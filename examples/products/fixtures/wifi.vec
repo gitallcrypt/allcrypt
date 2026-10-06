@@ -1,0 +1,33 @@
+# Wi-Fi captures from aircrack-ng's test suite, for
+# examples/products/wifi's tests. Written by scripts/check_wifi.py
+# --record. The capture is fixtures/wifi/NAME; payload_sha256 is the
+# SHA-256 of the decrypted Ethernet records' payloads concatenated,
+# which equalled airdecap-ng's. Do not edit.
+#
+# Airdecap-ng 1.7 rev 2f393ae - (C) 2006-2022 Thomas d'Otreppe
+
+[captures]
+
+name = wpa.cap
+capture = wifi/wpa.cap
+essid = test
+password = biscotte
+wep_key = -
+decrypted = 2
+payload_sha256 = fc6441b15030ce92bf50bebeb09079718959ead5245b4b5089132122496bc67a
+
+name = wpa2-psk-linksys.cap
+capture = wifi/wpa2-psk-linksys.cap
+essid = linksys
+password = dictionary
+wep_key = -
+decrypted = 25
+payload_sha256 = 90623cd097fd3c1ce83a1bdde4ba034811077d49b7ea8eeb2ff159e38f27b4ff
+
+name = wpa-psk-linksys.cap
+capture = wifi/wpa-psk-linksys.cap
+essid = linksys
+password = dictionary
+wep_key = -
+decrypted = 53
+payload_sha256 = 78eca82c3b0912a08c9ebd33ec489995ce3ddcc8c23b5d67a3c1e04e60d45784

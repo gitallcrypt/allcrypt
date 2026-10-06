@@ -1,0 +1,22 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+What a signature covers:  
+
+- - the text
+- -- and dashes
+last line
+-----BEGIN PGP SIGNATURE-----
+
+iQHIBAEBCgAyFiEE+m4tJEj6uMvhQbgllUlkxFJsqBsFAmrAJlsUHHJzYTMwNzJA
+ZXhhbXBsZS5vcmcACgkQlUlkxFJsqBu2pwv/VJdKrnBcdzMX+9E5EZZ8xJugv7ub
+bIpNelxBDoHzQTsdGq0sfZHzW1X28qxZ/TaH23/WLkt5wLFJSjRCN4VfrJI05BSt
+ZsH1Hlzv1wKYkbIUrb5umRPXWrBTM+RqWyO0xyIughebzI5QGB4KyP7eD5sYGfFX
+Y0BHKNQ8C2QnlJmkv3qNxIT0sZC2EyB0KLRHhAn/I+t10XuCm/LKIb5Q2jGJK/CX
+0HcXxdAZ2AbosRpLrCaTTCZcVdDy+WlCS4mBliHlgsQGKX2dSpdAPK6VQjZs7Syf
+qwzHXsYqhlNFxBCcM7IWQJnHf2kasVyn7tpa/L6qsd0p+j/4SbHqBupT7LyjKObj
+OO0STw4jYV1d0anV2tmsflpfBJ065IEgw70bHxTYmkJRxgJJ2B/5XQppEfNg5AD+
+xZ0SgdP0NgT5VLni9eFspVaZ38mT01unra/LP4wv3ziiGnuy2TTx1KV40D20yRg0
+uCx43kkD1IJQzGzMNpf01s2hErsdbzKOSUWn
+=2QcV
+-----END PGP SIGNATURE-----

@@ -1,0 +1,23 @@
+Copyright (C) 2026 E.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The license above is the Zero-Clause BSD license (SPDX: 0BSD). It covers
+this repository's own code and documentation.
+
+Not covered by it, and kept here only so the tests can read them without
+a network: the specifications in `rfcs/` (RFCs, Internet-Drafts, BIPs and
+ERCs, under their publishers' terms), and test data that other software
+wrote - recorded handshakes, volumes, archives and documents in
+`examples/products/fixtures/`, `tests/` and `vectors/`.

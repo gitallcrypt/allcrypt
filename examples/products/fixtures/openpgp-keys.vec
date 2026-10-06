@@ -1,0 +1,204 @@
+# Keys GnuPG 2.4.4 made and exported, each protected with the
+# passphrase below, a message GnuPG encrypted to each, and GnuPG's
+# inline and detached signatures over the same data and text-mode and
+# cleartext signatures over the SIGN_TEXT of check_openpgp.py. Written by
+# scripts/check_openpgp.py --record; fingerprints as `gpg --with-colons`
+# lists them, primary first.
+
+[gnupg-keys]
+
+name = rsa1024/rsa1024
+key = openpgp/keys/rsa1024.asc
+message = openpgp/keys/rsa1024.gpg
+passphrase = correct horse battery staple
+fingerprints = 05E895942D19664D1637D85F86D3CAF79933EA33 4D3C131CB0D1FFA14CE210FF93DBC593F428E8F9
+inline = openpgp/keys/rsa1024.inline.sig
+detached = openpgp/keys/rsa1024.detached.sig
+text-mode = openpgp/keys/rsa1024.text-mode.sig
+cleartext = openpgp/keys/rsa1024.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = rsa2048/rsa2048
+key = openpgp/keys/rsa2048.asc
+message = openpgp/keys/rsa2048.gpg
+passphrase = correct horse battery staple
+fingerprints = 9048388D6C11139B9F3F37F447A4AF52E8DF4F59 ABFBF57CA47273B5890B002F9EA46516FE01C2EE
+inline = openpgp/keys/rsa2048.inline.sig
+detached = openpgp/keys/rsa2048.detached.sig
+text-mode = openpgp/keys/rsa2048.text-mode.sig
+cleartext = openpgp/keys/rsa2048.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = rsa3072/rsa3072
+key = openpgp/keys/rsa3072.asc
+message = openpgp/keys/rsa3072.gpg
+passphrase = correct horse battery staple
+fingerprints = FA6E2D2448FAB8CBE141B825954964C4526CA81B 8B5F094850E65F7B746EA47D767589A6ACD69E06
+inline = openpgp/keys/rsa3072.inline.sig
+detached = openpgp/keys/rsa3072.detached.sig
+text-mode = openpgp/keys/rsa3072.text-mode.sig
+cleartext = openpgp/keys/rsa3072.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = dsa1024/elg1024
+key = openpgp/keys/dsa1024.asc
+message = openpgp/keys/dsa1024.gpg
+passphrase = correct horse battery staple
+fingerprints = D0B1B1F7339F980D9141DDF1A3293D3BD131B54A 422258E8E6C89AF7A9169C6D36B358A86DB1E108
+inline = openpgp/keys/dsa1024.inline.sig
+detached = openpgp/keys/dsa1024.detached.sig
+text-mode = openpgp/keys/dsa1024.text-mode.sig
+cleartext = openpgp/keys/dsa1024.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = dsa2048/elg2048
+key = openpgp/keys/dsa2048.asc
+message = openpgp/keys/dsa2048.gpg
+passphrase = correct horse battery staple
+fingerprints = FB8E686C19DC5AC7C7C4B4249B01C8B07DCDEFCA CEE39A85BF60A4D90308260A016A2E4E9382B7FC
+inline = openpgp/keys/dsa2048.inline.sig
+detached = openpgp/keys/dsa2048.detached.sig
+text-mode = openpgp/keys/dsa2048.text-mode.sig
+cleartext = openpgp/keys/dsa2048.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = nistp256/nistp256
+key = openpgp/keys/nistp256.asc
+message = openpgp/keys/nistp256.gpg
+passphrase = correct horse battery staple
+fingerprints = A8C41D31B1E976B9C3FCE2240CA1D4A9D1BB8D93 0D4BFFFA56F13A8E53E76EFFA44203D311742F25
+inline = openpgp/keys/nistp256.inline.sig
+detached = openpgp/keys/nistp256.detached.sig
+text-mode = openpgp/keys/nistp256.text-mode.sig
+cleartext = openpgp/keys/nistp256.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = nistp384/nistp384
+key = openpgp/keys/nistp384.asc
+message = openpgp/keys/nistp384.gpg
+passphrase = correct horse battery staple
+fingerprints = 8A3F74AD46CC80C121FAA9350938C3CFDB11B821 DC28BF3FA9A7CE5A1672445E863C5457E22C7B0D
+inline = openpgp/keys/nistp384.inline.sig
+detached = openpgp/keys/nistp384.detached.sig
+text-mode = openpgp/keys/nistp384.text-mode.sig
+cleartext = openpgp/keys/nistp384.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = nistp521/nistp521
+key = openpgp/keys/nistp521.asc
+message = openpgp/keys/nistp521.gpg
+passphrase = correct horse battery staple
+fingerprints = 6290A1F4C9297F6EDD08C9AA97A3290D05DAA7D1 D25960FA6730A660E1916638BE89AB03E64C7587
+inline = openpgp/keys/nistp521.inline.sig
+detached = openpgp/keys/nistp521.detached.sig
+text-mode = openpgp/keys/nistp521.text-mode.sig
+cleartext = openpgp/keys/nistp521.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = brainpoolP256r1/brainpoolP256r1
+key = openpgp/keys/brainpoolp256r1.asc
+message = openpgp/keys/brainpoolp256r1.gpg
+passphrase = correct horse battery staple
+fingerprints = 3A2F10FB013450DF941790728325D9DCE15D074A D5369F9F56B850F91FF8C3A068C650FA16565CC1
+inline = openpgp/keys/brainpoolp256r1.inline.sig
+detached = openpgp/keys/brainpoolp256r1.detached.sig
+text-mode = openpgp/keys/brainpoolp256r1.text-mode.sig
+cleartext = openpgp/keys/brainpoolp256r1.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = brainpoolP384r1/brainpoolP384r1
+key = openpgp/keys/brainpoolp384r1.asc
+message = openpgp/keys/brainpoolp384r1.gpg
+passphrase = correct horse battery staple
+fingerprints = BDDD0EF1159192E3D4272D911A6BD883BFAFED93 7BB1B2F25693ED28EEC565A5CDEFCC7AFE7C41F6
+inline = openpgp/keys/brainpoolp384r1.inline.sig
+detached = openpgp/keys/brainpoolp384r1.detached.sig
+text-mode = openpgp/keys/brainpoolp384r1.text-mode.sig
+cleartext = openpgp/keys/brainpoolp384r1.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = brainpoolP512r1/brainpoolP512r1
+key = openpgp/keys/brainpoolp512r1.asc
+message = openpgp/keys/brainpoolp512r1.gpg
+passphrase = correct horse battery staple
+fingerprints = 6508D075503C92FF6FE61DC25FB1B6AF769E23A4 85CE25F8CB866171034F35C7D491F4301139F7D9
+inline = openpgp/keys/brainpoolp512r1.inline.sig
+detached = openpgp/keys/brainpoolp512r1.detached.sig
+text-mode = openpgp/keys/brainpoolp512r1.text-mode.sig
+cleartext = openpgp/keys/brainpoolp512r1.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = secp256k1/secp256k1
+key = openpgp/keys/secp256k1.asc
+message = openpgp/keys/secp256k1.gpg
+passphrase = correct horse battery staple
+fingerprints = E2FE7D82A93B42880BCCD9202CC9BED033234455 371278A33853409C5ED27CDE17D36AF7440266F2
+inline = openpgp/keys/secp256k1.inline.sig
+detached = openpgp/keys/secp256k1.detached.sig
+text-mode = openpgp/keys/secp256k1.text-mode.sig
+cleartext = openpgp/keys/secp256k1.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = ed25519/cv25519
+key = openpgp/keys/ed25519.asc
+message = openpgp/keys/ed25519.gpg
+passphrase = correct horse battery staple
+fingerprints = 762E19B02633999EBC1854630F730BDF44F5CF31 B2BFCE4BFDD2751D6361587193528A4B67F71455
+inline = openpgp/keys/ed25519.inline.sig
+detached = openpgp/keys/ed25519.detached.sig
+text-mode = openpgp/keys/ed25519.text-mode.sig
+cleartext = openpgp/keys/ed25519.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65
+
+name = ed448/cv448
+key = openpgp/keys/ed448.asc
+message = openpgp/keys/ed448.gpg
+passphrase = correct horse battery staple
+fingerprints = 9AFF94B1A3A94A80B9D76D12547EAED70B5E1D8C8DFEAA29E0CB832F6C778201 ABBFFE550454EBD17ADF3014F9FE41CAF83FF3ED90841CDB64A95440FAECFDB0
+inline = openpgp/keys/ed448.inline.sig
+detached = openpgp/keys/ed448.detached.sig
+text-mode = openpgp/keys/ed448.text-mode.sig
+cleartext = openpgp/keys/ed448.cleartext.sig
+data_length = 5000
+data_seed = 3
+data_sha256 = 82bf637ea354a2a6cb8e29e8cd79b33e6761f038db15023c1317353f15a89593
+text = 576861742061207369676e617475726520636f766572733a20200a0a2d2074686520746578740a2d2d20616e64206461736865730a6c617374206c696e65

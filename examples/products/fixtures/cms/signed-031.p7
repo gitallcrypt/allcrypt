@@ -1,0 +1,48 @@
+MIME-Version: 1.0
+Content-Type: multipart/signed; protocol="application/pkcs7-signature"; micalg="sha-512"; boundary="----B6DE4B4C335A18C14396406D306A7AE5"
+
+This is an S/MIME signed message
+
+------B6DE4B4C335A18C14396406D306A7AE5
+Line 0 of a message, some of it signed and some sealed.
+Line 1 of a message, some of it signed and some sealed.
+Line 2 of a message, some of it signed and some sealed.
+Line 3 of a message, some of it signed and some sealed.
+Line 4 of a message, some of it signed and some sealed.
+Line 5 of a message, some of it signed and some sealed.
+Line 6 of a message, some of it signed and some sealed.
+Line 7 of a message, some of it signed and some sealed.
+Line 8 of a message, some of it signed and some sealed.
+Line 9 of a message, some of it signed and some sealed.
+Line 10 of a message, some of it signed and some sealed.
+Line 11 of a message, some of it signed and some sealed.
+
+------B6DE4B4C335A18C14396406D306A7AE5
+Content-Type: application/pkcs7-signature; name="smime.p7s"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7s"
+
+MIID4gYJKoZIhvcNAQcCoIID0zCCA88CAQExDTALBglghkgBZQMEAgMwCwYJKoZI
+hvcNAQcBoIICFDCCAhAwgfmgAwIBAgIUZ/msHDxcrvXZYcQZ8xcCb92/eRMwDQYJ
+KoZIhvcNAQELBQAwFTETMBEGA1UEAwwKRXhhbXBsZSBDQTAeFw0yNjEwMDMwNzQ3
+MjhaFw0zNjA5MzAwNzQ3MjhaMBkxFzAVBgNVBAMMDmVkMjU1MTkgc2lnbmVyMCow
+BQYDK2VwAyEAWdlI5irGNPoP08gPJrG6SnheYiPrFLAkbrqblNSQTRWjTzBNMB0G
+A1UdDgQWBBSJ+Q/HcEkKzaRtsx9lxEQe6DJxeDAfBgNVHSMEGDAWgBTpZwdSzbEj
+euek3vIH0TakImK+wTALBgNVHQ8EBAMCA6gwDQYJKoZIhvcNAQELBQADggEBAKaO
+4ZoN87sB4WfPUi+N1D0iJBAxWJrF4PMU079HKpmjICWYJ0LpfPWy3pNRkcpiOQOh
+rWyvu/wl+OdYqcVnHbhia/HqQddNmUSXFsJXQzkeLEHkxf5DPx9QvNtOG0dgJFV7
+KlJWWgPa6VjgHsEAeGjcDvaN9bksXAhU1ntYGXdTqrkjskKPr5kzPk2Xnlp/1hLt
+5ettE2AsL5sTHnm+BMPE31V++j8q1EQ+hYiT5V8yM5zuptCX+PvibAPO50jZjH6I
+U4Qg4MKbNn7jjh+YRzTOa/bYcjB2HF2wV0nziHE0gfTlKTQfYmJ1tev8+mVbeHD6
+Zky6TKt0MbfzBm2egg0xggGUMIIBkAIBATAtMBUxEzARBgNVBAMMCkV4YW1wbGUg
+Q0ECFGf5rBw8XK712WHEGfMXAm/dv3kTMAsGCWCGSAFlAwQCA6CCAQQwGAYJKoZI
+hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjYxMDAzMDc0NzI4
+WjBPBgkqhkiG9w0BCQQxQgRAKU7KtAd1gEV3R82V2f5w5AUb96c2RockDA7D2Z9N
+fj9hLy1S40VGU0vlETPGWPEwIbBeSFPyNCdiAQQa6asI8zB5BgkqhkiG9w0BCQ8x
+bDBqMAsGCWCGSAFlAwQBKjALBglghkgBZQMEARYwCwYJYIZIAWUDBAECMAoGCCqG
+SIb3DQMHMA4GCCqGSIb3DQMCAgIAgDANBggqhkiG9w0DAgIBQDAHBgUrDgMCBzAN
+BggqhkiG9w0DAgIBKDAFBgMrZXAEQKOFD3i/WEvZv28f88uUR9q0OD6amY2P5W5t
+ORnnAdqpPZv8BcfXNLRQDc2/YeWN7I3GbBTjYxu12whllG/l8Ak=
+
+------B6DE4B4C335A18C14396406D306A7AE5--
+

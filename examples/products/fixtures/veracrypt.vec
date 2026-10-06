@@ -1,0 +1,61 @@
+# VeraCrypt and TrueCrypt volumes examples/products/veracrypt wrote
+# that cryptsetup opened, for the example's tests. Written by
+# scripts/check_veracrypt.py --record; master_key is what
+# `cryptsetup tcryptDump --dump-master-key` printed, and
+# python-cryptography's AES-XTS under it decrypted the data.
+# Only the headers and the data recorded are kept; the random
+# fill of the rest is zeros. Do not edit.
+#
+# cryptsetup 2.8.8 flags: UDEV BLKID KEYRING KERNEL_CAPI HW_OPAL
+
+[cryptsetup]
+
+name = vc-sha512
+arguments = --hash sha512 --pim 1
+volume = veracrypt/vc-sha512.sparse
+password = aaaaaaaaaaaa
+pim = 1
+hash = sha512
+master_key = 1d477bcb3491156ce24b84ad63c72817a42fc4e3d880ed633fed3d7497e1f7b8811fa7b09c383ef7239574f9770d976bb825b1a0a0790384d23346c3d4ba5617
+data_length = 16384
+data_sha256 = cdf2725a3dced4a6badca7353ee9b08f4e9810a5fc30b49f58ad7cfb1375098e
+
+name = vc-blake2s
+arguments = --hash blake2s --pim 1
+volume = veracrypt/vc-blake2s.sparse
+password = aaaaaaaaaaaa
+pim = 1
+hash = blake2s
+master_key = 75fc28047897dd34dbf203246dac3e1ad6de1aeb184d4610bafef633bedb5ca0950d20ca7299ab2334879b78322a8d857e18ee104c8f932d8000ab3aa4c41f06
+data_length = 16384
+data_sha256 = cdf2725a3dced4a6badca7353ee9b08f4e9810a5fc30b49f58ad7cfb1375098e
+
+name = tc-sha512
+arguments = --truecrypt --hash sha512
+volume = veracrypt/tc-sha512.sparse
+password = aaaaaaaaaaaa
+pim = 0
+hash = sha512
+master_key = 4e830f178440298f1252113c75afe84c1a2dcdf0353f88eeaeb83a6d7d4316fe914cd341891a30e7b03263bdfbaa6b5f34b882302fa592b2505507920e2d23ea
+data_length = 16384
+data_sha256 = cdf2725a3dced4a6badca7353ee9b08f4e9810a5fc30b49f58ad7cfb1375098e
+
+name = tc-ripemd160
+arguments = --truecrypt --hash ripemd160
+volume = veracrypt/tc-ripemd160.sparse
+password = aaaaaaaaaaaa
+pim = 0
+hash = ripemd160
+master_key = d7dcaf121815b4504718b5790123a07083c4e2fe30b1c167d33c5ab96ed2c0b837546effe53c75901390594e510085aca68f33e8cbbfff1ae933c704408b62d0
+data_length = 16384
+data_sha256 = cdf2725a3dced4a6badca7353ee9b08f4e9810a5fc30b49f58ad7cfb1375098e
+
+name = tc-whirlpool
+arguments = --truecrypt --hash whirlpool
+volume = veracrypt/tc-whirlpool.sparse
+password = aaaaaaaaaaaa
+pim = 0
+hash = whirlpool
+master_key = df6e26279f9126c70b5141c5193ee96a662974d0430496b855792924414a9f39e2c2701569300e8b1aadf1638ddeb78cc6d9e0af9cb6fe586cdcd042ec1031e3
+data_length = 16384
+data_sha256 = cdf2725a3dced4a6badca7353ee9b08f4e9810a5fc30b49f58ad7cfb1375098e

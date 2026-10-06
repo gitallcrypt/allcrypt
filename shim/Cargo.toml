@@ -1,0 +1,19 @@
+[package]
+name = "allcrypt-shim"
+version = "0.1.0"
+edition = "2021"
+license = "0BSD"
+rust-version = "1.87"
+
+# `libssl.so`. The name is what makes this work: LD_PRELOAD inserts
+# these symbols ahead of the real library's, so a program that calls
+# SSL_connect gets ours.
+#
+# Only a `cdylib` - there is no Rust API here, and nothing links against
+# it at build time.
+[lib]
+name = "ssl"
+crate-type = ["cdylib"]
+
+[dependencies]
+allcrypt = { path = ".." }

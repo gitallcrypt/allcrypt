@@ -1,0 +1,16 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+What a signature covers:  
+
+- - the text
+- -- and dashes
+last line
+-----BEGIN PGP SIGNATURE-----
+
+iJIEARMIADoWIQQ6LxD7ATRQ35QXkHKDJdnc4V0HSgUCasAmZBwcYnJhaW5wb29s
+cDI1NnIxQGV4YW1wbGUub3JnAAoJEIMl2dzhXQdKHBUA/25PWP2LFDmDHCV/soyJ
+jeIrk4y0JOB5Ct2KrkxCceDYAP9OkagZC6P38eQUXfoQ/4hKH3KOvgKu7OVIVKJv
+khvOUg==
+=Qthx
+-----END PGP SIGNATURE-----

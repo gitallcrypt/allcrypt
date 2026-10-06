@@ -1,0 +1,63 @@
+# TKIP per-packet RC4 keys, computed as Linux's net/mac80211/tkip.c
+# (v6.12) does, with its S-box table. Written by
+# scripts/make_tkip_vectors.py. Do not edit.
+
+tk = 03203d5a7794b1ceeb0825425f7c99b6
+ta = 00356a9fd409
+tsc = 000000000000
+rc4_key = 002000286c36b9ee419556d800a152ac
+
+tk = 0a2744617e9bb8d5f20f2c496683a0bd
+ta = 01366ba0d50a
+tsc = 000000000001
+rc4_key = 00200126d03da8455e84d186c33b4651
+
+tk = 112e4b6885a2bfdcf91633506d8aa7c4
+ta = 02376ca1d60b
+tsc = 00000000ffff
+rc4_key = ff7ffffda5c9728193680ea84310ea2b
+
+tk = 1835526f8ca9c6e3001d3a577491aecb
+ta = 03386da2d70c
+tsc = 000000010000
+rc4_key = 00200052ba280caa4ca6d2f01057bde3
+
+tk = 1f3c597693b0cdea0724415e7b98b5d2
+ta = 04396ea3d80d
+tsc = 000000010001
+rc4_key = 002001c51774c27554bcc8f9187095d1
+
+tk = 2643607d9ab7d4f10e2b4865829fbcd9
+ta = 053a6fa4d90e
+tsc = 123456789abc
+rc4_key = 9a3abc284b8bf59083fec4e8c3f5772b
+
+tk = 2d4a6784a1bedbf815324f6c89a6c3e0
+ta = 063b70a5da0f
+tsc = ffffffffffff
+rc4_key = ff7fff173f46b0dae7ba9cf02e4d0270
+
+tk = 34516e8ba8c5e2ff1c39567390adcae7
+ta = 073c71a6db10
+tsc = 000000010000
+rc4_key = 00200051020fbe65d5cf04db8b269723
+
+tk = 3b587592afcce90623405d7a97b4d1ee
+ta = 083d72a7dc11
+tsc = abcd0000ff00
+rc4_key = ff7f0022a0a0ccb4e191852f9c7b7f8a
+
+tk = 425f7c99b6d3f00d2a4764819ebbd8f5
+ta = 093e73a8dd12
+tsc = 800000007fff
+rc4_key = 7f7fff75ea269b351acf8c5ce693a901
+
+tk = 496683a0bddaf714314e6b88a5c2dffc
+ta = 0a3f74a9de13
+tsc = 00ff00ff00ff
+rc4_key = 0020ff3a84838b424fcf030a1f893cce
+
+tk = 506d8aa7c4e1fe1b3855728facc9e603
+ta = 0b4075aadf14
+tsc = 5a5a5a5a5a5a
+rc4_key = 5a7a5a59eccc9b078682e621dd3ee39d

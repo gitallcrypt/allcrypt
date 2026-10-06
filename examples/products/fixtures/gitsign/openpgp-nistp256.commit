@@ -1,0 +1,13 @@
+tree 5956ee4903fed69449888bcf55ff90c287160c8b
+parent e3c5a711fb34b8ae67aaa35e56d1d7782fa1de2e
+author Alice <alice@example.com> 1791061209 +0200
+committer Alice <alice@example.com> 1791061209 +0200
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ iHUEABMIAB0WIQTkBAv8ODzwx4Dcs5DyYW9MWKzZJgUCasFs2QAKCRDyYW9MWKzZ
+ Jv+6AP9dagh6IYyzFS7pdWEjWZ1i0oQGl9f9qqNe6LMm8cxLSAD/Rdm0HXWUUsGB
+ 6bDYBXUksRD5qGrPepj14jGAOapWGzE=
+ =6TFp
+ -----END PGP SIGNATURE-----
+
+theirs signing nistp256

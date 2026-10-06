@@ -1,0 +1,184 @@
+# One workspace, three packages: the library (and its proxy binary)
+# here, the OpenSSL shim in shim/, and the development tools in tools/.
+# The shim has to be its own package because a package produces one
+# library, and the shim's is a `cdylib` that must be called `libssl.so`
+# rather than `liballcrypt.so`. The tools are their own package so that
+# examples/ holds only examples, and so that every program in
+# tools/src/bin/ is found without a line here.
+[workspace]
+members = [".", "shim", "tools"]
+# All three, so a plain `cargo build` produces the shim as well as the
+# library and the proxy - `pytests/test_shim.py` runs the real
+# `libssl.so`, and a gate command that does not build it turns that
+# whole file into a failure about a missing file - and so that `cargo
+# test` and clippy compile the tools.
+default-members = [".", "shim", "tools"]
+
+[package]
+name = "allcrypt"
+version = "0.1.0"
+edition = "2021"
+license = "0BSD"
+# The oldest toolchain this builds on. Declared rather than implied:
+# `is_multiple_of` and `Option::is_none_or` were stabilised in 1.87 and
+# are now used throughout, so an older compiler fails with a handful of
+# unrelated-looking method-not-found errors instead of one clear line.
+# Raise it only for a reason worth writing in the commit message - this
+# library exists to talk to old things, and being buildable on an old
+# toolchain is part of that.
+rust-version = "1.87"
+
+[lib]
+name = "allcrypt"
+crate-type = ["cdylib", "rlib"]
+
+# The proxy. Named for what it is rather than after the crate: it is a
+# tool somebody runs, not the library, and `allcrypt` on a PATH would
+# say nothing about what it does.
+[[bin]]
+name = "allcrypt-proxy"
+path = "src/main.rs"
+
+
+# The product examples: formats other software writes, built from the
+# library's primitives, each with tests that `cargo test` runs.
+# `examples/products/README.md` lists them and what checked each.
+[[example]]
+name = "luks"
+path = "examples/products/luks/main.rs"
+test = true
+
+[[example]]
+name = "bitlocker"
+path = "examples/products/bitlocker/main.rs"
+test = true
+
+[[example]]
+name = "wifi"
+path = "examples/products/wifi/main.rs"
+test = true
+
+[[example]]
+name = "veracrypt"
+path = "examples/products/veracrypt/main.rs"
+test = true
+
+[[example]]
+name = "age"
+path = "examples/products/age/main.rs"
+test = true
+
+[[example]]
+name = "openpgp"
+path = "examples/products/openpgp/main.rs"
+test = true
+
+[[example]]
+name = "signal"
+path = "examples/products/signal/main.rs"
+test = true
+
+[[example]]
+name = "keepass"
+path = "examples/products/keepass/main.rs"
+test = true
+
+[[example]]
+name = "zip"
+path = "examples/products/zip/main.rs"
+test = true
+
+[[example]]
+name = "pdf"
+path = "examples/products/pdf/main.rs"
+test = true
+
+[[example]]
+name = "office"
+path = "examples/products/office/main.rs"
+test = true
+
+[[example]]
+name = "odf"
+path = "examples/products/odf/main.rs"
+test = true
+
+[[example]]
+name = "keystore"
+path = "examples/products/keystore/main.rs"
+test = true
+
+[[example]]
+name = "jose"
+path = "examples/products/jose/main.rs"
+test = true
+
+[[example]]
+name = "sevenzip"
+path = "examples/products/sevenzip/main.rs"
+test = true
+
+[[example]]
+name = "cms"
+path = "examples/products/cms/main.rs"
+test = true
+
+[[example]]
+name = "kerberos"
+path = "examples/products/kerberos/main.rs"
+test = true
+
+[[example]]
+name = "wallet"
+path = "examples/products/wallet/main.rs"
+test = true
+
+[[example]]
+name = "dnssec"
+path = "examples/products/dnssec/main.rs"
+test = true
+
+[[example]]
+name = "wireguard"
+path = "examples/products/wireguard/main.rs"
+test = true
+
+[[example]]
+name = "gitsign"
+path = "examples/products/gitsign/main.rs"
+test = true
+
+[[example]]
+name = "smartcard"
+path = "examples/products/smartcard/main.rs"
+test = true
+
+[dependencies]
+#serialize = "1.0"
+lazy_static = "1.0"
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+
+[features]
+# Off by default: `cargo test` stays free of the pyo3 dependency.
+# Build the module with `python3 scripts/build_python.py`, which is
+# cargo plus a rename. maturin builds wheels from the same feature.
+python = ["dep:pyo3"]
+# Hardware AES (AES-NI) and GHASH (PCLMULQDQ) on x86-64, chosen at run
+# time when the processor has them. Off by default because reaching the
+# instructions needs `unsafe`, which nothing else in the library's
+# cryptography uses; src/block_ciphers/aes_ni.rs and docs/building.md
+# ("Building for speed") say what it buys - speed, and constant time for
+# the one-block-at-a-time modes - and what the `unsafe` is. Does nothing
+# on other architectures.
+aes-ni = []
+# SHA-1 and SHA-256 on the x86-64 SHA extensions, chosen at run time
+# when the processor has them. Off by default for the same reason as
+# `aes-ni`: the instructions need `unsafe`. src/hash_functions/sha_ni.rs
+# says what the `unsafe` is. Does nothing on other architectures.
+sha-ni = []
+# The C interface: `extern "C"` functions over `api`, declared in
+# include/allcrypt.h. Off by default because the functions are exported
+# from every build that has them, and only a C caller wants that.
+# docs/c.md has the build and link lines; scripts/check_c_api.py checks
+# the header against the library and runs a C program through it.
+c-api = []

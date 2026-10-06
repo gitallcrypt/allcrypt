@@ -1,0 +1,49 @@
+MIME-Version: 1.0
+Content-Type: multipart/signed; protocol="application/pkcs7-signature"; micalg="sha-256"; boundary="----38561B34FAC29E2D68B081FD1FDE4E1E"
+
+This is an S/MIME signed message
+
+------38561B34FAC29E2D68B081FD1FDE4E1E
+Line 0 of a message, some of it signed and some sealed.
+Line 1 of a message, some of it signed and some sealed.
+Line 2 of a message, some of it signed and some sealed.
+Line 3 of a message, some of it signed and some sealed.
+Line 4 of a message, some of it signed and some sealed.
+Line 5 of a message, some of it signed and some sealed.
+Line 6 of a message, some of it signed and some sealed.
+Line 7 of a message, some of it signed and some sealed.
+Line 8 of a message, some of it signed and some sealed.
+Line 9 of a message, some of it signed and some sealed.
+Line 10 of a message, some of it signed and some sealed.
+Line 11 of a message, some of it signed and some sealed.
+
+------38561B34FAC29E2D68B081FD1FDE4E1E
+Content-Type: application/pkcs7-signature; name="smime.p7s"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7s"
+
+MIID9wYJKoZIhvcNAQcCoIID6DCCA+QCAQExDTALBglghkgBZQMEAgEwCwYJKoZI
+hvcNAQcBoIICPzCCAjswggEjoAMCAQICFAtMu50DZVkIEbotMog8SFX7bmUnMA0G
+CSqGSIb3DQEBCwUAMBUxEzARBgNVBAMMCkV4YW1wbGUgQ0EwHhcNMjYxMDAzMDc0
+NzI4WhcNMzYwOTMwMDc0NzI4WjAUMRIwEAYDVQQDDAllYyBzaWduZXIwWTATBgcq
+hkjOPQIBBggqhkjOPQMBBwNCAAStNJBbxE8u+NChktmFzqRa4AAdjjqj1qS+Q/Xy
+q9kXPW8M7T45UXJjH/ptffxdMW+p+bgKb02YFAARQl0BjM2Jo08wTTAdBgNVHQ4E
+FgQU/1dXt+IgzJk8WeQZWn2P/D4Cul0wHwYDVR0jBBgwFoAU6WcHUs2xI3rnpN7y
+B9E2pCJivsEwCwYDVR0PBAQDAgOoMA0GCSqGSIb3DQEBCwUAA4IBAQC4P0jjCS9d
+dsw8J6ehSlhqfmQ6l8B6iKlENv+swd8mYV/DGEMip+wHCJnE3dFlkJGyNExHp1yG
+eE593VI2RNBhL+wLFAr3U9DNPPTyJH9rk6JedKbwcFB5KPmadFvfVKaQJVNIHXM3
+nZUS/1YHztVDG98hiNkb8pj9Q72gX6kgXRNO2mqdjbyREN/mNR7EKqhikVFNpVID
+Ojbchwekx+bnL1/2uFWJs+NMWx0HkCiDTFHy0pvDmrUvGO6KZ2RBUeyHSlJsihfm
+U1bV7JPQablqdvAvL71ywwElzM8guBocOB13+rTjQttOku5VbKQKk2zlYjBJukZs
+mdsp7/wF4E4oMYIBfjCCAXoCAQEwLTAVMRMwEQYDVQQDDApFeGFtcGxlIENBAhQL
+TLudA2VZCBG6LTKIPEhV+25lJzALBglghkgBZQMEAgGggeQwGAYJKoZIhvcNAQkD
+MQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjYxMDAzMDc0NzI4WjAvBgkq
+hkiG9w0BCQQxIgQg6LmK/s2ozaED0Nj/qIgUpHAkcEfEE6Io7Wxc+ni1+y8weQYJ
+KoZIhvcNAQkPMWwwajALBglghkgBZQMEASowCwYJYIZIAWUDBAEWMAsGCWCGSAFl
+AwQBAjAKBggqhkiG9w0DBzAOBggqhkiG9w0DAgICAIAwDQYIKoZIhvcNAwICAUAw
+BwYFKw4DAgcwDQYIKoZIhvcNAwICASgwCgYIKoZIzj0EAwIERjBEAiAboaWqQyPa
+hQWAURWtVmokLES5BH+cy28Ez79mLD93WAIgYJ6S8uP20q8ozHGev0CbH/0P2/S4
+C2ng50Wu/xgMpEk=
+
+------38561B34FAC29E2D68B081FD1FDE4E1E--
+

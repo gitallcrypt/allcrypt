@@ -1,0 +1,127 @@
+# Messages GnuPG 2.4.4 encrypted with a passphrase, that
+# examples/products/openpgp decrypts. Written by
+# scripts/check_openpgp.py --record; session_key is what
+# `gpg --show-session-key` printed; the data is plaintext(length,
+# seed) of that script.
+
+[gnupg]
+
+name = IDEA
+file = openpgp/idea.gpg
+passphrase = correct horse battery staple
+session_key = 1:A32607589DA25AD1A98105DBDB04AD96
+data_length = 1000
+data_seed = 4
+data_sha256 = 039d303011d8e722eee194dede81ab7dc626ccbf10b067fa7be4dd9f7ec2d2a0
+
+name = CAST5
+file = openpgp/cast5.gpg
+passphrase = correct horse battery staple
+session_key = 3:37BF46D8C127505E928597C03F7CFD9D
+data_length = 1000
+data_seed = 5
+data_sha256 = 34d5e36f751ca42995cfc3b4a4b9248d769e4c384f49555d2cc4bde177b44e81
+
+name = TWOFISH
+file = openpgp/twofish.gpg
+passphrase = correct horse battery staple
+session_key = 10:A48A6128EE6980EBABC85487AB7DF37831A18E14FD7A13657650B3A771306148
+data_length = 1000
+data_seed = 7
+data_sha256 = 8e5efe84f787db0c81f5e1bc828014ca5801ce3ef8b3a1ed37e77986171d6003
+
+name = CAMELLIA256
+file = openpgp/camellia256.gpg
+passphrase = correct horse battery staple
+session_key = 13:C1B2005802C24EAF880BE540F33E33022B609A0611FF7592BFC3DF8B4A96EC27
+data_length = 1000
+data_seed = 11
+data_sha256 = 9b2eeecb46b0554f2832bbf76ea81d4205f12d6faebd1ec949e961654f37f350
+
+name = compress zlib
+file = openpgp/compress-zlib.gpg
+passphrase = correct horse battery staple
+session_key = 2:D3CCDF160E60FFD1682C66866C7FA8F191484C89DA118A37
+data_length = 70000
+data_seed = 13
+data_sha256 = 5187a5727dd6bf5eba843c4684b1a738506615f74073552b9793c2cdd3911664
+
+name = compress bzip2
+file = openpgp/compress-bzip2.gpg
+passphrase = correct horse battery staple
+session_key = 2:707B2240AB7D5CEB574052773F6497E0DF4052221E0D8A5C
+data_length = 70000
+data_seed = 14
+data_sha256 = 9d9441ee8ab9f5c6cc5e93f48d5bf43d7703ceace2ff07630ce198b38aba8fb2
+
+name = S2K mode 0 SHA1
+file = openpgp/s2k-mode-0-sha1.gpg
+passphrase = correct horse battery staple
+session_key = 2:ABF7AAD6438836DBE526AA231ABDE2D0EEF74D4249C9D753
+data_length = 100
+data_seed = 15
+data_sha256 = 2832825d3e7cabd9e52173259cadb2d77af709158ff684c41b4489cba91e0231
+
+name = S2K mode 3 RIPEMD160
+file = openpgp/s2k-mode-3-ripemd160.gpg
+passphrase = correct horse battery staple
+session_key = 2:CC6623DAD99A61CD31D7CE2952965E78F1B13505E28B2AA1
+data_length = 100
+data_seed = 20
+data_sha256 = d7141b8d106e76d3347f87abd7d11e49fed211bdef19dfd258fa58eb380da7e5
+
+name = OCB packet AES
+file = openpgp/ocb-packet-aes.gpg
+passphrase = correct horse battery staple
+session_key = 7.2:0530E55CB2F1E06B5E0BDBBB3CAEC285
+data_length = 1000
+data_seed = 14
+data_sha256 = bf54be82dda2b12aff18bdd4de90187be92451538e240ea20f91f731e098ce6a
+
+name = OCB packet CAMELLIA192
+file = openpgp/ocb-packet-camellia192.gpg
+passphrase = correct horse battery staple
+session_key = 12.2:760EA77385C1C675D2C479AF853E3E905CDDCFE28EF3FDEA
+data_length = 1000
+data_seed = 22
+data_sha256 = 3d774854a90a57abb9c87709bff537756fa8f2645ff0355aa55d729773eb5d39
+
+name = no MDC CAST5
+file = openpgp/no-mdc-cast5.gpg
+passphrase = correct horse battery staple
+session_key = 3:D161F4A07B5E3C59B4DA4B0B71A93D67
+data_length = 1000
+data_seed = 12
+data_sha256 = 959f4d01ef7b2a08d17a4b60cb758f2844f7fddf9a9124f328a5cee2390a4a0a
+
+name = 0 bytes OCB from a pipe
+file = openpgp/0-bytes-ocb-from-a-pipe.gpg
+passphrase = correct horse battery staple
+session_key = 9.2:5CAAAE3E6F963530E65999C8C6A58AF79449D84B65499DD019D7A16EB232BC9C
+data_length = 0
+data_seed = 23
+data_sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+name = 70000 bytes from a pipe
+file = openpgp/70000-bytes-from-a-pipe.gpg
+passphrase = correct horse battery staple
+session_key = 2:19EB1454477AD9483F83CE8A0ECADED3F81EA6EEA39EBD43
+data_length = 70000
+data_seed = 23
+data_sha256 = 9266c0b229772ea20272903ca03bcf28afecfaf68b27a47037a3abd8e38ce547
+
+name = 70000 bytes OCB from a pipe
+file = openpgp/70000-bytes-ocb-from-a-pipe.gpg
+passphrase = correct horse battery staple
+session_key = 9.2:0B431A88FEA79FBBDFFFCE764E11DB1D2A372DC80DC5CBC1CDACF0E5FBC81E36
+data_length = 70000
+data_seed = 27
+data_sha256 = d20909b7be7059a5e8cd329a8a4b843c42e829c5490b8888e43eb438acaa454a
+
+name = armored OCB
+file = openpgp/armored-ocb.gpg
+passphrase = correct horse battery staple
+session_key = 9.2:1F788B571FDE677030FD6DF0DA5151CC680D56DD18F5905F00FEF429179872F0
+data_length = 1000
+data_seed = 11
+data_sha256 = 9b2eeecb46b0554f2832bbf76ea81d4205f12d6faebd1ec949e961654f37f350

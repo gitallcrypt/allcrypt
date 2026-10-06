@@ -1,0 +1,13 @@
+object 3a7ab4f3136c14a07b232084bc712f28151d8f66
+type commit
+tag v-theirs
+tagger Alice <alice@example.com> 1791061209 +0200
+
+tag v-theirs
+-----BEGIN PGP SIGNATURE-----
+
+iHUEABMIAB0WIQTkBAv8ODzwx4Dcs5DyYW9MWKzZJgUCasFs2QAKCRDyYW9MWKzZ
+Ji1VAP426pT86aZveg7cXTrug4HpR24T2bOcoUWV7xA2iZaBaAD/UD1KVNLzip5u
+dlYVr2g+ZH4yuEdHhYy3vKFKBn/VTsI=
+=Ck5Y
+-----END PGP SIGNATURE-----

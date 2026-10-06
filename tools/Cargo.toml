@@ -1,0 +1,27 @@
+# Development tools, not part of the library: the corpus generators
+# `scripts/diff_check.py` checks against other implementations
+# (`diff_*`), the constant-time harness `scripts/ct_check.py` runs under
+# valgrind (`ct_bignum`), and benchmarks (`bench_*`). Every file in
+# src/bin/ is a program, found by Cargo without a line here:
+#
+#     cargo run --release -p allcrypt-tools --bin diff_gcm
+#
+# A workspace member and a default one, so `cargo test` and clippy
+# compile them: a generator that stops compiling fails the gate, not the
+# next differential run.
+[package]
+name = "allcrypt-tools"
+version = "0.1.0"
+edition = "2021"
+license = "0BSD"
+rust-version = "1.87"
+publish = false
+
+[dependencies]
+allcrypt = { path = ".." }
+
+[features]
+# For bench_speed and ct_bignum against the hardware AES and SHA paths:
+#     cargo run --release -p allcrypt-tools --features aes-ni,sha-ni --bin bench_speed
+aes-ni = ["allcrypt/aes-ni"]
+sha-ni = ["allcrypt/sha-ni"]

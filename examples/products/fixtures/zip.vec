@@ -1,0 +1,67 @@
+# Archives the witnesses wrote, kept by scripts/check_zip.py --record,
+# with the SHA-256 of every file in each. The password is
+# 636f727265637420686f727365206261747465727920737461706c65 (hex of its UTF-8).
+
+[archive]
+name = infozip-0.zip
+made_by = Info-ZIP zip -0 ZipCrypto
+name = infozip-0-pipe.zip
+made_by = Info-ZIP zip -0 ZipCrypto to a pipe
+name = infozip-6.zip
+made_by = Info-ZIP zip -6 ZipCrypto
+name = infozip-6-pipe.zip
+made_by = Info-ZIP zip -6 ZipCrypto to a pipe
+name = infozip-zip64.zip
+made_by = Info-ZIP zip -fz (ZIP64) ZipCrypto
+name = bsdtar-zipcrypt-store.zip
+made_by = bsdtar zipcrypt store
+name = bsdtar-zipcrypt-deflate.zip
+made_by = bsdtar zipcrypt deflate
+name = bsdtar-aes128-store.zip
+made_by = bsdtar aes128 store
+name = bsdtar-aes128-deflate.zip
+made_by = bsdtar aes128 deflate
+name = bsdtar-aes256-store.zip
+made_by = bsdtar aes256 store
+name = bsdtar-aes256-deflate.zip
+made_by = bsdtar aes256 deflate
+name = 7zz-ZipCrypto-Copy.zip
+made_by = 7-Zip ZipCrypto Copy
+name = 7zz-ZipCrypto-Deflate.zip
+made_by = 7-Zip ZipCrypto Deflate
+name = 7zz-ZipCrypto-BZip2.zip
+made_by = 7-Zip ZipCrypto BZip2
+name = 7zz-AES128-Copy.zip
+made_by = 7-Zip AES128 Copy
+name = 7zz-AES128-Deflate.zip
+made_by = 7-Zip AES128 Deflate
+name = 7zz-AES128-BZip2.zip
+made_by = 7-Zip AES128 BZip2
+name = 7zz-AES192-Copy.zip
+made_by = 7-Zip AES192 Copy
+name = 7zz-AES192-Deflate.zip
+made_by = 7-Zip AES192 Deflate
+name = 7zz-AES192-BZip2.zip
+made_by = 7-Zip AES192 BZip2
+name = 7zz-AES256-Copy.zip
+made_by = 7-Zip AES256 Copy
+name = 7zz-AES256-Deflate.zip
+made_by = 7-Zip AES256 Deflate
+name = 7zz-AES256-BZip2.zip
+made_by = 7-Zip AES256 BZip2
+
+[file]
+name = dir/nested.txt
+sha256 = a133020e944a00ebfc9660943ce16aff48e4ff5db1f9954b7a17ea16cbe08d56
+name = empty.bin
+sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+name = fifteen.bin
+sha256 = 7071fc3188fde7e7e500d4768f1784bede1a22e991648dcab9dc3219acff1d4c
+name = one.bin
+sha256 = 4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a
+name = seventeen.bin
+sha256 = 3e5718fea51a8f3f5baca61c77afab473c1810f8b9db330273b4011ce92c787e
+name = sixteen.bin
+sha256 = be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991
+name = text.txt
+sha256 = 2c2256862708edc580cec186af872b6791a9158d3fb5ee4bd52f559c3a4102a3

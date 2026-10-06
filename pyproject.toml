@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "allcrypt"
+description = "Pure Rust implementations of common crypto and hashing algorithms."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "0BSD" }
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Security :: Cryptography",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.maturin]
+# The `python` feature gates src/python.rs; without it the crate builds as a
+# plain Rust library with no pyo3 dependency at all.
+features = ["python"]
+module-name = "allcrypt"
+python-source = "python"
+
+[tool.pytest.ini_options]
+testpaths = ["pytests"]

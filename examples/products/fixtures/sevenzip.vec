@@ -1,0 +1,118 @@
+# Archives 7-Zip wrote, kept by scripts/check_sevenzip.py --record, with
+# the SHA-256 of every file in them. Each holds every [file] below except
+# blocks.bin and the two xz-*.bin, and an empty directory named hollow. Those
+# are alone in LZMA2-blocks.7z and xz-*.7z, the last xz's raw LZMA2 in a
+# container the script writes. The password is
+# 636f727265637420686f7273652062617474657279207374c3a4706c65 (hex of its UTF-8).
+
+[archive]
+name = Copy.7z
+made_by = 7-Zip Copy
+name = LZMA.7z
+made_by = 7-Zip LZMA
+name = LZMA-lc0-lp0-pb0.7z
+made_by = 7-Zip LZMA lc0 lp0 pb0
+name = LZMA-lc8-lp0-pb4.7z
+made_by = 7-Zip LZMA lc8 lp0 pb4
+name = LZMA-lc0-lp4-pb4.7z
+made_by = 7-Zip LZMA lc0 lp4 pb4
+name = LZMA-lc1-lp3-pb1.7z
+made_by = 7-Zip LZMA lc1 lp3 pb1
+name = LZMA-d4k.7z
+made_by = 7-Zip LZMA d=4k
+name = LZMA-eos.7z
+made_by = 7-Zip LZMA eos
+name = LZMA2.7z
+made_by = 7-Zip LZMA2
+name = LZMA2-lc0-lp4.7z
+made_by = 7-Zip LZMA2 lc0 lp4
+name = LZMA2-lc4-lp0.7z
+made_by = 7-Zip LZMA2 lc4 lp0
+name = LZMA2-d4k.7z
+made_by = 7-Zip LZMA2 d=4k
+name = LZMA2-mt4.7z
+made_by = 7-Zip LZMA2 mt4
+name = LZMA2-mx9.7z
+made_by = 7-Zip LZMA2 mx9
+name = Deflate.7z
+made_by = 7-Zip Deflate
+name = BZip2.7z
+made_by = 7-Zip BZip2
+name = BCJ-LZMA2.7z
+made_by = 7-Zip BCJ LZMA2
+name = ARM-LZMA2.7z
+made_by = 7-Zip ARM LZMA2
+name = ARMT-LZMA2.7z
+made_by = 7-Zip ARMT LZMA2
+name = PPC-LZMA2.7z
+made_by = 7-Zip PPC LZMA2
+name = SPARC-LZMA2.7z
+made_by = 7-Zip SPARC LZMA2
+name = ARM64-LZMA2.7z
+made_by = 7-Zip ARM64 LZMA2
+name = BCJ-Copy.7z
+made_by = 7-Zip BCJ Copy
+name = Delta1-LZMA.7z
+made_by = 7-Zip Delta1 LZMA
+name = Delta4-LZMA.7z
+made_by = 7-Zip Delta4 LZMA
+name = Delta7-Copy.7z
+made_by = 7-Zip Delta7 Copy
+name = not-solid.7z
+made_by = 7-Zip not solid
+name = solid-by-extension.7z
+made_by = 7-Zip solid by extension
+name = header-not-compressed.7z
+made_by = 7-Zip header not compressed
+name = all-times.7z
+made_by = 7-Zip all times
+name = AES-Copy.7z
+made_by = 7-Zip AES Copy
+name = AES-LZMA2.7z
+made_by = 7-Zip AES LZMA2
+name = AES-header.7z
+made_by = 7-Zip AES header
+name = AES-header-Copy.7z
+made_by = 7-Zip AES header Copy
+name = AES-BCJ-Deflate.7z
+made_by = 7-Zip AES BCJ Deflate
+name = LZMA2-blocks.7z
+made_by = 7-Zip LZMA2 in 4 KiB blocks
+name = xz-state.7z
+made_by = 7-Zip xz (liblzma) LZMA2, put in a 7z container by hand
+name = xz-stored.7z
+made_by = 7-Zip xz (liblzma) LZMA2, put in a 7z container by hand
+
+[file]
+name = blocks.bin
+sha256 = 0ce6a6a45cff09f20a3706d072ccfe75b09bd2370bad23e3e1b496e8e2bbf900
+name = code/arm.bin
+sha256 = 698d13e4cadf2b807ccc283ff854399d4e935dd864552aefa212a47b4d63811e
+name = code/arm64.bin
+sha256 = a444e744e89edc49da03d94f902ecda202c757be41c11b5a31929bc1fd4b0379
+name = code/armt.bin
+sha256 = 34cd92324cf2e2c083a44600f66bb110f14864311b97348ea942a0dc426d0812
+name = code/ppc.bin
+sha256 = d5bb48b7021c69253ba755e1fc8de7d74752687aac3514b4c873145e647d9872
+name = code/sparc.bin
+sha256 = bb3d0deab3d549f410d8a5f06947d5097ae55b9133ec5c37c775bbcc255206f2
+name = code/x86.bin
+sha256 = 18a316cfbac376d2981223e5ace5497148bd05a8cb922a9a6e38b19d95a4f241
+name = dir/nested.txt
+sha256 = a133020e944a00ebfc9660943ce16aff48e4ff5db1f9954b7a17ea16cbe08d56
+name = empty.bin
+sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+name = fifteen.bin
+sha256 = 7071fc3188fde7e7e500d4768f1784bede1a22e991648dcab9dc3219acff1d4c
+name = one.bin
+sha256 = 4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a
+name = seventeen.bin
+sha256 = 3e5718fea51a8f3f5baca61c77afab473c1810f8b9db330273b4011ce92c787e
+name = sixteen.bin
+sha256 = be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991
+name = text.txt
+sha256 = 7f81979623375a435073c35a84d9e1fbcf61663ad3c2212cabb72a87667b9e02
+name = xz-state.bin
+sha256 = ceeb9246e5c623e389fa2a0898c99ad17c99ac2c2c0be35d1b58139a60d29093
+name = xz-stored.bin
+sha256 = 1f3a2625ded59c9bb63197a31a2e6a86768580f11dbf03d49fcbaa0b027b40c7

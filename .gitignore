@@ -1,0 +1,17 @@
+
+# Python bindings / offline dependency bundle
+offline-deps.tar.gz
+vendor-offline/
+py-wheels/
+.cargo/config.toml
+*.so
+*.pyd
+__pycache__/
+.pytest_cache/
+examples/doc_examples.rs
+/target
+.vscode/
+
+# ACVP downloads cached by scripts/make_*_vectors.py --keep: tens of
+# megabytes each, and the generated vector file is what ships.
+vectors/.acvp-*

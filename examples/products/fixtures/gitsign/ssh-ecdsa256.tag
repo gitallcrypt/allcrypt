@@ -1,0 +1,13 @@
+object 9b54e123ffaeae9d2aa5c0df18d6340a6ad50375
+type commit
+tag v-theirs
+tagger Alice <alice@example.com> 1791061205 +0200
+
+tag v-theirs
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAE
+EEwVwFeU/D5OwYn/2cssvsgTBvDmnwFWRNainXnx1tKi7Frj8wnh+cWapts8+Qmt5aTO9j
+Dj5elqB0MvZJRjqqrgAAAANnaXQAAAAAAAAABnNoYTUxMgAAAGUAAAATZWNkc2Etc2hhMi
+1uaXN0cDI1NgAAAEoAAAAhAMwRewELbOin7baC3aho3wGqDfs3WA8lv3fOJRToeUVmAAAA
+IQD/AiOqOXwRtFeePbmqZvYRuiz/4vJ5S6jkOBmPNdBPZw==
+-----END SSH SIGNATURE-----

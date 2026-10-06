@@ -1,0 +1,27 @@
+# Michael (TKIP's MIC): the Linux kernel's crypto/testmgr.h
+# michael_mic_tv_template (v6.12), from IEEE 802.11. Written by
+# scripts/make_michael_vectors.py. Do not edit.
+
+key = 0000000000000000
+message = 
+tag = 82925c1ca1d130b8
+
+key = 82925c1ca1d130b8
+message = 4d
+tag = 434721ca40639b3f
+
+key = 434721ca40639b3f
+message = 4d69
+tag = e8f9becae97e5d29
+
+key = e8f9becae97e5d29
+message = 4d6963
+tag = 90038fc6cf13c1db
+
+key = 90038fc6cf13c1db
+message = 4d696368
+tag = d55e100510128986
+
+key = d55e100510128986
+message = 4d69636861656c
+tag = 0a942b124ecaa546

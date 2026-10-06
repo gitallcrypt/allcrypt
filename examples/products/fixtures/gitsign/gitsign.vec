@@ -1,0 +1,55 @@
+# Objects OpenSSH 10.0's ssh-keygen and GnuPG 2.4.4 signed through git 2.43,
+# with what checks them, kept by scripts/check_gitsign.py --record for the
+# offline tests in examples/products/gitsign. Each record names its files.
+
+[ssh]
+name = ssh-ed25519
+commit = ssh-ed25519.commit
+tag = ssh-ed25519.tag
+keys = ssh-ed25519.keys
+name = ssh-ecdsa256
+commit = ssh-ecdsa256.commit
+tag = ssh-ecdsa256.tag
+keys = ssh-ecdsa256.keys
+name = ssh-ecdsa384
+commit = ssh-ecdsa384.commit
+tag = ssh-ecdsa384.tag
+keys = ssh-ecdsa384.keys
+name = ssh-ecdsa521
+commit = ssh-ecdsa521.commit
+tag = ssh-ecdsa521.tag
+keys = ssh-ecdsa521.keys
+name = ssh-rsa2048
+commit = ssh-rsa2048.commit
+tag = ssh-rsa2048.tag
+keys = ssh-rsa2048.keys
+name = ssh-rsa3072
+commit = ssh-rsa3072.commit
+tag = ssh-rsa3072.tag
+keys = ssh-rsa3072.keys
+
+[openpgp]
+name = openpgp-ed25519
+commit = openpgp-ed25519.commit
+tag = openpgp-ed25519.tag
+keys = openpgp-ed25519.keys
+name = openpgp-rsa3072
+commit = openpgp-rsa3072.commit
+tag = openpgp-rsa3072.tag
+keys = openpgp-rsa3072.keys
+name = openpgp-nistp256
+commit = openpgp-nistp256.commit
+tag = openpgp-nistp256.tag
+keys = openpgp-nistp256.keys
+name = openpgp-nistp384
+commit = openpgp-nistp384.commit
+tag = openpgp-nistp384.tag
+keys = openpgp-nistp384.keys
+name = openpgp-brainpoolP256r1
+commit = openpgp-brainpoolP256r1.commit
+tag = openpgp-brainpoolP256r1.tag
+keys = openpgp-brainpoolP256r1.keys
+name = openpgp-rsa2048
+commit = openpgp-rsa2048.commit
+tag = openpgp-rsa2048.tag
+keys = openpgp-rsa2048.keys

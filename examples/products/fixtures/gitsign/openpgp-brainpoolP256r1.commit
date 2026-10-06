@@ -1,0 +1,13 @@
+tree 5956ee4903fed69449888bcf55ff90c287160c8b
+parent 44e2c5d26ac87bf1ac14adb4a44000b718d98e63
+author Alice <alice@example.com> 1791061210 +0200
+committer Alice <alice@example.com> 1791061210 +0200
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ iHUEABMIAB0WIQRfq0o8T+5hssw4+4X7qke7CcFI1wUCasFs2gAKCRD7qke7CcFI
+ 15SPAQCej9jsVBv1KdLap0MZSS2NYmk6Q3xQmip3+GRjpmhpeAD7BuPf6w5UyDAr
+ U4JCGQM3ceFMSsrnUMkRKovm/hd6Dvs=
+ =1/Wz
+ -----END PGP SIGNATURE-----
+
+theirs signing brainpoolP256r1

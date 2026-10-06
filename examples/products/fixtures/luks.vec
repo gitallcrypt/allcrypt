@@ -1,0 +1,58 @@
+# LUKS images cryptsetup made, for examples/products/luks's tests.
+# Written by scripts/check_luks.py --record. Each image is
+# fixtures/luks/NAME.sparse; the data was encrypted by
+# `cryptsetup reencrypt --encrypt` (LUKS1 by way of `cryptsetup
+# convert`), and volume_key is what `cryptsetup luksDump
+# --dump-volume-key` printed. Only what is read is kept: the
+# headers, the active keyslots' material and the data recorded;
+# the rest (cryptsetup's random fill of unused keyslot space,
+# data beyond data_length) is zeros. Do not edit.
+#
+# cryptsetup 2.8.8 flags: UDEV BLKID KEYRING KERNEL_CAPI HW_OPAL
+
+[cryptsetup]
+
+name = luks2-argon2i-2lanes
+arguments = --type luks2 --cipher aes-xts-plain64 --key-size 256 --pbkdf argon2i --pbkdf-force-iterations 4 --pbkdf-memory 128 --pbkdf-parallel 2
+image = luks/luks2-argon2i-2lanes.sparse
+passphrase = correct horse battery staple
+cipher = aes-xts-plain64
+volume_key = beeeef9faa679e47f652c343453dfb5ff6f5aef516dd92e4f37952c910f3063c
+data_length = 0
+data_sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+name = luks2-data-512
+arguments = --type luks2 --cipher aes-xts-plain64 --key-size 256 --sector-size 512 --pbkdf argon2id --pbkdf-force-iterations 4 --pbkdf-memory 64 --pbkdf-parallel 1
+image = luks/luks2-data-512.sparse
+passphrase = correct horse battery staple
+cipher = aes-xts-plain64
+volume_key = 3ed69effcfa82c364388f85ecd2b9c97a1b381a9d39e90510c39bd8183d9e04b
+data_length = 65536
+data_sha256 = b5c15e3b97091e9c926d4409590d42b49b2ab23dc5d2bb55c15f53fd7756e56c
+
+name = luks2-data-4096
+arguments = --type luks2 --cipher aes-xts-plain64 --key-size 256 --sector-size 4096 --pbkdf pbkdf2 --pbkdf-force-iterations 1000
+image = luks/luks2-data-4096.sparse
+passphrase = correct horse battery staple
+cipher = aes-xts-plain64
+volume_key = 99f22e4be8db768deb10c81db1d369ab21f2679b61234bad5b452c61b89a78c3
+data_length = 65536
+data_sha256 = b5c15e3b97091e9c926d4409590d42b49b2ab23dc5d2bb55c15f53fd7756e56c
+
+name = luks1-data-xts
+arguments = --type luks1 --cipher aes-xts-plain64 --key-size 256 --hash sha256 --pbkdf-force-iterations 1000
+image = luks/luks1-data-xts.sparse
+passphrase = correct horse battery staple
+cipher = aes-xts-plain64
+volume_key = 8da0893e2048528753b998693e6f440d5c9e725a547eb2e41aa963e5f0616e5a
+data_length = 65536
+data_sha256 = b5c15e3b97091e9c926d4409590d42b49b2ab23dc5d2bb55c15f53fd7756e56c
+
+name = luks1-data-cbc-essiv
+arguments = --type luks1 --cipher aes-cbc-essiv:sha256 --key-size 256 --hash sha1 --pbkdf-force-iterations 1000
+image = luks/luks1-data-cbc-essiv.sparse
+passphrase = correct horse battery staple
+cipher = aes-cbc-essiv:sha256
+volume_key = d644a50b9ac89ec1d49029a2b16ba09f3e778c35074269d9ec9fc6ceffbf1e3c
+data_length = 65536
+data_sha256 = b5c15e3b97091e9c926d4409590d42b49b2ab23dc5d2bb55c15f53fd7756e56c
