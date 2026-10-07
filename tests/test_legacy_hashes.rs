@@ -1,16 +1,17 @@
 /*!
 `vectors/legacy_hashes.vec` against RIPEMD-128, -256 and -320, HAS-160,
-Whirlpool-0 and Whirlpool-T, through `api::AnyHash` by name. Every digest
-in the file is one on which two to five independent implementations
-agree; the file's header lists them.
+Whirlpool-0, Whirlpool-T and MD6, through `api::AnyHash` by name. Every
+digest in the file is one on which the reference implementations agree;
+the file's header lists them.
 */
 
 use allcrypt::api::AnyHash;
 use allcrypt::hash_functions::HashFunction;
 
 const VECTORS: &str = include_str!("../vectors/legacy_hashes.vec");
-const NAMES: [&str; 6] = ["ripemd128", "ripemd256", "ripemd320", "has160", "whirlpool_0",
-                          "whirlpool_t"];
+const NAMES: [&str; 11] = ["ripemd128", "ripemd256", "ripemd320", "has160", "whirlpool_0",
+                           "whirlpool_t", "md6_128", "md6_224", "md6_256", "md6_384",
+                           "md6_512"];
 
 fn unhex(text: &str) -> Vec<u8> {
     if text == "-" {
@@ -65,10 +66,10 @@ fn test_the_reference_implementations_answers() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 317 * 6);
+    assert_eq!(checked, 317 * NAMES.len());
 }
 
-/// The six names are in the API's list of hashes.
+/// The names are in the API's list of hashes.
 #[test]
 fn test_the_names_are_listed() {
     for name in NAMES {

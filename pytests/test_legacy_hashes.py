@@ -1,14 +1,15 @@
-"""RIPEMD-128/256/320, HAS-160, Whirlpool-0 and Whirlpool-T through the
-Python surface, against `vectors/legacy_hashes.vec`: digests on which
-two to five independent implementations agree (the file's header lists
-them), and streaming in pieces against one call."""
+"""RIPEMD-128/256/320, HAS-160, Whirlpool-0, Whirlpool-T and MD6 through
+the Python surface, against `vectors/legacy_hashes.vec`: digests on which
+the reference implementations agree (the file's header lists them), and
+streaming in pieces against one call."""
 
 import pathlib
 
 import allcrypt
 
 VECTORS = pathlib.Path(__file__).resolve().parent.parent / "vectors" / "legacy_hashes.vec"
-NAMES = ["ripemd128", "ripemd256", "ripemd320", "has160", "whirlpool_0", "whirlpool_t"]
+NAMES = ["ripemd128", "ripemd256", "ripemd320", "has160", "whirlpool_0", "whirlpool_t",
+         "md6_128", "md6_224", "md6_256", "md6_384", "md6_512"]
 
 
 def records():

@@ -92,6 +92,7 @@ pub const HASHES: &[&str] = &[
     "gost94", "gost94_test",
     "blake2b", "blake2s", "ripemd128", "ripemd160", "ripemd256", "ripemd320",
     "sm3", "whirlpool", "whirlpool_0", "whirlpool_t", "has160",
+    "md6_128", "md6_224", "md6_256", "md6_384", "md6_512",
     "sha3_224", "sha3_256", "sha3_384", "sha3_512",
     "shake_128", "shake_256",
     "keccak_224", "keccak_256", "keccak_384", "keccak_512",
@@ -1248,6 +1249,8 @@ pub enum AnyHash {
     Ripemd(crate::hash_functions::ripemd::Ripemd),
     /// HAS-160, the Korean standard hash KCDSA signs with.
     Has160(crate::hash_functions::has160::Has160),
+    /// MD6, any whole-byte digest size up to 512 bits.
+    Md6(crate::hash_functions::md6::Md6),
     /// SM3, GB/T 32905-2016. The hash SM2 is defined against and the
     /// one RFC 8998's TLS 1.3 suites use.
     Sm3(crate::hash_functions::sm3::Sm3),
@@ -1350,6 +1353,12 @@ impl AnyHash {
                 crate::hash_functions::keccak::Keccak::keccak(64)?)),
             "ripemd160" | "ripemd_160" | "rmd160" => Ok(AnyHash::Ripemd160(
                 crate::hash_functions::ripemd160::Ripemd160::new(&[]))),
+            other if other.starts_with("md6_") => {
+                let bits: usize = other[4..].parse().map_err(|_| {
+                    format!("{:?} does not name a bit length.", other)
+                })?;
+                Ok(AnyHash::Md6(crate::hash_functions::md6::Md6::new(bits)?))
+            }
             "has160" | "has_160" => Ok(AnyHash::Has160(
                 crate::hash_functions::has160::Has160::new(&[]))),
             "ripemd128" | "ripemd_128" | "rmd128" => Ok(AnyHash::Ripemd(
@@ -1411,6 +1420,7 @@ macro_rules! dispatch_hash {
             AnyHash::Ripemd160($inner) => $body,
             AnyHash::Ripemd($inner) => $body,
             AnyHash::Has160($inner) => $body,
+            AnyHash::Md6($inner) => $body,
             AnyHash::Sm3($inner) => $body,
             AnyHash::Md2($inner) => $body,
             AnyHash::Md4($inner) => $body,

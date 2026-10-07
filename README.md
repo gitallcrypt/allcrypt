@@ -35,7 +35,7 @@ description and test vectors.
   and WEP and TKIP's constructions on top of them.
 - **Hashes** - MD2, MD4, MD5, SHA-0 to SHA-3, SHAKE, Keccak, BLAKE2,
   RIPEMD-128 to -320, HAS-160, SM3, Whirlpool and its two earlier
-  versions, Streebog and GOST R 34.11-94.
+  versions, MD6, Streebog and GOST R 34.11-94.
 - **MACs and key derivation** - HMAC, CMAC, CBC-MAC, Poly1305, UMAC;
   PBKDF1 and 2, scrypt, Argon2, HKDF, SP 800-108, Windows's NT and LM
   hashes, and the KDFs that particular formats and protocols define.

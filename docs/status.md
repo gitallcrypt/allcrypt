@@ -200,7 +200,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |HAS-160 (TTA.KO-12.0011/R2)|✓|RHash, Botan 1.10 and GNU Crypto, agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |Whirlpool-0, Whirlpool-T|✓|sphlib and GNU Crypto (and Crypto++ 5.2.1 for Whirlpool-T), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |LM hash, NT hash|✓|see [key derivation](#key-derivation)|
-|MD6|||
+|MD6 (unkeyed, default mode, whole-byte sizes to 512 bits)|✓|the MIT reference implementation and Jacksum's Java port of it, agreeing on 317 inputs at nine sizes: `vectors/legacy_hashes.vec`. The port is a translation of the reference, not a second design|
 |ssdeep / CTPH fuzzy hashing|||
 
 ## Public key

@@ -236,8 +236,10 @@ fn test_hash_facade() {
         // block is replaced by its own digest, and that digest then has
         // to fit in a block. Asserting the number HMAC needs says why
         // it is here; asserting 64 said only that nothing small had
-        // been added yet.
-        assert!(h.block_size() >= h.digest_len() && h.block_size() <= 200,
+        // been added yet. The ceiling is MD6's, whose leaves are
+        // 512-byte blocks; it was 200, a sponge's widest rate, until a
+        // hash with a larger block arrived.
+        assert!(h.block_size() >= h.digest_len() && h.block_size() <= 512,
                 "{} reports a block size of {} for a digest of {}",
                 name, h.block_size(), h.digest_len());
 

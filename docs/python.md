@@ -143,14 +143,15 @@ bytes — so HMAC's `B >= L` holds with equality, as it does for MD2.
 Its two earlier versions are `whirlpool_0` (2000) and `whirlpool_t`
 (2001, also called Whirlpool-1), for software that hashed with them
 before the final one; RIPEMD-160's relatives are `ripemd128`,
-`ripemd256` and `ripemd320`, and Korea's KCDSA hash is `has160`. None of
-them is in `hashlib`.
+`ripemd256` and `ripemd320`, Korea's KCDSA hash is `has160`, and MD6 is
+`md6_128` to `md6_512` - or `md6_` with any whole-byte size up to 512
+bits. None of them is in `hashlib`.
 
 ```python
 import allcrypt
 
 sizes = {"ripemd128": 16, "ripemd256": 32, "ripemd320": 40, "has160": 20,
-         "whirlpool_0": 64, "whirlpool_t": 64}
+         "whirlpool_0": 64, "whirlpool_t": 64, "md6_256": 32, "md6_200": 25}
 for name, size in sizes.items():
     assert allcrypt.new(name, b"abc").digest_size == size
 # Three different functions, not three spellings of one.
