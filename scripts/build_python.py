@@ -7,7 +7,7 @@
 
     # Faster, for this machine or ones like it (docs/building.md,
     # "Building for speed"):
-    python3 scripts/build_python.py --target-cpu x86-64-v3 --features aes-ni,sha-ni
+    python3 scripts/build_python.py --target-cpu x86-64-v3 --features aes-ni,sha-ni,simd
 
 Then either run from the repository root, where `python/` is already on
 the path for the scripts here, or set it yourself:
@@ -79,8 +79,8 @@ def main():
                         help="pass --offline to cargo, for a vendored build")
     parser.add_argument("--features", default="",
                         help="extra cargo features of the allcrypt crate, "
-                             "comma separated - `aes-ni` and `sha-ni` for "
-                             "the hardware AES and SHA paths")
+                             "comma separated - `aes-ni`, `sha-ni` and "
+                             "`simd` for the hardware paths")
     parser.add_argument("--target-cpu", default="",
                         help="compile for this CPU level or model, e.g. "
                              "x86-64-v3 (AVX2) - the result does not run on "

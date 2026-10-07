@@ -141,25 +141,54 @@ impl Chacha {
         }
     }
 
-    /// Four consecutive blocks XORed into `buf`, which is 256 bytes.
-    ///
-    /// The four states differ only in their counters. They are held word
-    /// by word with the four blocks side by side, and each quarter round
-    /// is a loop over the four - the innermost loop, which is what the
-    /// compiler's loop vectoriser widens into four-lane vector arithmetic.
-    fn four_blocks(&mut self, buf: &mut [u8]) {
-        let mut input = [[0u32; 4]; 16];
-        for lane in 0..4 {
-            for (word, value) in input.iter_mut().zip(self.state.iter()) {
+    /// The starting states of the next `N` blocks, word by word with the
+    /// blocks side by side - `states[w][l]` is word `w` of block `l` - and
+    /// the counter moved past them.
+    fn next_states<const N: usize>(&mut self) -> [[u32; N]; 16] {
+        let mut states = [[0u32; N]; 16];
+        for lane in 0..N {
+            for (word, value) in states.iter_mut().zip(self.state.iter()) {
                 word[lane] = *value;
             }
             self.advance_counter();
         }
+        states
+    }
+
+    /// As many whole groups of blocks as `buf` holds, on vector registers:
+    /// eight at a time with AVX2, then four at a time with SSE2. Returns
+    /// what is left, under 256 bytes.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    fn simd_blocks<'a>(&mut self, mut buf: &'a mut [u8]) -> &'a mut [u8] {
+        use crate::stream_ciphers::chacha_simd;
+        if chacha_simd::avx2() {
+            while buf.len() >= 512 {
+                let (chunk, rest) = buf.split_at_mut(512);
+                let input = self.next_states::<8>();
+                assert!(chacha_simd::eight(&input, self.rounds, chunk));
+                buf = rest;
+            }
+        }
+        while buf.len() >= 256 {
+            let (chunk, rest) = buf.split_at_mut(256);
+            chacha_simd::four(&self.next_states::<4>(), self.rounds, chunk);
+            buf = rest;
+        }
+        buf
+    }
+
+    /// Four consecutive blocks XORed into `buf`, which is 256 bytes.
+    ///
+    /// The four states differ only in their counters. They are held word
+    /// by word with the four blocks side by side, and a double round runs
+    /// on each block in turn. The compiler keeps this scalar: it does not
+    /// vectorise ChaCha's rounds in any arrangement tried, `x86-64-v3`
+    /// included, and the disassembly has no vector arithmetic. The `simd`
+    /// feature (`chacha_simd.rs`) is the vectorised path.
+    fn four_blocks(&mut self, buf: &mut [u8]) {
+        let input = self.next_states::<4>();
         let mut x = input;
         for _ in (0..self.rounds).step_by(2) {
-            // One double round per lane, the lane loop innermost: a body
-            // this size is vectorised across the lanes rather than
-            // unrolled into scalar code.
             for l in 0..4 {
                 let mut w: [u32; 16] = core::array::from_fn(|i| x[i][l]);
                 qr(0, 4,  8, 12, &mut w);
@@ -200,6 +229,8 @@ impl Chacha {
             self.key_pos = (self.key_pos + take) % 64;
             buf = &mut buf[take..];
         }
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        let buf = self.simd_blocks(buf);
         let mut fours = buf.chunks_exact_mut(256);
         for chunk in &mut fours {
             self.four_blocks(chunk);
@@ -396,6 +427,58 @@ mod tests {
                 // And the counter both left behind is the same.
                 assert_eq!(fast.state, reference.state);
             }
+        }
+    }
+
+    /// The vector paths against `chacha_block` one block at a time: four
+    /// lanes and eight called directly, and `apply` over lengths that
+    /// take eight, four and single blocks in turn. The counter starts at
+    /// several distances before its 32 bit wrap, so the wrap falls at
+    /// different lanes: carried into word 13 for the 8 byte nonce, not for
+    /// the 12 byte one. Without AVX2 the eight-lane path refuses, and that
+    /// is checked instead.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[test]
+    fn test_the_vector_paths_are_one_at_a_time() {
+        use crate::stream_ciphers::chacha_simd;
+        for nonce_len in [8usize, 12] {
+            for rounds in [8usize, 12, 20] {
+                for before_wrap in [0u32, 1, 3, 6] {
+                    let make = || {
+                        let mut c = Chacha::new(vec![5u8; 32], vec![6u8; nonce_len], rounds).unwrap();
+                        c.set_counter(u32::MAX - before_wrap).unwrap();
+                        c
+                    };
+                    let mut reference = make();
+                    let mut want = Vec::new();
+                    for _ in 0..32 {
+                        reference.chacha_block();
+                        want.extend_from_slice(&reference.byte_state);
+                    }
+                    let what = format!("nonce {nonce_len}, {rounds} rounds, {before_wrap}");
+
+                    let mut got = vec![0u8; 256];
+                    chacha_simd::four(&make().next_states::<4>(), rounds, &mut got);
+                    assert_eq!(got, want[..256], "four lanes, {what}");
+                    let mut got = vec![0u8; 512];
+                    if chacha_simd::eight(&make().next_states::<8>(), rounds, &mut got) {
+                        assert_eq!(got, want[..512], "eight lanes, {what}");
+                    } else {
+                        assert!(!chacha_simd::avx2());
+                        assert_eq!(got, [0u8; 512], "nothing written without AVX2");
+                    }
+
+                    for blocks in [1usize, 4, 5, 8, 12, 13, 16, 31] {
+                        let mut fast = make();
+                        let mut got = vec![0u8; blocks * 64 + 7];
+                        fast.apply(&mut got);
+                        assert_eq!(got[..], want[..blocks * 64 + 7], "apply, {blocks} blocks, {what}");
+                    }
+                }
+            }
+        }
+        if !chacha_simd::avx2() {
+            eprintln!("eight lanes skipped: this processor has no AVX2");
         }
     }
 

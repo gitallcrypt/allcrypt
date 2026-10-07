@@ -1,0 +1,233 @@
+# A5/1 and A5/2, the GSM voice-privacy stream ciphers. Do not edit.
+#
+# key    - 8 bytes. Bit i of the key is (key[i / 8] >> (i % 8)) & 1, and bit 0
+#          is loaded first: least significant bit of the first byte first.
+#          This is the convention of Briceno, Goldberg and Wagner's 1999
+#          pedagogical implementations. libosmocore numbers the key bytes
+#          the other way round (key[7 - i / 8]), so its test key
+#          0123456789abcdef is efcdab8967452301 here.
+# count  - the 22-bit COUNT the cipher takes, loaded least significant bit
+#          first. fn is the GSM TDMA frame number it comes from:
+#          count = (fn / 1326) << 11 | (fn % 51) << 5 | (fn % 26).
+# downlink, uplink - the 114-bit blocks, A->B then B->A, generated one after
+#          the other. Bit j of a block is bit 7 - j % 8 of byte j / 8:
+#          most significant bit first, and the last byte's low six bits are
+#          zero padding.
+#
+# Every row was produced by each implementation available and kept only
+# where all of them agree:
+#   A5/1: the original A5/1 pedagogical implementation (A5.1.c, whose own
+#         self-test passes), the combined A5/1+A5/2 code as carried by
+#         airprobe and gr-gsm (a5-1-2.h), and libosmocore's src/gsm/a5.c;
+#   A5/2: a5-1-2.h and libosmocore's src/gsm/a5.c.
+# The first row of each section is the vector published with the 1999 code;
+# the second is libosmocore's tests/a5/a5_test.c vector in this key order.
+
+[A5/1]
+key = 1223456789abcdef
+fn = 774
+count = 000134
+downlink = 534eaa582fe8151ab6e1855a728c00
+uplink = 24fd35a35d5fb6526d32f906df1ac0
+
+key = efcdab8967452301
+fn = 123456
+count = 02ec88
+downlink = cba25576175d3b1c7b2f29a8c1b600
+uplink = d9035e0f2aec139a05d4a87bb16480
+
+key = 0000000000000000
+fn = 0
+count = 000000
+downlink = 000000000000000000000000000000
+uplink = 000000000000000000000000000000
+
+key = ffffffffffffffff
+fn = 2715647
+count = 3ffe59
+downlink = df39cbbf74547d432a05861e59a700
+uplink = 3343f02d6ea0d1a396bbd860165440
+
+key = 0100000000000000
+fn = 0
+count = 000000
+downlink = ea36ac11f8f23f48be6ab439a068c0
+uplink = 268d27abe6b6fd49e1fc3684624280
+
+key = 0000000000000080
+fn = 0
+count = 000000
+downlink = 56d75e50e9fff1daf5d0defcc01ec0
+uplink = df442e14e7b893ac4f96c708a36e80
+
+key = 0000000000000000
+fn = 1
+count = 000021
+downlink = 3e7f449c85e1ff3fdf409c60682000
+uplink = a74984ef3a83b4fae677fc77c11dc0
+
+key = 5c47ab7e4c73d114
+fn = 1202028
+count = 1c5136
+downlink = ccff3bf987e6cbd7eda3612e7d6180
+uplink = 05f0321f817a975fba698a4b7d95c0
+
+key = 1087cbea3edfe749
+fn = 2138359
+count = 3263ef
+downlink = 66a3ac3edf301b6cba333386b2be40
+uplink = fb36d87fef8a81b17a2bc63c49f5c0
+
+key = 7edb7732e92270c8
+fn = 2344776
+count = 374012
+downlink = 94b005fc4d392fdca234ae7571b800
+uplink = 33adbabfed5386a52a18f4d8d36ac0
+
+key = 6591b23b6c880586
+fn = 2622982
+count = 3dd038
+downlink = 262e21dd235f24f9e3b878407b0900
+uplink = 32954fba448873754712afdc1dac00
+
+key = 9edf5486c62773b5
+fn = 2285558
+count = 35dd82
+downlink = 20e29392fe76e69cab0fcf26633ac0
+uplink = 1793a7a681d9ac9a77134cacc5d2c0
+
+key = c1ce03dc537773c1
+fn = 134770
+count = 032b8c
+downlink = 56723660e872934df7b8b4a26d5440
+uplink = 73fa4df8cf9b951d4cce683455e540
+
+key = 104d941b9154f002
+fn = 987036
+count = 174438
+downlink = 98d88b0847304e83e7d316674167c0
+uplink = fd79fcb4d6d01e0ef76a537aad94c0
+
+[A5/1 setup]
+# The section's first vector at three points of the setup: after the
+# 64 key bits, after the 22 count bits, and after the 100 mixing clocks,
+# before any output. Registers as integers; bit 0 is the bit most
+# recently shifted in.
+key = 1223456789abcdef
+count = 000134
+after_key.R1 = 4030d
+after_key.R2 = 1fa05c
+after_key.R3 = 3668e1
+after_count.R1 = 064a2
+after_count.R2 = 2bc0e5
+after_count.R3 = 72df8d
+after_mixing.R1 = 1da4b
+after_mixing.R2 = 2cb2f9
+after_mixing.R3 = 08be5f
+
+[A5/2]
+key = 00fcffffffffffff
+fn = 1
+count = 000021
+downlink = f4512cac13593764460b722dadd500
+uplink = 4800d4328e16a14dcd7b9722265100
+
+key = efcdab8967452301
+fn = 123456
+count = 02ec88
+downlink = 459c88c382b7ffb398d2f96e0f1480
+uplink = f03aacdee35b5e6580baabc0592640
+
+key = 0000000000000000
+fn = 0
+count = 000000
+downlink = 158df7d240d1c4b3c9e0a5dca81940
+uplink = dd3621d19e0f23d081d8ed1c906000
+
+key = ffffffffffffffff
+fn = 2715647
+count = 3ffe59
+downlink = 784efe31b74ec2e4e5903ef4c24580
+uplink = 74f2a04da7fe0ed1d151e27b6d1640
+
+key = 0100000000000000
+fn = 0
+count = 000000
+downlink = 0335052cdcfbfeedde4e8fd7702040
+uplink = 5068f3aae20f3caa5e3923ee730700
+
+key = 0000000000000080
+fn = 0
+count = 000000
+downlink = df35a810d134ed471366d593069100
+uplink = eebcad0d8a9ee6dfbd7723fbd13340
+
+key = 0000000000000000
+fn = 1
+count = 000021
+downlink = 40119fc98e1d744889aa73353cdfc0
+uplink = 65ab1af6dd930ebacb3311144f2700
+
+key = 5c47ab7e4c73d114
+fn = 1202028
+count = 1c5136
+downlink = 7834adf05047f730d9e90d3f669140
+uplink = fb2f95dc2aaded29bd240ab4d69040
+
+key = 1087cbea3edfe749
+fn = 2138359
+count = 3263ef
+downlink = 53a5db434addf6a091245d51945bc0
+uplink = ed98d7dd1bba98597799ee934b5f00
+
+key = 7edb7732e92270c8
+fn = 2344776
+count = 374012
+downlink = 99ce1037105747938f58b95d56ca80
+uplink = d900072864d66c9ca4912f683c1c40
+
+key = 6591b23b6c880586
+fn = 2622982
+count = 3dd038
+downlink = dfd8574d6903a527ff5b74d28431c0
+uplink = a54d4e846830c33ed6ce32f0577e80
+
+key = 9edf5486c62773b5
+fn = 2285558
+count = 35dd82
+downlink = edd59de9c3e57074dc2d4c83e82400
+uplink = 05abbb9d80b402abcbe1321ea4e600
+
+key = c1ce03dc537773c1
+fn = 134770
+count = 032b8c
+downlink = ee33fec149a205c6a5c5dce458c240
+uplink = 8d4519498d51a05b55c6df779d4700
+
+key = 104d941b9154f002
+fn = 987036
+count = 174438
+downlink = edd0d5bec7d3b16b0ee18ff4508000
+uplink = 25432968007d8c4198bdd044ff9b80
+
+[A5/2 setup]
+# The section's first vector at three points of the setup: after the
+# 64 key bits, after the 22 count bits (the four forced bits included),
+# and after 100 irregular clocks. That last state is the one the first
+# output bit is computed from: A5/2's output is taken before each clock,
+# where A5/1's is taken after it. Registers as integers; bit 0 is the bit
+# most recently shifted in.
+key = 00fcffffffffffff
+count = 000021
+after_key.R1 = 4f148
+after_key.R2 = 3ff3ff
+after_key.R3 = 414ccd
+after_key.R4 = 01f38
+after_count.R1 = 6ff45
+after_count.R2 = 211400
+after_count.R3 = 750232
+after_count.R4 = 006ef
+after_mixing.R1 = 33195
+after_mixing.R2 = 3cc07c
+after_mixing.R3 = 151b22
+after_mixing.R4 = 0ce3e

@@ -4,14 +4,15 @@ Set this library's speed beside OpenSSL's on the same machine.
 
 Runs `tools/src/bin/bench_speed.rs` (release builds) and, for every row it
 prints that OpenSSL also has, `openssl speed` over the same 16 KiB
-buffers; the password KDFs go through `hashlib` and Argon2id through
-python-cryptography, both of which are OpenSSL underneath. Rows OpenSSL
+buffers; the password KDFs go through `hashlib`, and Argon2id and
+Poly1305 through python-cryptography, both of which are OpenSSL
+underneath. Rows OpenSSL
 does not have are printed with our numbers alone.
 
 One column per build of ours, as `docs/building.md` ("Building for
 speed") describes them: `portable` (a plain `--release`), `x86-64-v3`
-(`-C target-cpu=x86-64-v3`, AVX2), `ni` (the `aes-ni` and `sha-ni`
-features, the opt-in hardware paths) and `v3+ni`, both together. Each
+(`-C target-cpu=x86-64-v3`, AVX2), `hw` (the `aes-ni`, `sha-ni` and
+`simd` features, the opt-in hardware paths) and `v3+hw`, both together. Each
 build has its own target directory under `target/bench/`, so the next
 run only rebuilds what changed. On a processor without AVX2
 the `x86-64-v3` builds are skipped - the binary would not start - and
@@ -27,7 +28,7 @@ path.
 
     python3 scripts/bench_compare.py            # everything, every build
     python3 scripts/bench_compare.py aes        # rows whose name contains "aes"
-    python3 scripts/bench_compare.py --builds portable,ni aes
+    python3 scripts/bench_compare.py --builds portable,hw aes
 
 Development tool, not a test: the numbers depend on the machine and on what
 else it is doing. Nothing here needs the network.
@@ -97,8 +98,9 @@ def without_hardware(name):
 BUILDS = {
     "portable": ([], ""),
     "x86-64-v3": ([], "-C target-cpu=x86-64-v3"),
-    "ni": (["--features", "allcrypt/aes-ni,allcrypt/sha-ni"], ""),
-    "v3+ni": (["--features", "allcrypt/aes-ni,allcrypt/sha-ni"], "-C target-cpu=x86-64-v3"),
+    "hw": (["--features", "allcrypt/aes-ni,allcrypt/sha-ni,allcrypt/simd"], ""),
+    "v3+hw": (["--features", "allcrypt/aes-ni,allcrypt/sha-ni,allcrypt/simd"],
+              "-C target-cpu=x86-64-v3"),
 }
 
 
@@ -193,6 +195,17 @@ def reference_kdf(name):
     return None
 
 
+def reference_poly1305():
+    """MB/s of OpenSSL's Poly1305 through python-cryptography: the
+    `openssl speed` command has no Poly1305 of its own."""
+    try:
+        from cryptography.hazmat.primitives.poly1305 import Poly1305
+    except ImportError:
+        return None
+    key, buffer = bytes(range(32)), bytes(16384)
+    return per_second(lambda: Poly1305.generate_tag(key, buffer)) * 16384 / 1e6
+
+
 def main():
     arguments = sys.argv[1:]
     builds = available_builds()
@@ -227,6 +240,8 @@ def main():
             reference = openssl_public_key(name)
         elif name.startswith("kdf/"):
             reference = reference_kdf(name)
+        elif name == "mac/poly1305":
+            reference = reference_poly1305()
         else:
             reference = None
         line = f"{name:30}" + "".join(f" {v:10.1f}" if v is not None else f" {'-':>10}"

@@ -354,6 +354,15 @@ CASES = [
     ("ghash", CLEAN,
      "GHASH with a secret H and secret data: bmul64 and the reduction "
      "are multiplies, shifts and XORs."),
+
+    # ---- ChaCha20 and Poly1305 --------------------------------------
+    ("poly1305", CLEAN,
+     "Poly1305 with a secret key and data: the four-block and one-block "
+     "paths, the powers of r, and the final reduction, whose subtraction "
+     "of p is a mask."),
+    ("chacha20_poly1305_seal", CLEAN,
+     "ChaCha20-Poly1305 encryption through api::aead_encrypt: the "
+     "keystream is additions, rotations and XORs."),
 ]
 
 REPORT = re.compile(r"^==\d+== [A-Z]")

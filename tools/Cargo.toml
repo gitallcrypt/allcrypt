@@ -21,7 +21,8 @@ publish = false
 allcrypt = { path = ".." }
 
 [features]
-# For bench_speed and ct_bignum against the hardware AES and SHA paths:
-#     cargo run --release -p allcrypt-tools --features aes-ni,sha-ni --bin bench_speed
+# For bench_speed and ct_bignum against the hardware paths:
+#     cargo run --release -p allcrypt-tools --features aes-ni,sha-ni,simd --bin bench_speed
 aes-ni = ["allcrypt/aes-ni"]
 sha-ni = ["allcrypt/sha-ni"]
+simd = ["allcrypt/simd"]

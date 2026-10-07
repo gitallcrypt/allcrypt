@@ -1,0 +1,277 @@
+# The NT and LM password hashes (MS-NLMP 3.3.1, NTOWFv1 and LMOWFv1).
+# Do not edit.
+#
+# lm rows: password = the bytes hashed, in the OEM code page, before
+# uppercasing ("-" is empty). Each row was produced by Samba 4.9's
+# libcli/auth/smbdes.c (its own DES, str_to_key and E_P16, with ASCII
+# uppercasing and zero padding to fourteen bytes as E_deshash does) and by
+# impacket's compute_lmhash over OpenSSL's DES, and kept only where both
+# agree.
+# nt rows: password = the text as UTF-8; the hash is OpenSSL's MD4 (legacy
+# provider) of it as UTF-16 little endian.
+
+[LM]
+password = -
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 61
+hash = 7584248b8d2c9f9eaad3b435b51404ee
+
+password = 7364
+hash = c460bcece66e7415aad3b435b51404ee
+
+password = 73706f
+hash = 2019f141050e4c49aad3b435b51404ee
+
+password = 77617273
+hash = b5dff29e937091c8aad3b435b51404ee
+
+password = 6f73647761
+hash = b55925340fe6e1b7aad3b435b51404ee
+
+password = 7273706f7364
+hash = 2f6dcf8725a861baaad3b435b51404ee
+
+password = 6477617273706f
+hash = 42b38476896861ceaad3b435b51404ee
+
+password = 706f736477617273
+hash = f29ad1616fd7280993e28745b8bf4ba6
+
+password = 617273706f73647761
+hash = 9c72a2a7bdcd3f7a33db7dd06cc79d59
+
+password = 736477617273706f7364
+hash = 58b2dd389fcb9bf026407fe33b5fadf3
+
+password = 73706f736477617273706f
+hash = e26c7b395bff3591a31c4294457a9f7c
+
+password = 77617273706f736477617273
+hash = bcd6add7041b73d15a902599a9f4845a
+
+password = 6f736477617273706f73647761
+hash = 163f638e77d252cf4e72157a5f90c7a6
+
+password = 7273706f736477617273706f7364
+hash = a582e002a439cc289c72a2a7bdcd3f7a
+
+password = -
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 61
+hash = 7584248b8d2c9f9eaad3b435b51404ee
+
+password = 3564
+hash = 285aa3161e5f4e25aad3b435b51404ee
+
+password = 352161
+hash = 389d466bd533b626aad3b435b51404ee
+
+password = 77233564
+hash = 43f2f92f89c44c00aad3b435b51404ee
+
+password = 3025352161
+hash = 81a92f64136c8a00aad3b435b51404ee
+
+password = 722677233564
+hash = c5b6405acb66f350aad3b435b51404ee
+
+password = 64503025352161
+hash = d4403759bec7326baad3b435b51404ee
+
+password = 2161722677233564
+hash = 598d4e40e5ee86d74a3b108f3fa6cb6d
+
+password = 233564503025352161
+hash = 57a01f6ef59d0a451d27148804d4f392
+
+password = 25352161722677233564
+hash = d926193fc11697c96fa4a0e78d865642
+
+password = 2677233564503025352161
+hash = 7dc361e19d3834397c1b4f3dde7e5d3c
+
+password = 503025352161722677233564
+hash = 7f703aae81b53e80be10d71e89fbe1f1
+
+password = 61722677233564503025352161
+hash = 4f29e31b95469dbb97246b9f21a27ef5
+
+password = 3564503025352161722677233564
+hash = ee4bc35b8fd08c044f29e31b95469dbb
+
+password = -
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = e9
+hash = 167b787acbbc64dfaad3b435b51404ee
+
+password = 9090
+hash = b1c8de776cddb3d5aad3b435b51404ee
+
+password = ffffff
+hash = f2959a67e00e2ff9aad3b435b51404ee
+
+password = a0a0a0a0
+hash = 6f0a4438190e9eb5aad3b435b51404ee
+
+password = 8080808080
+hash = 73ae9b079e3af63faad3b435b51404ee
+
+password = e9e9e9e9e9e9
+hash = 3f303114127258e0aad3b435b51404ee
+
+password = 90909090909090
+hash = 92d6dda64eeac73faad3b435b51404ee
+
+password = ffffffffffffffff
+hash = 163a1bfe5fb95332ecf2a92337524c2b
+
+password = a0a0a0a0a0a0a0a0a0
+hash = 753946c96aa2403001570705fc554866
+
+password = 80808080808080808080
+hash = 2601e8fc42270333e776e41c229743b1
+
+password = e9e9e9e9e9e9e9e9e9e9e9
+hash = 72d27f92e072f7cecd7cc707de306ad0
+
+password = 909090909090909090909090
+hash = 92d6dda64eeac73ff3d7f815ff97444b
+
+password = ffffffffffffffffffffffffff
+hash = 163a1bfe5fb953320972fce13b0d0e8b
+
+password = a0a0a0a0a0a0a0a0a0a0a0a0a0a0
+hash = 753946c96aa24030753946c96aa24030
+
+password = -
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 00
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 6262
+hash = ac5ba6a944526699aad3b435b51404ee
+
+password = 000000
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 63636363
+hash = 8451d63bb2065edeaad3b435b51404ee
+
+password = 6161616161
+hash = a80f6e6a87ba6ac2aad3b435b51404ee
+
+password = 000000000000
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 62626262626262
+hash = 9dd5ea599d4d4fc5aad3b435b51404ee
+
+password = 0000000000000000
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 636363636363636363
+hash = 7461998d60d01ba7c1fc55987644b2cf
+
+password = 61616161616161616161
+hash = cbc501a4d22277831c3a2b6d939a1021
+
+password = 0000000000000000000000
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 626262626262626262626262
+hash = 9dd5ea599d4d4fc55e5e4989c4fdebaf
+
+password = 00000000000000000000000000
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 6363636363636363636363636363
+hash = 7461998d60d01ba77461998d60d01ba7
+
+password = -
+hash = aad3b435b51404eeaad3b435b51404ee
+
+password = 5a
+hash = 1d91a081d4b37861aad3b435b51404ee
+
+password = 7957
+hash = 3eceb57af7516be7aad3b435b51404ee
+
+password = 597654
+hash = 7ec55cd79d0248c2aad3b435b51404ee
+
+password = 78567359
+hash = e14b833c38cf5e71aad3b435b51404ee
+
+password = 5875537856
+hash = 03ca4305eb88bd27aad3b435b51404ee
+
+password = 77557a587553
+hash = 78339cb2ee4c3909aad3b435b51404ee
+
+password = 57745a77557a58
+hash = e10806c95cb8fcdeaad3b435b51404ee
+
+password = 76547957745a7755
+hash = fc197374424f0853613e9293942509f0
+
+password = 56735976547957745a
+hash = 07c05531e304a7cf08915131041db033
+
+password = 75537856735976547957
+hash = 0777c7e2034991b5dde5c5bcfbe95713
+
+password = 557a587553785673597654
+hash = 6edb272dba121a750a657dd7f8125f6e
+
+password = 745a77557a58755378567359
+hash = e6c062be0046d27e7bec2ee2ac50b5cf
+
+password = 547957745a77557a5875537856
+hash = 85af22f2887a82a9aa529247cdf8a60b
+
+password = 735976547957745a77557a587553
+hash = 4a62846459ac40cb3fcc5c0320da0f18
+
+password = 50617373776f7264
+hash = e52cac67419a9a224a3b108f3fa6cb6d
+
+password = 70617373776f7264
+hash = e52cac67419a9a224a3b108f3fa6cb6d
+
+password = 50415353574f5244
+hash = e52cac67419a9a224a3b108f3fa6cb6d
+
+[NT]
+password = -
+hash = 31d6cfe0d16ae931b73c59d7e0c089c0
+
+password = 50617373776f7264
+hash = a4f49c406510bdcab6824ee7c30fd852
+
+password = 70617373776f7264
+hash = 8846f7eaee8fb117ad06bdd830b7586c
+
+password = 5365635245743031
+hash = cd06ca7c7e10c99b1d33b7485a2ed808
+
+password = c3a974c3a9
+hash = 6fd6e4578aa492f412c1c83ae40432c8
+
+password = e282ac75726f
+hash = 65a07986d69e1cb33d52eacab1a9322a
+
+password = f09f9880
+hash = 4b58a10cc20a4e7d808d218e1f80aabc
+
+password = 61f09f949162e282ac63c3a964
+hash = 026ed025d431237e28685f96439196fe
+
+password = e4b8ade69687e5af86e7a081
+hash = a6ea5bd6eb61f1c5e735a08f621b3b9a
+
+password = 61206d756368206c6f6e676572207061737320706872617365207468616e20666f75727465656e2063686172616374657273
+hash = f0d4e739b7838ec4b8c033825c85956e

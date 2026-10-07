@@ -36,8 +36,8 @@ description and test vectors.
 - **Hashes** - MD2, MD4, MD5, SHA-0 to SHA-3, SHAKE, Keccak, BLAKE2,
   RIPEMD-160, SM3, Whirlpool, Streebog and GOST R 34.11-94.
 - **MACs and key derivation** - HMAC, CMAC, CBC-MAC, Poly1305, UMAC;
-  PBKDF1 and 2, scrypt, Argon2, HKDF, SP 800-108 and the KDFs that
-  particular formats and protocols define.
+  PBKDF1 and 2, scrypt, Argon2, HKDF, SP 800-108, Windows's NT and LM
+  hashes, and the KDFs that particular formats and protocols define.
 - **Public key** - RSA (PKCS#1 v1.5, OAEP, PSS), DSA, Diffie-Hellman,
   ElGamal, ECDSA and ECDH on the NIST, secp256k1, SM2 and GOST curves,
   X25519 and X448, Ed25519 and Ed448, GOST R 34.10, SM2. RSA, finite-

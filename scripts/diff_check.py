@@ -2987,6 +2987,83 @@ def _cmac_reference(encrypt_block, block_size, message):
     return encrypt_block(bytes(a ^ b for a, b in zip(chain, last)))
 
 
+def check_windows_hashes(lines):
+    """The NT and LM password hashes (MS-NLMP 3.3.1).
+
+    NT: this file's MD4 - pinned to OpenSSL's by `_md4_selftest` - over
+    the password as UTF-16 little endian.
+
+    LM: the construction written out here from MS-NLMP, over
+    python-cryptography's DES: ASCII letters uppercased, zero padding to
+    fourteen bytes, each seven bytes made a DES key by inserting a parity
+    bit after every seven bits, `KGS!@#$%` encrypted under each. The
+    insertion is done on a string of bits, as the specification states
+    it, rather than by the shifts the Rust uses. Samba's and impacket's
+    LM code, run once, produced `vectors/windows_hashes.vec`, which the
+    Rust tests read.
+    """
+    import warnings
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    def des(key, block):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            encryptor = Cipher(algorithms.TripleDES(key), modes.ECB()).encryptor()
+        return encryptor.update(block) + encryptor.finalize()
+
+    def lm(password):
+        upper = bytes(c - 32 if 0x61 <= c <= 0x7a else c for c in password)
+        padded = upper.ljust(14, b"\0")
+        out = b""
+        for half in (padded[:7], padded[7:]):
+            bits = "".join(f"{byte:08b}" for byte in half)
+            key = bytes(int(bits[7 * i:7 * i + 7] + "0", 2) for i in range(8))
+            out += des(key, b"KGS!@#$%")
+        return out
+
+    checked = {"lm": 0, "nt": 0}
+    for line in lines:
+        parts = line.split()
+        if not parts or parts[0] not in checked:
+            continue
+        password, got = unhex(parts[1]), parts[2]
+        if parts[0] == "lm":
+            want = lm(password).hex()
+        else:
+            want = md4(password.decode("utf-8").encode("utf-16-le")).hex()
+        if got != want:
+            raise Mismatch(f"{parts[0]} hash of {parts[1]}: ours {got}, reference {want}")
+        checked[parts[0]] += 1
+    if checked["lm"] < 78 or checked["nt"] < 10:
+        raise Mismatch(f"too few rows: {checked}")
+    return sum(checked.values())
+
+
+def check_poly1305(lines):
+    """Poly1305 on its own, against OpenSSL's through python-cryptography.
+
+    The AEAD corpus reaches Poly1305 only with keys ChaCha produced; these
+    rows choose the keys, including the largest clamped r with all-ones
+    messages, which is where the limbs and carries reach their bounds.
+    """
+    from cryptography.hazmat.primitives.poly1305 import Poly1305 as Theirs
+
+    checked = 0
+    for line in lines:
+        parts = line.split()
+        if not parts or parts[0] != "poly1305":
+            continue
+        key, message, got = unhex(parts[1]), unhex(parts[2]), parts[3]
+        want = Theirs.generate_tag(key, message).hex()
+        if got != want:
+            raise Mismatch(f"poly1305 key {parts[1]} length {len(message)}: "
+                           f"ours {got}, OpenSSL {want}")
+        checked += 1
+    if checked < 1000:
+        raise Mismatch(f"only {checked} Poly1305 rows; the corpus has shrunk")
+    return checked
+
+
 def check_cmac(lines):
     """CMAC - which GOST calls OMAC - over every block cipher here.
 
@@ -8695,6 +8772,8 @@ CORPORA = {
     "tls13record": ("diff_tls13_record", check_tls13_record),
     "gost": ("diff_gost", check_gost),
     "cmac": ("diff_cmac", check_cmac),
+    "poly1305": ("diff_poly1305", check_poly1305),
+    "windows": ("diff_windows_hashes", check_windows_hashes),
     "bitlocker": ("diff_bitlocker", check_bitlocker),
     "wifi": ("diff_wifi", check_wifi),
     "acpkm": ("diff_acpkm", check_acpkm),

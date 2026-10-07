@@ -1588,6 +1588,22 @@ pub fn bitlocker_decrypt_sector(method: &str, key: &[u8], byte_offset: u64, sect
     Ok(out)
 }
 
+/// The NT hash of a password (MS-NLMP NTOWFv1): MD4 of the password as
+/// UTF-16 little endian. It is what NTLM and Kerberos's RC4-HMAC use as
+/// the user's key.
+pub fn nt_hash(password: &str) -> Vec<u8> {
+    kdf::windows::nt_hash(password).to_vec()
+}
+
+/// The LM hash of a password (MS-NLMP LMOWFv1), given as bytes in the
+/// OEM code page it was made under. ASCII letters are uppercased here;
+/// other bytes are used as they are, since their uppercase depends on
+/// the code page. More than 14 bytes is an error: Windows stores no LM
+/// hash for such a password.
+pub fn lm_hash(password: &[u8]) -> Result<Vec<u8>, String> {
+    kdf::windows::lm_hash(password).map(|hash| hash.to_vec())
+}
+
 /// The key that opens a BitLocker password protector's copy of the
 /// volume master key: SHA-256 twice over the UTF-16LE password, then
 /// 2^20 rounds of stretching with the protector's 16-byte salt.

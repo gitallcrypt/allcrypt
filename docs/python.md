@@ -1026,6 +1026,25 @@ assert allcrypt.new("blake2b_256", b"abc").digest() \
     != allcrypt.new("blake2b", b"abc").digest()[:32]
 ```
 
+### Windows password hashes
+
+`nt_hash` and `lm_hash` are the two hashes Windows stores (MS-NLMP
+3.3.1), as found in a SAM database or `ntds.dit`:
+
+```python
+import allcrypt
+
+assert allcrypt.nt_hash("Password").hex() == "a4f49c406510bdcab6824ee7c30fd852"
+
+# LM takes bytes in the OEM code page; ASCII letters are uppercased, and
+# anything else is the caller's to uppercase in that code page.
+assert allcrypt.lm_hash(b"Password").hex() == "e52cac67419a9a224a3b108f3fa6cb6d"
+assert allcrypt.lm_hash("\xe9t\xe9".upper().encode("cp850")) == allcrypt.lm_hash(b"\x90T\x90")
+```
+
+A password over fourteen bytes has no LM hash, and `lm_hash` raises
+`ValueError` for one rather than hashing its first fourteen bytes.
+
 ### The file formats' own derivations
 
 OpenPGP's string-to-key, 7-Zip's AES key, KeePass's AES-KDF and LUKS's

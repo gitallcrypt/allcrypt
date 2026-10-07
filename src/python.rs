@@ -999,6 +999,19 @@ fn bitlocker_decrypt_sector<'py>(py: Python<'py>, method: &str, key: Bytes, byte
     Ok(PyBytes::new(py, &out))
 }
 
+/// The NT hash of a password: MD4 of it as UTF-16 little endian.
+#[pyfunction]
+fn nt_hash<'py>(py: Python<'py>, password: &str) -> Bound<'py, PyBytes> {
+    PyBytes::new(py, &api::nt_hash(password))
+}
+
+/// The LM hash of a password given as bytes in its OEM code page.
+#[pyfunction]
+fn lm_hash<'py>(py: Python<'py>, password: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::lm_hash(&password).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 /// The key a BitLocker password protector's salt and password give.
 #[pyfunction]
 fn bitlocker_password_key<'py>(py: Python<'py>, password: &str, salt: Bytes)
@@ -4605,6 +4618,8 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bitlocker_encrypt_sector, m)?)?;
     m.add_function(wrap_pyfunction!(bitlocker_decrypt_sector, m)?)?;
     m.add_function(wrap_pyfunction!(bitlocker_password_key, m)?)?;
+    m.add_function(wrap_pyfunction!(nt_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(lm_hash, m)?)?;
     m.add_function(wrap_pyfunction!(bitlocker_recovery_password_key, m)?)?;
     m.add_function(wrap_pyfunction!(michael, m)?)?;
     m.add_function(wrap_pyfunction!(wep_encrypt, m)?)?;

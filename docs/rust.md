@@ -1316,6 +1316,29 @@ nothing can observe the machine's memory; `Variant::I` leaks nothing
 through the access pattern; `Variant::Id` is the first for half of the
 first pass and the second thereafter.
 
+### Windows password hashes
+
+`kdf::windows` has the two hashes Windows stores (MS-NLMP 3.3.1). Both
+are keys rather than verifiers - NTLM authenticates with the hash
+itself - and neither has a salt or a cost.
+
+```rust
+use allcrypt::kdf::windows::{lm_hash, nt_hash};
+
+// NT: MD4 of the password as UTF-16LE.
+assert_eq!(allcrypt::to_hex(&nt_hash("Password")), "a4f49c406510bdcab6824ee7c30fd852");
+
+// LM: bytes in the OEM code page, at most 14 of them. ASCII letters are
+// uppercased here; anything above 0x7f is the caller's to uppercase,
+// because which byte that is depends on the code page.
+assert_eq!(allcrypt::to_hex(&lm_hash(b"Password")?), "e52cac67419a9a224a3b108f3fa6cb6d");
+assert!(lm_hash(b"fifteen letters").is_err());
+```
+
+A password over fourteen bytes has no LM hash - Windows keeps the hash
+of the empty password in its place - so `lm_hash` refuses one rather
+than quietly hashing its first fourteen bytes.
+
 ## Randomness
 
 `random` reads the operating system's generator. Use it for anything keyed.

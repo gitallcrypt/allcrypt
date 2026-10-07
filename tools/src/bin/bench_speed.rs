@@ -120,6 +120,13 @@ fn main() {
         });
     }
 
+    // One fresh key per message, as Poly1305 is used.
+    bulk(f, "mac/poly1305", |buf| {
+        let mut mac = allcrypt::mac::poly1305::Poly1305::new(&[3u8; 32]).unwrap();
+        allcrypt::Mac::update(&mut mac, buf);
+        black_box(mac.tag());
+    });
+
     bulk(f, "mac/hmac-sha256", |buf| {
         black_box(api::hmac("sha256", b"key", buf).unwrap());
     });

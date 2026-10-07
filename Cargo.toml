@@ -179,6 +179,12 @@ aes-ni = []
 # `aes-ni`: the instructions need `unsafe`. src/hash_functions/sha_ni.rs
 # says what the `unsafe` is. Does nothing on other architectures.
 sha-ni = []
+# ChaCha20 (and XChaCha20, and ChaCha20-Poly1305's keystream) on vector
+# registers: SSE2 on every x86-64 processor, AVX2 chosen at run time
+# where the processor has it. Off by default for the same reason again:
+# src/stream_ciphers/chacha_simd.rs says what the `unsafe` is. Does
+# nothing on other architectures.
+simd = []
 # The C interface: `extern "C"` functions over `api`, declared in
 # include/allcrypt.h. Off by default because the functions are exported
 # from every build that has them, and only a C caller wants that.

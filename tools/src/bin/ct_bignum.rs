@@ -616,6 +616,25 @@ fn run(case: &str) {
             publish_bytes(&ghash.digest());
         }
 
+        "poly1305" => {
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let mut mac = allcrypt::mac::poly1305::Poly1305::new(&key[..32]).unwrap();
+            // 333 bytes: five four-block groups, one single block and a
+            // short final one, so every path is reached.
+            allcrypt::Mac::update(&mut mac, &data[..333]);
+            publish_bytes(&mac.tag());
+        }
+
+        "chacha20_poly1305_seal" => {
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let (ciphertext, tag) = api::aead_encrypt("chacha20-poly1305", &key[..32], &[7u8; 12],
+                                                      b"header", &data[..333]).unwrap();
+            publish_bytes(&ciphertext);
+            publish_bytes(&tag);
+        }
+
         other => {
             eprintln!("unknown case {:?}", other);
             std::process::exit(2);

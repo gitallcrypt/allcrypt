@@ -26,6 +26,7 @@ pub mod luks_af;
 pub mod nist;
 pub mod password;
 pub mod scrypt;
+pub mod windows;
 
 use crate::hash_functions::{md5::MD5, sha1::SHA1, HashFunction};
 use crate::mac::hmac::Hmac;

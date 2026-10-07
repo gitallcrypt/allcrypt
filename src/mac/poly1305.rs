@@ -33,13 +33,30 @@ the limbs small enough that the carries in the multiply stay bounded -
 it is an implementation affordance, not a security measure, and it is part
 of the specification, so skipping it produces a different function.
 
-The modulus is 2^130 - 5, which does not fit in two 64 bit words and is
-awkward in three. This implementation uses five 26 bit limbs, which is the
-usual choice: 26 * 5 = 130 exactly, products of two limbs fit in a u64
-with room for the accumulated carries, and the reduction modulo 2^130 - 5
-becomes "fold the top back in multiplied by 5". The alternative - a
-generic bignum - would be correct and several times slower, and would put
-a variable-time modular reduction in the path of a secret.
+The modulus is 2^130 - 5, which does not fit in two 64 bit words. This
+implementation uses three limbs of 44, 44 and 42 bits: a product of two
+limbs fits in a u128 with room for the sums, a block costs nine 64 x 64
+bit multiplications where five 26 bit limbs cost twenty-five, and the
+reduction modulo 2^130 - 5 is "fold the top back in multiplied by 5".
+Because the top limb is 42 bits, a product that lands above it carries
+a factor of 2^2 as well, which is why the folded coefficients are
+r * 20 rather than r * 5. A generic bignum would be correct and several
+times slower, and would put a variable-time modular reduction in the
+path of a secret.
+
+## Four blocks at a time
+
+Block after block, each multiplication waits for the one before it, so
+the speed is the latency of one multiply-and-reduce rather than the
+processor's multiplier throughput - fewer multiplications per block did
+not make it faster. With r^2, r^3 and r^4 computed once per key, four
+blocks are absorbed as
+
+    a = (a + n1) * r^4 + n2 * r^3 + n3 * r^2 + n4 * r
+
+which is the same polynomial, regrouped. The four products are
+independent of one another, and they are summed unreduced and reduced
+once.
 
 ## Timing
 
@@ -55,18 +72,98 @@ use crate::Mac;
 /// A Poly1305 authenticator over one message.
 #[derive(Clone)]
 pub struct Poly1305 {
-    /// The clamped r, as five 26 bit limbs.
-    r: [u32; 5],
-    /// r[1..5] pre-multiplied by 5, for the reduction.
-    r5: [u32; 4],
-    /// The accumulator, five 26 bit limbs.
-    a: [u32; 5],
-    /// s, the value added at the end, as four 32 bit words.
-    s: [u32; 4],
+    /// r, r^2, r^3 and r^4, for one block and for four at a time.
+    powers: [Multiplier; 4],
+    /// The accumulator, as limbs of 44, 44 and 42 bits.
+    a: [u64; 3],
+    /// s, the value added at the end, as two 64 bit words.
+    s: [u64; 2],
     /// A partial block carried between `update` calls.
     partial: [u8; 16],
     used: usize,
     finished: bool,
+}
+
+const LOW_44: u64 = (1 << 44) - 1;
+const LOW_42: u64 = (1 << 42) - 1;
+
+/// A value to multiply by: its limbs, and its upper two limbs times 20
+/// for the reduction - 5 for 2^130 = 5, and 4 because the top limb ends
+/// at bit 130 rather than 132.
+#[derive(Clone, Copy)]
+struct Multiplier {
+    limbs: [u64; 3],
+    times20: [u64; 2],
+}
+
+impl Multiplier {
+    fn new(limbs: [u64; 3]) -> Multiplier {
+        Multiplier { limbs, times20: [limbs[1] * 20, limbs[2] * 20] }
+    }
+}
+
+/// A 16 byte little-endian number as two 64 bit words.
+fn words(bytes: &[u8]) -> (u64, u64) {
+    (u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+     u64::from_le_bytes(bytes[8..16].try_into().expect("8 bytes")))
+}
+
+/// Two 64 bit words as limbs of 44, 44 and 42 bits.
+fn limbs(low: u64, high: u64) -> [u64; 3] {
+    [low & LOW_44, ((low >> 44) | (high << 20)) & LOW_44, (high >> 24) & LOW_42]
+}
+
+/// A message block as limbs, with the bit appended above it - at 2^128,
+/// which is bit 40 of the top limb - when `high` is 1.
+fn block_limbs(block: &[u8], high: u64) -> [u64; 3] {
+    let (low_word, high_word) = words(block);
+    let n = limbs(low_word, high_word);
+    [n[0], n[1], n[2] | (high << 40)]
+}
+
+/// `x * m` modulo 2^130 - 5, as three column sums not yet carried. A
+/// product whose limb positions add up past the top limb has overflowed
+/// 2^130 and folds back in times twenty.
+#[inline(always)]
+fn product(x: [u64; 3], m: &Multiplier) -> [u128; 3] {
+    let (x0, x1, x2) = (x[0] as u128, x[1] as u128, x[2] as u128);
+    let (m0, m1, m2) = (m.limbs[0] as u128, m.limbs[1] as u128, m.limbs[2] as u128);
+    let (t1, t2) = (m.times20[0] as u128, m.times20[1] as u128);
+    [x0 * m0 + x1 * t2 + x2 * t1,
+     x0 * m1 + x1 * m0 + x2 * t2,
+     x0 * m2 + x1 * m1 + x2 * m0]
+}
+
+/// Column sums carried back down to limbs.
+///
+/// Bounds, for the sums of up to four products that reach here: every
+/// limb multiplied is below 2^46 (an accumulator limb plus a message
+/// limb) and every multiplier limb times 20 below 2^49, so each of the
+/// twelve terms in a column is below 2^95 and the column below 2^99. The
+/// carry out of the top limb is then below 2^57 and five times it below
+/// 2^60, and what comes out is a0 below 2^44, a1 below 2^44 + 2^16 and
+/// a2 below 2^42 - inside the bounds assumed for the next block and for
+/// `finalize`.
+#[inline(always)]
+fn reduce(d: [u128; 3]) -> [u64; 3] {
+    let carry = (d[0] >> 44) as u64;
+    let mut out0 = d[0] as u64 & LOW_44;
+    let d1 = d[1] + carry as u128;
+    let carry = (d1 >> 44) as u64;
+    let mut out1 = d1 as u64 & LOW_44;
+    let d2 = d[2] + carry as u128;
+    let carry = (d2 >> 42) as u64;
+    let out2 = d2 as u64 & LOW_42;
+
+    // The carry out of the top limb wraps around times five.
+    out0 += carry * 5;
+    out1 += out0 >> 44;
+    out0 &= LOW_44;
+    [out0, out1, out2]
+}
+
+fn add(a: [u64; 3], b: [u64; 3]) -> [u64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 impl Poly1305 {
@@ -78,24 +175,20 @@ impl Poly1305 {
                 "Poly1305 key must be 32 bytes (r then s), got {}.", key.len()));
         }
 
-        // Clamp and split r into 26 bit limbs in one pass. The masks are
-        // from RFC 8439 section 2.5.1: they clear the top four bits of
-        // bytes 3, 7, 11 and 15 and the bottom two of bytes 4, 8 and 12.
-        let word = |i: usize| u32::from_le_bytes(key[i..i + 4].try_into().unwrap());
-        let mut r = [0u32; 5];
-        r[0] = word(0) & 0x03ff_ffff;
-        r[1] = ((word(3) >> 2) & 0x03ff_ff03) & 0x03ff_ffff;
-        r[2] = ((word(6) >> 4) & 0x03ff_c0ff) & 0x03ff_ffff;
-        r[3] = ((word(9) >> 6) & 0x03f0_3fff) & 0x03ff_ffff;
-        r[4] = ((word(12) >> 8) & 0x000f_ffff) & 0x03ff_ffff;
-
-        let r5 = [r[1] * 5, r[2] * 5, r[3] * 5, r[4] * 5];
-        let s = [word(16), word(20), word(24), word(28)];
+        // The clamp, RFC 8439 section 2.5.1: the top four bits of bytes 3,
+        // 7, 11 and 15 and the bottom two of bytes 4, 8 and 12 cleared.
+        let (low, high) = words(&key[..16]);
+        let r = Multiplier::new(limbs(low & 0x0fff_fffc_0fff_ffff,
+                                      high & 0x0fff_fffc_0fff_fffc));
+        let r2 = Multiplier::new(reduce(product(r.limbs, &r)));
+        let r3 = Multiplier::new(reduce(product(r2.limbs, &r)));
+        let r4 = Multiplier::new(reduce(product(r3.limbs, &r)));
+        let s = words(&key[16..]);
 
         Ok(Poly1305 {
-            r, r5,
-            a: [0; 5],
-            s,
+            powers: [r, r2, r3, r4],
+            a: [0; 3],
+            s: [s.0, s.1],
             partial: [0u8; 16],
             used: 0,
             finished: false,
@@ -105,65 +198,23 @@ impl Poly1305 {
     /// Absorb one 16 byte block. `high` is the bit appended above the
     /// block: 1 for a whole block, and for a short final block it is
     /// already in the padded bytes, so 0.
-    fn block(&mut self, block: &[u8; 16], high: u32) {
-        let word = |i: usize| u32::from_le_bytes(block[i..i + 4].try_into().unwrap());
+    fn block(&mut self, block: &[u8; 16], high: u64) {
+        self.a = reduce(product(add(self.a, block_limbs(block, high)), &self.powers[0]));
+    }
 
-        // n, as 26 bit limbs, plus the appended bit in the top limb.
-        let n0 = word(0) & 0x03ff_ffff;
-        let n1 = (word(3) >> 2) & 0x03ff_ffff;
-        let n2 = (word(6) >> 4) & 0x03ff_ffff;
-        let n3 = (word(9) >> 6) & 0x03ff_ffff;
-        let n4 = (word(12) >> 8) | (high << 24);
-
-        // a += n
-        let a0 = (self.a[0] + n0) as u64;
-        let a1 = (self.a[1] + n1) as u64;
-        let a2 = (self.a[2] + n2) as u64;
-        let a3 = (self.a[3] + n3) as u64;
-        let a4 = (self.a[4] + n4) as u64;
-
-        let (r0, r1, r2, r3, r4) = (self.r[0] as u64, self.r[1] as u64,
-                                    self.r[2] as u64, self.r[3] as u64,
-                                    self.r[4] as u64);
-        let (s1, s2, s3, s4) = (self.r5[0] as u64, self.r5[1] as u64,
-                                self.r5[2] as u64, self.r5[3] as u64);
-
-        // a *= r, modulo 2^130 - 5. Anything above limb 4 has overflowed
-        // 2^130, and 2^130 = 5 (mod 2^130 - 5), so it folds back in
-        // multiplied by five - which is what r5 is for.
-        let d0 = a0 * r0 + a1 * s4 + a2 * s3 + a3 * s2 + a4 * s1;
-        let d1 = a0 * r1 + a1 * r0 + a2 * s4 + a3 * s3 + a4 * s2;
-        let d2 = a0 * r2 + a1 * r1 + a2 * r0 + a3 * s4 + a4 * s3;
-        let d3 = a0 * r3 + a1 * r2 + a2 * r1 + a3 * r0 + a4 * s4;
-        let d4 = a0 * r4 + a1 * r3 + a2 * r2 + a3 * r1 + a4 * r0;
-
-        // Carry propagation, back down to 26 bit limbs.
-        let mut carry = d0 >> 26;
-        let mut out = [0u32; 5];
-        out[0] = (d0 & 0x03ff_ffff) as u32;
-
-        let d = d1 + carry;
-        carry = d >> 26;
-        out[1] = (d & 0x03ff_ffff) as u32;
-
-        let d = d2 + carry;
-        carry = d >> 26;
-        out[2] = (d & 0x03ff_ffff) as u32;
-
-        let d = d3 + carry;
-        carry = d >> 26;
-        out[3] = (d & 0x03ff_ffff) as u32;
-
-        let d = d4 + carry;
-        carry = d >> 26;
-        out[4] = (d & 0x03ff_ffff) as u32;
-
-        // The carry out of the top limb wraps around times five.
-        out[0] += (carry * 5) as u32;
-        out[1] += out[0] >> 26;
-        out[0] &= 0x03ff_ffff;
-
-        self.a = out;
+    /// Absorb four whole blocks, 64 bytes: `(a + n1) * r^4 + n2 * r^3 +
+    /// n3 * r^2 + n4 * r`, reduced once.
+    fn four_blocks(&mut self, blocks: &[u8]) {
+        let [r, r2, r3, r4] = &self.powers;
+        let first = product(add(self.a, block_limbs(&blocks[..16], 1)), r4);
+        let second = product(block_limbs(&blocks[16..32], 1), r3);
+        let third = product(block_limbs(&blocks[32..48], 1), r2);
+        let fourth = product(block_limbs(&blocks[48..64], 1), r);
+        let mut sum = [0u128; 3];
+        for (i, column) in sum.iter_mut().enumerate() {
+            *column = first[i] + second[i] + third[i] + fourth[i];
+        }
+        self.a = reduce(sum);
     }
 
     /// The 16 byte tag.
@@ -189,46 +240,42 @@ impl Poly1305 {
         }
         self.finished = true;
 
-        // Final carry, so every limb is below 2^26.
-        let mut a = self.a;
-        a[1] += a[0] >> 26; a[0] &= 0x03ff_ffff;
-        a[2] += a[1] >> 26; a[1] &= 0x03ff_ffff;
-        a[3] += a[2] >> 26; a[2] &= 0x03ff_ffff;
-        a[4] += a[3] >> 26; a[3] &= 0x03ff_ffff;
-        a[0] += (a[4] >> 26) * 5; a[4] &= 0x03ff_ffff;
-        a[1] += a[0] >> 26; a[0] &= 0x03ff_ffff;
+        // One carry pass puts every limb within its width. `reduce`
+        // leaves a0 below 2^44, a1 below 2^44 + 2^16 and a2 below 2^42:
+        // if a1 carries, what is left of it is below 2^16; the carry can
+        // lift a2 to 2^42, whose wrap adds 5 to a0, whose own carry is
+        // then at most 1 into that small a1. Nothing carries a second
+        // time.
+        let [mut a0, mut a1, mut a2] = self.a;
+        a2 += a1 >> 44; a1 &= LOW_44;
+        a0 += (a2 >> 42) * 5; a2 &= LOW_42;
+        a1 += a0 >> 44; a0 &= LOW_44;
 
-        // a may still be in [p, 2^130). Compute a - p and take it only if
-        // it did not borrow - with a mask, not a branch, because which one
-        // is taken depends on the secret.
-        let mut g = [0u32; 5];
-        let mut carry = 5u32;              // subtracting p = 2^130 - 5 is +5 then -2^130
-        for i in 0..5 {
-            let value = a[i] + carry;
-            carry = value >> 26;
-            g[i] = value & 0x03ff_ffff;
-        }
-        // carry is 1 exactly when a + 5 reached 2^130, i.e. when a >= p.
-        let mask = 0u32.wrapping_sub(carry);
-        for i in 0..5 {
-            a[i] = (a[i] & !mask) | (g[i] & mask);
-        }
+        // a may still be in [p, 2^130). Compute a - p = a + 5 - 2^130 and
+        // take it only if it did not go negative - with a mask, not a
+        // branch, because which one is taken depends on the secret.
+        let g0 = a0 + 5;
+        let g1 = a1 + (g0 >> 44);
+        let g2 = (a2 + (g1 >> 44)).wrapping_sub(1 << 42);
+        // The top bit of g2 is set exactly when a + 5 < 2^130, i.e. a < p.
+        let take = (g2 >> 63).wrapping_sub(1);
+        a0 = (a0 & !take) | (g0 & LOW_44 & take);
+        a1 = (a1 & !take) | (g1 & LOW_44 & take);
+        a2 = (a2 & !take) | (g2 & LOW_42 & take);
 
-        // Repack the 26 bit limbs into four 32 bit words, add s, serialise.
-        let words = [
-            a[0] | (a[1] << 26),
-            (a[1] >> 6) | (a[2] << 20),
-            (a[2] >> 12) | (a[3] << 14),
-            (a[3] >> 18) | (a[4] << 8),
-        ];
+        // Add s modulo 2^128 and serialise.
+        let s = limbs(self.s[0], self.s[1]);
+        let mut sum0 = a0 + s[0];
+        let mut sum1 = a1 + s[1] + (sum0 >> 44);
+        let sum2 = (a2 + s[2] + (sum1 >> 44)) & LOW_42;
+        sum0 &= LOW_44;
+        sum1 &= LOW_44;
+        let low = sum0 | (sum1 << 44);
+        let high = (sum1 >> 20) | (sum2 << 24);
 
         let mut tag = [0u8; 16];
-        let mut carry = 0u64;
-        for i in 0..4 {
-            let sum = words[i] as u64 + self.s[i] as u64 + carry;
-            carry = sum >> 32;
-            tag[i * 4..i * 4 + 4].copy_from_slice(&(sum as u32).to_le_bytes());
-        }
+        tag[..8].copy_from_slice(&low.to_le_bytes());
+        tag[8..].copy_from_slice(&high.to_le_bytes());
         tag
     }
 
@@ -266,6 +313,11 @@ impl Mac for Poly1305 {
             }
         }
 
+        let mut fours = data.chunks_exact(64);
+        for blocks in &mut fours {
+            self.four_blocks(blocks);
+        }
+        data = fours.remainder();
         while data.len() >= 16 {
             let mut block = [0u8; 16];
             block.copy_from_slice(&data[..16]);
@@ -463,6 +515,46 @@ electronic communications made at any time or place, which are addressed to";
         let mut check = Poly1305::new(&key).unwrap();
         check.update(b"authentic");
         assert!(!check.verify(&tag[..15]));
+    }
+
+    /// The final reduction from accumulators at the bounds `reduce`
+    /// leaves - a0 below 2^44, a1 below 2^44 + 2^16, a2 below 2^42 - and from
+    /// values either side of p, against the same arithmetic done with
+    /// `BigUint`. No message is known that reaches these exact states, so
+    /// they are set directly.
+    #[test]
+    fn test_the_final_reduction_at_the_limb_bounds() {
+        use crate::bignum::BigUint;
+        let p = BigUint::from_u64(1).shl(130).sub(&BigUint::from_u64(5)).unwrap();
+        let top44 = (1u64 << 44) - 1;
+        let top42 = (1u64 << 42) - 1;
+        let states = [
+            [top44, 1 << 44, top42],              // 2^130 + 2^44 - 1
+            [top44, (1 << 44) + (1 << 16) - 1, top42],
+            [top44, top44, top42],                // 2^130 - 1
+            [top44 - 4, top44, top42],            // p
+            [top44 - 5, top44, top42],            // p - 1
+            [top44 - 3, top44, top42],            // p + 1
+            [4, 1 << 44, top42],                  // 2^130 + 4 = p + 9
+            [0, 0, 0],
+        ];
+        let key = unhex(&("00".repeat(16) + &"ff".repeat(16)));
+        for a in states {
+            let mut mac = Poly1305::new(&key).unwrap();
+            mac.a = a;
+            let tag = mac.tag();
+
+            let value = BigUint::from_u64(a[0])
+                .add(&BigUint::from_u64(a[1]).shl(44))
+                .add(&BigUint::from_u64(a[2]).shl(88));
+            let s = BigUint::from_bytes_be(&[0xffu8; 16]);
+            let want = value.rem(&p).unwrap().add(&s)
+                .rem(&BigUint::from_u64(1).shl(128)).unwrap();
+            let mut want_bytes = want.to_bytes_be();
+            want_bytes.reverse();
+            want_bytes.resize(16, 0);
+            assert_eq!(tag.to_vec(), want_bytes, "accumulator {a:x?}");
+        }
     }
 
     #[test]

@@ -1002,7 +1002,9 @@ for the same code.
 
 A plain `cargo build --release` runs on every x86-64 processor (and on
 the other architectures Rust targets), and everything in it is portable
-Rust. Two options make it faster. They are independent and combine.
+Rust. Two kinds of option make it faster: a CPU level for the whole
+build, and features that add hand-written paths for particular
+instructions. They are independent and combine.
 
 | | portable | `x86-64-v3` | `aes-ni` feature | both | OpenSSL 3.0 |
 |---|---|---|---|---|---|
@@ -1023,7 +1025,8 @@ MB/s on a 2-core Xeon (Cascade Lake) at 2.8 GHz; the `aes-ni` column is
 the portable build plus the feature, and "both" adds `x86-64-v3` to it.
 That processor has no SHA extensions, so the `sha-ni` feature changes
 nothing there; [its own section](#the-sha-ni-feature-hardware-sha-1-and-sha-256)
-has numbers from one that does.
+has numbers from one that does. The ChaCha20 row is without the `simd`
+feature, which [has its own section too](#the-simd-feature-chacha20-on-vector-registers).
 GCM and XTS are keyed once and run message after message, as
 `openssl speed` runs them. Runs differ by ten or fifteen percent, and
 `scripts/bench_compare.py` (below) prints this table, every column, on
@@ -1184,23 +1187,63 @@ SHA-256: OpenSSL's remaining lead there is computing the message
 schedule four words at a time in vector registers, alongside the scalar
 rounds.
 
+### The `simd` feature: ChaCha20 on vector registers
+
+    cargo build --release --features simd
+    cargo build --release --features aes-ni,sha-ni,simd
+
+With the feature, on x86-64, ChaCha20 - and XChaCha20, and the
+keystream of ChaCha20-Poly1305 - computes eight blocks at a time in
+AVX2 registers when the processor has AVX2, chosen at run time, and
+four at a time in SSE2 otherwise. Without it, the compiler is left to
+vectorise the portable code and does not: it keeps the rounds scalar
+whatever the code looks like, `x86-64-v3` included. On other
+architectures the feature does nothing.
+
+It is off by default for the same reason as the other two, and its
+`unsafe` is confined the same way, to
+`src/stream_ciphers/chacha_simd.rs`. Like SHA, ChaCha has no secret
+table lookups or branches, so the portable code is constant time
+already; this is only speed.
+
+| | portable | `simd` feature | OpenSSL 3.0 |
+|---|---|---|---|
+| ChaCha20, i9-13900K | 1,651 | 3,550 | 4,594 |
+| ChaCha20, Xeon above | 920 | 2,009 | 3,654 |
+
+MB/s, 16 KiB buffers; the i9 row is the best of five runs. On the i9
+that is 0.77x of
+OpenSSL's AVX2 code; on the Xeon OpenSSL uses AVX-512, which this
+library does not. A processor without AVX2 gets the SSE2 path, which is
+barely faster than the portable code (985 MB/s on the Xeon): sixteen
+words of state fill all sixteen SSE registers, and SSE2 has no byte
+shuffle for the rotations.
+
+ChaCha20-Poly1305 is the two run one after the other. Poly1305 is
+portable code in every build - four blocks at a time against
+precomputed powers of r, so the multiplications do not wait on each
+other - and runs at 4,868 MB/s on the i9, against 4,405 for OpenSSL's
+through python-cryptography (`openssl speed` has no Poly1305). The AEAD
+with the `simd` feature is 2,016 MB/s there against OpenSSL's 3,233:
+OpenSSL computes the cipher and the MAC in one interleaved pass.
+
 ### Measuring
 
 ```
 cargo run --release -p allcrypt-tools --bin bench_speed [filter]
-cargo run --release -p allcrypt-tools --features aes-ni,sha-ni --bin bench_speed [filter]
+cargo run --release -p allcrypt-tools --features aes-ni,sha-ni,simd --bin bench_speed [filter]
 python3 scripts/bench_compare.py [filter]
-python3 scripts/bench_compare.py --builds portable,ni [filter]
+python3 scripts/bench_compare.py --builds portable,hw [filter]
 ```
 
 `bench_speed` prints throughput for the hashes, ciphers, AEADs and KDFs
 and the rate of the public-key operations, one row per line; a filter
 keeps the rows whose name contains it. `bench_compare.py` builds it four
-ways - `portable`, `x86-64-v3`, `ni` (both hardware features) and
-`v3+ni`, each in its own directory under `target/bench/` - and sets each
+ways - `portable`, `x86-64-v3`, `hw` (the three hardware features) and
+`v3+hw`, each in its own directory under `target/bench/` - and sets each
 row's four numbers beside
 `openssl speed` on the same 16 KiB buffers, with `hashlib` and
-python-cryptography for the KDFs; the ratio is the best of ours against
+python-cryptography for the KDFs and Poly1305; the ratio is the best of ours against
 OpenSSL. On a processor without AVX2 the `x86-64-v3` builds are skipped,
 since they would not start, and off x86-64 there is only the portable
 one. The AES, SHA-1 and SHA-256 rows carry one more OpenSSL column,

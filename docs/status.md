@@ -166,6 +166,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |KeePass AES-KDF|✓|✓|
 |LUKS anti-forensic splitter (AFsplit, AFmerge)|✓|✓|
 |BitLocker key stretching (password, recovery password)|✓|Windows's volumes, through the BitLocker example|
+|NT hash and LM hash (MS-NLMP §3.3.1, NTOWFv1 and LMOWFv1)|✓|NT ✓; LM: Samba's and impacket's answers (`vectors/windows_hashes.vec`) and spec reference|
 |IEEE 802.11 PSK, PRF, PTK and PMKID (WPA/WPA2/WPA3)|✓|IEEE 802.11i vectors; aircrack-ng, through the Wi-Fi example|
 |TLS 1.2 PRF (RFC 5246)|✓|✓|
 |TLS 1.0/1.1 PRF (RFC 2246)|✓|✓|

@@ -1703,6 +1703,13 @@ def bitlocker_encrypt_sector(method: str, key: BytesLike, byte_offset: int,
 def bitlocker_decrypt_sector(method: str, key: BytesLike, byte_offset: int,
                              sector: BytesLike) -> bytes:
     """The inverse of ``bitlocker_encrypt_sector``."""
+def nt_hash(password: str) -> bytes:
+    """The NT hash (NTOWFv1): MD4 of the password as UTF-16 little endian."""
+def lm_hash(password: BytesLike) -> bytes:
+    """The LM hash (LMOWFv1) of a password given as bytes in the OEM code
+    page it was made under, at most 14 of them. ASCII letters are
+    uppercased; other bytes are the caller's to uppercase, because which
+    byte is the uppercase of which depends on the code page."""
 def bitlocker_password_key(password: str, salt: BytesLike) -> bytes:
     """The AES key a BitLocker password protector's salt and password give."""
 def bitlocker_recovery_password_key(recovery: str, salt: BytesLike) -> bytes:
