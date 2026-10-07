@@ -1104,7 +1104,15 @@ mod tests {
         let alice = Key::from_private(allcrypt::x509::private_key::parse(
             &files["AlicePrivRSASign.pri"]).unwrap()).unwrap();
         let wrong = Credentials { key: Some(&alice), ..creds };
-        assert!(decrypt(&read_input(&files["5.1.bin"], false).unwrap(), &wrong, None).is_err());
+        // With the wrong RSA key the content key is random (RFC 3218), so
+        // the decryption fails at the CBC padding - except about once in
+        // 256, when the last byte happens to be valid padding and garbage
+        // comes back. Asserting an error failed one run in a few hundred;
+        // what must hold every time is that the content does not come out.
+        match decrypt(&read_input(&files["5.1.bin"], false).unwrap(), &wrong, None) {
+            Err(_) => {}
+            Ok((_, plain)) => assert_ne!(plain, files["ExContent.bin"]),
+        }
         let digested = verify(&read_input(&files["6.0.bin"], false).unwrap(), None, &[], &[],
                               &weak()).unwrap();
         assert_eq!(digested.content, files["ExContent.bin"]);

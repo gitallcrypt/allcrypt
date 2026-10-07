@@ -196,11 +196,11 @@ for a tag. Key wrap authenticates without one. Both are in
 |Whirlpool (ISO/IEC 10118-3)|✓|✓|
 |Streebog-256 and -512 (GOST R 34.11-2012)|✓|✓|
 |GOST R 34.11-94 (RFC 5831, RFC 4357 parameters)|✓|✓|
+|RIPEMD-128, RIPEMD-256, RIPEMD-320|✓|libtomcrypt, Bouncy Castle, Crypto++ and RustCrypto (and GNU Crypto for RIPEMD-128), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
+|HAS-160 (TTA.KO-12.0011/R2)|✓|RHash, Botan 1.10 and GNU Crypto, agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
+|Whirlpool-0, Whirlpool-T|✓|sphlib and GNU Crypto (and Crypto++ 5.2.1 for Whirlpool-T), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
+|LM hash, NT hash|✓|see [key derivation](#key-derivation)|
 |MD6|||
-|RIPEMD-128, RIPEMD-256, RIPEMD-320|||
-|HAS-160|||
-|Whirlpool-0, Whirlpool-T|||
-|LM hash, NT hash|||
 |ssdeep / CTPH fuzzy hashing|||
 
 ## Public key

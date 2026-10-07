@@ -1519,12 +1519,14 @@ normalised `BigUint` and comparing it with `!=`; a fault check that leaks the
 value it is checking is a poor trade, so it is `Montgomery::pow_public` and a
 `ct_eq` mask now.
 
-**Accepted:** the blinding factors are computed with `BigUint`: `r^e` by
-`mod_pow`, `c * r^e` by `mod_mul` (a Knuth division), and `r^-1` by
-`mod_inverse`, all variable time. All three run on `r`, a fresh random
-value that is not the key and is discarded after the operation, so the
-trade is deliberate. `ct_check.py` cannot see it, because its harness
-marks the key, not `r`.
+**Also mitigated:** the blinding factors. `r^e` and `c * r^e` are
+`Montgomery::pow_public` and `mul_mod` at fixed width. The inverse is
+still the Euclidean algorithm, which is variable time, but it is never
+taken of `r`: it is taken of `r * s` for a second random `s`, a value
+independent of `r`, and `s` is multiplied back in afterwards. They used
+to be `BigUint` `mod_pow`, `mod_mul` and `mod_inverse` on `r` itself,
+accepted because `r` is fresh and discarded. `ct_check.py` cannot see
+either version, because its harness marks the key, not `r`.
 
 ### Small keys and weak primes
 

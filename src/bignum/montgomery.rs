@@ -131,45 +131,18 @@ impl Montgomery {
     /// exponentiation below - makes none. `t` holds the full product on
     /// return; the caller wipes it when it is done.
     fn mul_into(&self, a: &[u64], b: &[u64], t: &mut [u64], out: &mut [u64]) {
-        let k = self.k;
+        // The same kernel compiled per limb count: with the count a
+        // constant the loops have known bounds, so the slice checks go and
+        // the inner loops unroll. Every other width takes the generic copy.
         let n = self.n.limbs();
-        t.fill(0);
-        for &b_i in &b[..k] {
-            // t += a * b[i]
-            let mut carry: u128 = 0;
-            for j in 0..k {
-                let sum = t[j] as u128 + a[j] as u128 * b_i as u128 + carry;
-                t[j] = sum as u64;
-                carry = sum >> 64;
-            }
-            let sum = t[k] as u128 + carry;
-            t[k] = sum as u64;
-            t[k + 1] = (sum >> 64) as u64;
-
-            // m makes the low limb of t vanish, so the whole thing can shift
-            // down by one limb, which is the division by R.
-            let m = t[0].wrapping_mul(self.n0inv);
-
-            let sum = t[0] as u128 + m as u128 * n[0] as u128;
-            debug_assert_eq!(sum as u64, 0, "the low limb must cancel");
-            let mut carry: u128 = sum >> 64;
-            for j in 1..k {
-                let sum = t[j] as u128 + m as u128 * n[j] as u128 + carry;
-                t[j - 1] = sum as u64;
-                carry = sum >> 64;
-            }
-            let sum = t[k] as u128 + carry;
-            t[k - 1] = sum as u64;
-            t[k] = t[k + 1] + (sum >> 64) as u64;
-        }
-
-        // The result so far is below 2n but may not be below n, and it may
-        // have spilled into the extra limb. Subtract n into `out` and keep
-        // the difference unless it borrowed with nothing spilled.
-        let borrow = ct::sub_borrow(&t[..k], n, out);
-        let take_difference = ct::mask_is_zero(borrow) | ct::mask_is_nonzero(t[k]);
-        for (limb, &kept) in out.iter_mut().zip(&t[..k]) {
-            *limb = ct::select(*limb, kept, take_difference);
+        match self.k {
+            4 => cios(4, a, b, n, self.n0inv, t, out),
+            6 => cios(6, a, b, n, self.n0inv, t, out),
+            8 => cios(8, a, b, n, self.n0inv, t, out),
+            16 => cios(16, a, b, n, self.n0inv, t, out),
+            24 => cios(24, a, b, n, self.n0inv, t, out),
+            32 => cios(32, a, b, n, self.n0inv, t, out),
+            k => cios(k, a, b, n, self.n0inv, t, out),
         }
     }
 
@@ -189,58 +162,16 @@ impl Montgomery {
     /// Exponentiation is almost all squarings, so this is most of its
     /// time. `wide` holds the square on return; the caller wipes it.
     fn sqr_into(&self, a: &[u64], wide: &mut [u64], out: &mut [u64]) {
-        let k = self.k;
+        // Per limb count, as in `mul_into`.
         let n = self.n.limbs();
-        wide.fill(0);
-        // The cross products, each once.
-        for i in 0..k {
-            let mut carry: u128 = 0;
-            for j in i + 1..k {
-                let sum = wide[i + j] as u128 + a[i] as u128 * a[j] as u128 + carry;
-                wide[i + j] = sum as u64;
-                carry = sum >> 64;
-            }
-            wide[i + k] = carry as u64;
-        }
-        // Doubled, by a one-bit shift across the 2k limbs.
-        let mut top = 0u64;
-        for limb in wide[..2 * k].iter_mut() {
-            let next = *limb >> 63;
-            *limb = (*limb << 1) | top;
-            top = next;
-        }
-        // Plus the squares on the diagonal.
-        let mut carry: u128 = 0;
-        for i in 0..k {
-            let square = a[i] as u128 * a[i] as u128;
-            let low = wide[2 * i] as u128 + (square as u64) as u128 + carry;
-            wide[2 * i] = low as u64;
-            let high = wide[2 * i + 1] as u128 + (square >> 64) + (low >> 64);
-            wide[2 * i + 1] = high as u64;
-            carry = high >> 64;
-        }
-
-        // Montgomery reduction of the 2k limbs, word by word: each pass
-        // clears the lowest remaining limb, and its carry runs into the
-        // limb above the window, which the next pass then includes.
-        let mut extra = 0u64;
-        for i in 0..k {
-            let m = wide[i].wrapping_mul(self.n0inv);
-            let mut carry: u128 = 0;
-            for j in 0..k {
-                let sum = wide[i + j] as u128 + m as u128 * n[j] as u128 + carry;
-                wide[i + j] = sum as u64;
-                carry = sum >> 64;
-            }
-            let sum = wide[i + k] as u128 + carry + extra as u128;
-            wide[i + k] = sum as u64;
-            extra = (sum >> 64) as u64;
-        }
-
-        let borrow = ct::sub_borrow(&wide[k..2 * k], n, out);
-        let take_difference = ct::mask_is_zero(borrow) | ct::mask_is_nonzero(extra);
-        for (limb, &kept) in out.iter_mut().zip(&wide[k..2 * k]) {
-            *limb = ct::select(*limb, kept, take_difference);
+        match self.k {
+            4 => square(4, a, n, self.n0inv, wide, out),
+            6 => square(6, a, n, self.n0inv, wide, out),
+            8 => square(8, a, n, self.n0inv, wide, out),
+            16 => square(16, a, n, self.n0inv, wide, out),
+            24 => square(24, a, n, self.n0inv, wide, out),
+            32 => square(32, a, n, self.n0inv, wide, out),
+            k => square(k, a, n, self.n0inv, wide, out),
         }
     }
 
@@ -539,6 +470,111 @@ impl core::fmt::Debug for Montgomery {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Montgomery({} limbs)", self.k)
     }
+}
+
+/// CIOS for `mul_into`, with the limb count an argument so each caller
+/// in `mul_into` gets a copy compiled for a constant one.
+#[inline(always)]
+fn cios(k: usize, a: &[u64], b: &[u64], n: &[u64], n0inv: u64, t: &mut [u64], out: &mut [u64]) {
+    let (a, b, n, t, out) = (&a[..k], &b[..k], &n[..k], &mut t[..k + 2], &mut out[..k]);
+    t.fill(0);
+    for &b_i in &b[..k] {
+        // t += a * b[i]
+        let mut carry: u128 = 0;
+        for j in 0..k {
+            let sum = t[j] as u128 + a[j] as u128 * b_i as u128 + carry;
+            t[j] = sum as u64;
+            carry = sum >> 64;
+        }
+        let sum = t[k] as u128 + carry;
+        t[k] = sum as u64;
+        t[k + 1] = (sum >> 64) as u64;
+
+        // m makes the low limb of t vanish, so the whole thing can shift
+        // down by one limb, which is the division by R.
+        let m = t[0].wrapping_mul(n0inv);
+
+        let sum = t[0] as u128 + m as u128 * n[0] as u128;
+        debug_assert_eq!(sum as u64, 0, "the low limb must cancel");
+        let mut carry: u128 = sum >> 64;
+        for j in 1..k {
+            let sum = t[j] as u128 + m as u128 * n[j] as u128 + carry;
+            t[j - 1] = sum as u64;
+            carry = sum >> 64;
+        }
+        let sum = t[k] as u128 + carry;
+        t[k - 1] = sum as u64;
+        t[k] = t[k + 1] + (sum >> 64) as u64;
+    }
+
+    // The result so far is below 2n but may not be below n, and it may
+    // have spilled into the extra limb. Subtract n into `out` and keep
+    // the difference unless it borrowed with nothing spilled.
+    let borrow = ct::sub_borrow(&t[..k], n, out);
+    let take_difference = ct::mask_is_zero(borrow) | ct::mask_is_nonzero(t[k]);
+    for (limb, &kept) in out.iter_mut().zip(&t[..k]) {
+        *limb = ct::select(*limb, kept, take_difference);
+    }
+    
+}
+
+/// The squaring and reduction for `sqr_into`, compiled per limb count
+/// the same way.
+#[inline(always)]
+fn square(k: usize, a: &[u64], n: &[u64], n0inv: u64, wide: &mut [u64], out: &mut [u64]) {
+    let (a, n, wide, out) = (&a[..k], &n[..k], &mut wide[..2 * k + 1], &mut out[..k]);
+    wide.fill(0);
+    // The cross products, each once.
+    for i in 0..k {
+        let mut carry: u128 = 0;
+        for j in i + 1..k {
+            let sum = wide[i + j] as u128 + a[i] as u128 * a[j] as u128 + carry;
+            wide[i + j] = sum as u64;
+            carry = sum >> 64;
+        }
+        wide[i + k] = carry as u64;
+    }
+    // Doubled, by a one-bit shift across the 2k limbs.
+    let mut top = 0u64;
+    for limb in wide[..2 * k].iter_mut() {
+        let next = *limb >> 63;
+        *limb = (*limb << 1) | top;
+        top = next;
+    }
+    // Plus the squares on the diagonal.
+    let mut carry: u128 = 0;
+    for i in 0..k {
+        let square = a[i] as u128 * a[i] as u128;
+        let low = wide[2 * i] as u128 + (square as u64) as u128 + carry;
+        wide[2 * i] = low as u64;
+        let high = wide[2 * i + 1] as u128 + (square >> 64) + (low >> 64);
+        wide[2 * i + 1] = high as u64;
+        carry = high >> 64;
+    }
+
+    // Montgomery reduction of the 2k limbs, word by word: each pass
+    // clears the lowest remaining limb, and its carry runs into the
+    // limb above the window, which the next pass then includes.
+    let mut extra = 0u64;
+    for i in 0..k {
+        let m = wide[i].wrapping_mul(n0inv);
+        let mut carry: u128 = 0;
+        for j in 0..k {
+            let sum = wide[i + j] as u128 + m as u128 * n[j] as u128 + carry;
+            wide[i + j] = sum as u64;
+            carry = sum >> 64;
+        }
+        let sum = wide[i + k] as u128 + carry + extra as u128;
+        wide[i + k] = sum as u64;
+        extra = (sum >> 64) as u64;
+    }
+
+    let borrow = ct::sub_borrow(&wide[k..2 * k], n, out);
+    let take_difference = ct::mask_is_zero(borrow) | ct::mask_is_nonzero(extra);
+    for (limb, &kept) in out.iter_mut().zip(&wide[k..2 * k]) {
+        *limb = ct::select(*limb, kept, take_difference);
+    }
+    
 }
 
 /// Zero a buffer that held a secret, with stores the compiler may not

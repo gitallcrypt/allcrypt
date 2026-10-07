@@ -140,6 +140,24 @@ assert len(key) == 64
 It is the one hash here whose digest is as wide as its block, both 64
 bytes — so HMAC's `B >= L` holds with equality, as it does for MD2.
 
+Its two earlier versions are `whirlpool_0` (2000) and `whirlpool_t`
+(2001, also called Whirlpool-1), for software that hashed with them
+before the final one; RIPEMD-160's relatives are `ripemd128`,
+`ripemd256` and `ripemd320`, and Korea's KCDSA hash is `has160`. None of
+them is in `hashlib`.
+
+```python
+import allcrypt
+
+sizes = {"ripemd128": 16, "ripemd256": 32, "ripemd320": 40, "has160": 20,
+         "whirlpool_0": 64, "whirlpool_t": 64}
+for name, size in sizes.items():
+    assert allcrypt.new(name, b"abc").digest_size == size
+# Three different functions, not three spellings of one.
+assert len({allcrypt.new(n, b"abc").digest() for n in
+            ("whirlpool", "whirlpool_t", "whirlpool_0")}) == 3
+```
+
 `new("md2")` and `new("md4")` are RFC 1319 and RFC 1320. Neither is in
 `hashlib` - OpenSSL moved MD4 to its legacy provider and dropped MD2
 entirely - and both are here for what still speaks them rather than for

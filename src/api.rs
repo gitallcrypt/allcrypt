@@ -90,7 +90,8 @@ pub const HASHES: &[&str] = &[
     // standard's own test parameter set is a separate name because it
     // is a different hash of the same message.
     "gost94", "gost94_test",
-    "blake2b", "blake2s", "ripemd160", "sm3", "whirlpool",
+    "blake2b", "blake2s", "ripemd128", "ripemd160", "ripemd256", "ripemd320",
+    "sm3", "whirlpool", "whirlpool_0", "whirlpool_t", "has160",
     "sha3_224", "sha3_256", "sha3_384", "sha3_512",
     "shake_128", "shake_256",
     "keccak_224", "keccak_256", "keccak_384", "keccak_512",
@@ -1242,6 +1243,11 @@ pub enum AnyHash {
     Blake2b(crate::hash_functions::blake2::Blake2b),
     Blake2s(crate::hash_functions::blake2::Blake2s),
     Ripemd160(crate::hash_functions::ripemd160::Ripemd160),
+    /// RIPEMD-128, -256 and -320: RIPEMD-160's relatives, one type with
+    /// the variant inside.
+    Ripemd(crate::hash_functions::ripemd::Ripemd),
+    /// HAS-160, the Korean standard hash KCDSA signs with.
+    Has160(crate::hash_functions::has160::Has160),
     /// SM3, GB/T 32905-2016. The hash SM2 is defined against and the
     /// one RFC 8998's TLS 1.3 suites use.
     Sm3(crate::hash_functions::sm3::Sm3),
@@ -1344,8 +1350,24 @@ impl AnyHash {
                 crate::hash_functions::keccak::Keccak::keccak(64)?)),
             "ripemd160" | "ripemd_160" | "rmd160" => Ok(AnyHash::Ripemd160(
                 crate::hash_functions::ripemd160::Ripemd160::new(&[]))),
+            "has160" | "has_160" => Ok(AnyHash::Has160(
+                crate::hash_functions::has160::Has160::new(&[]))),
+            "ripemd128" | "ripemd_128" | "rmd128" => Ok(AnyHash::Ripemd(
+                crate::hash_functions::ripemd::Ripemd::ripemd128(&[]))),
+            "ripemd256" | "ripemd_256" | "rmd256" => Ok(AnyHash::Ripemd(
+                crate::hash_functions::ripemd::Ripemd::ripemd256(&[]))),
+            "ripemd320" | "ripemd_320" | "rmd320" => Ok(AnyHash::Ripemd(
+                crate::hash_functions::ripemd::Ripemd::ripemd320(&[]))),
             "whirlpool" => Ok(AnyHash::Whirlpool(
                 crate::hash_functions::whirlpool::Whirlpool::new(&[]))),
+            // The two earlier versions. Whirlpool-T is also called
+            // Whirlpool-1, being the first revision.
+            "whirlpool_0" | "whirlpool0" => Ok(AnyHash::Whirlpool(
+                crate::hash_functions::whirlpool::Whirlpool::of_version(
+                    crate::hash_functions::whirlpool::Version::Zero, &[]))),
+            "whirlpool_t" | "whirlpoolt" | "whirlpool_1" | "whirlpool1" => Ok(AnyHash::Whirlpool(
+                crate::hash_functions::whirlpool::Whirlpool::of_version(
+                    crate::hash_functions::whirlpool::Version::Tweaked, &[]))),
             "sm3" => Ok(AnyHash::Sm3(
                 crate::hash_functions::sm3::Sm3::new(&[]))),
             "blake2b" => Ok(AnyHash::Blake2b(
@@ -1387,6 +1409,8 @@ macro_rules! dispatch_hash {
             AnyHash::Blake2b($inner) => $body,
             AnyHash::Blake2s($inner) => $body,
             AnyHash::Ripemd160($inner) => $body,
+            AnyHash::Ripemd($inner) => $body,
+            AnyHash::Has160($inner) => $body,
             AnyHash::Sm3($inner) => $body,
             AnyHash::Md2($inner) => $body,
             AnyHash::Md4($inner) => $body,

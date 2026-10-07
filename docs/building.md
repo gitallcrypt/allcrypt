@@ -1042,7 +1042,7 @@ by either option:
 | Ed25519 sign / verify | 16,900 / 7,000 | 22,400 / 7,900 |
 | Ed448 sign / verify | 3,900 / 1,500 | 4,300 / 4,300 |
 | ECDSA P-256 sign / verify | 18,500 / 5,600 | 40,100 / 13,300 |
-| RSA-2048 sign / verify | 360 / 18,400 | 1,490 / 51,400 |
+| RSA-2048 sign / verify | 716 / 25,700 | 2,625 / 48,200 |
 
 The Curve25519 and Curve448 algorithms have fields of their own
 (`ec/field25519.rs`, `ec/field448.rs`) and Edwards arithmetic on them
@@ -1052,7 +1052,11 @@ arithmetic on fixed-size arrays (`bignum/fixed.rs`), with P-256's
 modulus compiled in as a constant, a table of the base point's multiples
 for `k * G`, and a sliding window for the public half of verification.
 RSA and finite-field Diffie-Hellman run on `Montgomery` over
-`bignum::ct::Secret`. OpenSSL's lead in public-key work is mostly its
+`bignum::ct::Secret`, whose multiplication and squaring are compiled
+separately for the common limb counts (4, 6, 8, 16, 24 and 32) so their
+loops have constant bounds. On an i9-13900K RSA-2048 signs 1,455 times a
+second against OpenSSL's 2,810, and verifies 50,000 times against
+93,600. OpenSSL's lead in public-key work is mostly its
 assembly multipliers: a 256-bit Montgomery product here is about 25 ns,
 a chain of carries that Rust without `asm!` cannot split the way
 `mulx`/`adcx`/`adox` do.

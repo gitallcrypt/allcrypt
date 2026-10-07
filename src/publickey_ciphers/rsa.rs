@@ -274,7 +274,7 @@ impl RsaPrivateKey {
 
         // The unblinding is modulo `n`, which is public, but the value is
         // the plaintext - so it stays in the fixed-width path too.
-        let m = mn.mul_mod(&recombined, &Secret::from_biguint(&unblind, kn)?);
+        let m = mn.mul_mod(&recombined, &unblind);
 
         // The Bellcore check. If a fault corrupted either half of the CRT,
         // m^e will not be c, and returning m would hand over the
@@ -300,19 +300,31 @@ impl RsaPrivateKey {
     }
 
     /// `(c * r^e mod n, r^-1 mod n)` for a fresh random r.
-    fn blinding_factors(&self, c: &BigUint) -> Result<(BigUint, BigUint), String> {
+    ///
+    /// Fixed width throughout but for one step. The inverse is the
+    /// Euclidean algorithm, which is variable time, so it is not taken of
+    /// `r`: it is taken of `r * s` for a second random `s` - a value that
+    /// says nothing about `r` - and `s` is multiplied back in afterwards,
+    /// `s * (r s)^-1 = r^-1`. Two multiplications buy an inverse whose
+    /// timing has nothing to measure.
+    fn blinding_factors(&self, c: &BigUint) -> Result<(BigUint, Secret), String> {
         let n = &self.public.n;
+        let mn = &self.mont_n;
+        let kn = mn.limbs();
         for _ in 0..64 {
-            let r = random::below(n)?;
-            // r must be invertible mod n. For a genuine RSA modulus this
-            // fails only if r happens to be a multiple of p or q, which also
-            // means we just factored n by accident.
-            let inverse = match r.mod_inverse(n) {
+            let r = Secret::from_biguint(&random::below(n)?, kn)?;
+            let s = Secret::from_biguint(&random::below(n)?, kn)?;
+            // `r s` is invertible exactly when both are. For a genuine RSA
+            // modulus a failure means one of them is a multiple of p or q,
+            // which would also have factored n by accident.
+            let inverse = match mn.mul_mod(&r, &s).declassify().mod_inverse(n) {
                 Ok(inverse) => inverse,
                 Err(_) => continue,
             };
-            let masked = c.mod_mul(&r.mod_pow(&self.public.e, n)?, n)?;
-            return Ok((masked, inverse));
+            let r_inverse = mn.mul_mod(&Secret::from_biguint(&inverse, kn)?, &s);
+            let blinded = mn.mul_mod(&Secret::from_biguint(c, kn)?,
+                                     &mn.pow_public(&r, &self.public.e));
+            return Ok((blinded.declassify(), r_inverse));
         }
         Err("Could not find a blinding factor; the random source looks broken."
             .to_string())

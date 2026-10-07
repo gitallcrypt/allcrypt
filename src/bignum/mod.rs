@@ -579,11 +579,18 @@ impl BigUint {
         a
     }
 
-    /// Modular inverse via the extended Euclidean algorithm, with the
-    /// coefficients kept reduced mod `m` so nothing has to be signed.
+    /// Modular inverse via the extended Euclidean algorithm.
     ///
     /// Returns an error when the inverse does not exist, i.e. when
-    /// `gcd(self, m) != 1`.
+    /// `gcd(self, m) != 1`. **Variable time**, in both operands.
+    ///
+    /// The coefficient of `self` alternates in sign from one step to the
+    /// next - `0, 1, -q1, 1 + q1 q2, ...` - so only its magnitude is kept,
+    /// and the next one is `|t| + q |new_t|`, an addition; the sign is the
+    /// parity of the step. The magnitudes never exceed `m`. An earlier
+    /// version reduced each coefficient modulo `m` with a multiplication
+    /// and a division at every step, which made one 2048-bit inverse cost
+    /// about a third of an RSA signature.
     pub fn mod_inverse(&self, m: &BigUint) -> Result<BigUint, String> {
         if m.is_zero() {
             return Err("Modulus is zero.".to_string());
@@ -591,18 +598,22 @@ impl BigUint {
         if m.is_one() {
             return Ok(BigUint::zero());
         }
+        if !m.is_even() {
+            return self.rem(m)?.mod_inverse_odd(m);
+        }
+        // |t| and |new_t|, and whether new_t is negative.
         let mut t = BigUint::zero();
         let mut new_t = BigUint::one();
+        let mut new_t_negative = false;
         let mut r = m.clone();
         let mut new_r = self.rem(m)?;
 
         while !new_r.is_zero() {
             let (q, rem) = r.divrem(&new_r)?;
-            // (t, new_t) = (new_t, t - q*new_t)  in Z_m
-            let prod = q.mod_mul(&new_t, m)?;
-            let next_t = t.mod_sub(&prod, m)?;
+            let next_t = t.add(&q.mul(&new_t));
             t = new_t;
             new_t = next_t;
+            new_t_negative = !new_t_negative;
             r = new_r;
             new_r = rem;
         }
@@ -610,7 +621,110 @@ impl BigUint {
         if !r.is_one() {
             return Err("No modular inverse: the values are not coprime.".to_string());
         }
-        Ok(t)
+        // `t` is the coefficient that went with the final `r = 1`, and its
+        // sign is the opposite of `new_t`'s.
+        if new_t_negative || t.is_zero() {
+            Ok(t)
+        } else {
+            m.sub(&t)
+        }
+    }
+
+    /// `mod_inverse` for an odd `m` and `self < m`: the binary extended
+    /// Euclidean algorithm, in place on arrays of `m`'s width. No division,
+    /// no allocation inside the loop - halvings and subtractions, with the
+    /// coefficients kept in `[0, m)`; halving an odd coefficient adds `m`
+    /// first, which is why `m` must be odd. Variable time.
+    ///
+    /// Invariants: `x1 * self = u` and `x2 * self = v` modulo `m`, with
+    /// `u, v` starting at `self, m`; they shrink to the gcd, and when one
+    /// reaches 1 its coefficient is the inverse.
+    fn mod_inverse_odd(&self, m: &BigUint) -> Result<BigUint, String> {
+        let k = m.limbs.len();
+        let widen = |x: &BigUint| {
+            let mut out = x.limbs.clone();
+            out.resize(k + 1, 0);
+            out
+        };
+        let modulus = widen(m);
+        let (mut u, mut v) = (widen(self), modulus.clone());
+        let (mut x1, mut x2) = (widen(&BigUint::one()), vec![0u64; k + 1]);
+
+        fn is_zero(a: &[u64]) -> bool { a.iter().all(|&l| l == 0) }
+        fn is_one(a: &[u64]) -> bool { a[0] == 1 && a[1..].iter().all(|&l| l == 0) }
+        fn halve(a: &mut [u64]) {
+            let last = a.len() - 1;
+            for i in 0..last {
+                a[i] = (a[i] >> 1) | (a[i + 1] << 63);
+            }
+            a[last] >>= 1;
+        }
+        /// `a += b`, both `k + 1` limbs, no carry out (the values fit).
+        fn add(a: &mut [u64], b: &[u64]) {
+            let mut carry = 0u64;
+            for (x, &y) in a.iter_mut().zip(b) {
+                let (sum, c1) = x.overflowing_add(y);
+                let (sum, c2) = sum.overflowing_add(carry);
+                *x = sum;
+                carry = (c1 | c2) as u64;
+            }
+        }
+        /// `a -= b`, returning the borrow.
+        fn sub(a: &mut [u64], b: &[u64]) -> bool {
+            let mut borrow = false;
+            for (x, &y) in a.iter_mut().zip(b) {
+                let (diff, b1) = x.overflowing_sub(y);
+                let (diff, b2) = diff.overflowing_sub(borrow as u64);
+                *x = diff;
+                borrow = b1 | b2;
+            }
+            borrow
+        }
+        fn at_least(a: &[u64], b: &[u64]) -> bool {
+            for (x, y) in a.iter().rev().zip(b.iter().rev()) {
+                if x != y {
+                    return x > y;
+                }
+            }
+            true
+        }
+        /// Halve a coefficient modulo `m`: add `m` first when it is odd.
+        fn halve_mod(x: &mut [u64], m: &[u64]) {
+            if x[0] & 1 == 1 {
+                add(x, m);
+            }
+            halve(x);
+        }
+
+        if is_zero(&u) {
+            return Err("No modular inverse: the values are not coprime.".to_string());
+        }
+        while !is_one(&u) && !is_one(&v) {
+            while u[0] & 1 == 0 {
+                halve(&mut u);
+                halve_mod(&mut x1, &modulus);
+            }
+            while v[0] & 1 == 0 {
+                halve(&mut v);
+                halve_mod(&mut x2, &modulus);
+            }
+            if at_least(&u, &v) {
+                sub(&mut u, &v);
+                if sub(&mut x1, &x2) {
+                    add(&mut x1, &modulus);
+                }
+                if is_zero(&u) {
+                    // u = v: the gcd is v, which is not 1 here.
+                    return Err("No modular inverse: the values are not coprime.".to_string());
+                }
+            } else {
+                sub(&mut v, &u);
+                if sub(&mut x2, &x1) {
+                    add(&mut x2, &modulus);
+                }
+            }
+        }
+        Ok(BigUint::from_limbs(if is_one(&u) { x1 } else { x2 }))
     }
 }
 

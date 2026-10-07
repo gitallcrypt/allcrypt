@@ -276,17 +276,28 @@ impl<const N: usize> Mont<N> {
             inverse = inverse.wrapping_mul(2u64.wrapping_sub(n[0].wrapping_mul(inverse)));
         }
         let mut context = Mont { n, n0inv: inverse.wrapping_neg(), r2: [0; N], one: [0; N] };
-        // R mod n and R^2 mod n by doubling 1, 64N and then 128N times:
-        // no division, and n is public, so the time it takes says nothing.
+        // R mod n by doubling 1 64N times: no division, and n is public, so
+        // the time it takes says nothing.
         let mut x = [0u64; N];
         x[0] = 1;
-        for i in 0..128 * N {
+        for _ in 0..64 * N {
             x = context.add(&x, &x);
-            if i + 1 == 64 * N {
-                context.one = x;
+        }
+        context.one = x;
+        // R^2 mod n without another 64N doublings: in the domain, 2 is
+        // `2R`, and raising it to the 64N-th power there gives the domain
+        // form of 2^(64N), which is `R * R` - about nine squarings. The
+        // products need only `n` and `n0inv`, both set above.
+        let two = context.add(&x, &x);
+        let exponent = 64 * N;
+        let mut r2 = context.one;
+        for bit in (0..usize::BITS - exponent.leading_zeros()).rev() {
+            r2 = context.square(&r2);
+            if (exponent >> bit) & 1 == 1 {
+                r2 = context.mul(&r2, &two);
             }
         }
-        context.r2 = x;
+        context.r2 = r2;
         Ok(context)
     }
 }
