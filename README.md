@@ -26,8 +26,8 @@ description and test vectors.
 
 ## What is in it
 
-- **Block ciphers** - AES, ARIA, Blowfish, Camellia, CAST5, DES and 3DES,
-  GOST 28147-89, IDEA, Kuznyechik, Magma, RC2, RC5, SEED, Serpent, SM4,
+- **Block ciphers** - AES, ARIA, Blowfish, Camellia, CAST5, CAST-256, DES and 3DES,
+  GOST 28147-89, IDEA, Kuznyechik, Magma, RC2, RC5, RC6, SEED, Serpent, SM4,
   TEA, Twofish, XTEA - in the modes each one's block size allows: ECB,
   CBC, PCBC, CFB, OFB, CTR, ciphertext stealing, XTS, LRW, GCM, CCM,
   EAX, OCB, MGM and key wrap.

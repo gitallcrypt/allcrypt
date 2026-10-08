@@ -43,6 +43,7 @@ against that software's own tools.
 |Blowfish, little-endian words (TrueCrypt's)|✓|TrueCrypt's volumes, by hand|
 |Camellia (RFC 3713)|✓|✓|
 |CAST5 / CAST-128 (RFC 2144)|✓|✓|
+|CAST-256 / CAST6 (RFC 2612)|✓|RFC 2612's Appendix A, every quad-round; Bouncy Castle 1.77 agrees on 410 inputs over all five key lengths, `vectors/cast256.vec`|
 |DES|✓|✓|
 |3DES (EDE2, EDE3)|✓|✓|
 |GOST 28147-89|✓|✓|
@@ -51,6 +52,7 @@ against that software's own tools.
 |Magma (GOST R 34.12-2015)|✓|✓|
 |RC2 (RFC 2268)|✓|✓|
 |RC5 (RFC 2040)|✓|spec reference; RFC 2040's vectors|
+|RC6 (RC6-32/20/b, AES finalist)|✓|Bouncy Castle 1.77 agrees on 513 inputs, every key length from 1 to 64 bytes and 41 more to 255; the submission's six vectors; `vectors/rc6.vec`|
 |SEED (RFC 4269)|✓|✓|
 |Serpent|✓|Botan's vectors; VeraCrypt, LUKS and KeePass files, by hand|
 |SM4 (GB/T 32907-2016)|✓|✓|

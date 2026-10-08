@@ -418,6 +418,53 @@ five bits of the other half — which is where RC5's strength comes from
 and why it cannot be made constant time without a rewrite. No attempt is
 made; see `docs/pitfalls.md`.
 
+### CAST-256
+
+CAST-256 (RFC 2612, also called CAST6) is CAST-128's round functions
+and S-boxes in a 128 bit, 48 round design: six forward quad-rounds and
+six reverse. Its key is 16, 20, 24, 28 or 32 bytes, **zero-padded to 32
+before the schedule runs**, so a 16 byte key and the same key followed by
+sixteen zero bytes are one key.
+
+```rust
+use allcrypt::block_ciphers::cast256::Cast256;
+use allcrypt::block_ciphers::BlockCipher;
+
+let mut short = Cast256::new(vec![7u8; 16])?;
+let mut long = Cast256::new([vec![7u8; 16], vec![0u8; 16]].concat())?;
+let (mut a, mut b) = (Vec::new(), Vec::new());
+short.block_encrypt(&[1u8; 16], &mut a);
+long.block_encrypt(&[1u8; 16], &mut b);
+assert_eq!(a, b);
+```
+
+RFC 2612's appendix is parsed at test time down to every quad-round's
+keys and output, and Bouncy Castle agrees over all five key lengths.
+
+### RC6
+
+RC6-32/20/b, the AES finalist from the RC5 family: a 128 bit block,
+twenty rounds and a key of 1 to 255 bytes (16, 24 or 32 in the AES
+profile). Each round squares a word, `B * (2B + 1)`, and rotates by the
+result, so the rotation amounts are data dependent as in RC5 and the
+same caution applies. An empty key is refused, since the one other
+implementation that takes arbitrary lengths cannot process it.
+
+```rust
+use allcrypt::block_ciphers::rc6::Rc6;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The submission's first vector: zero key, zero block.
+let mut rc6 = Rc6::new(vec![0u8; 16])?;
+let mut out = Vec::new();
+rc6.block_encrypt(&[0u8; 16], &mut out);
+assert_eq!(out[..4], [0x8f, 0xc3, 0xa5, 0x36]);
+assert!(Rc6::new(vec![]).is_err());
+```
+
+It is checked against Bouncy Castle over every key length from 1 to 64
+bytes and forty-one more up to 255, in `vectors/rc6.vec`.
+
 ### RC2, and the parameter that weakens a key on purpose
 
 RC2 (RFC 2268) has an `effective_bits` parameter whose entire function is

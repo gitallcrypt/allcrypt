@@ -475,14 +475,14 @@ fn test_aead_through_the_api() {
     assert_eq!(AEADS, &["aes-gcm", "aes-ccm", "aes-ccm-8", "chacha20-poly1305",
                         "xchacha20-poly1305", "aes-eax", "twofish-eax", "serpent-eax", "camellia-eax",
                         "sm4-eax", "des-eax", "3des-eax", "blowfish-eax",
-                        "tea-eax", "xtea-eax", "rc5-eax", "aria-eax",
-                        "kuznyechik-mgm", "magma-mgm", "aes-mgm",
+                        "tea-eax", "xtea-eax", "rc5-eax", "aria-eax", "rc6-eax",
+                        "cast256-eax", "kuznyechik-mgm", "magma-mgm", "aes-mgm",
                         "twofish-mgm", "serpent-mgm", "camellia-mgm",
                         "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
-                        "blowfish-mgm", "tea-mgm", "xtea-mgm", "rc5-mgm",
-                        "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
-                        "aria-ocb", "sm4-ocb", "seed-ocb", "kuznyechik-ocb",
-                        "aes-128-cbc-hmac-sha256", "aes-192-cbc-hmac-sha384",
+                        "blowfish-mgm", "tea-mgm", "xtea-mgm", "rc5-mgm", "rc6-mgm",
+                        "cast256-mgm", "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
+                        "aria-ocb", "sm4-ocb", "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
+                        "cast256-ocb", "aes-128-cbc-hmac-sha256", "aes-192-cbc-hmac-sha384",
                         "aes-256-cbc-hmac-sha512"]);
 
     // Every AEAD, over every key length it takes. ChaCha20-Poly1305 has
@@ -501,7 +501,8 @@ fn test_aead_through_the_api() {
         ("camellia-eax", 16), ("sm4-eax", 16),
         ("des-eax", 8), ("3des-eax", 24), ("blowfish-eax", 16),
         ("tea-eax", 16), ("xtea-eax", 16), ("rc5-eax", 16),
-        ("aria-eax", 16), ("aria-eax", 32),
+        ("aria-eax", 16), ("aria-eax", 32), ("rc6-eax", 16), ("rc6-eax", 32),
+        ("cast256-eax", 20),
         // MGM, the same way: the standard's own two ciphers first, then
         // one of each block size from the rest. MGM's field polynomial
         // differs between a 64 and a 128 bit block, so the two sizes
@@ -511,12 +512,12 @@ fn test_aead_through_the_api() {
         ("twofish-mgm", 32), ("serpent-mgm", 32),
         ("camellia-mgm", 16), ("sm4-mgm", 16), ("aria-mgm", 32),
         ("des-mgm", 8), ("3des-mgm", 24), ("blowfish-mgm", 16),
-        ("tea-mgm", 16), ("xtea-mgm", 16), ("rc5-mgm", 16),
+        ("tea-mgm", 16), ("xtea-mgm", 16), ("rc5-mgm", 16), ("rc6-mgm", 24), ("cast256-mgm", 32),
         // OCB, 128 bit blocks only.
         ("aes-ocb", 16), ("aes-ocb", 24), ("aes-ocb", 32),
         ("camellia-ocb", 16), ("twofish-ocb", 32), ("serpent-ocb", 32),
         ("aria-ocb", 16), ("sm4-ocb", 16), ("seed-ocb", 16),
-        ("kuznyechik-ocb", 32),
+        ("kuznyechik-ocb", 32), ("rc6-ocb", 16), ("cast256-ocb", 28),
         // AES-CBC with HMAC: one key size each, the MAC key and the AES
         // key together.
         ("aes-128-cbc-hmac-sha256", 32), ("aes-192-cbc-hmac-sha384", 48),

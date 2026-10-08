@@ -26,8 +26,8 @@ use crate::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 // ------------------------------------------------------------- catalogue ---
 
 pub const BLOCK_CIPHERS: &[&str] =
-    &["aes", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "des", "3des", "gost",
-      "idea", "kuznyechik", "magma", "rc2", "rc5", "seed", "serpent",
+    &["aes", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des", "gost",
+      "idea", "kuznyechik", "magma", "rc2", "rc5", "rc6", "seed", "serpent",
       "sm4", "tea", "twofish", "xtea"];
 pub const STREAM_CIPHERS: &[&str] =
     &["chacha20", "chacha12", "chacha8", "xchacha20", "rc4", "salsa20", "salsa12", "salsa8",
@@ -55,6 +55,7 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              // two produce 8 byte tags**. See
                              // `aead_tag_len`.
                              "tea-eax", "xtea-eax", "rc5-eax", "aria-eax",
+                             "rc6-eax", "cast256-eax",
                              // MGM (RFC 9058), named the same way. The
                              // first two are the ones the standard is
                              // written for and the ones RFC 9367's TLS
@@ -65,13 +66,14 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "twofish-mgm", "serpent-mgm", "camellia-mgm",
                              "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
                              "blowfish-mgm", "tea-mgm", "xtea-mgm",
-                             "rc5-mgm",
+                             "rc5-mgm", "rc6-mgm", "cast256-mgm",
                              // OCB (RFC 7253), which is defined for 128
                              // bit blocks only. OpenPGP's AEAD packets
                              // default to it.
                              "aes-ocb", "camellia-ocb", "twofish-ocb",
                              "serpent-ocb", "aria-ocb", "sm4-ocb",
-                             "seed-ocb", "kuznyechik-ocb",
+                             "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
+                             "cast256-ocb",
                              // AES-CBC and HMAC-SHA-2 as one AEAD (RFC
                              // 7518 5.2): JWE's A128CBC-HS256 and its two
                              // siblings. The nonce is the 16-byte IV.
@@ -206,6 +208,12 @@ pub enum AnyBlockCipher {
     /// RC5-32/r/b: a 64 bit block, a round count and a key of 1..=255
     /// bytes. Only the 32 bit word size is implemented; see the module.
     Rc5(crate::block_ciphers::rc5::Rc5),
+    /// RC6-32/20/b, an AES finalist: a 128 bit block and a key of
+    /// 1..=255 bytes.
+    Rc6(crate::block_ciphers::rc6::Rc6),
+    /// CAST-256 (RFC 2612): a 128 bit block and a key of 16, 20, 24, 28
+    /// or 32 bytes.
+    Cast256(crate::block_ciphers::cast256::Cast256),
     /// ARIA, RFC 5794 - the Korean national block cipher, and the one
     /// RFC 6209's TLS suites use. AES's block and key sizes, AES's
     /// S-box as one of its four, and neither AES's diffusion nor AES's
@@ -252,6 +260,11 @@ impl AnyBlockCipher {
                 GostCrypto::new(key.to_vec(),
                                 param.unwrap_or(GostCrypto::DEFAULT_PARAM_SET)
                                      .to_string())?)),
+            // RFC 2612 3 names it CAST6 as well.
+            "cast256" | "cast6" => Ok(AnyBlockCipher::Cast256(
+                crate::block_ciphers::cast256::Cast256::new(key.to_vec())?)),
+            "rc6" => Ok(AnyBlockCipher::Rc6(
+                crate::block_ciphers::rc6::Rc6::new(key.to_vec())?)),
             "idea" => Ok(AnyBlockCipher::Idea(
                 crate::block_ciphers::idea::Idea::new(key.to_vec())?)),
             "sm4" => Ok(AnyBlockCipher::Sm4(
@@ -346,6 +359,8 @@ impl AnyBlockCipher {
             AnyBlockCipher::Tea(_) => "tea",
             AnyBlockCipher::Xtea(_) => "xtea",
             AnyBlockCipher::Rc5(_) => "rc5",
+            AnyBlockCipher::Rc6(_) => "rc6",
+            AnyBlockCipher::Cast256(_) => "cast256",
             AnyBlockCipher::Aria(_) => "aria",
         }
     }
@@ -373,6 +388,8 @@ macro_rules! dispatch {
             AnyBlockCipher::Tea($inner) => $body,
             AnyBlockCipher::Xtea($inner) => $body,
             AnyBlockCipher::Rc5($inner) => $body,
+            AnyBlockCipher::Rc6($inner) => $body,
+            AnyBlockCipher::Cast256($inner) => $body,
             AnyBlockCipher::Aria($inner) => $body,
         }
     };
@@ -1640,6 +1657,13 @@ pub fn nt_hash(password: &str) -> Vec<u8> {
 /// hash for such a password.
 pub fn lm_hash(password: &[u8]) -> Result<Vec<u8>, String> {
     kdf::windows::lm_hash(password).map(|hash| hash.to_vec())
+}
+
+/// The NT hash of a password (MS-NLMP NTOWFv1): MD4 of the password as
+/// UTF-16 little endian. It is what NTLM and Kerberos's RC4-HMAC use as
+/// the user's key.
+pub fn ntlmv2_hash(password: &str, username: &str, domain: &str) -> Vec<u8> {
+    kdf::windows::ntlmv2_hash(password, username, domain)
 }
 
 /// The key that opens a BitLocker password protector's copy of the

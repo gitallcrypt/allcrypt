@@ -100,6 +100,8 @@ to be someone's CVE.**
 - [7zzh. The C interface](#7zzh-the-c-interface)
 - [7zzi. NaCl and libsodium](#7zzi-nacl-and-libsodium)
 - [7zzj. Unix crypt(3)](#7zzj-unix-crypt3)
+- [7zzk. RC6](#7zzk-rc6)
+- [7zzl. CAST-256](#7zzl-cast-256)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -9409,6 +9411,71 @@ reached none of the three;
 `test_a_malformed_setting_is_an_error_not_a_panic` feeds every prefix of
 a setting for each method, with a two-byte character inserted at every
 position.
+
+---
+
+## 7zzk. RC6
+
+`src/block_ciphers/rc6.rs`: RC6-32/20/b. Checked against Bouncy Castle
+1.77 and the submission's vectors, `vectors/rc6.vec`.
+
+### The rotation amounts are data dependent
+
+**Status: accepted.** As in RC5, each round rotates by an amount taken
+from the data - here the top five bits of `B * (2B + 1)` and
+`D * (2D + 1)` - so the shifter sees a secret-dependent value and the
+cipher is not on `scripts/ct_check.py`'s list. It is a property of the
+cipher, not of this implementation.
+
+### Decryption is not the encryption loop run backwards
+
+**Status: mitigated.** The decryption round rotates the four words the
+other way *first* and then recomputes `t` and `u` from the words now in
+`B` and `D`; reusing the encryption round's order, or swapping which of
+`t` and `u` undoes which rotation, gives a cipher that round-trips
+nothing. The vectors check decryption of every row, and a breakage sweep
+swapping the two rotations fails them.
+
+### An empty key
+
+**Status: mitigated, by refusing.** The submission's key schedule takes
+`c = max(1, ceil(b / 4))`, so an empty key is defined on paper - but
+Bouncy Castle, the only other implementation here that takes arbitrary
+lengths, indexes past the end of the empty array. With nothing to agree
+with, an empty key is refused, as RC5's is. The upper bound is the
+submission's 255 bytes, although Bouncy Castle accepts 256.
+
+---
+
+## 7zzl. CAST-256
+
+`src/block_ciphers/cast256.rs`: RFC 2612. Checked against the RFC's
+Appendix A and Bouncy Castle 1.77, `vectors/cast256.vec`.
+
+### A short key is a long key ending in zeros
+
+**Status: accepted** (it is the algorithm). RFC 2612 pads every key with
+zeros to 256 bits before the schedule, so a 128 bit key `K` and the
+256 bit key `K || 0^128` produce the same subkeys and the same cipher;
+the five key sizes are one cipher with some key bytes fixed. A protocol
+that lets the key length vary without binding it elsewhere has five
+names for some keys. `docs/rust.md` shows the equality.
+
+### Decryption keeps the quad-round order
+
+**Status: mitigated.** Decryption is encryption with the twelve sets of
+quad-round keys reversed, and *still* six forward quad-rounds then six
+reverse: a reverse quad-round with a set of keys undoes the forward one
+with the same keys. Swapping the types as well as the keys looks
+symmetric and decrypts nothing. The RFC's appendix prints the decryption
+quad-rounds too, and the test checks each one.
+
+### The S-boxes are printed twice
+
+**Status: mitigated.** RFC 2612 reprints CAST-128's four round S-boxes.
+This module uses `cast5`'s copy (read from RFC 2144), and a test parses
+RFC 2612's 1,024 words and requires them to be identical, so the two
+documents cannot have drifted apart unnoticed.
 
 ---
 

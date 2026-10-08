@@ -23,7 +23,8 @@
 use crate::block_ciphers::des::Des;
 use crate::block_ciphers::BlockCipher;
 use crate::hash_functions::md4::Md4;
-use crate::hash_functions::HashFunction;
+use crate::hash_functions::{HashFunction, md5};
+use crate::mac::Hmac;
 
 /// The NT hash (NTOWFv1): MD4 of the password as UTF-16 little endian.
 pub fn nt_hash(password: &str) -> [u8; 16] {
@@ -57,6 +58,13 @@ pub fn lm_hash(password: &[u8]) -> Result<[u8; 16], String> {
         out.copy_from_slice(&block);
     }
     Ok(hash)
+}
+
+//NTLMv2. Needs more testing.
+pub fn ntlmv2_hash(password: &str, username: &str, domain: &str) -> Vec<u8> {
+    let digest = nt_hash(password);
+    let user: Vec<u8> = (username.to_uppercase() + domain).encode_utf16().flat_map(u16::to_le_bytes).collect();
+    Hmac::mac(md5::MD5::new(&[]), &digest, &user)
 }
 
 /// Fifty-six key bits, seven to a byte with the low bit of each byte -
@@ -131,5 +139,12 @@ mod tests {
     fn test_nt_is_md4_of_utf16le() {
         let mut md4 = Md4::new(&[b'P', 0, 0xe9, 0, 0xac, 0x20, 0x3d, 0xd8, 0x00, 0xde]);
         assert_eq!(nt_hash("P\u{e9}\u{20ac}\u{1f600}").to_vec(), md4.digest());
+    }
+
+    #[test]
+    fn test_ntlmv2_hash() {
+        let has_hex = "0C868A403BFD7A93A3001EF22EF02E3F";
+        let res = ntlmv2_hash("Password", "user", "Domain");
+        assert_eq!(has_hex, crate::to_hex(&res));
     }
 }

@@ -367,6 +367,23 @@ assert allcrypt.Cipher("aria", key).encrypt("ecb", block).hex() \
 assert allcrypt.Cipher("aria", bytes(32)).block_size == 16
 ```
 
+CAST-256 (`"cast256"`, or `"cast6"` as RFC 2612 also names it) is a
+128 bit block built from CAST5's round functions, with a key of 16, 20,
+24, 28 or 32 bytes. The key is zero-padded to 32 bytes first, so a
+16 byte key and the same key with sixteen zero bytes after it are the
+same key.
+
+RC6 is the AES finalist from the same family as RC5: a 128 bit block, twenty
+rounds and a key of 1 to 255 bytes. It takes every mode a 128 bit
+cipher takes, including `rc6-eax`, `rc6-mgm` and `rc6-ocb`:
+
+```python
+import allcrypt
+
+assert allcrypt.Cipher("rc6", bytes(16)).encrypt("ecb", bytes(16)).hex() \
+    == "8fc3a53656b1f778c129df4e9848a41e"
+```
+
 RC5 (RFC 2040) is `RC5-32/r/b`: a 64 bit block, a round count, and a key
 of 1 to 255 bytes. **Zero rounds is a legal RC5 and not the identity** —
 the two halves are still summed with the first two subkeys, so RFC 2040

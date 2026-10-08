@@ -825,6 +825,18 @@ $ scripts/witness/lcgwitness/build.sh           # builds /opt/lcgwitness
 $ python3 scripts/make_lcg_vectors.py           # rewrites vectors/lcg.vec
 ```
 
+**Bouncy Castle's block ciphers**: `scripts/witness/bcwitness` compiles a
+small driver against the bcprov jar the system ships (1.77 here), which
+reads key and plaintext pairs and writes each engine's ciphertext. RC6's
+script also fetches the submission's six vectors, as Crypto++ carries
+them, and requires Bouncy Castle to reproduce them first.
+
+```console
+$ scripts/witness/bcwitness/build.sh            # builds /opt/bcwitness
+$ python3 scripts/make_rc6_vectors.py           # rewrites vectors/rc6.vec
+$ python3 scripts/make_cast256_vectors.py       # rewrites vectors/cast256.vec
+```
+
 **WireGuard**: wireguard-go (`WireGuard/wireguard-go`, its main branch)
 with the x/ modules at the versions its `go.mod` pins, all from GitHub,
 and `replace` lines for them and three empty stand-ins for modules the

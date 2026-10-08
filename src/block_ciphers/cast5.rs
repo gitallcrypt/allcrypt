@@ -53,7 +53,7 @@ use crate::block_ciphers::BlockCipher;
 /// thousand and forty-eight hand-copied constants is two thousand
 /// and forty-eight chances to be wrong in a way that shows up as one
 /// bad ciphertext somewhere in the middle of the key space.
-const S1: [u32; 256] = [
+pub(crate) const S1: [u32; 256] = [
     0x30fb40d4, 0x9fa0ff0b, 0x6beccd2f, 0x3f258c7a, 0x1e213f2f, 0x9c004dd3,
     0x6003e540, 0xcf9fc949, 0xbfd4af27, 0x88bbbdb5, 0xe2034090, 0x98d09675,
     0x6e63a0e0, 0x15c361d2, 0xc2e7661d, 0x22d4ff8e, 0x28683b6f, 0xc07fd059,
@@ -99,7 +99,7 @@ const S1: [u32; 256] = [
     0x427b169c, 0x5ac9f049, 0xdd8f0f00, 0x5c8165bf,
 ];
 
-const S2: [u32; 256] = [
+pub(crate) const S2: [u32; 256] = [
     0x1f201094, 0xef0ba75b, 0x69e3cf7e, 0x393f4380, 0xfe61cf7a, 0xeec5207a,
     0x55889c94, 0x72fc0651, 0xada7ef79, 0x4e1d7235, 0xd55a63ce, 0xde0436ba,
     0x99c430ef, 0x5f0c0794, 0x18dcdb7d, 0xa1d6eff3, 0xa0b52f7b, 0x59e83605,
@@ -145,7 +145,7 @@ const S2: [u32; 256] = [
     0x7160a539, 0x73bfbe70, 0x83877605, 0x4523ecf1,
 ];
 
-const S3: [u32; 256] = [
+pub(crate) const S3: [u32; 256] = [
     0x8defc240, 0x25fa5d9f, 0xeb903dbf, 0xe810c907, 0x47607fff, 0x369fe44b,
     0x8c1fc644, 0xaececa90, 0xbeb1f9bf, 0xeefbcaea, 0xe8cf1950, 0x51df07ae,
     0x920e8806, 0xf0ad0548, 0xe13c8d83, 0x927010d5, 0x11107d9f, 0x07647db9,
@@ -191,7 +191,7 @@ const S3: [u32; 256] = [
     0xdfef4636, 0xa133c501, 0xe9d3531c, 0xee353783,
 ];
 
-const S4: [u32; 256] = [
+pub(crate) const S4: [u32; 256] = [
     0x9db30420, 0x1fb6e9de, 0xa7be7bef, 0xd273a298, 0x4a4f7bdb, 0x64ad8c57,
     0x85510443, 0xfa020ed1, 0x7e287aff, 0xe60fb663, 0x095f35a1, 0x79ebf120,
     0xfd059d43, 0x6497b7b1, 0xf3641f63, 0x241e4adf, 0x28147f5f, 0x4fa2b8cd,

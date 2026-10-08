@@ -1012,6 +1012,13 @@ fn lm_hash<'py>(py: Python<'py>, password: Bytes) -> PyResult<Bound<'py, PyBytes
     Ok(PyBytes::new(py, &out))
 }
 
+/// The NTLM hash of a password, username and domain.
+#[pyfunction]
+fn ntlmv2_hash<'py>(py: Python<'py>, password: &str, username: &str, domain: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::ntlmv2_hash(&password, &username, &domain);
+    Ok(PyBytes::new(py, &out))
+}
+
 /// The key a BitLocker password protector's salt and password give.
 #[pyfunction]
 fn bitlocker_password_key<'py>(py: Python<'py>, password: &str, salt: Bytes)
@@ -5100,6 +5107,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bitlocker_password_key, m)?)?;
     m.add_function(wrap_pyfunction!(nt_hash, m)?)?;
     m.add_function(wrap_pyfunction!(lm_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(ntlmv2_hash, m)?)?;
     m.add_function(wrap_pyfunction!(bitlocker_recovery_password_key, m)?)?;
     m.add_function(wrap_pyfunction!(michael, m)?)?;
     m.add_function(wrap_pyfunction!(wep_encrypt, m)?)?;
