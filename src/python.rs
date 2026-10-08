@@ -2284,6 +2284,183 @@ fn dual_ec_drbg<'py>(py: Python<'py>, curve: &str, hash: &str, entropy: Bytes, n
     Ok(out.iter().map(|block| PyBytes::new(py, block)).collect())
 }
 
+/// The named linear congruential generators: ``minstd_rand0``,
+/// ``msvc``, ``java``, ``randu`` and the rest. Not for keys.
+#[pyfunction]
+fn lcg_names() -> Vec<&'static str> {
+    api::lcg_names()
+}
+
+/// A linear congruential generator, ``x' = (a*x + c) mod m``. Not for
+/// keys: one output predicts the rest.
+///
+/// ``Lcg(name, seed)`` is one of ``lcg_names()``, seeded the way its
+/// library seeds it; ``Lcg.custom`` takes any parameters.
+#[pyclass(name = "Lcg", module = "allcrypt")]
+pub struct PyLcg {
+    inner: api::lcg::LCG,
+}
+
+#[pymethods]
+impl PyLcg {
+    #[new]
+    fn py_new(name: &str, seed: u64) -> PyResult<PyLcg> {
+        Ok(PyLcg { inner: api::lcg::LCG::named(name, seed).map_err(err)? })
+    }
+
+    /// Any parameters below 2**128. The output is ``(state & mask) >>``
+    /// the mask's trailing zeros; the default mask is the whole state.
+    #[staticmethod]
+    #[pyo3(signature = (a, c, m, state, mask=u128::MAX))]
+    fn custom(a: u128, c: u128, m: u128, state: u128, mask: u128) -> PyResult<PyLcg> {
+        Ok(PyLcg { inner: api::lcg_custom(a, c, m, state, mask).map_err(err)? })
+    }
+
+    /// Advance once and return the output, as the original function
+    /// returns it (signed for ``mrand48`` and ``java``).
+    fn next(&mut self) -> i128 {
+        self.inner.next_output()
+    }
+
+    /// ``n`` outputs.
+    fn outputs(&mut self, n: usize) -> Vec<i128> {
+        (0..n).map(|_| self.inner.next_output()).collect()
+    }
+
+    /// Advance once and return the whole new state.
+    fn step(&mut self) -> u128 {
+        self.inner.step()
+    }
+
+    /// ``n`` bytes, the low byte of each output.
+    fn get_bytes<'py>(&mut self, py: Python<'py>, n: usize) -> Bound<'py, PyBytes> {
+        use crate::prng::Prng;
+        let mut out = Vec::with_capacity(n);
+        self.inner.get_bytes(&mut out, n);
+        PyBytes::new(py, &out)
+    }
+
+    /// Reseed, by the named generator's own rule.
+    fn seed(&mut self, seed: u64) {
+        use crate::prng::Prng;
+        self.inner.set_seed(seed);
+    }
+
+    #[getter]
+    fn state(&self) -> u128 {
+        self.inner.state()
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        use crate::prng::Prng;
+        self.inner.name()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<allcrypt.Lcg {}>", self.name())
+    }
+}
+
+/// ``java.util.Random``, method for method: the same seed and calls give
+/// the JDK's values.
+#[pyclass(name = "JavaRandom", module = "allcrypt")]
+pub struct PyJavaRandom {
+    inner: api::lcg::JavaRandom,
+}
+
+#[pymethods]
+impl PyJavaRandom {
+    /// ``new Random(seed)``; ``seed`` is a Java ``long``.
+    #[new]
+    fn py_new(seed: i64) -> PyJavaRandom {
+        PyJavaRandom { inner: api::lcg::JavaRandom::new(seed) }
+    }
+
+    fn set_seed(&mut self, seed: i64) {
+        self.inner.set_seed(seed);
+    }
+
+    /// ``nextInt()``, or ``nextInt(bound)`` with a bound.
+    #[pyo3(signature = (bound=None))]
+    fn next_int(&mut self, bound: Option<i32>) -> PyResult<i32> {
+        match bound {
+            None => Ok(self.inner.next_int()),
+            Some(b) => self.inner.next_int_bounded(b).map_err(err),
+        }
+    }
+
+    fn next_long(&mut self) -> i64 {
+        self.inner.next_long()
+    }
+
+    fn next_boolean(&mut self) -> bool {
+        self.inner.next_boolean()
+    }
+
+    fn next_float(&mut self) -> f32 {
+        self.inner.next_float()
+    }
+
+    fn next_double(&mut self) -> f64 {
+        self.inner.next_double()
+    }
+
+    /// ``nextBytes(new byte[n])``.
+    fn next_bytes<'py>(&mut self, py: Python<'py>, n: usize) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.next_bytes(n))
+    }
+}
+
+/// The POSIX ``drand48`` family over one state, as the C library keeps
+/// it. ``Rand48()`` is the unseeded state (zero), ``Rand48(seed)`` the
+/// one ``srand48(seed)`` leaves.
+#[pyclass(name = "Rand48", module = "allcrypt")]
+pub struct PyRand48 {
+    inner: api::lcg::Rand48,
+}
+
+#[pymethods]
+impl PyRand48 {
+    #[new]
+    #[pyo3(signature = (seed=None))]
+    fn py_new(seed: Option<i64>) -> PyRand48 {
+        PyRand48 {
+            inner: match seed {
+                Some(s) => api::lcg::Rand48::new(s),
+                None => api::lcg::Rand48::default(),
+            },
+        }
+    }
+
+    fn srand48(&mut self, seed: i64) {
+        self.inner.srand48(seed);
+    }
+
+    /// Three 16 bit words, least significant first; returns the previous
+    /// state in the same form.
+    fn seed48(&mut self, xsubi: [u16; 3]) -> [u16; 3] {
+        self.inner.seed48(xsubi)
+    }
+
+    /// State, multiplier and addend in seven 16 bit words.
+    fn lcong48(&mut self, param: [u16; 7]) {
+        self.inner.lcong48(param);
+    }
+
+    fn lrand48(&mut self) -> i64 {
+        self.inner.lrand48()
+    }
+
+    fn mrand48(&mut self) -> i64 {
+        self.inner.mrand48()
+    }
+
+    fn drand48(&mut self) -> f64 {
+        self.inner.drand48()
+    }
+}
+
 /// Whether AES runs on the processor's AES instructions in this build.
 #[pyfunction]
 fn hardware_aes() -> bool {
@@ -4803,6 +4980,9 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCertificate>()?;
     m.add_class::<PyTrustStore>()?;
     m.add_class::<PyReplayGuard>()?;
+    m.add_class::<PyLcg>()?;
+    m.add_class::<PyJavaRandom>()?;
+    m.add_class::<PyRand48>()?;
     m.add_function(wrap_pyfunction!(private_key, m)?)?;
     m.add_function(wrap_pyfunction!(encrypt_private_key, m)?)?;
     m.add_function(wrap_pyfunction!(encryption_schemes, m)?)?;
@@ -4900,6 +5080,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(random_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(random_source, m)?)?;
     m.add_function(wrap_pyfunction!(dual_ec_drbg, m)?)?;
+    m.add_function(wrap_pyfunction!(lcg_names, m)?)?;
     m.add_function(wrap_pyfunction!(hardware_aes, m)?)?;
     m.add_function(wrap_pyfunction!(key_wrap, m)?)?;
     m.add_function(wrap_pyfunction!(key_unwrap, m)?)?;

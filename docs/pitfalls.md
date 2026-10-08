@@ -9394,6 +9394,22 @@ to the first `$` **or** `,`, which the dispatcher now honours (it read
 `md5,rounds=1000` as the method and refused it until fixed). The passage
 is a constant of the algorithm, in `unix_crypt_hamlet.txt`.
 
+### A setting is input, and a short one must not panic
+
+**Status: mitigated.** A bcrypt setting shorter than its 22-character
+salt sliced past the end of the string, and a SHA-crypt salt containing a
+multi-byte character was cut at byte 16 through the middle of it - both
+panics, which through Python are a `PanicException` that `except
+ValueError` does not catch. md5-crypt cut its salt at byte 8 the same
+way and wrote an *empty* salt into the output when the cut split a
+character: a wrong hash string, no error. The C truncates bytewise and
+has no string to keep whole; here a salt that cannot be cut on a
+character boundary is refused. The vectors are all well formed and
+reached none of the three;
+`test_a_malformed_setting_is_an_error_not_a_panic` feeds every prefix of
+a setting for each method, with a two-byte character inserted at every
+position.
+
 ---
 
 ## 8. What to do with this document

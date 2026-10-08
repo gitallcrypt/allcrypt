@@ -4032,6 +4032,39 @@ recover the generator's state from a little of its output and predict the
 rest; the Rust module comment in `prng/dual_ec.rs` shows why. **Do not
 generate keys with it** — it is here to be recognised in the wild.
 
+## Linear congruential generators
+
+The `rand()` of old software, by name, for reproducing what a program saw
+or for studying why these generators are predictable. **Not for keys.**
+`lcg_names()` lists them; `Lcg(name, seed)` seeds one the way its library
+does, and its outputs are what the library's function returned:
+
+```python
+import allcrypt
+
+msvc = allcrypt.Lcg("msvc", 1)           # Microsoft C runtime, srand(1)
+assert msvc.outputs(3) == [41, 18467, 6334]
+
+java = allcrypt.JavaRandom(42)           # java.util.Random(42)
+assert java.next_int() == -1170105035
+die = java.next_int(6) + 1               # nextInt(bound), the JDK's way
+assert 1 <= die <= 6
+
+r = allcrypt.Rand48(42)                  # srand48(42)
+values = (r.lrand48(), r.mrand48(), r.drand48())
+
+# RANDU: every output is fixed by the two before it.
+randu = allcrypt.Lcg("randu", 1)
+x = [1] + randu.outputs(100)
+assert all(x[k + 2] == (6 * x[k + 1] - 9 * x[k]) % 2**31 for k in range(99))
+
+custom = allcrypt.Lcg.custom(a=69069, c=1, m=2**32, state=1)
+assert custom.next() == 69070
+```
+
+`Lcg.step()` returns the whole new state, `get_bytes(n)` the low byte of
+each of `n` outputs, and `seed(n)` reseeds by the generator's own rule.
+
 ## Threads
 
 The bulk calls release the GIL, so hashing and encryption scale across

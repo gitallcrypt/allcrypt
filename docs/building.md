@@ -811,6 +811,20 @@ methods implemented here, and requires `libcrypt` to reproduce each row.
 $ python3 scripts/make_unix_crypt_vectors.py     # rewrites vectors/unix_crypt.vec
 ```
 
+**Linear congruential generators**: the rand() of musl 1.2.5 and newlib
+4.4.0, and of MSVC as Wine 9.0's msvcrt reimplements it, compiled from
+their own sources (newlib's and Wine's per-thread state reached through
+the stand-ins in `scripts/witness/lcgwitness/shim`); PCG's 64 bit step for
+Knuth's MMIX constants; libstdc++'s `minstd` engines; the JDK's
+`java.util.Random`; and the system glibc through `ctypes` for TYPE_0
+`random()` and the `drand48` family. The build fetches each source at a
+pinned tag and checks its SHA-256.
+
+```console
+$ scripts/witness/lcgwitness/build.sh           # builds /opt/lcgwitness
+$ python3 scripts/make_lcg_vectors.py           # rewrites vectors/lcg.vec
+```
+
 **WireGuard**: wireguard-go (`WireGuard/wireguard-go`, its main branch)
 with the x/ modules at the versions its `go.mod` pins, all from GitHub,
 and `replace` lines for them and three empty stand-ins for modules the

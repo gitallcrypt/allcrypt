@@ -2683,6 +2683,49 @@ pub fn dual_ec_drbg(curve: &str, hash: &str, entropy: &[u8], nonce: &[u8],
     requests.iter().map(|(n, adin)| drbg.generate(*n, adin)).collect()
 }
 
+// ------------------------------------------------------------------ LCGs ---
+
+pub use crate::prng::lcg;
+
+/// The named linear congruential generators, in `lcg::NAMED`'s order:
+/// parameter sets real software shipped (`minstd_rand0`, `msvc`, `java`,
+/// `randu`, ...). See `crate::prng::lcg` for the table. Not for keys.
+pub fn lcg_names() -> Vec<&'static str> {
+    lcg::NAMED.iter().map(|g| g.name).collect()
+}
+
+/// A generator with any parameters: `x' = (a*x + c) mod m`, output
+/// `(state & mask) >>` the mask's trailing zeros.
+///
+/// # Errors
+/// A modulus below 2, or an empty mask - a generator that cannot step,
+/// or one with no output.
+pub fn lcg_custom(a: u128, c: u128, m: u128, state: u128, mask: u128)
+                  -> Result<lcg::LCG, String> {
+    if m < 2 {
+        return Err(format!("the modulus must be at least 2, not {m}"));
+    }
+    if mask == 0 {
+        return Err("the output mask selects no bits".to_string());
+    }
+    Ok(lcg::LCG::new(state, a, c, m, mask))
+}
+
+/// `count` outputs of the named generator seeded with `seed` by its own
+/// rule, after discarding `skip`. Each output is what the original
+/// function returns - signed for `mrand48` and `java`.
+///
+/// # Errors
+/// An unknown name; the message lists the known ones.
+pub fn lcg_outputs(name: &str, seed: u64, skip: usize, count: usize)
+                   -> Result<Vec<i128>, String> {
+    let mut g = lcg::LCG::named(name, seed)?;
+    for _ in 0..skip {
+        g.step();
+    }
+    Ok((0..count).map(|_| g.next_output()).collect())
+}
+
 // ------------------------------------------------------------------ EdDSA ---
 
 pub use crate::ec::eddsa;

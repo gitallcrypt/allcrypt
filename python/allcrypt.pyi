@@ -1555,6 +1555,66 @@ def dual_ec_drbg(curve: str, hash: str, entropy: BytesLike, nonce: BytesLike,
     of the design and its history. It uses the standard's unexplained
     ``Q``; **do not generate keys with it.**"""
 
+def lcg_names() -> List[str]:
+    """The named linear congruential generators: ``minstd_rand0``,
+    ``minstd_rand``, ``glibc_type0``, ``lrand48``, ``mrand48``, ``java``,
+    ``msvc``, ``musl``, ``newlib``, ``mmix`` and ``randu``. Not for keys."""
+
+class Lcg:
+    """A linear congruential generator, ``x' = (a*x + c) mod m``. Not for
+    keys: one output predicts the rest.
+
+    ``Lcg(name, seed)`` is one of ``lcg_names()``, seeded the way its
+    library seeds it; ``Lcg.custom`` takes any parameters."""
+    def __init__(self, name: str, seed: int) -> None: ...
+    @staticmethod
+    def custom(a: int, c: int, m: int, state: int, mask: int = ...) -> "Lcg":
+        """Any parameters below 2**128. The output is ``(state & mask)``
+        shifted down by the mask's trailing zeros; the default mask is the
+        whole state. Raises ``ValueError`` for ``m < 2`` or an empty mask."""
+    def next(self) -> int:
+        """Advance once and return the output, as the original function
+        returns it (signed for ``mrand48`` and ``java``)."""
+    def outputs(self, n: int) -> List[int]: ...
+    def step(self) -> int:
+        """Advance once and return the whole new state."""
+    def get_bytes(self, n: int) -> bytes:
+        """``n`` bytes, the low byte of each output."""
+    def seed(self, seed: int) -> None:
+        """Reseed, by the named generator's own rule."""
+    @property
+    def state(self) -> int: ...
+    @property
+    def name(self) -> str: ...
+
+class JavaRandom:
+    """``java.util.Random``: the same seed and calls give the JDK's
+    values."""
+    def __init__(self, seed: int) -> None: ...
+    def set_seed(self, seed: int) -> None: ...
+    def next_int(self, bound: Optional[int] = None) -> int:
+        """``nextInt()``, or ``nextInt(bound)``; a bound that is not
+        positive raises ``ValueError``."""
+    def next_long(self) -> int: ...
+    def next_boolean(self) -> bool: ...
+    def next_float(self) -> float: ...
+    def next_double(self) -> float: ...
+    def next_bytes(self, n: int) -> bytes: ...
+
+class Rand48:
+    """The POSIX ``drand48`` family over one state. ``Rand48()`` is the
+    unseeded state, ``Rand48(seed)`` the one ``srand48(seed)`` leaves."""
+    def __init__(self, seed: Optional[int] = None) -> None: ...
+    def srand48(self, seed: int) -> None: ...
+    def seed48(self, xsubi: Sequence[int]) -> List[int]:
+        """Three 16 bit words, least significant first; returns the
+        previous state in the same form."""
+    def lcong48(self, param: Sequence[int]) -> None:
+        """State, multiplier and addend in seven 16 bit words."""
+    def lrand48(self) -> int: ...
+    def mrand48(self) -> int: ...
+    def drand48(self) -> float: ...
+
 def hardware_aes() -> bool:
     """Whether AES runs on the processor's AES instructions: the module was
     built with the `aes-ni` feature and this CPU has AES-NI and PCLMULQDQ.

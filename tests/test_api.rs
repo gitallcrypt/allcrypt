@@ -1123,3 +1123,19 @@ fn test_the_wrapper_forwards_the_one_block_path() {
     des.decrypt_block_in_place(&mut eight, &mut scratch).unwrap();
     assert_eq!(&eight, b"8 bytes!");
 }
+
+#[test]
+fn test_lcg_outputs_and_custom_parameters() {
+    use allcrypt::api;
+    let names = api::lcg_names();
+    assert!(names.contains(&"minstd_rand0") && names.contains(&"randu"));
+    // skip discards outputs: the 10,000th minstd_rand0 value from seed 1
+    // is the 10,000th of the full run.
+    let run = api::lcg_outputs("minstd_rand0", 1, 0, 10_000).unwrap();
+    assert_eq!(api::lcg_outputs("minstd_rand0", 1, 9_999, 1).unwrap(), vec![run[9_999]]);
+    assert!(api::lcg_outputs("rand", 1, 0, 1).unwrap_err().contains("msvc"));
+    let mut custom = api::lcg_custom(16807, 0, (1 << 31) - 1, 1, u128::MAX).unwrap();
+    assert_eq!(custom.next_output(), run[0]);
+    assert!(api::lcg_custom(1, 0, 1, 0, 1).is_err());
+    assert!(api::lcg_custom(1, 0, 7, 0, 0).is_err());
+}

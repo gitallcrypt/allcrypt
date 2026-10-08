@@ -1388,9 +1388,48 @@ assert!(!scalar.is_zero() && scalar < order);
 ```
 
 It errors rather than falling back to anything weaker, and never buffers
-across a `fork`. The separate `prng` module is a linear congruential
-generator for simulation and for talking to systems that used one — it is
-**not** for keys, and says so.
+across a `fork`.
+
+The separate `prng` module is for simulation, for reproducing what an old
+program saw, and for studying the generators themselves — it is **not**
+for keys, and says so. `prng::lcg` has the linear congruential generators
+that shipped, by name, seeded and truncated the way their libraries do it:
+`minstd_rand0` and `minstd_rand` (Park and Miller; C++11), `glibc_type0`,
+`lrand48` and `mrand48`, `java`, `msvc`, `musl`, `newlib`, `mmix` and
+IBM's `randu`. The module comment has the table and the seeding rules.
+
+```rust
+use allcrypt::prng::lcg::{JavaRandom, Rand48, LCG};
+
+// The Microsoft C runtime after srand(1).
+let mut msvc = LCG::named("msvc", 1)?;
+let first: Vec<i128> = (0..3).map(|_| msvc.next_output()).collect();
+assert_eq!(first, vec![41, 18467, 6334]);
+
+// The C++ standard's own check: the 10,000th minstd_rand0 output.
+let mut minstd = LCG::named("minstd_rand0", 1)?;
+let ten_thousandth = (0..10_000).map(|_| minstd.next_output()).last();
+assert_eq!(ten_thousandth, Some(1043618065));
+
+// java.util.Random, method for method.
+let mut java = JavaRandom::new(42);
+assert_eq!(java.next_int(), -1170105035);
+let _ = java.next_int_bounded(6)?;
+let _ = java.next_double();
+
+// The drand48 family shares one state, as in the C library.
+let mut r = Rand48::new(42);
+let _ = (r.lrand48(), r.mrand48(), r.drand48());
+
+// Any other parameters: a, c, m and the mask of output bits.
+let mut custom = LCG::new(1, 69069, 1, 1 << 32, 0xffff_ffff);
+let _ = custom.next_output();
+```
+
+Every named generator is checked against the library it came from —
+libstdc++, musl, newlib, Wine's msvcrt, PCG, glibc and the JDK — in
+`vectors/lcg.vec`. RANDU, which nothing still ships, is checked by the
+relation that made it notorious: each output is `6 x[k-1] - 9 x[k-2]`.
 
 `prng::dual_ec` is Dual_EC_DRBG (NIST SP 800-90A), the standardised
 generator with the NSA back door, kept because the back door is the most

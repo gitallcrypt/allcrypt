@@ -112,6 +112,14 @@ fn permuted_value(digest: &[u8], triple: [usize; 3]) -> u32 {
     (byte(triple[0]) << 16) | (byte(triple[1]) << 8) | byte(triple[2])
 }
 
+/// The first `n` bytes of a salt, which the C truncates bytewise. A cut
+/// inside a multi-byte character has no string to put in the output, so
+/// it is refused rather than written as something else.
+fn salt_prefix(salt: &str, n: usize) -> Result<&str, String> {
+    salt.get(..n).ok_or_else(|| format!(
+        "The salt is cut at {n} bytes, which falls inside a character."))
+}
+
 // ----------------------------------------------------------- DES crypt ---
 
 /// The 56-bit DES key from up to eight password bytes, each shifted left
@@ -288,7 +296,7 @@ impl ShaLike {
             body = &after[end + 1..];
         }
         let salt_end = body.find('$').unwrap_or(body.len());
-        let salt = &body[..salt_end.min(16)];
+        let salt = salt_prefix(body, salt_end.min(16))?;
         Ok((rounds, custom, salt.to_string()))
     }
 
@@ -396,7 +404,8 @@ const SHA512_CRYPT: ShaLike = ShaLike {
 fn md5_crypt(password: &[u8], setting: &str) -> Result<String, String> {
     let rest = setting.strip_prefix("$1$").ok_or("Not an md5-crypt setting.")?;
     let salt_end = rest.find('$').unwrap_or(rest.len());
-    let salt = &rest.as_bytes()[..salt_end.min(8)];
+    let salt_text = salt_prefix(rest, salt_end.min(8))?;
+    let salt = salt_text.as_bytes();
 
     let alt = digest_of(MD5::new(&[]), &[password, salt, password]);
     let mut parts: Vec<&[u8]> = vec![password, b"$1$", salt];
@@ -441,7 +450,7 @@ fn md5_crypt(password: &[u8], setting: &str) -> Result<String, String> {
         digest = digest_of(MD5::new(&[]), &r);
     }
 
-    let mut out = format!("$1${}$", core::str::from_utf8(salt).unwrap_or(""));
+    let mut out = format!("$1${salt_text}$");
     for &(triple, n) in MD5_CRYPT.permute {
         b64_low_first(&mut out, permuted_value(&digest, triple), n);
     }
@@ -629,7 +638,8 @@ fn bcrypt(password: &[u8], setting: &str) -> Result<String, String> {
     if !(4..=31).contains(&cost) {
         return Err(format!("bcrypt's cost is 04 to 31; this is {cost:02}."));
     }
-    let salt = bcrypt_decode_salt(&setting[7..7 + 22])?;
+    let salt = bcrypt_decode_salt(setting.get(7..7 + 22).ok_or(
+        "A bcrypt setting is $2?$NN$ then a 22-character salt.")?)?;
 
     // bcrypt truncates the password (with its NUL) to 72 bytes.
     let password = &password[..password.len().min(72)];
@@ -800,6 +810,48 @@ pub fn verify(password: &[u8], stored: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every prefix of a setting, and every prefix with a two-byte
+    /// character inserted, must come back as a hash or an error - never a
+    /// panic, which through Python is a `PanicException` that `except
+    /// ValueError` does not catch. A bcrypt setting shorter than its salt
+    /// sliced past the end, and a SHA-crypt salt cut at 16 bytes inside a
+    /// character sliced through it; md5-crypt's 8 byte cut wrote an empty
+    /// salt into the output instead. The vectors are all well formed, so
+    /// none of them reached any of the three.
+    #[test]
+    fn test_a_malformed_setting_is_an_error_not_a_panic() {
+        // The cheapest cost each method allows, since this is a few
+        // hundred hashes.
+        let settings = ["ab", "_/...rasm", "abcdefghijklmn", "$1$abcdefgh$",
+                        "$2b$04$CCCCCCCCCCCCCCCCCCCCC.", "$3$$",
+                        "$5$rounds=1000$saltstringsaltst$", "$6$rounds=1000$saltstringsaltst$",
+                        "$sha1$1$abcdefgh$", "$md5,rounds=1$abcdefgh$"];
+        for setting in settings {
+            let mut variants = Vec::new();
+            for cut in 0..=setting.len() {
+                variants.push(setting[..cut].to_string());
+                variants.push(format!("{}\u{e9}", &setting[..cut]));
+                variants.push(format!("{}\u{e9}{}", &setting[..cut], &setting[cut..]));
+            }
+            for v in variants {
+                {
+                    let r = std::panic::catch_unwind(|| crypt(b"longer password", &v));
+                    assert!(r.is_ok(), "panicked on {v:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_a_salt_cut_inside_a_character_is_refused() {
+        // 7 ASCII bytes and a two-byte character: the 8 byte cut splits it.
+        assert!(crypt(b"pw", "$1$abcdefg\u{e9}$").unwrap_err().contains("inside a character"));
+        assert!(crypt(b"pw", "$5$abcdefghijklmno\u{e9}$").unwrap_err().contains("inside a character"));
+        // A cut on a boundary keeps the whole character.
+        assert!(crypt(b"pw", "$1$abcdef\u{e9}$").unwrap().starts_with("$1$abcdef\u{e9}$"));
+        assert!(crypt(b"pw", "$2b$05$CCCCC").is_err());
+    }
 
     #[test]
     fn test_des_crypt_truncates_at_eight_bytes() {

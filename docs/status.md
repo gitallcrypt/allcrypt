@@ -210,7 +210,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |Component|Implemented|Tested|
 |---|---|---|
 |OS randomness (`random`)|✓||
-|Linear congruential generator (`prng`), not for keys|✓||
+|Linear congruential generators (`prng::lcg`), generic and eleven named ones, not for keys|✓|libstdc++, musl 1.2.5, newlib 4.4.0 and Wine 9.0 from source, PCG, glibc and JDK 21 agree, `vectors/lcg.vec`; RANDU by its three-term relation only|
 |Dual_EC_DRBG (SP 800-90A, withdrawn 2015), not for keys|✓|OpenSSL FIPS 2.0.5 and Bouncy Castle 1.78.1 agree, `vectors/dual_ec.vec`|
 |Arbitrary-precision integers (`BigUint`)|✓|✓|
 |Montgomery multiplication|✓|✓|
