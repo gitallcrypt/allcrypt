@@ -237,14 +237,48 @@ impl Blowfish {
     /// next two words of P and then of the S-boxes.
     pub(crate) fn expand0_state(&mut self, key: &[u8]) {
         self.mix_key(key);
+        self.refill(None);
+    }
+
+    /// `expand0_state` with the key already cut into the eighteen words
+    /// XORed into P - for bcrypt's `$2x$` and `$2a$`, whose words are not
+    /// always the key's bytes read in the ordinary way.
+    pub(crate) fn expand0_state_words(&mut self, key: &[u32; 18]) {
+        for (word, k) in self.P.iter_mut().zip(key) {
+            *word ^= k;
+        }
+        self.refill(None);
+    }
+
+    /// `expand_state` with the key as eighteen words, as above.
+    pub(crate) fn expand_state_words(&mut self, salt: &[u8], key: &[u32; 18]) {
+        for (word, k) in self.P.iter_mut().zip(key) {
+            *word ^= k;
+        }
+        self.refill(Some(salt));
+    }
+
+    /// The second half of both schedules: encrypt a running block, XORed
+    /// with the salt's next two words when there is a salt, and write
+    /// each output over the next two words of P and then of the S-boxes.
+    fn refill(&mut self, salt: Option<&[u8]>) {
+        let mut position = 0;
+        let next = |position: &mut usize| match salt {
+            Some(salt) => stream_word(salt, position),
+            None => 0,
+        };
         let (mut left, mut right) = (0, 0);
         for i in (0..18).step_by(2) {
+            left ^= next(&mut position);
+            right ^= next(&mut position);
             (left, right) = self.encrypt_words(left, right);
             self.P[i] = left;
             self.P[i + 1] = right;
         }
         for sbox in 0..4 {
             for i in (0..256).step_by(2) {
+                left ^= next(&mut position);
+                right ^= next(&mut position);
                 (left, right) = self.encrypt_words(left, right);
                 self.S[sbox][i] = left;
                 self.S[sbox][i + 1] = right;
@@ -257,24 +291,7 @@ impl Blowfish {
     /// words of the salt (cyclically) before it is encrypted.
     pub(crate) fn expand_state(&mut self, salt: &[u8], key: &[u8]) {
         self.mix_key(key);
-        let mut position = 0;
-        let (mut left, mut right) = (0, 0);
-        for i in (0..18).step_by(2) {
-            left ^= stream_word(salt, &mut position);
-            right ^= stream_word(salt, &mut position);
-            (left, right) = self.encrypt_words(left, right);
-            self.P[i] = left;
-            self.P[i + 1] = right;
-        }
-        for sbox in 0..4 {
-            for i in (0..256).step_by(2) {
-                left ^= stream_word(salt, &mut position);
-                right ^= stream_word(salt, &mut position);
-                (left, right) = self.encrypt_words(left, right);
-                self.S[sbox][i] = left;
-                self.S[sbox][i + 1] = right;
-            }
-        }
+        self.refill(Some(salt));
     }
 
     fn mix_key(&mut self, key: &[u8]) {

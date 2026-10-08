@@ -1664,6 +1664,28 @@ pub fn bitlocker_recovery_password_key(recovery: &str, salt: &[u8]) -> Result<Ve
     Ok(kdf::password::bitlocker_stretch(&initial, &salt).to_vec())
 }
 
+/// A Unix `crypt(3)` password hash. `setting` chooses the method by its
+/// prefix - a bare two-character salt for traditional DES, `_` for BSDi,
+/// `$1$` for MD5-crypt, `$2b$` and kin for bcrypt, `$5$`/`$6$` for the
+/// SHA-crypts, `$3$` for the NT hash, `$sha1$`, `$md5` for Sun's - and
+/// also carries the salt and any cost. Returns the full hash string,
+/// which begins with the setting. These are old by design; `crate::kdf::
+/// unix_crypt` says what each is and when it was current.
+///
+/// # Errors
+/// A setting whose prefix names no known method, or is malformed for the
+/// method it names.
+pub fn unix_crypt(password: &[u8], setting: &str) -> Result<String, String> {
+    kdf::unix_crypt::crypt(password, setting)
+}
+
+/// Whether `password` produces the stored `crypt(3)` hash, compared in
+/// constant time. `false` for a hash this cannot parse, so a parse
+/// failure cannot be mistaken for a match.
+pub fn unix_crypt_verify(password: &[u8], stored: &str) -> bool {
+    kdf::unix_crypt::verify(password, stored)
+}
+
 /// PBKDF2 (RFC 8018 section 5.2).
 ///
 /// No minimum iteration count is imposed: a file written in 2009 with
@@ -2632,6 +2654,33 @@ pub fn random_bytes(n: usize) -> Result<Vec<u8>, String> {
 /// record it.
 pub fn random_source() -> &'static str {
     random::source()
+}
+
+// --------------------------------------------------------- Dual_EC_DRBG ---
+
+pub use crate::prng::dual_ec;
+
+/// Dual_EC_DRBG (SP 800-90A, withdrawn 2015) output, the whole of a
+/// generator's life in one call: instantiate on `entropy`, `nonce` and
+/// `personalization`, then `requests.len()` generate calls, each for its
+/// own byte count and additional input. It uses the standard's `Q`, so it
+/// is a demonstration of the design and its history (see `crate::prng::
+/// dual_ec`), not something to generate keys with.
+///
+/// `curve` is `"P-256"`, `"P-384"` or `"P-521"`; `hash` is `"SHA-1"` or a
+/// SHA-2 name. For prediction resistance, reseed between requests, which
+/// this one-shot does not expose - the streaming type in `dual_ec` does.
+///
+/// # Errors
+/// An unknown curve or hash, a hash too weak for the curve, or too little
+/// entropy.
+pub fn dual_ec_drbg(curve: &str, hash: &str, entropy: &[u8], nonce: &[u8],
+                    personalization: &[u8], requests: &[(usize, &[u8])])
+                    -> Result<Vec<Vec<u8>>, String> {
+    let params = dual_ec::Parameters::standard(dual_ec::DualEcCurve::from_name(curve)?);
+    let hash = dual_ec::DrbgHash::from_name(hash)?;
+    let mut drbg = dual_ec::DualEcDrbg::new(params, hash, entropy, nonce, personalization)?;
+    requests.iter().map(|(n, adin)| drbg.generate(*n, adin)).collect()
 }
 
 // ------------------------------------------------------------------ EdDSA ---

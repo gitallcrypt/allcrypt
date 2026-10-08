@@ -1341,6 +1341,33 @@ A password over fourteen bytes has no LM hash - Windows keeps the hash
 of the empty password in its place - so `lm_hash` refuses one rather
 than quietly hashing its first fourteen bytes.
 
+### Unix `crypt(3)`
+
+`kdf::unix_crypt` reads and writes the password hashes in the world's
+`/etc/shadow` files, NIS maps and `.htpasswd`. One function dispatches on
+the setting's prefix, as the C library does: a bare salt for DES, `$1$`,
+`$5$`/`$6$`, `$2b$`, `$3$`, `$sha1$`, `$md5`, `_`. To make a new hash,
+pass a setting; to check a password, pass the stored hash.
+
+```rust
+use allcrypt::kdf::unix_crypt::{crypt, verify};
+
+// SHA-512 crypt, Drepper's scheme, the Linux default.
+let hash = crypt(b"correct horse", "$6$rounds=5000$usesomesalt")?;
+assert!(hash.starts_with("$6$rounds=5000$usesomesalt$"));
+assert!(verify(b"correct horse", &hash));
+assert!(!verify(b"wrong", &hash));
+
+// bcrypt at cost 8. $2b$ is the current reading; $2a$/$2x$/$2y$ differ
+// only for passwords with a byte >= 0x80, which is a pitfall of its own.
+let bc = crypt(b"correct horse", "$2b$08$abcdefghijklmnopqrstuu")?;
+assert!(verify(b"correct horse", &bc));
+```
+
+It matches the system `libcrypt` and Passlib across every method; none is
+what to pick for new work, but all of them are already out there. See
+`vectors/unix_crypt.vec` and the module comment for what each is.
+
 ## Randomness
 
 `random` reads the operating system's generator. Use it for anything keyed.
@@ -1364,6 +1391,26 @@ It errors rather than falling back to anything weaker, and never buffers
 across a `fork`. The separate `prng` module is a linear congruential
 generator for simulation and for talking to systems that used one — it is
 **not** for keys, and says so.
+
+`prng::dual_ec` is Dual_EC_DRBG (NIST SP 800-90A), the standardised
+generator with the NSA back door, kept because the back door is the most
+instructive thing in this library's problem domain. Its module comment
+describes how `P = e * Q` lets whoever chose `Q` recover the state from a
+little output. It is here to be read and recognised, not to produce keys:
+
+```rust
+use allcrypt::prng::dual_ec::{DualEcCurve, DrbgHash, DualEcDrbg, Parameters};
+
+let params = Parameters::standard(DualEcCurve::P256);
+let mut drbg = DualEcDrbg::new(params, DrbgHash::Sha256,
+                               &[0x42; 32], b"nonce", b"")?;
+let out = drbg.generate(48, &[])?;
+assert_eq!(out.len(), 48);
+```
+
+It matches OpenSSL's FIPS module and Bouncy Castle over
+`vectors/dual_ec.vec`. The standard's `Q` is used as published; nobody
+outside the authors knows its `e`, which is exactly the problem.
 
 ## Big integers
 

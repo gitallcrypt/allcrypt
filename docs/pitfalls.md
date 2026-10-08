@@ -99,6 +99,7 @@ to be someone's CVE.**
 - [7zzg. The smart card example](#7zzg-the-smart-card-example)
 - [7zzh. The C interface](#7zzh-the-c-interface)
 - [7zzi. NaCl and libsodium](#7zzi-nacl-and-libsodium)
+- [7zzj. Unix crypt(3)](#7zzj-unix-crypt3)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -9326,6 +9327,72 @@ libsodium's own point addition, and the refusals match libsodium's.
 can also receive boxes, which libsodium supports and some protocols use.
 Using one key for two schemes ties their security together; nothing here
 prevents it, and separate keys are the simpler choice where there is one.
+
+## 7zzj. Unix crypt(3)
+
+`src/kdf/unix_crypt.rs`: the `/etc/shadow` password hashes, one function
+dispatching on the setting prefix. Checked against the system `libcrypt`
+and Passlib (libxcrypt's `ka-table`), `vectors/unix_crypt.vec`.
+
+### The base64 is three different conventions
+
+**Status: mitigated.** The alphabet is `./0-9A-Za-z`, not RFC 4648, and
+md5-crypt and the SHA-crypts pack each 24-bit group **least-significant
+six bits first**. bcrypt uses a *different* alphabet (`./A-Za-z0-9`) and
+packs the other way. The traditional DES hash uses a third packing again
+(`des_encode`), straddling bytes. Each is wrong for the others, silently;
+the vectors are what pin them.
+
+### The last base64 group is not a full triple
+
+**Status: mitigated.** Each method's final group encodes one or two
+digest bytes with literal zeros in the other positions - md5-crypt's last
+is `(0, 0, digest[11])`, SHA-256-crypt's is `(0, digest[31],
+digest[30])`. Written as `(digest[11], digest[11], digest[11])` it
+differs only in the last one or two characters, which is exactly the kind
+of near-miss a casual eye passes over; the `ZERO` sentinel in the
+permutation tables makes the zero explicit. Found by the one-character
+disagreement with libcrypt on the empty password.
+
+### DES crypt truncates at eight bytes; bigcrypt at sixteen blocks
+
+**Status: accepted** (it is the algorithm). Traditional DES crypt ignores
+the password past its eighth byte, so `password` and `password123` hash
+alike. bigcrypt extends it to sixteen 8-byte blocks and then ignores the
+rest, each block's salt carried from the previous block's output.
+`test_des_crypt_truncates_at_eight_bytes` records the first;
+`vectors/unix_crypt.vec` has a 190-byte bigcrypt input that stops at 128.
+
+### bcrypt's `$2a$`, `$2b$`, `$2x$`, `$2y$` differ only on high bytes
+
+**Status: mitigated.** `$2x$` reproduces a sign-extension bug in reading
+password bytes `>= 0x80`; `$2a$` keeps the correct reading but flips one
+key bit for the passwords where the bug would have collided; `$2b$` and
+`$2y$` are the plain correct reading. For an all-ASCII password all four
+agree, so a test that used only ASCII would miss the difference entirely
+- `bcrypt_key_words` builds the eighteen key words per variant exactly as
+libxcrypt's `BF_set_key` does, and the vectors include `$2x$`/`$2a$` rows
+with a top-bit-set password.
+
+### The length-bit fold looks like a bug and is required
+
+**Status: mitigated.** md5-crypt and the SHA-crypts, after priming the
+digest, add one byte per bit of the password length - the alternate sum
+(or a NUL, for md5-crypt) for a 1 bit, the password (or its first byte)
+for a 0. Leaving it out, or reading the bits the other way, gives a hash
+that is self-consistent and matches nothing. The SHA-crypts' P and S
+byte sequences must also be **stretched** to the password and salt
+lengths, not left as the raw 64-byte digest; that was the empty-password
+and short-password disagreement with libcrypt.
+
+### Sun's MD5 crypt hashes Hamlet
+
+**Status: mitigated.** `$md5` folds a fixed passage of *Hamlet* into the
+digest on rounds chosen by a "coin toss" over the previous digest, and
+its setting may be `$md5$` or `$md5,rounds=N$` - so the method token runs
+to the first `$` **or** `,`, which the dispatcher now honours (it read
+`md5,rounds=1000` as the method and refused it until fixed). The passage
+is a constant of the algorithm, in `unix_crypt_hamlet.txt`.
 
 ---
 

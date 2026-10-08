@@ -333,6 +333,53 @@ fn triple(input: u64, stages: [(&[[u8; 8]; 16], bool); 3]) -> u64 {
     permute_fast(((left as u64) << 32) | right as u64, &FP_NIBBLES)
 }
 
+/// The Unix `crypt(3)` variant of DES: `count` encryptions of `block`
+/// under `key`, with E perturbed by a salt. Salt bit `i` (from the least
+/// significant) swaps bit `i` of E's first 24 output bits with bit `i` of
+/// its last 24, counting from the left - bits 1 and 25 for the lowest. A
+/// salt of zero is DES; `traditional` crypt uses 12 bits of salt and 25
+/// encryptions, BSDi's extended form 24 bits and a count from the hash.
+///
+/// The inner FP and IP cancel between encryptions, as in `triple`.
+pub(crate) fn crypt_des(key: u64, salt: u32, block: u64, count: u32) -> u64 {
+    let subkeys = schedule(key);
+    let keys: [[u8; 8]; 16] = core::array::from_fn(|i| subkey_groups(subkeys[i]));
+    // The salt as a mask on each of E's first four six-bit groups; the
+    // swap is with the group four further on.
+    let masks: [u8; 4] = core::array::from_fn(|group| {
+        let mut mask = 0u8;
+        for bit in 0..6 {
+            if salt >> (6 * group + bit) & 1 == 1 {
+                mask |= 0x20 >> bit;
+            }
+        }
+        mask
+    });
+    let permuted = permute_fast(block, &IP_NIBBLES);
+    let (mut left, mut right) = ((permuted >> 32) as u32, permuted as u32);
+    for _ in 0..count.max(1) {
+        for groups in &keys {
+            let mut six: [u8; 8] = core::array::from_fn(|i| {
+                (right.rotate_right((27 + 32 - 4 * i as u32) % 32) & 0x3f) as u8
+            });
+            for (j, mask) in masks.iter().enumerate() {
+                let swap = (six[j] ^ six[j + 4]) & mask;
+                six[j] ^= swap;
+                six[j + 4] ^= swap;
+            }
+            let mut out = 0u32;
+            for i in 0..8 {
+                out |= SP[i][(six[i] ^ groups[i]) as usize];
+            }
+            let next = left ^ out;
+            left = right;
+            right = next;
+        }
+        (left, right) = (right, left);
+    }
+    permute_fast(((left as u64) << 32) | right as u64, &FP_NIBBLES)
+}
+
 /// The block operation as the standard writes it, `permute` and all: the
 /// reference the fast one is tested against.
 #[cfg(test)]

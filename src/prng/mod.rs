@@ -12,6 +12,7 @@ For anything keyed - key generation, nonces, IVs, TLS randoms - use
 separate modules on purpose.
 */
 
+pub mod dual_ec;
 pub mod lcg;
 
 pub trait Prng {

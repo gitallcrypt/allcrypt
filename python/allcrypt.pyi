@@ -1523,6 +1523,38 @@ def random_source() -> str:
     """The name of the system random source, for a caller that wants to
     record which one was used."""
 
+def unix_crypt(password: BytesLike, setting: str) -> str:
+    """A Unix ``crypt(3)`` password hash.
+
+    ``setting`` names the method by its prefix and carries the salt (and
+    any cost): two base64 characters for traditional DES, ``_`` for BSDi,
+    ``$1$`` for MD5-crypt, ``$2b$`` and kin for bcrypt, ``$5$``/``$6$`` for
+    the SHA-crypts, ``$3$`` for the NT hash, ``$sha1$``, ``$md5`` for
+    Sun's. Returns the full hash, beginning with the setting.
+
+    These are the hashes already in the world's ``/etc/shadow`` files, not
+    what to choose for new work (that is Argon2, or bcrypt at a high cost).
+    A drop-in for the standard library's deprecated ``crypt.crypt``."""
+
+def unix_crypt_verify(password: BytesLike, stored: str) -> bool:
+    """Whether ``password`` produces ``stored``, in constant time.
+    ``False`` for a hash string this does not understand."""
+
+def dual_ec_drbg(curve: str, hash: str, entropy: BytesLike, nonce: BytesLike,
+                 personalization: BytesLike = b"",
+                 requests: List[Tuple[int, BytesLike]] = []) -> List[bytes]:
+    """Dual_EC_DRBG output (SP 800-90A, withdrawn in 2015).
+
+    Instantiate on ``entropy``, ``nonce`` and ``personalization``, then
+    run one generate call per ``(nbytes, additional_input)`` in
+    ``requests``, returning one ``bytes`` per request. ``curve`` is
+    ``"P-256"``, ``"P-384"`` or ``"P-521"``; ``hash`` is ``"SHA-1"`` or a
+    SHA-2 name.
+
+    This is the generator with the NSA back door, kept as a demonstration
+    of the design and its history. It uses the standard's unexplained
+    ``Q``; **do not generate keys with it.**"""
+
 def hardware_aes() -> bool:
     """Whether AES runs on the processor's AES instructions: the module was
     built with the `aes-ni` feature and this CPU has AES-NI and PCLMULQDQ.

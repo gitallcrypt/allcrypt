@@ -791,6 +791,26 @@ $ python3 scripts/build_python.py
 $ python3 scripts/make_nacl_vectors.py --ours    # rewrites vectors/nacl.vec
 ```
 
+**Dual_EC_DRBG**: OpenSSL FIPS module 2.0.5's `fips_drbg_ec.c`, fetched
+unchanged and built against OpenSSL 1.0.2 (`/opt/openssl102`) through the
+stand-in headers in `scripts/witness/dualecwitness/shim`. The script
+requires it to reproduce Bouncy Castle 1.78.1's published vectors (an
+implementation independent of OpenSSL) before writing the corpus.
+
+```console
+$ scripts/witness/dualecwitness/build.sh         # builds /opt/dualecwitness/dualec
+$ python3 scripts/make_dual_ec_vectors.py        # rewrites vectors/dual_ec.vec
+```
+
+**Unix crypt(3)**: the system's `libcrypt` (libxcrypt 4.4.36) through
+`ctypes`, and its `test/ka-table.inc` of known answers, whose header
+says Passlib generated them. The script fetches the table, keeps the
+methods implemented here, and requires `libcrypt` to reproduce each row.
+
+```console
+$ python3 scripts/make_unix_crypt_vectors.py     # rewrites vectors/unix_crypt.vec
+```
+
 **WireGuard**: wireguard-go (`WireGuard/wireguard-go`, its main branch)
 with the x/ modules at the versions its `go.mod` pins, all from GitHub,
 and `replace` lines for them and three empty stand-ins for modules the

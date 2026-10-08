@@ -1064,6 +1064,30 @@ assert allcrypt.lm_hash("\xe9t\xe9".upper().encode("cp850")) == allcrypt.lm_hash
 A password over fourteen bytes has no LM hash, and `lm_hash` raises
 `ValueError` for one rather than hashing its first fourteen bytes.
 
+### Unix `crypt(3)`
+
+`unix_crypt` is a drop-in for the standard library's deprecated
+`crypt.crypt`: the setting's prefix chooses the method and carries the
+salt, and the full hash string comes back.
+
+```python
+import allcrypt
+
+hash = allcrypt.unix_crypt(b"correct horse", "$6$rounds=5000$usesomesalt")
+assert hash.startswith("$6$rounds=5000$usesomesalt$")
+assert allcrypt.unix_crypt_verify(b"correct horse", hash)
+assert not allcrypt.unix_crypt_verify(b"wrong", hash)
+
+# bcrypt, and the NT hash in crypt clothing ($3$, salt ignored).
+assert allcrypt.unix_crypt(b"pw", "$2b$08$abcdefghijklmnopqrstuu").startswith("$2b$08$")
+assert allcrypt.unix_crypt(b"pw", "$3$") == "$3$$" + allcrypt.nt_hash("pw").hex()
+```
+
+It covers traditional DES, BSDi, bigcrypt, md5crypt, the SHA-crypts,
+bcrypt (`$2a`/`$2b`/`$2x`/`$2y`), the NT hash, sha1crypt and Sun's MD5,
+matching the system `libcrypt` on all of them. These read the hashes that
+already exist; new work wants Argon2 or a high-cost bcrypt.
+
 ### The file formats' own derivations
 
 OpenPGP's string-to-key, 7-Zip's AES key, KeePass's AES-KDF and LUKS's
@@ -3984,6 +4008,29 @@ SHA-1. `to_openssh` takes `cipher=` any of OpenSSH's ciphers and
 `sshsig_verify` returns the key that signed. Whether that key is one to
 trust is a separate decision - the one an allowed-signers file makes -
 and the function does not make it for you.
+
+## Dual_EC_DRBG
+
+The generator with the NSA back door (NIST SP 800-90A, withdrawn in 2015),
+kept because it is the most instructive cautionary tale the field has.
+`dual_ec_drbg` instantiates it and runs a list of `(nbytes,
+additional_input)` requests:
+
+```python
+import allcrypt
+
+entropy = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+nonce = bytes.fromhex("2021222324252627")
+blocks = allcrypt.dual_ec_drbg("P-256", "SHA-256", entropy, nonce,
+                               requests=[(60, b""), (60, b"")])
+# Matches OpenSSL's FIPS module and Bouncy Castle byte for byte.
+assert blocks[0].hex().startswith("ff5163c388f791e9")
+```
+
+It uses the standard's unexplained `Q`. Whoever chose that point can
+recover the generator's state from a little of its output and predict the
+rest; the Rust module comment in `prng/dual_ec.rs` shows why. **Do not
+generate keys with it** — it is here to be recognised in the wild.
 
 ## Threads
 

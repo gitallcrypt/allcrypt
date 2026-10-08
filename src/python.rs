@@ -1054,6 +1054,19 @@ fn pbkdf2_recommended_iterations(hash_name: &str) -> u32 {
     api::pbkdf2_recommended_iterations(hash_name)
 }
 
+/// A Unix ``crypt(3)`` hash. ``setting`` picks the method by prefix and
+/// carries the salt; the full hash string is returned.
+#[pyfunction]
+fn unix_crypt(password: Bytes, setting: &str) -> PyResult<String> {
+    api::unix_crypt(&password, setting).map_err(err)
+}
+
+/// Whether ``password`` produces ``stored``, compared in constant time.
+#[pyfunction]
+fn unix_crypt_verify(password: Bytes, stored: &str) -> bool {
+    api::unix_crypt_verify(&password, stored)
+}
+
 /// Squeeze any number of bytes out of a SHAKE.
 ///
 /// `hashlib`'s `shake_128(...).digest(length)` in function form. Only
@@ -2251,6 +2264,24 @@ fn random_bytes(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyBytes>> {
 #[pyfunction]
 fn random_source() -> &'static str {
     api::random_source()
+}
+
+/// Dual_EC_DRBG (SP 800-90A, withdrawn) output. ``requests`` is a list of
+/// ``(nbytes, additional_input)``; the return is one ``bytes`` per
+/// request. A demonstration of the design, not a key generator - see the
+/// module docstring.
+#[pyfunction]
+#[pyo3(signature = (curve, hash, entropy, nonce, personalization=Bytes::empty(), requests=Vec::new()))]
+fn dual_ec_drbg<'py>(py: Python<'py>, curve: &str, hash: &str, entropy: Bytes, nonce: Bytes,
+                     personalization: Bytes, requests: Vec<(usize, Bytes)>)
+                     -> PyResult<Vec<Bound<'py, PyBytes>>> {
+    let reqs: Vec<(usize, Vec<u8>)> =
+        requests.into_iter().map(|(n, a)| (n, a.to_vec())).collect();
+    let out = py.allow_threads(|| {
+        let borrowed: Vec<_> = reqs.iter().map(|(n, a)| (*n, a.as_slice())).collect();
+        api::dual_ec_drbg(curve, hash, &entropy, &nonce, &personalization, &borrowed)
+    }).map_err(err)?;
+    Ok(out.iter().map(|block| PyBytes::new(py, block)).collect())
 }
 
 /// Whether AES runs on the processor's AES instructions in this build.
@@ -4833,6 +4864,8 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scrypt, m)?)?;
     m.add_function(wrap_pyfunction!(argon2, m)?)?;
     m.add_function(wrap_pyfunction!(pbkdf2_recommended_iterations, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_verify, m)?)?;
     m.add_function(wrap_pyfunction!(tls_master_secret, m)?)?;
     m.add_function(wrap_pyfunction!(ssl3_record_mac, m)?)?;
     m.add_function(wrap_pyfunction!(x25519_generate, m)?)?;
@@ -4866,6 +4899,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(x448_raw, m)?)?;
     m.add_function(wrap_pyfunction!(random_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(random_source, m)?)?;
+    m.add_function(wrap_pyfunction!(dual_ec_drbg, m)?)?;
     m.add_function(wrap_pyfunction!(hardware_aes, m)?)?;
     m.add_function(wrap_pyfunction!(key_wrap, m)?)?;
     m.add_function(wrap_pyfunction!(key_unwrap, m)?)?;
