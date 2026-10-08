@@ -63,6 +63,8 @@ block_ciphers_available: List[str]
 stream_ciphers_available: List[str]
 modes_available: List[str]
 aeads_available: List[str]
+#: The NaCl box constructions, for the ``construction`` arguments below.
+box_constructions_available: List[str]
 curves_available: List[str]
 #: Every cipher suite in the registry, implemented or not - the catalogue
 #: of what TLS has, rather than of what this library has.
@@ -1369,6 +1371,108 @@ def x25519_raw(scalar: BytesLike, point: BytesLike) -> bytes:
     """The RFC 7748 primitive, without the degenerate-output refusal.
     Here because the specification's test vectors are stated in these
     terms, and a test that cannot reach the primitive cannot use them."""
+
+# NaCl and libsodium. ``construction`` is "xsalsa20poly1305" (NaCl's,
+# the default) or "xchacha20poly1305" (libsodium's), each also accepted
+# with the box's "curve25519" prefix. libsodium's xchacha20poly1305 box is
+# not the AEAD "xchacha20-poly1305": Poly1305 covers the ciphertext alone
+# and the payload starts at keystream byte 32.
+
+def secretbox_encrypt(key: BytesLike, nonce: BytesLike, message: BytesLike,
+                      construction: str = "xsalsa20poly1305") -> bytes:
+    """A secretbox: the 16 byte tag, then the ciphertext. 32 byte key, 24
+    byte nonce, which must never repeat under one key; at 24 bytes it can
+    be drawn at random per message."""
+
+def secretbox_decrypt(key: BytesLike, nonce: BytesLike, boxed: BytesLike,
+                      construction: str = "xsalsa20poly1305") -> bytes:
+    """Open a secretbox. Raises ``CryptoError``, with no plaintext, unless
+    it authenticates."""
+
+def secretbox_encrypt_detached(key: BytesLike, nonce: BytesLike, message: BytesLike,
+                               construction: str = "xsalsa20poly1305") -> Tuple[bytes, bytes]:
+    """A secretbox as ``(ciphertext, tag)``."""
+
+def secretbox_decrypt_detached(key: BytesLike, nonce: BytesLike, ciphertext: BytesLike,
+                               tag: BytesLike,
+                               construction: str = "xsalsa20poly1305") -> bytes:
+    """Open a detached secretbox."""
+
+def box_keypair() -> Tuple[bytes, bytes]:
+    """A fresh box key pair, ``(private, public)``: an X25519 key pair."""
+
+def box_seed_keypair(seed: BytesLike) -> Tuple[bytes, bytes]:
+    """A box key pair from a 32 byte seed, as libsodium's
+    ``crypto_box_seed_keypair``: the private key is the first half of
+    SHA-512 of the seed."""
+
+def box_beforenm(peer_public: BytesLike, private: BytesLike,
+                 construction: str = "xsalsa20poly1305") -> bytes:
+    """The 32 byte key a box between two key pairs is sealed under, the
+    same from either end. A secretbox under it is a box. Raises for a
+    low-order peer key."""
+
+def box_encrypt(peer_public: BytesLike, private: BytesLike, nonce: BytesLike,
+                message: BytesLike, construction: str = "xsalsa20poly1305") -> bytes:
+    """A box from ``private`` to ``peer_public`` (libsodium's
+    ``crypto_box_easy``): tag, then ciphertext."""
+
+def box_decrypt(peer_public: BytesLike, private: BytesLike, nonce: BytesLike,
+                boxed: BytesLike, construction: str = "xsalsa20poly1305") -> bytes:
+    """Open a box from ``peer_public`` to ``private``."""
+
+def box_seal(recipient_public: BytesLike, message: BytesLike,
+             construction: str = "xsalsa20poly1305") -> bytes:
+    """An anonymous box (libsodium's ``crypto_box_seal``): a fresh
+    ephemeral key per message, 48 bytes of overhead. Anybody can make
+    one, so it says nothing about the sender."""
+
+def box_seal_open(recipient_public: BytesLike, recipient_private: BytesLike,
+                  sealed: BytesLike, construction: str = "xsalsa20poly1305") -> bytes:
+    """Open a sealed box. The public key is needed too: it is half of
+    the nonce."""
+
+def kx_seed_keypair(seed: BytesLike) -> Tuple[bytes, bytes]:
+    """A key-exchange key pair from a 32 byte seed, as libsodium's
+    ``crypto_kx_seed_keypair`` (BLAKE2b of the seed) - not the same key
+    pair ``box_seed_keypair`` gives for the same seed."""
+
+def kx_client_session_keys(client_public: BytesLike, client_private: BytesLike,
+                           server_public: BytesLike) -> Tuple[bytes, bytes]:
+    """The client's ``(receive, transmit)`` keys; the server's are the
+    same two the other way round."""
+
+def kx_server_session_keys(server_public: BytesLike, server_private: BytesLike,
+                           client_public: BytesLike) -> Tuple[bytes, bytes]:
+    """The server's ``(receive, transmit)`` keys."""
+
+def nacl_auth(key: BytesLike, message: BytesLike) -> bytes:
+    """NaCl's ``crypto_auth``: HMAC-SHA-512 truncated to 32 bytes, under a
+    32 byte key."""
+
+def nacl_auth_verify(key: BytesLike, message: BytesLike, tag: BytesLike) -> bool:
+    """Whether a ``crypto_auth`` tag is right, compared in constant time."""
+
+def nacl_sign(private: BytesLike, message: BytesLike) -> bytes:
+    """NaCl's ``crypto_sign``: the Ed25519 signature followed by the
+    message. ``private`` is the 32 byte seed, or libsodium's 64 byte
+    seed-and-public-key form, which is refused if its halves disagree."""
+
+def nacl_sign_open(public: BytesLike, signed: BytesLike) -> bytes:
+    """The message, if the signature in front of it verifies; raises
+    otherwise."""
+
+def ed25519_public_to_x25519(public: BytesLike) -> bytes:
+    """The X25519 public key for an Ed25519 one. Raises for bytes that
+    are not a point, a small-order point, or a point outside the
+    prime-order subgroup, as libsodium does."""
+
+def ed25519_private_to_x25519(private: BytesLike) -> bytes:
+    """The X25519 private key for a 32 byte Ed25519 seed, clamped."""
+
+def hsalsa20(key: BytesLike, input: BytesLike) -> bytes:
+    """HSalsa20: 32 byte key and 16 byte input to 32 bytes. XSalsa20's
+    subkey derivation, and NaCl's box key from an X25519 secret."""
 
 def x448_generate() -> Tuple[bytes, bytes]:
     """A fresh X448 key pair (RFC 7748), as ``(private, public)``.

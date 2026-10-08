@@ -160,6 +160,14 @@ CASES = [
      "scalar secret and the point public."),
     ("x448", CLEAN,
      "the same ladder over 2^448 - 2^224 - 1, 448 iterations."),
+    # `exchange` is the ladder plus the refusal of an all-zero secret.
+    # That refusal is the verdict and may branch; it was `iter().all`,
+    # whose early exit also said where the first non-zero byte was, and
+    # reported from inside `all` rather than from `exchange`.
+    ("x25519_exchange", {"allcrypt::ec::x25519::exchange"},
+     "the verdict on the all-zero secret, and nothing before it."),
+    ("x448_exchange", {"allcrypt::ec::x448::exchange"},
+     "the same for X448."),
     # SM2's two rows, and they are **positive controls rather than
     # clean rows** - the honest classification of where this is.
     #
@@ -363,6 +371,16 @@ CASES = [
     ("chacha20_poly1305_seal", CLEAN,
      "ChaCha20-Poly1305 encryption through api::aead_encrypt: the "
      "keystream is additions, rotations and XORs."),
+
+    # ---- NaCl ---------------------------------------------------------
+    ("secretbox_seal", CLEAN,
+     "both secretbox constructions with a secret key and message: HSalsa20 "
+     "and HChaCha20, the stream from byte 32, and Poly1305."),
+    ("secretbox_open", {"allcrypt::nacl::secretbox_decrypt_detached"},
+     "opening under a secret key; the only branch allowed is the verdict."),
+    ("box_beforenm", {"allcrypt::ec::x25519::exchange"},
+     "the box key from a secret X25519 private key, both H-functions; the "
+     "only branch allowed is exchange's all-zero refusal, the verdict."),
 ]
 
 REPORT = re.compile(r"^==\d+== [A-Z]")
@@ -440,6 +458,20 @@ def run(case):
     return len(reports), proc.stderr
 
 
+def list_check():
+    """The harness's own list of cases against this table. A case written
+    in the harness and left out of the table is never run; one in the
+    table and not the harness fails as an unknown case. The harness's
+    list had fallen two rows behind before this check."""
+    listed = subprocess.run([BINARY, "--list"], capture_output=True, text=True,
+                            check=True).stdout.split()
+    table = [name for name, _, _ in CASES]
+    if sorted(listed) != sorted(table):
+        sys.exit("ct_check: the harness and the table list different cases.\n"
+                 "  only in the harness: {}\n  only in the table: {}".format(
+                     sorted(set(listed) - set(table)), sorted(set(table) - set(listed))))
+
+
 def self_test():
     """
     Prove the marking reaches valgrind before believing any CLEAN row.
@@ -460,66 +492,146 @@ def self_test():
                  "CLEAN result below would mean anything.")
 
 
-#: Functions that must contain no division instruction. Valgrind cannot
-#: see this: a `div` is not a branch, but its latency depends on its
-#: operands on many processors, and a division on a secret in ML-KEM is
-#: the KyberSlash leak. `byte_decode` had one - `value % modulus` with the
-#: modulus chosen at run time - until this check was written.
-NO_DIVISION = re.compile(r"pq::ml_(kem|dsa)")
+#: Source files whose code runs on secrets, and from which no division may
+#: come. Valgrind cannot see this: a `div` is not a branch, but its
+#: latency depends on its operands on many processors, and a division on a
+#: secret in ML-KEM is the KyberSlash leak. `byte_decode` had one - `value
+#: % modulus` with the modulus chosen at run time - until the first
+#: version of this scan, which covered ML-KEM and ML-DSA by symbol name.
+#:
+#: Attribution is by the debug line table's whole inline chain
+#: (`addr2line -i`), not by the enclosing symbol: much of this code is
+#: inlined into the harness's own `run`, and a `div_ceil` written here is
+#: inlined from the standard library and attributed to `core` by its
+#: innermost frame. A division is charged to every listed file anywhere in
+#: its chain.
+CONSTANT_TIME_SOURCES = re.compile(
+    r"(^|/)src/(bignum/(ct|montgomery|fixed)"
+    r"|ec/(fixed|ct|field25519|field448|edwards|x25519|x448|eddsa|xeddsa|ecdsa)"
+    r"|mac/poly1305|stream_ciphers/(chacha|chacha_simd|salsa20|chacha20poly1305)"
+    r"|block_ciphers/(aes|aes_ni|ghash|gcm)|nacl"
+    r"|pq/ml_(kem|dsa)(/[a-z_0-9]+)?"
+    r"|publickey_ciphers/(rsa|dh))\.rs:\d+")
+
+#: Divisions in those files that are on public values, each with the
+#: source text that identifies it and the reason. Matched against the
+#: line's text rather than its number, so an edit above it does not
+#: invalidate the entry; a division that matches nothing here fails.
+PUBLIC_DIVISIONS = [
+    ("src/bignum/montgomery.rs", "table.chunks_exact(k)",
+     "the table's length over the limb count: both are the modulus's "
+     "width, which is public."),
+    ("src/block_ciphers/aes.rs", "if i % nk == 0",
+     "the key schedule's word index modulo the key's length in words, "
+     "neither of which is secret. The `i % nk == 4` below it reuses the "
+     "remainder."),
+    ("src/ec/eddsa.rs", "bytes.chunks(width)",
+     "the hash's length over the group order's width in bytes: a "
+     "64 or 114 byte digest split into fixed-width pieces."),
+]
 
 #: Somewhere a division is known to be, so that a scan which finds none
-#: in ML-KEM is known to be able to find one at all: a function in the
-#: harness that does nothing but divide two run-time values. (`bignum`
-#: is no use for this - its 128 bit divisions are calls to `__udivti3`
-#: rather than an instruction in its own body.)
-DIVISION_CONTROL = re.compile(r"ct_bignum::division_control")
+#: in the files above is known to be able to find one at all: a function
+#: in the harness that does nothing but divide two run-time values.
+DIVISION_CONTROL = "tools/src/bin/ct_bignum.rs"
 
 #: A division too wide for one instruction is a call into the compiler's
 #: runtime instead, and is the same leak.
 DIVISION = re.compile(r"\t(i?div)\s|<__(u?)(div|mod)[dt]i3>")
+ADDRESS = re.compile(r"^\s*([0-9a-f]+):")
+LOCATION = re.compile(r"^(.*?):(\d+)(?: \(discriminator \d+\))?$")
+
+
+def inline_chains(addresses):
+    """`{address: [(function, file, line), ...]}`, innermost frame first."""
+    chains = {}
+    addresses = sorted(addresses)
+    for start in range(0, len(addresses), 500):
+        batch = addresses[start:start + 500]
+        out = subprocess.run(["addr2line", "-a", "-i", "-f", "-C", "-e", BINARY]
+                             + ["0x" + a for a in batch],
+                             capture_output=True, text=True, check=True).stdout
+        current = None
+        lines = out.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("0x"):
+                current = format(int(line, 16), "x")
+                chains[current] = []
+                i += 1
+                continue
+            function = line
+            location = lines[i + 1] if i + 1 < len(lines) else "??:0"
+            match = LOCATION.match(location)
+            file, number = (match.group(1), int(match.group(2))) if match else (location, 0)
+            chains[current].append((function, file, number))
+            i += 2
+    return chains
+
+
+def source_line(file, number):
+    try:
+        with open(os.path.join(ROOT, file)) as handle:
+            return handle.read().splitlines()[number - 1].strip()
+    except (OSError, IndexError):
+        return ""
 
 
 def division_scan():
-    """Fail if any ML-KEM function in the harness binary divides.
-
-    Reads the disassembly with objdump. Inlined code is attributed to the
-    function it was inlined into, which for everything in ML-KEM is
-    another ML-KEM function, so the scan sees it.
-    """
-    if shutil.which("objdump") is None:
-        sys.exit("ct_check: objdump is not installed (binutils). See "
-                 "docs/building.md.")
-    text = subprocess.run(["objdump", "-d", "--no-show-raw-insn", "-C",
-                           BINARY], capture_output=True, text=True,
-                          check=True).stdout
-    function = ""
-    offending = set()
+    """Fail if a division in the harness binary comes from code that runs
+    on secrets, other than the public ones listed with their reasons."""
+    for tool in ("objdump", "addr2line"):
+        if shutil.which(tool) is None:
+            sys.exit("ct_check: {} is not installed (binutils). See "
+                     "docs/building.md.".format(tool))
+    text = subprocess.run(["objdump", "-d", "--no-show-raw-insn", BINARY],
+                          capture_output=True, text=True, check=True).stdout
+    divisions = [ADDRESS.match(line).group(1) for line in text.splitlines()
+                 if DIVISION.search(line) and ADDRESS.match(line)]
+    chains = inline_chains(divisions)
     control = 0
-    for line in text.splitlines():
-        if line.endswith(">:"):
-            function = line[line.find("<") + 1:-2]
+    offending = []
+    allowed_seen = set()
+    for address in divisions:
+        chain = chains.get(address, [])
+        if any(file.endswith(DIVISION_CONTROL) for _, file, _ in chain):
+            control += 1
             continue
-        if DIVISION.search(line):
-            if NO_DIVISION.search(function):
-                offending.add(function)
-            if DIVISION_CONTROL.search(function):
-                control += 1
+        for function, file, number in chain:
+            located = "{}:{}".format(file, number)
+            if not CONSTANT_TIME_SOURCES.search(located):
+                continue
+            text_here = source_line(file, number)
+            allowed = [i for i, (name, fragment, _) in enumerate(PUBLIC_DIVISIONS)
+                       if file.endswith(name) and fragment in text_here]
+            if allowed:
+                allowed_seen.update(allowed)
+            else:
+                offending.append("{} in {}\n        {}".format(
+                    located[located.find("src/"):], function, text_here))
     if control == 0:
-        sys.exit("ct_check: the division scan found no division in "
-                 "bignum, where one is known to be. The scan is not "
-                 "reading the disassembly, so its clean result for ML-KEM "
-                 "would mean nothing.")
+        sys.exit("ct_check: the division scan found no division in the "
+                 "harness's control function. The scan is not reading the "
+                 "disassembly, so a clean result would mean nothing.")
     if offending:
-        sys.exit("ct_check: a division instruction in ML-KEM, which "
-                 "runs on secrets:\n    " + "\n    ".join(sorted(offending)))
-    print("division scan: no division in ML-KEM or ML-DSA; {} in the control"
-          .format(control))
+        sys.exit("ct_check: division on a constant-time path (a division "
+                 "whose operands are public belongs in PUBLIC_DIVISIONS with "
+                 "its reason):\n    " + "\n    ".join(sorted(set(offending))))
+    stale = [PUBLIC_DIVISIONS[i][:2] for i in range(len(PUBLIC_DIVISIONS))
+             if i not in allowed_seen]
+    print("division scan: {} divisions in the binary, none on a constant-time "
+          "path; {} public ones listed and found{}; {} in the control"
+          .format(len(divisions), len(allowed_seen),
+                  ", {} listed and not found: {}".format(len(stale), stale) if stale else "",
+                  control))
 
 
 def main():
     if shutil.which("valgrind") is None:
         sys.exit("ct_check: valgrind is not installed. See docs/building.md.")
     build()
+    list_check()
     self_test()
     division_scan()
 

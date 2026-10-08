@@ -27,7 +27,7 @@ against that software's own tools.
 - [Stream ciphers](#stream-ciphers)
 - [MACs](#macs) and [key derivation](#key-derivation)
 - [Hashes](#hashes)
-- [Public key](#public-key) and [post-quantum](#post-quantum)
+- [Public key](#public-key), [NaCl and libsodium](#nacl-and-libsodium) and [post-quantum](#post-quantum)
 - [Certificates and keys](#certificates-and-keys)
 - [TLS](#tls), [GOST TLS](#gost-tls) and [SSH](#ssh)
 - [Interfaces and tools](#interfaces-and-tools)
@@ -126,6 +126,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |ChaCha20-Poly1305 (RFC 8439), XChaCha20-Poly1305|✓|✓|
 |RC4|✓|spec reference; RFC 6229's vectors|
 |Salsa20 (20, 12 and 8 rounds)|✓|spec reference|
+|XSalsa20 and HSalsa20 ("Extending the Salsa20 nonce")|✓|NaCl's own values; libsodium 1.0.18 and golang.org/x/crypto, `vectors/nacl.vec`|
 |ZipCrypto (PKWARE traditional ZIP encryption)|✓|✓|
 |WEP (RC4 with the per-frame IV; IEEE 802.11)|✓|spec reference|
 |TKIP per-packet key mixing (WPA; IEEE 802.11)|✓|spec reference|
@@ -253,6 +254,29 @@ refused by name rather than aliased to the pure ones. The tests read RFC
 compares several hundred signatures with OpenSSL byte for byte - EdDSA is
 deterministic, so that is a comparison of bytes rather than only of
 acceptance.
+
+## NaCl and libsodium
+
+Byte for byte with libsodium 1.0.18. `vectors/nacl.vec` holds NaCl's
+own examples ("Cryptography in NaCl", read out of libsodium's tests) and
+libsodium's answers over many lengths and keys;
+`scripts/make_nacl_vectors.py` writes it and requires golang.org/x/crypto
+v0.37.0 to agree wherever it implements the function, and with `--ours`
+has both open boxes and sealed boxes made here.
+
+|Function|Implemented|Tested|
+|---|---|---|
+|secretbox, XSalsa20-Poly1305 (`crypto_secretbox`), combined and detached|✓|NaCl's values; libsodium and Go agree|
+|secretbox, XChaCha20-Poly1305 (`crypto_secretbox_xchacha20poly1305`)|✓|libsodium|
+|box, Curve25519-XSalsa20-Poly1305 (`crypto_box`, `_beforenm`)|✓|NaCl's values; libsodium and Go agree; ours opened by both|
+|box, Curve25519-XChaCha20-Poly1305|✓|libsodium; ours opened by libsodium|
+|Sealed boxes (`crypto_box_seal`), both constructions|✓|libsodium and Go open the rows' and ours|
+|Seed key pairs (`crypto_box_seed_keypair`, `crypto_kx_seed_keypair`)|✓|libsodium|
+|Session keys (`crypto_kx`)|✓|libsodium|
+|`crypto_auth` (HMAC-SHA-512-256)|✓|libsodium and Go agree|
+|`crypto_sign`, combined form|✓|libsodium and Go agree|
+|Ed25519 to X25519 keys (`crypto_sign_ed25519_pk_to_curve25519`, `_sk_`)|✓|libsodium, refusals included|
+|Secret streams (`crypto_secretstream_xchacha20poly1305`)|||
 
 ## Post-quantum
 
@@ -400,6 +424,7 @@ directions, and recorded sessions replay offline byte for byte.
 |C interface (`include/allcrypt.h`, the `c-api` feature)|✓|✓|
 |OpenSSL `LD_PRELOAD` shim for curl, wget and git (Unix only)|✓|✓|
 |`allcrypt-proxy`, with certificate mirroring|✓|✓|
+|Constant-time checks: valgrind rows and division scan (`ct_check.py`), timing on the machine (`dudect`)|✓|controls in both that must report|
 
 The Python bindings' tests compare with hashlib, python-cryptography and
 the standard `ssl` module; `scripts/check_c_api.py` compares the C

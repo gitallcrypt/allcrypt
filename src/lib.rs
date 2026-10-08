@@ -9,6 +9,7 @@ pub mod stream_ciphers;
 pub mod hash_functions;
 pub mod kdf;
 pub mod mac;
+pub mod nacl;
 pub mod pem;
 pub mod prng;
 pub mod random;

@@ -1386,6 +1386,88 @@ assert allcrypt.xeddsa_sign("xeddsa", private, b"m", z) == \
        allcrypt.xeddsa_sign("xeddsa", private, b"m", z)
 ```
 
+## NaCl: secretbox, box and sealed boxes
+
+NaCl's constructions and libsodium's additions, byte for byte with
+libsodium. Every function takes the construction last:
+`"xsalsa20poly1305"` (NaCl's, the default) or `"xchacha20poly1305"`
+(libsodium's). Both use a 24 byte nonce, long enough to draw at random
+for every message.
+
+```python
+import allcrypt
+
+key = allcrypt.random_bytes(32)
+nonce = allcrypt.random_bytes(24)
+boxed = allcrypt.secretbox_encrypt(key, nonce, b"attack at dawn")
+assert len(boxed) == 16 + 14          # the tag, then the ciphertext
+assert allcrypt.secretbox_decrypt(key, nonce, boxed) == b"attack at dawn"
+
+tampered = boxed[:-1] + bytes([boxed[-1] ^ 1])
+try:
+    allcrypt.secretbox_decrypt(key, nonce, tampered)
+    raise AssertionError("a tampered box opened")
+except allcrypt.CryptoError:
+    pass
+```
+
+A box is the same thing under a key two X25519 key pairs agree on.
+`box_beforenm` is that key, for a session of many boxes without an
+exchange per message:
+
+```python
+import allcrypt
+
+alice, alice_public = allcrypt.box_keypair()
+bob, bob_public = allcrypt.box_keypair()
+nonce = allcrypt.random_bytes(24)
+
+boxed = allcrypt.box_encrypt(bob_public, alice, nonce, b"hi bob", "xchacha20poly1305")
+assert allcrypt.box_decrypt(alice_public, bob, nonce, boxed, "xchacha20poly1305") == b"hi bob"
+
+key = allcrypt.box_beforenm(alice_public, bob, "xchacha20poly1305")
+assert key == allcrypt.box_beforenm(bob_public, alice, "xchacha20poly1305")
+assert allcrypt.secretbox_decrypt(key, nonce, boxed, "xchacha20poly1305") == b"hi bob"
+```
+
+A sealed box needs only the recipient's public key. It carries a fresh
+ephemeral key, so anybody can make one; it says nothing about the sender.
+
+```python
+import allcrypt
+
+private, public = allcrypt.box_seed_keypair(bytes(range(32)))
+sealed = allcrypt.box_seal(public, b"anonymous")
+assert len(sealed) == 48 + 9
+assert allcrypt.box_seal_open(public, private, sealed) == b"anonymous"
+```
+
+**`"xchacha20poly1305"` here is not the AEAD `"xchacha20-poly1305"`.**
+The box authenticates the ciphertext alone, with no additional data and
+no lengths, and starts the payload at keystream byte 32. Asking a box for
+the AEAD's name raises and says so.
+
+The rest of libsodium's set: `kx_seed_keypair` and
+`kx_client_session_keys` / `kx_server_session_keys` (two session keys,
+one per direction), `nacl_auth` (HMAC-SHA-512-256), `nacl_sign` and
+`nacl_sign_open` (the signature followed by the message), and
+`ed25519_public_to_x25519` / `ed25519_private_to_x25519`:
+
+```python
+import allcrypt
+
+client, client_public = allcrypt.kx_seed_keypair(bytes(32))
+server, server_public = allcrypt.kx_seed_keypair(bytes([1] * 32))
+rx, tx = allcrypt.kx_client_session_keys(client_public, client, server_public)
+assert allcrypt.kx_server_session_keys(server_public, server, client_public) == (tx, rx)
+
+seed, ed_public = allcrypt.eddsa_generate("ed25519")
+signed = allcrypt.nacl_sign(seed, b"message")
+assert allcrypt.nacl_sign_open(ed_public, signed) == b"message"
+x_private = allcrypt.ed25519_private_to_x25519(seed)
+assert allcrypt.x25519_public_key(x_private) == allcrypt.ed25519_public_to_x25519(ed_public)
+```
+
 ## Finite-field Diffie-Hellman
 
 `allcrypt.DhGroup` is the other Diffie-Hellman: a prime modulus and a

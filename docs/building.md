@@ -192,6 +192,8 @@ small support crates.
 | `scripts/rfc_oids.py` | Reads OIDs back out of the RFC texts vendored in `rfcs/` |
 | `tools/src/bin/ct_bignum.rs` | Runs each operation with its secrets marked, for ctgrind |
 | `scripts/ct_check.py` | Checks those under valgrind: what is constant time, and what is not |
+| `tools/src/bin/dudect.rs` | Times the constant-time targets on the machine itself, with controls |
+| `tests/test_nacl.rs`, `pytests/test_nacl.py` | NaCl's boxes against `vectors/nacl.vec`, from NaCl, libsodium and Go |
 | `tests/test_gost_handshake.rs` | A whole RFC 9189 handshake, against a server written there |
 | `examples/doc_examples.rs` | Generated; see below |
 | `scripts/check_messages.py` | Error messages with Rust's line-continuation rule forgotten |
@@ -776,6 +778,19 @@ $ (cd scripts/witness/xchachawitness && GOFLAGS=-mod=mod GOPROXY=off go build -o
 $ python3 scripts/make_xchacha_vectors.py    # rewrites vectors/xchacha.vec
 ```
 
+**NaCl**: the system's libsodium 1.0.18 (`libsodium23`, reached through
+`ctypes`, no headers), and golang.org/x/crypto's `nacl/*` packages from
+the same checkouts as XChaCha20 above. The script fetches NaCl's own
+examples from libsodium's `test/default` at tag 1.0.18 and requires
+libsodium to reproduce them; `--ours` has libsodium and Go open boxes
+and sealed boxes made by the built Python module.
+
+```console
+$ (cd scripts/witness/naclwitness && GOFLAGS=-mod=mod GOPROXY=off go build -o /opt/wgwitness/naclwitness .)
+$ python3 scripts/build_python.py
+$ python3 scripts/make_nacl_vectors.py --ours    # rewrites vectors/nacl.vec
+```
+
 **WireGuard**: wireguard-go (`WireGuard/wireguard-go`, its main branch)
 with the x/ modules at the versions its `go.mod` pins, all from GitHub,
 and `replace` lines for them and three empty stand-ins for modules the
@@ -983,13 +998,100 @@ optimiser folded away before valgrind saw it. It is a lower bound on the
 problems, not a proof of their absence.
 
 **One variable-latency instruction is checked separately: division.**
-Before the valgrind rows, `ct_check.py` disassembles the harness with
-`objdump` and fails if any ML-KEM function contains a `div` or calls the
-compiler's wide-division routines (`__udivti3` and friends). A division's
-latency depends on its operands on many processors, and a division on a
-secret in ML-KEM is the KyberSlash leak. The scan has a control of its
-own - a function in the harness that only divides - so a scan that has
+Before the valgrind rows, `ct_check.py` disassembles the harness and
+fails if a division instruction (`div`, `idiv`, or a call to the
+compiler's wide-division routines such as `__udivti3`) comes from a
+source file whose code runs on secrets: the fixed-width bignum and
+Montgomery code, the curve fields and point arithmetic, X25519 and X448,
+EdDSA and ECDSA, RSA and Diffie-Hellman, ML-KEM and ML-DSA, AES, GHASH,
+ChaCha, Salsa20, Poly1305 and the NaCl boxes. A division's latency
+depends on its operands on many processors, and a division on a secret
+in ML-KEM is the KyberSlash leak. Each division is attributed through
+the debug line table's whole inline chain (`addr2line -i`), so code
+inlined into another function, or a `div_ceil` inlined from the standard
+library, is still charged to the file it was written in. Divisions in
+those files on public values - a length, a modulus - are listed in
+`PUBLIC_DIVISIONS` with the line's text and the reason; anything else
+fails with the file, line and source. The scan has a control of its own
+- a function in the harness that only divides - so a scan that has
 stopped reading the disassembly fails rather than reporting nothing.
+
+The harness's list of cases (`ct_bignum --list`) is compared with the
+table before anything runs, so a case written in one and not the other
+fails instead of silently not running.
+
+### Timing on the machine itself: dudect
+
+Valgrind checks the compiled code against a model of the processor. The
+other half is the processor: `tools/src/bin/dudect.rs` times each target
+on two classes of input - one fixed secret and fresh random ones,
+interleaved at random - and applies Welch's t-test to the two
+distributions of cycle counts (Reparaz, Balasch and Verbauwhede, "Dude,
+is my code constant time?", 2017). It sees what valgrind cannot: an
+instruction whose latency depends on its data, and whatever the
+microarchitecture adds.
+
+```
+cargo run --release -p allcrypt-tools --bin dudect                    # every row, 10 s each
+cargo run --release -p allcrypt-tools --bin dudect -- --seconds 60 x25519
+cargo run --release -p allcrypt-tools --bin dudect -- --list
+```
+
+It prints, per row, the measurements taken, the mean cycles and the
+largest |t| over the whole sample and twenty cropped versions of it
+(the cropping removes the long tail of interrupts, where a small shift
+in the body would otherwise hide). |t| above 10 means the two classes
+take different time; 4.5 to 10 is inconclusive and wants a longer run.
+The rows:
+
+- **`control_xor`** - no difference between the classes but the data.
+  If its |t| is large, the machine is the cause, not the code: pin the
+  run to one core (`taskset -c 2 ...`), stop other work, and run again.
+  The tool exits non-zero and says so.
+- **`control_memcmp`, `control_biguint_pow`** - variable time on
+  purpose, and they must show a large |t|. If they do not, the
+  measurement is not working on this machine and no clean row means
+  anything.
+- **the targets** - X25519, Ed25519 and ECDSA signing, ML-KEM-768
+  decapsulation (a valid ciphertext against random ones, which is the
+  implicit-rejection path), bitsliced AES, Poly1305, ChaCha20-Poly1305,
+  the secretbox tag comparison and the box key. Each must stay under 10.
+
+A clean result is evidence over the inputs and the time it ran, not a
+proof: a leak smaller than the noise is not seen, and a busy machine
+hides more. A target that fails twice on a quiet machine, with the
+controls behaving, is a finding.
+
+### After a new toolchain, or on a new machine
+
+Constant time is a property of the binary, so it is re-established
+whenever the compiler or the processor changes - a Rust upgrade can
+turn a mask back into a branch (`Montgomery::conditional_subtract` did,
+which is why `bignum::ct::opaque` exists), and a processor can have a
+data-dependent instruction its predecessor did not. After building, on
+the machine that matters:
+
+```
+rustc -V                                              # record it with the results
+python3 scripts/ct_check.py                           # valgrind rows, division scan
+python3 scripts/ct_check.py --aes-ni                  # if the build uses the aes-ni feature
+taskset -c 2 cargo run --release -p allcrypt-tools --bin dudect -- --seconds 30
+taskset -c 2 cargo run --release -p allcrypt-tools --features aes-ni,simd --bin dudect -- --seconds 30
+```
+
+`ct_check.py` needs `valgrind` and binutils (`objdump`, `addr2line`);
+dudect needs nothing. Both exit non-zero on anything unexpected. The
+first two answer "does this compiler still emit what the code claims";
+the dudect runs answer "does this processor run it in constant time",
+and the second of them covers the hardware AES and vectorised ChaCha
+paths. On a machine without Rust, a static binary built elsewhere runs
+as it is:
+
+```
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p allcrypt-tools \
+    --bin dudect --target x86_64-unknown-linux-gnu
+# then, on the machine: target/x86_64-unknown-linux-gnu/release/dudect --seconds 30
+```
 
 GHASH relies on the opposite assumption about **multiplication**: its
 carry-less products are built from 64-bit integer multiplies on secret

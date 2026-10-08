@@ -98,6 +98,7 @@ to be someone's CVE.**
 - [7zzf. Wi-Fi: WEP, TKIP, Michael and the WPA handshake](#7zzf-wi-fi-wep-tkip-michael-and-the-wpa-handshake)
 - [7zzg. The smart card example](#7zzg-the-smart-card-example)
 - [7zzh. The C interface](#7zzh-the-c-interface)
+- [7zzi. NaCl and libsodium](#7zzi-nacl-and-libsodium)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -906,6 +907,20 @@ implementation "MAY" check for it.
 primitive) does not, because the primitive is what the specification's
 test vectors are stated in terms of and the judgement belongs to the key
 exchange. A test covers all five published low-order points.
+
+### The all-zero check stopped at the first non-zero byte
+
+`exchange` tested for zero with `iter().all(|b| *b == 0)`, which returns
+at the first non-zero byte - so its running time said where that byte
+was, which is more about the shared secret than the verdict. The
+`x25519` row in `scripts/ct_check.py` runs the raw ladder, to keep the
+verdict's own branch out of a clean row, and so left the loop before the
+verdict out as well. X448 had the same line.
+
+**Status: mitigated.** Both fold the bytes with OR and branch once. The
+`x25519_exchange` and `x448_exchange` rows allow a report from
+`exchange` itself and nowhere else; the early exit reported from inside
+`all`, which those rows would name as new.
 
 ### The ladder swapped its registers with a branch on the scalar
 
@@ -9227,6 +9242,90 @@ inside the library, as in any C interface.
 **Status: open.** The C test runs against the shared and the static
 library on Linux. The Windows and macOS file names in [c.md](c.md) are
 cargo's conventions; neither build has been compiled and linked here.
+
+## 7zzi. NaCl and libsodium
+
+`src/nacl.rs`: secretbox, box, sealed boxes, `crypto_kx`, `crypto_auth`,
+combined signatures, and Ed25519 to X25519 keys. `vectors/nacl.vec` is
+NaCl's own examples and libsodium 1.0.18's answers, with Go's
+`x/crypto/nacl` agreeing where it can; `tests/test_nacl.rs` reads it.
+
+### Two constructions called XChaCha20-Poly1305
+
+**Status: mitigated.** libsodium's `crypto_secretbox_xchacha20poly1305`
+and the AEAD `xchacha20-poly1305` share a key size, a nonce size and
+nearly a name, and differ in three ways: Poly1305 covers the ciphertext
+alone (no additional data, padding or lengths), the payload starts at
+keystream byte 32 rather than 64, and the stream is the 8 byte nonce,
+64 bit counter ChaCha20. Either way round, the result encrypts and
+opens its own boxes. `test_the_secretbox_is_not_the_aead` shows the two
+disagreeing, and `Construction::from_name` refuses the AEAD's spelling
+with a message that names the difference.
+
+### The payload starts in block zero
+
+**Status: mitigated.** The Poly1305 key is the first 32 bytes of the
+keystream and the message is encrypted from byte 32, so the rest of
+block zero is payload keystream. Discarding it, as the IETF AEAD does,
+gives a box that opens itself and nothing else.
+`test_the_payload_starts_at_byte_32` checks every length across the end
+of the block, and the vectors run from 0 to 4,096 bytes.
+
+### A low-order peer key
+
+**Status: mitigated.** NaCl's `crypto_box` boxed under whatever X25519
+returned, so a peer key of small order gave a box key anybody could
+compute. libsodium refuses the seven u values of its list, and so does
+`box_beforenm`; `vectors/nacl.vec` has all seven for both
+constructions, each marked refused.
+
+### A sealed box authenticates nobody
+
+**Status: accepted.** `box_seal` uses a fresh key pair per message, so
+the recipient learns that the box was not altered but not who made it:
+anybody with the public key can make one. That is the construction's
+purpose. A caller that needs the sender wants `box_encrypt`.
+
+### A sealed box's nonce is a function of the keys
+
+**Status: accepted.** The nonce is `BLAKE2b-192(ephemeral_pk ||
+recipient_pk)`, so two messages sealed with one ephemeral key to one
+recipient share a key and a nonce. `box_seal` draws the ephemeral key
+itself. `box_seal_with_ephemeral` takes one, for known-answer tests; it
+is public in `nacl` and not in `api` or the bindings, and its comment
+says why.
+
+### A 64 byte secret key with two halves that disagree
+
+**Status: mitigated.** libsodium's Ed25519 secret key is the seed
+followed by the public key, and it signs with the stored public half as
+it stands. With a wrong public half, two signatures of one message give
+away the private scalar. `nacl::sign` derives the public key from the
+seed and refuses a 64 byte key whose second half differs;
+`test_signed_messages_and_both_key_forms` flips a byte of it.
+
+### One seed, two key pairs
+
+**Status: mitigated.** `crypto_box_seed_keypair` takes the first half of
+SHA-512 of the seed and `crypto_kx_seed_keypair` takes BLAKE2b-256 of
+it, so the same seed gives different keys through the two. Both are
+reproduced as libsodium has them, and a test asserts that they differ.
+
+### Converting a public key with a torsion component
+
+**Status: mitigated.** Ed25519 verification accepts a public key with a
+small-order component, and that key's Montgomery u is a different key.
+`ed25519_public_to_x25519` refuses, as libsodium does, bytes that are not
+a point, the small-order points and any point outside the prime-order
+subgroup. The vectors include keys with an order-8 component, made by
+libsodium's own point addition, and the refusals match libsodium's.
+
+### One key for signing and for exchange
+
+**Status: accepted.** The conversions exist so that one Ed25519 identity
+can also receive boxes, which libsodium supports and some protocols use.
+Using one key for two schemes ties their security together; nothing here
+prevents it, and separate keys are the simpler choice where there is one.
 
 ---
 

@@ -19,6 +19,7 @@ Checking against real servers is a development activity, not a test. It
 lives in `scripts/check_live.py`, which is run by hand.
 """
 
+import ipaddress
 import os
 import socket
 import sys
@@ -40,6 +41,22 @@ _ALLOWED = {"127.0.0.1", "::1", "localhost", "ip6-localhost"}
 
 _real_connect = socket.socket.connect
 _real_connect_ex = socket.socket.connect_ex
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _name_is_local(host):
+    """A host a lookup may be made for: none, a loopback name, or an
+    address literal - which needs no resolver, and which `connect` then
+    judges like any other address."""
+    if host is None or host in _ALLOWED or host == "":
+        return True
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    try:
+        ipaddress.ip_address(host.split("%")[0])
+        return True
+    except ValueError:
+        return False
 
 
 def _address_is_local(address):
@@ -83,10 +100,21 @@ def _no_network():
             _blocked(address)
         return _real_connect_ex(self, address)
 
+    def getaddrinfo(host, *args, **kwargs):
+        # A name lookup is traffic too, and it comes before `connect`: a
+        # connection by name used to reach the resolver first, so on a
+        # machine without one the guard was never consulted and its own
+        # test failed with a resolver error rather than the guard's.
+        if not _name_is_local(host):
+            _blocked((host,) + tuple(args[:1]))
+        return _real_getaddrinfo(host, *args, **kwargs)
+
     socket.socket.connect = connect
     socket.socket.connect_ex = connect_ex
+    socket.getaddrinfo = getaddrinfo
     try:
         yield
     finally:
         socket.socket.connect = _real_connect
         socket.socket.connect_ex = _real_connect_ex
+        socket.getaddrinfo = _real_getaddrinfo

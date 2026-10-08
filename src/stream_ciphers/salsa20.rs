@@ -52,23 +52,7 @@ pub fn core(input: &[u8; 64], rounds: usize) -> [u8; 64] {
                                     input[at + 2], input[at + 3]]);
     }
     let start = x;
-
-    for _ in 0..rounds / 2 {
-        // Column round. Each quarter-round walks *down* a column,
-        // starting from the diagonal element - so column 0 starts at
-        // word 0, column 1 at word 5, column 2 at word 10, column 3 at
-        // word 15. Starting each at the top of its column instead is a
-        // plausible misreading that gives a different cipher.
-        quarter(&mut x, 4, 0, 8, 12);
-        quarter(&mut x, 9, 5, 13, 1);
-        quarter(&mut x, 14, 10, 2, 6);
-        quarter(&mut x, 3, 15, 7, 11);
-        // Row round, the transpose of the above.
-        quarter(&mut x, 1, 0, 2, 3);
-        quarter(&mut x, 6, 5, 7, 4);
-        quarter(&mut x, 11, 10, 8, 9);
-        quarter(&mut x, 12, 15, 13, 14);
-    }
+    permute(&mut x, rounds);
 
     let mut out = [0u8; 64];
     for index in 0..16 {
@@ -76,6 +60,77 @@ pub fn core(input: &[u8; 64], rounds: usize) -> [u8; 64] {
         out[index * 4..index * 4 + 4].copy_from_slice(&sum.to_le_bytes());
     }
     out
+}
+
+/// The double rounds alone, without the feed-forward: what `core` and
+/// `hsalsa20` share.
+fn permute(x: &mut [u32; 16], rounds: usize) {
+    for _ in 0..rounds / 2 {
+        // Column round. Each quarter-round walks *down* a column,
+        // starting from the diagonal element - so column 0 starts at
+        // word 0, column 1 at word 5, column 2 at word 10, column 3 at
+        // word 15. Starting each at the top of its column instead is a
+        // plausible misreading that gives a different cipher.
+        quarter(x, 4, 0, 8, 12);
+        quarter(x, 9, 5, 13, 1);
+        quarter(x, 14, 10, 2, 6);
+        quarter(x, 3, 15, 7, 11);
+        // Row round, the transpose of the above.
+        quarter(x, 1, 0, 2, 3);
+        quarter(x, 6, 5, 7, 4);
+        quarter(x, 11, 10, 8, 9);
+        quarter(x, 12, 15, 13, 14);
+    }
+}
+
+/// The state Salsa20 starts from with a 32 byte key: the constants on the
+/// diagonal, the key's halves in words 1-4 and 11-14, and `input` - the
+/// nonce and counter for the cipher, sixteen bytes of nonce for HSalsa20 -
+/// in words 6-9.
+fn initial_state(key: &[u8; 32], input: &[u8; 16]) -> [u32; 16] {
+    let word = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let mut state = [0u32; 16];
+    for (index, position) in [0usize, 5, 10, 15].into_iter().enumerate() {
+        state[position] = SIGMA[index];
+    }
+    for index in 0..4 {
+        state[1 + index] = word(&key[index * 4..]);
+        state[11 + index] = word(&key[16 + index * 4..]);
+        state[6 + index] = word(&input[index * 4..]);
+    }
+    state
+}
+
+/// HSalsa20 ("Extending the Salsa20 nonce", Bernstein 2008): Salsa20's
+/// twenty rounds over the key and a sixteen byte input, with **no
+/// feed-forward**, and the output is the eight words the attacker could
+/// otherwise compute the feed-forward from - the diagonal (0, 5, 10, 15)
+/// and the input's position (6, 7, 8, 9).
+///
+/// It derives XSalsa20's subkey and NaCl's box key. Taking the
+/// feed-forward too, or the first eight words, gives a function of the
+/// key of the right length that matches nothing.
+pub fn hsalsa20(key: &[u8; 32], input: &[u8; 16]) -> [u8; 32] {
+    let mut x = initial_state(key, input);
+    permute(&mut x, 20);
+    let mut out = [0u8; 32];
+    for (index, position) in [0usize, 5, 10, 15, 6, 7, 8, 9].into_iter().enumerate() {
+        out[index * 4..index * 4 + 4].copy_from_slice(&x[position].to_le_bytes());
+    }
+    out
+}
+
+/// XSalsa20: Salsa20 under the subkey `hsalsa20(key, nonce[..16])`, with
+/// `nonce[16..]` as its eight byte nonce. A 24 byte nonce is long enough
+/// to draw at random per message, which an 8 byte one is not.
+pub fn xsalsa20(key: &[u8], nonce: &[u8]) -> Result<Salsa20, String> {
+    let key: &[u8; 32] = key.try_into()
+        .map_err(|_| format!("XSalsa20 takes a 32 byte key, got {}.", key.len()))?;
+    if nonce.len() != 24 {
+        return Err(format!("XSalsa20 takes a 24 byte nonce, got {}.", nonce.len()));
+    }
+    let subkey = hsalsa20(key, nonce[..16].try_into().expect("sixteen"));
+    Salsa20::new(subkey.to_vec(), nonce[16..].to_vec())
 }
 
 /// Salsa's quarter-round: four ARX steps with rotations 7, 9, 13, 18.
@@ -214,18 +269,28 @@ impl Salsa20 {
                      -> Result<(), String> {
         let start = result.len();
         result.extend_from_slice(input);
-        let mut at = start;
-        while at < result.len() {
-            if self.used == 64 {
-                if let Err(e) = self.next_block() {
-                    // What was produced before the stream ran out stays;
-                    // nothing after it is emitted.
-                    result.truncate(at);
-                    return Err(e);
-                }
+        match self.apply(&mut result[start..]) {
+            Ok(()) => Ok(()),
+            Err((done, e)) => {
+                // What was produced before the stream ran out stays;
+                // nothing after it is emitted.
+                result.truncate(start + done);
+                Err(e)
             }
-            let take = (64 - self.used).min(result.len() - at);
-            for (byte, key) in result[at..at + take].iter_mut()
+        }
+    }
+
+    /// XOR the keystream into `buf` in place, continuing from wherever the
+    /// previous call stopped. On exhaustion, the error carries how many
+    /// bytes were transformed before it.
+    pub fn apply(&mut self, buf: &mut [u8]) -> Result<(), (usize, String)> {
+        let mut at = 0;
+        while at < buf.len() {
+            if self.used == 64 {
+                self.next_block().map_err(|e| (at, e))?;
+            }
+            let take = (64 - self.used).min(buf.len() - at);
+            for (byte, key) in buf[at..at + take].iter_mut()
                                    .zip(&self.keystream[self.used..]) {
                 *byte ^= key;
             }
@@ -403,6 +468,45 @@ mod tests {
         assert!(Salsa20::new(vec![0; 32], vec![0; 9]).is_err());
         assert!(Salsa20::with_rounds(vec![0; 32], vec![0; 8], 7).is_err());
         assert!(Salsa20::with_rounds(vec![0; 32], vec![0; 8], 0).is_err());
+    }
+
+    /// HSalsa20 is the core without the feed-forward, read at the diagonal
+    /// and the input words: so each of its words is the core's output word
+    /// at that position minus the input word there. That pins the
+    /// positions against `core`, which RFC 7914's vector pins; NaCl's own
+    /// values are in `tests/test_nacl.rs`.
+    #[test]
+    fn test_hsalsa20_is_the_core_without_its_feed_forward() {
+        let key: [u8; 32] = core::array::from_fn(|i| (i * 11 + 5) as u8);
+        let input: [u8; 16] = core::array::from_fn(|i| (i * 29 + 3) as u8);
+        let start = initial_state(&key, &input);
+        let mut block = [0u8; 64];
+        for (bytes, word) in block.chunks_exact_mut(4).zip(start) {
+            bytes.copy_from_slice(&word.to_le_bytes());
+        }
+        let full = core(&block, 20);
+        let sub = hsalsa20(&key, &input);
+        for (index, position) in [0usize, 5, 10, 15, 6, 7, 8, 9].into_iter().enumerate() {
+            let core_word = u32::from_le_bytes(full[position * 4..position * 4 + 4]
+                                               .try_into().unwrap());
+            let sub_word = u32::from_le_bytes(sub[index * 4..index * 4 + 4]
+                                              .try_into().unwrap());
+            assert_eq!(sub_word, core_word.wrapping_sub(start[position]), "word {position}");
+        }
+    }
+
+    /// XSalsa20 is Salsa20 under the HSalsa20 subkey, and its first 16
+    /// nonce bytes reach the keystream only through that subkey.
+    #[test]
+    fn test_xsalsa20_is_salsa20_under_the_subkey() {
+        let key = [9u8; 32];
+        let nonce: [u8; 24] = core::array::from_fn(|i| i as u8);
+        let subkey = hsalsa20(&key, nonce[..16].try_into().unwrap());
+        let want = crypt(&mut Salsa20::new(subkey.to_vec(), nonce[16..].to_vec()).unwrap(),
+                         &[0u8; 200]);
+        assert_eq!(hex(&crypt(&mut xsalsa20(&key, &nonce).unwrap(), &[0u8; 200])), hex(&want));
+        assert!(xsalsa20(&key, &nonce[..23]).is_err());
+        assert!(xsalsa20(&key[..16], &nonce).is_err());
     }
 
     /// The counter must not run into the nonce.

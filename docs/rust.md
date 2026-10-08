@@ -1326,12 +1326,14 @@ itself - and neither has a salt or a cost.
 use allcrypt::kdf::windows::{lm_hash, nt_hash};
 
 // NT: MD4 of the password as UTF-16LE.
-assert_eq!(allcrypt::to_hex(&nt_hash("Password")), "a4f49c406510bdcab6824ee7c30fd852");
+assert_eq!(allcrypt::to_hex(&nt_hash("Password")).to_lowercase(),
+           "a4f49c406510bdcab6824ee7c30fd852");
 
 // LM: bytes in the OEM code page, at most 14 of them. ASCII letters are
 // uppercased here; anything above 0x7f is the caller's to uppercase,
 // because which byte that is depends on the code page.
-assert_eq!(allcrypt::to_hex(&lm_hash(b"Password")?), "e52cac67419a9a224a3b108f3fa6cb6d");
+assert_eq!(allcrypt::to_hex(&lm_hash(b"Password")?).to_lowercase(),
+           "e52cac67419a9a224a3b108f3fa6cb6d");
 assert!(lm_hash(b"fifteen letters").is_err());
 ```
 
@@ -1709,6 +1711,39 @@ Verification accepts what libsignal accepts, and that is looser than RFC
 8032 in one place: `S` is checked against `2^253` rather than the group
 order, so `S + L` verifies wherever `S` does.
 [pitfalls.md](pitfalls.md) section 7zk has the rest.
+
+## NaCl: secretbox, box and sealed boxes
+
+`allcrypt::nacl` is NaCl's boxes and libsodium's additions, byte for
+byte with libsodium. A `Construction` picks the stream cipher -
+XSalsa20, NaCl's, or XChaCha20, libsodium's - and the combined forms are
+the tag followed by the ciphertext.
+
+```rust
+use allcrypt::nacl::{self, Construction};
+
+let construction = Construction::XSalsa20Poly1305;
+let (alice, alice_public) = nacl::box_seed_keypair(&[1u8; 32])?;
+let (bob, bob_public) = nacl::box_seed_keypair(&[2u8; 32])?;
+let nonce = [7u8; 24];
+
+let boxed = nacl::box_encrypt(construction, &bob_public, &alice, &nonce, b"hi bob")?;
+assert_eq!(boxed.len(), nacl::MAC_BYTES + 6);
+assert_eq!(nacl::box_decrypt(construction, &alice_public, &bob, &nonce, &boxed)?, b"hi bob");
+
+// A box is a secretbox under the key both ends agree on.
+let key = nacl::box_beforenm(construction, &alice_public, &bob)?;
+assert_eq!(nacl::secretbox_decrypt(construction, &key, &nonce, &boxed)?, b"hi bob");
+
+let sealed = nacl::box_seal(Construction::XChaCha20Poly1305, &bob_public, b"anonymous")?;
+assert_eq!(nacl::box_seal_open(Construction::XChaCha20Poly1305, &bob_public, &bob, &sealed)?,
+           b"anonymous");
+```
+
+`api` has the same functions with the construction by name, which is how
+Python reaches them. libsodium's XChaCha20 box is a different
+construction from the XChaCha20-Poly1305 AEAD in `stream_ciphers`; the
+module comment in `src/nacl.rs` lists the three differences.
 
 ## Finite-field Diffie-Hellman
 

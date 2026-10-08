@@ -482,6 +482,19 @@ impl<F: Field> Curve<F> {
         u.sub(F::ONE).mul(u.add(F::ONE).invert()).to_le()
     }
 
+    /// The Montgomery `u = (1 + y) / (1 - y)` of a point, little endian:
+    /// the inverse of `edwards_y`. The identity (`y = 1`) has no image
+    /// and gives 0, since the inverse is by exponentiation.
+    pub(crate) fn montgomery_u(&self, p: &Point<F>) -> Vec<u8> {
+        let y = p.y.mul(p.z.invert());
+        F::ONE.add(y).mul(F::ONE.sub(y).invert()).to_le()
+    }
+
+    /// Whether `p` is the identity. Variable time, as `equals` is.
+    pub(crate) fn is_identity(&self, p: &Point<F>) -> bool {
+        self.equals(p, &Point::identity())
+    }
+
     /// Projective equality: `X1*Z2 == X2*Z1` and `Y1*Z2 == Y2*Z1`.
     /// Variable time; for verification, where everything is public.
     pub(crate) fn equals(&self, p: &Point<F>, q: &Point<F>) -> bool {

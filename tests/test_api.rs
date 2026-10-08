@@ -160,7 +160,7 @@ fn stream_nonce(name: &str) -> Vec<u8> {
     match name {
         "rc4" | "zipcrypto" => vec![],
         "salsa20" | "salsa12" | "salsa8" => iv(8),
-        "xchacha20" => iv(24),
+        "xchacha20" | "xsalsa20" => iv(24),
         _ => iv(12),
     }
 }

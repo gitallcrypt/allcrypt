@@ -1860,6 +1860,200 @@ fn x25519_raw<'py>(py: Python<'py>, scalar: Bytes, point: Bytes)
     Ok(PyBytes::new(py, &out))
 }
 
+fn bytes_pair(py: Python<'_>, pair: (Vec<u8>, Vec<u8>)) -> (Py<PyBytes>, Py<PyBytes>) {
+    (PyBytes::new(py, &pair.0).into(), PyBytes::new(py, &pair.1).into())
+}
+
+/// A NaCl secretbox: the 16 byte tag followed by the ciphertext.
+/// `construction` is ``"xsalsa20poly1305"`` (NaCl's) or
+/// ``"xchacha20poly1305"`` (libsodium's).
+#[pyfunction]
+#[pyo3(signature = (key, nonce, message, construction = "xsalsa20poly1305"))]
+fn secretbox_encrypt<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, message: Bytes,
+                          construction: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::secretbox_encrypt(&key, &nonce, &message, construction))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Open a secretbox; raises unless it authenticates.
+#[pyfunction]
+#[pyo3(signature = (key, nonce, boxed, construction = "xsalsa20poly1305"))]
+fn secretbox_decrypt<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, boxed: Bytes,
+                          construction: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::secretbox_decrypt(&key, &nonce, &boxed, construction))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// A secretbox as ``(ciphertext, tag)``.
+#[pyfunction]
+#[pyo3(signature = (key, nonce, message, construction = "xsalsa20poly1305"))]
+fn secretbox_encrypt_detached(py: Python<'_>, key: Bytes, nonce: Bytes, message: Bytes,
+                              construction: &str) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let pair = py.allow_threads(|| {
+        api::secretbox_encrypt_detached(&key, &nonce, &message, construction)
+    }).map_err(err)?;
+    Ok(bytes_pair(py, pair))
+}
+
+#[pyfunction]
+#[pyo3(signature = (key, nonce, ciphertext, tag, construction = "xsalsa20poly1305"))]
+fn secretbox_decrypt_detached<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, ciphertext: Bytes,
+                                   tag: Bytes, construction: &str)
+                                   -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| {
+        api::secretbox_decrypt_detached(&key, &nonce, &ciphertext, &tag, construction)
+    }).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The key a box between two key pairs is sealed under.
+#[pyfunction]
+#[pyo3(signature = (peer_public, private, construction = "xsalsa20poly1305"))]
+fn box_beforenm<'py>(py: Python<'py>, peer_public: Bytes, private: Bytes, construction: &str)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::box_beforenm(&peer_public, &private, construction))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// A box from ``private`` to ``peer_public``: tag, then ciphertext.
+#[pyfunction]
+#[pyo3(signature = (peer_public, private, nonce, message, construction = "xsalsa20poly1305"))]
+fn box_encrypt<'py>(py: Python<'py>, peer_public: Bytes, private: Bytes, nonce: Bytes,
+                    message: Bytes, construction: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| {
+        api::box_encrypt(&peer_public, &private, &nonce, &message, construction)
+    }).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+#[pyfunction]
+#[pyo3(signature = (peer_public, private, nonce, boxed, construction = "xsalsa20poly1305"))]
+fn box_decrypt<'py>(py: Python<'py>, peer_public: Bytes, private: Bytes, nonce: Bytes,
+                    boxed: Bytes, construction: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| {
+        api::box_decrypt(&peer_public, &private, &nonce, &boxed, construction)
+    }).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// A fresh box key pair, ``(private, public)``.
+#[pyfunction]
+fn box_keypair(py: Python<'_>) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let pair = py.allow_threads(api::box_keypair).map_err(err)?;
+    Ok(bytes_pair(py, pair))
+}
+
+/// A box key pair from a 32 byte seed, as libsodium's ``crypto_box_seed_keypair``.
+#[pyfunction]
+fn box_seed_keypair(py: Python<'_>, seed: Bytes) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let pair = py.allow_threads(|| api::box_seed_keypair(&seed)).map_err(err)?;
+    Ok(bytes_pair(py, pair))
+}
+
+/// An anonymous box to ``recipient_public`` (libsodium's ``crypto_box_seal``).
+#[pyfunction]
+#[pyo3(signature = (recipient_public, message, construction = "xsalsa20poly1305"))]
+fn box_seal<'py>(py: Python<'py>, recipient_public: Bytes, message: Bytes, construction: &str)
+                 -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::box_seal(&recipient_public, &message, construction))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+#[pyfunction]
+#[pyo3(signature = (recipient_public, recipient_private, sealed,
+                    construction = "xsalsa20poly1305"))]
+fn box_seal_open<'py>(py: Python<'py>, recipient_public: Bytes, recipient_private: Bytes,
+                      sealed: Bytes, construction: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| {
+        api::box_seal_open(&recipient_public, &recipient_private, &sealed, construction)
+    }).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// A key-exchange key pair from a 32 byte seed (``crypto_kx_seed_keypair``).
+#[pyfunction]
+fn kx_seed_keypair(py: Python<'_>, seed: Bytes) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let pair = py.allow_threads(|| api::kx_seed_keypair(&seed)).map_err(err)?;
+    Ok(bytes_pair(py, pair))
+}
+
+/// The client's ``(receive, transmit)`` session keys.
+#[pyfunction]
+fn kx_client_session_keys(py: Python<'_>, client_public: Bytes, client_private: Bytes,
+                          server_public: Bytes) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let pair = py.allow_threads(|| {
+        api::kx_client_session_keys(&client_public, &client_private, &server_public)
+    }).map_err(err)?;
+    Ok(bytes_pair(py, pair))
+}
+
+/// The server's ``(receive, transmit)`` session keys.
+#[pyfunction]
+fn kx_server_session_keys(py: Python<'_>, server_public: Bytes, server_private: Bytes,
+                          client_public: Bytes) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let pair = py.allow_threads(|| {
+        api::kx_server_session_keys(&server_public, &server_private, &client_public)
+    }).map_err(err)?;
+    Ok(bytes_pair(py, pair))
+}
+
+/// NaCl's ``crypto_auth``: HMAC-SHA-512 truncated to 32 bytes.
+#[pyfunction]
+fn nacl_auth<'py>(py: Python<'py>, key: Bytes, message: Bytes)
+                  -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::nacl_auth(&key, &message)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Whether a ``crypto_auth`` tag is right, compared in constant time.
+#[pyfunction]
+fn nacl_auth_verify(py: Python<'_>, key: Bytes, message: Bytes, tag: Bytes) -> PyResult<bool> {
+    py.allow_threads(|| api::nacl_auth_verify(&key, &message, &tag)).map_err(err)
+}
+
+/// NaCl's ``crypto_sign``: the Ed25519 signature followed by the message.
+#[pyfunction]
+fn nacl_sign<'py>(py: Python<'py>, private: Bytes, message: Bytes)
+                  -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::nacl_sign(&private, &message)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// NaCl's ``crypto_sign_open``: the message, or raises.
+#[pyfunction]
+fn nacl_sign_open<'py>(py: Python<'py>, public: Bytes, signed: Bytes)
+                       -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::nacl_sign_open(&public, &signed)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The X25519 public key for an Ed25519 one.
+#[pyfunction]
+fn ed25519_public_to_x25519<'py>(py: Python<'py>, public: Bytes)
+                                 -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ed25519_public_to_x25519(&public)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The X25519 private key for an Ed25519 seed, clamped.
+#[pyfunction]
+fn ed25519_private_to_x25519<'py>(py: Python<'py>, private: Bytes)
+                                  -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ed25519_private_to_x25519(&private)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// HSalsa20, XSalsa20's subkey derivation.
+#[pyfunction]
+fn hsalsa20<'py>(py: Python<'py>, key: Bytes, input: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::hsalsa20(&key, &input)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 /// X448 (RFC 7748), the key agreement on Curve448.
 ///
 /// Shaped exactly like the four `x25519_*` functions, with one thing to
@@ -4645,6 +4839,27 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(x25519_public_key, m)?)?;
     m.add_function(wrap_pyfunction!(x25519_exchange, m)?)?;
     m.add_function(wrap_pyfunction!(x25519_raw, m)?)?;
+    m.add_function(wrap_pyfunction!(secretbox_encrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(secretbox_decrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(secretbox_encrypt_detached, m)?)?;
+    m.add_function(wrap_pyfunction!(secretbox_decrypt_detached, m)?)?;
+    m.add_function(wrap_pyfunction!(box_beforenm, m)?)?;
+    m.add_function(wrap_pyfunction!(box_encrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(box_decrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(box_keypair, m)?)?;
+    m.add_function(wrap_pyfunction!(box_seed_keypair, m)?)?;
+    m.add_function(wrap_pyfunction!(box_seal, m)?)?;
+    m.add_function(wrap_pyfunction!(box_seal_open, m)?)?;
+    m.add_function(wrap_pyfunction!(kx_seed_keypair, m)?)?;
+    m.add_function(wrap_pyfunction!(kx_client_session_keys, m)?)?;
+    m.add_function(wrap_pyfunction!(kx_server_session_keys, m)?)?;
+    m.add_function(wrap_pyfunction!(nacl_auth, m)?)?;
+    m.add_function(wrap_pyfunction!(nacl_auth_verify, m)?)?;
+    m.add_function(wrap_pyfunction!(nacl_sign, m)?)?;
+    m.add_function(wrap_pyfunction!(nacl_sign_open, m)?)?;
+    m.add_function(wrap_pyfunction!(ed25519_public_to_x25519, m)?)?;
+    m.add_function(wrap_pyfunction!(ed25519_private_to_x25519, m)?)?;
+    m.add_function(wrap_pyfunction!(hsalsa20, m)?)?;
     m.add_function(wrap_pyfunction!(x448_generate, m)?)?;
     m.add_function(wrap_pyfunction!(x448_public_key, m)?)?;
     m.add_function(wrap_pyfunction!(x448_exchange, m)?)?;
@@ -4698,6 +4913,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("stream_ciphers_available", api::STREAM_CIPHERS.to_vec())?;
     m.add("modes_available", api::MODES.to_vec())?;
     m.add("aeads_available", api::AEADS.to_vec())?;
+    m.add("box_constructions_available", api::BOX_CONSTRUCTIONS.to_vec())?;
     m.add("curves_available", api::CURVES.to_vec())?;
     m.add("tls_suites_available", api::tls_suites_known())?;
     m.add_function(wrap_pyfunction!(tls_suite_names, m)?)?;

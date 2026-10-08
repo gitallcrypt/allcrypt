@@ -250,7 +250,7 @@ fn expand(variant: Variant, private: &[u8]) -> (Vec<u8>, Vec<u8>) {
 /// RFC 8032 sections 5.1 and 5.2 give both orders in decimal; these are
 /// the same numbers in hex, and `test_the_base_point_has_the_stated_order`
 /// is what checks them rather than a second reading.
-fn group_order(variant: Variant) -> BigUint {
+pub(crate) fn group_order(variant: Variant) -> BigUint {
     let hex = match variant {
         Variant::Ed25519 => "1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed",
         Variant::Ed448 => "3fffffffffffffffffffffffffffffffffffffffffffffffffffffff\
@@ -384,6 +384,57 @@ pub fn is_public_key(variant: Variant, bytes: &[u8]) -> bool {
         Variant::Ed25519 => edwards::ed25519().decode(bytes).is_some(),
         Variant::Ed448 => edwards::ed448().decode(bytes).is_some(),
     }
+}
+
+/// The X25519 public key with the same discrete logarithm as an Ed25519
+/// one: `u = (1 + y) / (1 - y)`, libsodium's
+/// `crypto_sign_ed25519_pk_to_curve25519`.
+///
+/// Refused, as libsodium refuses them: bytes that are not a point, a
+/// point of small order (whose `u` is shared by every key multiplied
+/// into it), and a point outside the prime-order subgroup - a key with a
+/// torsion component, which Ed25519 verification accepts and an
+/// exchange would turn into a shared secret off by a known point.
+///
+/// # Errors
+/// Any of those.
+pub fn ed25519_public_to_x25519(public: &[u8]) -> Result<[u8; 32], String> {
+    let curve = edwards::ed25519();
+    let point = curve.decode(public)
+        .ok_or("These bytes are not an Ed25519 public key.")?;
+    if curve.is_identity(&curve.multiply(&[8], &point)) {
+        return Err("This Ed25519 public key has small order; it has no X25519 \
+                    counterpart worth having.".to_string());
+    }
+    let mut order = group_order(Variant::Ed25519).to_bytes_be();
+    order.reverse();
+    if !curve.is_identity(&curve.multiply(&order, &point)) {
+        return Err("This Ed25519 public key is not in the prime-order subgroup.".to_string());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&curve.montgomery_u(&point)[..32]);
+    Ok(out)
+}
+
+/// The X25519 private key for an Ed25519 one: the first half of
+/// SHA-512 of the 32 byte seed, clamped - the scalar the Ed25519 key
+/// signs with. libsodium's `crypto_sign_ed25519_sk_to_curve25519`, which
+/// also returns it clamped.
+///
+/// # Errors
+/// A private key that is not 32 bytes.
+pub fn ed25519_private_to_x25519(private: &[u8]) -> Result<[u8; 32], String> {
+    if private.len() != 32 {
+        return Err(format!("An Ed25519 private key is 32 bytes; this one is {}.",
+                           private.len()));
+    }
+    let digest = crate::hash_functions::sha2::SHA512::new(private, 512).digest();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest[..32]);
+    out[0] &= 248;
+    out[31] &= 127;
+    out[31] |= 64;
+    Ok(out)
 }
 
 /// The public key for a private key.

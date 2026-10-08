@@ -189,7 +189,12 @@ pub fn generate_key_pair() -> Result<([u8; KEY_LEN], [u8; KEY_LEN]), String> {
 pub fn exchange(private: &[u8; KEY_LEN], peer: &[u8; KEY_LEN])
                 -> Result<[u8; KEY_LEN], String> {
     let shared = x448(private, peer)?;
-    if shared.iter().all(|byte| *byte == 0) {
+    // Every byte ORed together, then one branch on the verdict. `all`
+    // stops at the first non-zero byte, so its running time said where
+    // that byte was - a leak of the secret beyond the verdict, which
+    // `scripts/ct_check.py`'s exchange rows report by name.
+    let folded = shared.iter().fold(0u8, |acc, byte| acc | byte);
+    if folded == 0 {
         return Err("The X448 shared secret is all zero, so the peer sent a \
                     low-order point and the secret is a constant anybody \
                     can compute.".to_string());

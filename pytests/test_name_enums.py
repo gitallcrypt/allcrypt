@@ -181,6 +181,6 @@ def test_every_member_of_every_enum_actually_constructs():
                                 allcrypt.StreamCipherName.ZIPCRYPTO) else bytes(8)
         if name.value.startswith("chacha"):
             nonce = bytes(12)
-        if name.value.startswith("xchacha"):
+        if name.value.startswith(("xchacha", "xsalsa")):
             nonce = bytes(24)
         allcrypt.StreamCipher(name, bytes(32), nonce)

@@ -532,11 +532,11 @@ def test_catalogue_entries_all_work():
         assert sizes, f"{name} constructs at no key length"
         assert set(sizes) <= {8, 16}, f"{name} reports {set(sizes)}"
     # The nonce each stream cipher takes, which they do not agree on:
-    # RC4 has none, Salsa20 wants exactly 8 bytes, ChaCha 12 and XChaCha20
-    # 24. Spelled out rather than assumed, so a cipher with a different
+    # RC4 has none, Salsa20 wants exactly 8 bytes, ChaCha 12, XChaCha20 and
+    # XSalsa20 24. Spelled out rather than assumed, so a cipher with a different
     # nonce fails here loudly instead of being handed the wrong length.
     nonce_length = {"rc4": None, "zipcrypto": None, "salsa20": 8, "salsa12": 8, "salsa8": 8,
-                    "xchacha20": 24}
+                    "xchacha20": 24, "xsalsa20": 24}
     for name in allcrypt.stream_ciphers_available:
         size = nonce_length.get(name, 12)
         nonce = None if size is None else bytes(size)

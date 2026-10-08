@@ -31,7 +31,7 @@ pub const BLOCK_CIPHERS: &[&str] =
       "sm4", "tea", "twofish", "xtea"];
 pub const STREAM_CIPHERS: &[&str] =
     &["chacha20", "chacha12", "chacha8", "xchacha20", "rc4", "salsa20", "salsa12", "salsa8",
-      "zipcrypto"];
+      "xsalsa20", "zipcrypto"];
 pub const MODES: &[&str] = &["ecb", "cbc", "pcbc", "cfb", "ofb", "ctr", "ctr-le",
                               "cbc-cs1", "cbc-cs2", "cbc-cs3"];
 /// Authenticated modes, which are not in `MODES` because they do not
@@ -1006,6 +1006,10 @@ impl AnyStreamCipher {
         if lower == "xchacha20" {
             return Ok(AnyStreamCipher::Chacha(
                 crate::stream_ciphers::chacha::xchacha20(key, nonce)?));
+        }
+        if lower == "xsalsa20" {
+            return Ok(AnyStreamCipher::Salsa20(
+                crate::stream_ciphers::salsa20::xsalsa20(key, nonce)?));
         }
         // Salsa20's reduced-round variants are real ciphers from the
         // eSTREAM portfolio, not a test knob, so they get names.
@@ -2777,6 +2781,164 @@ pub fn xeddsa_verify(form: &str, public: &[u8], message: &[u8], signature: &[u8]
     let signature: [u8; 64] = signature.try_into().map_err(|_| format!(
         "An XEdDSA signature is 64 bytes, not {}.", signature.len()))?;
     Ok(xeddsa::verify(form, &public, message, &signature).is_ok())
+}
+
+// ------------------------------------------------------------------- NaCl ---
+
+pub use crate::nacl;
+
+/// The box constructions by name: `xsalsa20poly1305`, NaCl's, and
+/// `xchacha20poly1305`, libsodium's, each with or without the box's
+/// `curve25519` prefix. See `crate::nacl` for how the second differs
+/// from the AEAD `xchacha20-poly1305`.
+pub const BOX_CONSTRUCTIONS: &[&str] = nacl::CONSTRUCTIONS;
+
+fn construction(name: &str) -> Result<nacl::Construction, String> {
+    nacl::Construction::from_name(name)
+}
+
+/// A secretbox: the 16 byte tag followed by the ciphertext.
+///
+/// **The nonce must never repeat under one key.** At 24 bytes it can be
+/// drawn at random per message.
+pub fn secretbox_encrypt(key: &[u8], nonce: &[u8], message: &[u8], construction_name: &str)
+                         -> Result<Vec<u8>, String> {
+    nacl::secretbox_encrypt(construction(construction_name)?, key, nonce, message)
+}
+
+/// Open a secretbox. An error, and no plaintext, unless it authenticates.
+pub fn secretbox_decrypt(key: &[u8], nonce: &[u8], boxed: &[u8], construction_name: &str)
+                         -> Result<Vec<u8>, String> {
+    nacl::secretbox_decrypt(construction(construction_name)?, key, nonce, boxed)
+}
+
+/// A secretbox as `(ciphertext, tag)`.
+pub fn secretbox_encrypt_detached(key: &[u8], nonce: &[u8], message: &[u8],
+                                  construction_name: &str)
+                                  -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (ciphertext, tag) = nacl::secretbox_encrypt_detached(
+        construction(construction_name)?, key, nonce, message)?;
+    Ok((ciphertext, tag.to_vec()))
+}
+
+pub fn secretbox_decrypt_detached(key: &[u8], nonce: &[u8], ciphertext: &[u8], tag: &[u8],
+                                  construction_name: &str) -> Result<Vec<u8>, String> {
+    nacl::secretbox_decrypt_detached(construction(construction_name)?, key, nonce,
+                                     ciphertext, tag)
+}
+
+/// The key a box between two key pairs is sealed under; a secretbox
+/// under it is a box (NaCl's `crypto_box_beforenm` and `_afternm`).
+/// Refuses a low-order peer key.
+pub fn box_beforenm(peer_public: &[u8], private: &[u8], construction_name: &str)
+                    -> Result<Vec<u8>, String> {
+    Ok(nacl::box_beforenm(construction(construction_name)?, peer_public, private)?.to_vec())
+}
+
+/// A box from `private` to `peer_public`: the tag followed by the
+/// ciphertext, as libsodium's `crypto_box_easy`.
+pub fn box_encrypt(peer_public: &[u8], private: &[u8], nonce: &[u8], message: &[u8],
+                   construction_name: &str) -> Result<Vec<u8>, String> {
+    nacl::box_encrypt(construction(construction_name)?, peer_public, private, nonce, message)
+}
+
+/// Open a box from `peer_public` to `private`.
+pub fn box_decrypt(peer_public: &[u8], private: &[u8], nonce: &[u8], boxed: &[u8],
+                   construction_name: &str) -> Result<Vec<u8>, String> {
+    nacl::box_decrypt(construction(construction_name)?, peer_public, private, nonce, boxed)
+}
+
+/// A fresh box key pair, `(private, public)` - an X25519 key pair.
+pub fn box_keypair() -> Result<(Vec<u8>, Vec<u8>), String> {
+    x25519_generate()
+}
+
+/// A box key pair from a 32 byte seed, as libsodium's
+/// `crypto_box_seed_keypair`.
+pub fn box_seed_keypair(seed: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (private, public) = nacl::box_seed_keypair(seed)?;
+    Ok((private.to_vec(), public.to_vec()))
+}
+
+/// An anonymous box to `recipient_public` (libsodium's `crypto_box_seal`):
+/// a fresh ephemeral key per message, `SEAL_BYTES` of overhead. Anybody
+/// can make one, so it says nothing about the sender.
+pub fn box_seal(recipient_public: &[u8], message: &[u8], construction_name: &str)
+                -> Result<Vec<u8>, String> {
+    nacl::box_seal(construction(construction_name)?, recipient_public, message)
+}
+
+pub fn box_seal_open(recipient_public: &[u8], recipient_private: &[u8], sealed: &[u8],
+                     construction_name: &str) -> Result<Vec<u8>, String> {
+    nacl::box_seal_open(construction(construction_name)?, recipient_public,
+                        recipient_private, sealed)
+}
+
+/// A key-exchange key pair from a 32 byte seed, as libsodium's
+/// `crypto_kx_seed_keypair` - a different key pair from
+/// `box_seed_keypair`'s for the same seed.
+pub fn kx_seed_keypair(seed: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (private, public) = nacl::kx_seed_keypair(seed)?;
+    Ok((private.to_vec(), public.to_vec()))
+}
+
+/// The client's `(receive, transmit)` session keys.
+pub fn kx_client_session_keys(client_public: &[u8], client_private: &[u8],
+                              server_public: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (rx, tx) = nacl::kx_client_session_keys(client_public, client_private, server_public)?;
+    Ok((rx.to_vec(), tx.to_vec()))
+}
+
+/// The server's `(receive, transmit)` session keys.
+pub fn kx_server_session_keys(server_public: &[u8], server_private: &[u8],
+                              client_public: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (rx, tx) = nacl::kx_server_session_keys(server_public, server_private, client_public)?;
+    Ok((rx.to_vec(), tx.to_vec()))
+}
+
+/// NaCl's `crypto_auth`: HMAC-SHA-512 truncated to 32 bytes.
+pub fn nacl_auth(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(nacl::auth(key, message)?.to_vec())
+}
+
+/// Whether a `crypto_auth` tag is right, compared in constant time. An
+/// error only for a key of the wrong length.
+pub fn nacl_auth_verify(key: &[u8], message: &[u8], tag: &[u8]) -> Result<bool, String> {
+    nacl::auth(key, &[])?;
+    Ok(nacl::auth_verify(key, message, tag).is_ok())
+}
+
+/// NaCl's `crypto_sign`: the Ed25519 signature followed by the message.
+/// `private` is the 32 byte seed or libsodium's 64 byte secret key.
+pub fn nacl_sign(private: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
+    nacl::sign(private, message)
+}
+
+/// NaCl's `crypto_sign_open`: the message, or an error.
+pub fn nacl_sign_open(public: &[u8], signed: &[u8]) -> Result<Vec<u8>, String> {
+    nacl::sign_open(public, signed)
+}
+
+/// The X25519 public key for an Ed25519 one (libsodium's
+/// `crypto_sign_ed25519_pk_to_curve25519`). Refuses small-order points
+/// and points outside the prime-order subgroup.
+pub fn ed25519_public_to_x25519(public: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(eddsa::ed25519_public_to_x25519(public)?.to_vec())
+}
+
+/// The X25519 private key for an Ed25519 seed, clamped
+/// (libsodium's `crypto_sign_ed25519_sk_to_curve25519`).
+pub fn ed25519_private_to_x25519(private: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(eddsa::ed25519_private_to_x25519(private)?.to_vec())
+}
+
+/// HSalsa20 (`crypto_core_hsalsa20`): XSalsa20's subkey derivation.
+pub fn hsalsa20(key: &[u8], input: &[u8]) -> Result<Vec<u8>, String> {
+    let key: &[u8; 32] = key.try_into()
+        .map_err(|_| format!("An HSalsa20 key is 32 bytes, not {}.", key.len()))?;
+    let input: &[u8; 16] = input.try_into()
+        .map_err(|_| format!("HSalsa20's input is 16 bytes, not {}.", input.len()))?;
+    Ok(crate::stream_ciphers::salsa20::hsalsa20(key, input).to_vec())
 }
 
 // ---------------------------------------------- Diffie-Hellman (finite field) ---

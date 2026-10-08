@@ -31,8 +31,8 @@ description and test vectors.
   TEA, Twofish, XTEA - in the modes each one's block size allows: ECB,
   CBC, PCBC, CFB, OFB, CTR, ciphertext stealing, XTS, LRW, GCM, CCM,
   EAX, OCB, MGM and key wrap.
-- **Stream ciphers** - ChaCha20 and XChaCha20, Salsa20, RC4, ZipCrypto,
-  and WEP and TKIP's constructions on top of them.
+- **Stream ciphers** - ChaCha20 and XChaCha20, Salsa20 and XSalsa20, RC4,
+  ZipCrypto, and WEP and TKIP's constructions on top of them.
 - **Hashes** - MD2, MD4, MD5, SHA-0 to SHA-3, SHAKE, Keccak, BLAKE2,
   RIPEMD-128 to -320, HAS-160, SM3, Whirlpool and its two earlier
   versions, MD6, Streebog and GOST R 34.11-94.
@@ -46,6 +46,9 @@ description and test vectors.
   their secrets in fixed-width arithmetic, checked for constant time
   under valgrind; the leaks that remain elsewhere are named in
   [pitfalls.md](docs/pitfalls.md).
+- **NaCl and libsodium** - secretbox, box and sealed boxes on XSalsa20
+  and XChaCha20, key exchange, `crypto_auth`, combined signatures and
+  Ed25519-to-X25519 keys, byte for byte with libsodium.
 - **Post-quantum** - ML-KEM, ML-DSA, SLH-DSA, Streamlined NTRU Prime, and
   the hybrid key exchanges TLS and SSH use.
 - **Certificates and keys** - X.509 parsing, chain verification and

@@ -36,6 +36,7 @@ use allcrypt::block_ciphers::aes::AesCrypto;
 use allcrypt::block_ciphers::ghash::Ghash;
 use allcrypt::block_ciphers::BlockCipher;
 use allcrypt::ec::{curves, eddsa, sm2, x25519, x448, xeddsa};
+use allcrypt::nacl;
 use allcrypt::hash_functions::sha2::SHA256;
 use allcrypt::pq::{ml_dsa, ml_kem};
 use allcrypt::publickey_ciphers::dh;
@@ -138,6 +139,12 @@ fn secret_bytes32(fallback: &str) -> Vec<u8> {
     // through its own address range just the same.
     request(MAKE_MEM_UNDEFINED, bytes.as_ptr(), bytes.len());
     bytes
+}
+
+/// Bytes from hex, unmarked: the public counterpart of `secret_bytes32`.
+fn public_bytes(text: &str) -> Vec<u8> {
+    (0..text.len() / 2).map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect()
 }
 
 /// A public value, built the same way so the two differ only in the marking.
@@ -548,6 +555,23 @@ fn run(case: &str) {
             publish_bytes(&x25519::x25519(&scalar, &point).unwrap());
         }
 
+        "x25519_exchange" => {
+            let private: [u8; 32] = secret_bytes32(
+                "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4")
+                .try_into().unwrap();
+            let peer = x25519::public_key(&[0x42; 32]).unwrap();
+            publish_bytes(&x25519::exchange(&private, &peer).unwrap());
+        }
+
+        "x448_exchange" => {
+            let private: [u8; 56] = secret_bytes32(concat!(
+                "3d262fddf9ec8e88495266fea19a34d28882acef045104d0d1aae121",
+                "700a779c984c24f8cdd78fbff44943eba368f54b29259a4f1c600ad3"))
+                .try_into().unwrap();
+            let peer = x448::public_key(&[0x42; 56]).unwrap();
+            publish_bytes(&x448::exchange(&private, &peer).unwrap());
+        }
+
         "x448" => {
             let scalar: [u8; 56] = secret_bytes32(concat!(
                 "3d262fddf9ec8e88495266fea19a34d28882acef045104d0d1aae121",
@@ -633,6 +657,41 @@ fn run(case: &str) {
                                                       b"header", &data[..333]).unwrap();
             publish_bytes(&ciphertext);
             publish_bytes(&tag);
+        }
+
+        "secretbox_seal" => {
+            // Both constructions: HSalsa20 or HChaCha20 for the subkey,
+            // the stream from byte 32, and Poly1305 over the ciphertext.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            for construction in [nacl::Construction::XSalsa20Poly1305,
+                                 nacl::Construction::XChaCha20Poly1305] {
+                let boxed = nacl::secretbox_encrypt(construction, &key[..32], &[7u8; 24],
+                                                    &data[..333]).unwrap();
+                publish_bytes(&boxed);
+            }
+        }
+
+        "secretbox_open" => {
+            // A box sealed under a public key, opened under the same key
+            // marked secret: everything up to the verdict.
+            let boxed = nacl::secretbox_encrypt(nacl::Construction::XSalsa20Poly1305,
+                                                &public_bytes(AES_KEY)[..32], &[7u8; 24],
+                                                &public_bytes(AES_DATA)[..333]).unwrap();
+            let key = secret_bytes32(AES_KEY);
+            let opened = nacl::secretbox_decrypt(nacl::Construction::XSalsa20Poly1305,
+                                                 &key[..32], &[7u8; 24], &boxed).unwrap();
+            publish_bytes(&opened);
+        }
+
+        "box_beforenm" => {
+            let private = secret_bytes32(
+                "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4");
+            let peer = x25519::public_key(&[0x42; 32]).unwrap();
+            for construction in [nacl::Construction::XSalsa20Poly1305,
+                                 nacl::Construction::XChaCha20Poly1305] {
+                publish_bytes(&nacl::box_beforenm(construction, &peer, &private).unwrap());
+            }
         }
 
         other => {
@@ -766,6 +825,8 @@ const CASES: &[&str] = &[
     "xeddsa_sign",
     "x25519",
     "x448",
+    "x25519_exchange",
+    "x448_exchange",
     "sm2_sign",
     "sm2_decrypt",
     "dh_shared",
@@ -788,4 +849,9 @@ const CASES: &[&str] = &[
     "aes_xts",
     "aes_ctr_cbc_decrypt",
     "ghash",
+    "poly1305",
+    "chacha20_poly1305_seal",
+    "secretbox_seal",
+    "secretbox_open",
+    "box_beforenm",
 ];
