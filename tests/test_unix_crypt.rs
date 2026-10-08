@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use allcrypt::kdf::unix_crypt::{crypt, verify};
+use allcrypt::kdf::unix_crypt::{self, crypt, verify, BcryptVariant};
 
 /// A C string literal's bytes: `\xHH`, octal `\NNN`, and the usual
 /// single-character escapes. The settings and expected hashes are
@@ -96,4 +96,174 @@ fn test_a_wrong_password_does_not_verify() {
         assert!(!verify(b"hunter3", &right), "{setting}");
         assert!(!verify(b"Hunter2", &right), "{setting}");
     }
+}
+
+/// bcrypt's alphabet decoded back to the 16 salt bytes, for rebuilding a
+/// row's salt as the helper takes it.
+fn bcrypt_salt_bytes(chars: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut bits = 0u32;
+    let mut nbits = 0;
+    let mut out = Vec::new();
+    for c in chars.bytes() {
+        bits = (bits << 6) | ALPHABET.iter().position(|&a| a == c).unwrap() as u32;
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push((bits >> nbits) as u8);
+        }
+    }
+    out.truncate(16);
+    out
+}
+
+/// The parameters of a row whose setting is in the form a helper writes,
+/// or `None` for the forms only `crypt` reads (an over-long salt, a
+/// rounds value the C clamps, Sun MD5 without its closing `$`).
+fn helper_for(method: &str, setting: &str, phrase: &[u8]) -> Option<Result<String, String>> {
+    match method {
+        "descrypt" => Some(unix_crypt::des_crypt(phrase, Some(setting))),
+        "bigcrypt" => Some(unix_crypt::big_crypt(phrase, Some(&setting[..2]))),
+        "bsdicrypt" => {
+            let count = setting[1..5].bytes().enumerate().map(|(i, b)| {
+                (b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                    .iter().position(|&a| a == b).unwrap() as u32) << (6 * i)
+            }).sum();
+            Some(unix_crypt::bsdi_crypt(phrase, count, Some(&setting[5..9])))
+        }
+        "md5crypt" => {
+            let salt = setting.strip_prefix("$1$")?;
+            (salt.len() <= 8).then(|| unix_crypt::md5_crypt(phrase, Some(salt)))
+        }
+        "sha256crypt" | "sha512crypt" => {
+            let rest = &setting[3..];
+            let (rounds, salt) = match rest.strip_prefix("rounds=") {
+                Some(r) => {
+                    let (n, salt) = r.split_once('$')?;
+                    (Some(n.parse::<u32>().ok()?), salt)
+                }
+                None => (None, rest),
+            };
+            if salt.len() > 16 || salt.contains('$')
+                || rounds.is_some_and(|r| !(1000..=999_999_999).contains(&r)) {
+                return None;
+            }
+            Some(if method == "sha256crypt" {
+                unix_crypt::sha256_crypt(phrase, rounds, Some(salt))
+            } else {
+                unix_crypt::sha512_crypt(phrase, rounds, Some(salt))
+            })
+        }
+        "bcrypt" => {
+            let variant = BcryptVariant::from_name(&setting[1..3]).unwrap();
+            let cost: u32 = setting[4..6].parse().unwrap();
+            Some(unix_crypt::bcrypt(phrase, cost, Some(&bcrypt_salt_bytes(&setting[7..29])),
+                                    variant))
+        }
+        "nt" => Some(Ok(unix_crypt::nt_crypt(phrase))),
+        "sha1crypt" => {
+            let rest = setting.strip_prefix("$sha1$")?;
+            let (n, salt) = rest.split_once('$')?;
+            Some(unix_crypt::sha1_crypt(phrase, n.parse().ok()?, Some(salt.trim_end_matches('$'))))
+        }
+        "sunmd5" => {
+            let (rounds, rest) = match setting.strip_prefix("$md5,rounds=") {
+                Some(r) => {
+                    let (n, rest) = r.split_once('$')?;
+                    (n.parse().ok()?, rest)
+                }
+                None => (0, setting.strip_prefix("$md5$")?),
+            };
+            let salt = rest.strip_suffix('$')?;
+            (!salt.contains('$') && salt.len() <= 8)
+                .then(|| unix_crypt::sun_md5_crypt(phrase, rounds, Some(salt)))
+        }
+        other => panic!("unknown method {other}"),
+    }
+}
+
+/// The per-method helpers against the same answers: every row whose
+/// setting is in a helper's form is rebuilt from its parameters - salt,
+/// cost, variant - and must come out byte for byte. This is what checks
+/// that each helper writes the setting the method reads, including the
+/// encodings (BSDi's count, bcrypt's salt) a caller would otherwise write
+/// by hand.
+#[test]
+fn test_the_helpers_reproduce_the_vectors() {
+    let text = include_str!("../vectors/unix_crypt.vec");
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for line in text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+        let mut words = line.split(' ');
+        let method = words.next().unwrap();
+        let f: HashMap<_, _> = words.map(|w| w.split_once('=').unwrap()).collect();
+        let setting = String::from_utf8(decode_c(f["setting"])).unwrap();
+        let expected = String::from_utf8(decode_c(f["expected"])).unwrap();
+        let phrase = unhex(f["phrase"]);
+        if let Some(got) = helper_for(method, &setting, &phrase) {
+            let got = got.unwrap_or_else(|e| panic!("{method}: {line}\n  error: {e}"));
+            assert_eq!(got, expected, "{method}: {line}");
+            *counts.entry(method.to_string()).or_default() += 1;
+        }
+    }
+    for method in ["descrypt", "bsdicrypt", "bigcrypt", "md5crypt", "bcrypt", "nt",
+                   "sha1crypt", "sha256crypt", "sha512crypt", "sunmd5"] {
+        assert!(counts.get(method).copied().unwrap_or(0) >= 50,
+                "too few {method} rows through the helper: {:?}", counts.get(method));
+    }
+}
+
+/// A fresh salt is drawn when none is given, and the result verifies.
+#[test]
+fn test_the_helpers_draw_a_salt_when_given_none() {
+    let made = [
+        unix_crypt::des_crypt(b"hunter2", None).unwrap(),
+        unix_crypt::big_crypt(b"hunter2 and more", None).unwrap(),
+        unix_crypt::bsdi_crypt(b"hunter2", 725, None).unwrap(),
+        unix_crypt::md5_crypt(b"hunter2", None).unwrap(),
+        unix_crypt::sha256_crypt(b"hunter2", Some(1000), None).unwrap(),
+        unix_crypt::sha512_crypt(b"hunter2", None, None).unwrap(),
+        unix_crypt::bcrypt(b"hunter2", 4, None, BcryptVariant::B).unwrap(),
+        unix_crypt::sha1_crypt(b"hunter2", 100, None).unwrap(),
+        unix_crypt::sun_md5_crypt(b"hunter2", 0, None).unwrap(),
+    ];
+    for h in &made {
+        assert!(verify(b"hunter2", h) || verify(b"hunter2 and more", h), "{h}");
+        assert!(!verify(b"hunter3", h), "{h}");
+    }
+    // Two draws differ; a constant "fresh" salt would pass everything above.
+    assert_ne!(unix_crypt::sha512_crypt(b"pw", None, None).unwrap(),
+               unix_crypt::sha512_crypt(b"pw", None, None).unwrap());
+    // The salts drawn are the customary lengths.
+    assert_eq!(made[0].len(), 13);
+    assert_eq!(made[3].split('$').nth(2).unwrap().len(), 8);
+    assert_eq!(made[5].split('$').nth(2).unwrap().len(), 16);
+}
+
+/// What the helpers refuse and `crypt` would have taken, clamped or cut.
+#[test]
+fn test_the_helpers_refuse_out_of_range_parameters() {
+    assert!(unix_crypt::des_crypt(b"pw", Some("a")).is_err());
+    assert!(unix_crypt::des_crypt(b"pw", Some("a!")).is_err());
+    assert!(unix_crypt::bsdi_crypt(b"pw", 0, Some("abcd")).is_err());
+    assert!(unix_crypt::bsdi_crypt(b"pw", 1 << 24, Some("abcd")).is_err());
+    assert!(unix_crypt::md5_crypt(b"pw", Some("abcdefghi")).is_err());
+    // md5-crypt and the SHA-crypts hash any salt byte, so for these the
+    // helper's alphabet check is the only thing refusing; DES's own
+    // decoder would refuse "a!" without it.
+    assert!(unix_crypt::md5_crypt(b"pw", Some("ab!d")).is_err());
+    assert!(unix_crypt::sha512_crypt(b"pw", None, Some("sa:lt")).is_err());
+    assert!(unix_crypt::sha512_crypt(b"pw", Some(999), Some("salt")).is_err());
+    assert!(unix_crypt::sha512_crypt(b"pw", Some(1_000_000_000), Some("salt")).is_err());
+    assert!(unix_crypt::sha256_crypt(b"pw", None, Some("seventeen-chars!!")).is_err());
+    assert!(unix_crypt::sha256_crypt(b"pw", None, Some("a$b")).is_err());
+    assert!(unix_crypt::bcrypt(b"pw", 3, Some(&[0; 16]), BcryptVariant::B).is_err());
+    assert!(unix_crypt::bcrypt(b"pw", 32, Some(&[0; 16]), BcryptVariant::B).is_err());
+    assert!(unix_crypt::bcrypt(b"pw", 4, Some(&[0; 15]), BcryptVariant::B).is_err());
+    assert!(unix_crypt::sha1_crypt(b"pw", 0, Some("salt")).is_err());
+    assert!(unix_crypt::sun_md5_crypt(b"pw", 0, Some("")).is_err());
+    assert!(BcryptVariant::from_name("2c").is_err());
+    // An explicit default is written out, as the C writes it.
+    assert!(unix_crypt::sha512_crypt(b"pw", Some(5000), Some("salt")).unwrap()
+        .starts_with("$6$rounds=5000$salt$"));
+    assert!(unix_crypt::sha512_crypt(b"pw", None, Some("salt")).unwrap().starts_with("$6$salt$"));
 }

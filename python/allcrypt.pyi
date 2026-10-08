@@ -1536,6 +1536,52 @@ def unix_crypt(password: BytesLike, setting: str) -> str:
     what to choose for new work (that is Argon2, or bcrypt at a high cost).
     A drop-in for the standard library's deprecated ``crypt.crypt``."""
 
+def unix_crypt_des(password: BytesLike, salt: Optional[str] = None) -> str:
+    """Traditional DES crypt under a two-character salt, or a fresh one.
+
+    The ``unix_crypt_*`` functions take each method's cost and salt as
+    arguments and return what ``unix_crypt`` returns for the setting they
+    build. ``salt=None`` draws a fresh salt. They raise ``ValueError`` for
+    a cost out of range or a salt too long or outside ``./0-9A-Za-z``."""
+
+def unix_crypt_bigcrypt(password: BytesLike, salt: Optional[str] = None) -> str:
+    """bigcrypt: DES crypt over each eight bytes of the password."""
+
+def unix_crypt_bsdi(password: BytesLike, rounds: int, salt: Optional[str] = None) -> str:
+    """BSDi extended DES: ``rounds`` from 1 to 2**24 - 1, a four-character
+    salt."""
+
+def unix_crypt_md5(password: BytesLike, salt: Optional[str] = None) -> str:
+    """md5-crypt (``$1$``), up to eight salt characters."""
+
+def unix_crypt_sha256(password: BytesLike, rounds: Optional[int] = None,
+                      salt: Optional[str] = None) -> str:
+    """SHA-256-crypt (``$5$``). ``rounds=None`` is the default 5,000 and is
+    not written; a number from 1,000 to 999,999,999 is, even 5,000. Up to
+    sixteen salt characters."""
+
+def unix_crypt_sha512(password: BytesLike, rounds: Optional[int] = None,
+                      salt: Optional[str] = None) -> str:
+    """SHA-512-crypt (``$6$``); parameters as ``unix_crypt_sha256``."""
+
+def unix_crypt_bcrypt(password: BytesLike, cost: int, salt: Optional[BytesLike] = None,
+                      variant: str = "2b") -> str:
+    """bcrypt at ``cost`` (4 to 31) with a 16 byte ``salt``. ``variant`` is
+    ``"2a"``, ``"2b"``, ``"2x"`` or ``"2y"``, which differ only for a
+    password with a byte at or above 0x80."""
+
+def unix_crypt_nt(password: BytesLike) -> str:
+    """The NT hash as ``$3$$<hex>``; it has no salt and no cost."""
+
+def unix_crypt_sha1(password: BytesLike, rounds: int, salt: Optional[str] = None) -> str:
+    """NetBSD's sha1crypt (``$sha1$``): ``rounds`` of at least 1, up to 64
+    salt characters."""
+
+def unix_crypt_sun_md5(password: BytesLike, extra_rounds: int = 0,
+                       salt: Optional[str] = None) -> str:
+    """Sun's MD5 crypt (``$md5``): 4,096 rounds plus ``extra_rounds``, up to
+    eight salt characters, written with the closing ``$``."""
+
 def unix_crypt_verify(password: BytesLike, stored: str) -> bool:
     """Whether ``password`` produces ``stored``, in constant time.
     ``False`` for a hash string this does not understand."""

@@ -179,7 +179,7 @@ fn descrypt(password: &[u8], setting: &str) -> Result<String, String> {
     Ok(format!("{}{}{}", s[0] as char, s[1] as char, des_encode(block)))
 }
 
-fn bigcrypt(password: &[u8], setting: &str) -> Result<String, String> {
+fn bigcrypt_setting(password: &[u8], setting: &str) -> Result<String, String> {
     let s = setting.as_bytes();
     let s0 = index_in(CRYPT64, s[0]).ok_or("Bad salt character.")?;
     let s1 = index_in(CRYPT64, s[1]).ok_or("Bad salt character.")?;
@@ -401,7 +401,7 @@ const SHA512_CRYPT: ShaLike = ShaLike {
 /// md5-crypt's `$1$`: the "weird" 1000-round loop with the md5-specific
 /// construction, separate from the SHA-crypts because its length-bit step
 /// uses a NUL for the 1 case and the digest for 0.
-fn md5_crypt(password: &[u8], setting: &str) -> Result<String, String> {
+fn md5_crypt_setting(password: &[u8], setting: &str) -> Result<String, String> {
     let rest = setting.strip_prefix("$1$").ok_or("Not an md5-crypt setting.")?;
     let salt_end = rest.find('$').unwrap_or(rest.len());
     let salt_text = salt_prefix(rest, salt_end.min(8))?;
@@ -460,9 +460,10 @@ fn md5_crypt(password: &[u8], setting: &str) -> Result<String, String> {
 // ------------------------------------------------------------------ NT ---
 
 /// `$3$`: the NT hash (MD4 of the password as UTF-16LE), in crypt
-/// clothing. The salt is ignored - two accounts with the same password
+/// clothing. It takes no parameters: there is no salt and no cost, so it
+/// is the same function as `crypt(password, "$3$")`. The salt is ignored - two accounts with the same password
 /// have the same `$3$` hash, which is the NT hash's original sin.
-fn nt_crypt(password: &[u8]) -> String {
+pub fn nt_crypt(password: &[u8]) -> String {
     let mut ucs2 = Vec::with_capacity(password.len() * 2);
     for &byte in password {
         ucs2.push(byte);
@@ -478,7 +479,7 @@ fn nt_crypt(password: &[u8]) -> String {
 
 // ---------------------------------------------------------- sha1crypt ---
 
-fn sha1_crypt(password: &[u8], setting: &str) -> Result<String, String> {
+fn sha1_crypt_setting(password: &[u8], setting: &str) -> Result<String, String> {
     let rest = setting.strip_prefix("$sha1$").ok_or("Not a sha1crypt setting.")?;
     let end = rest.find('$').ok_or("sha1crypt needs an iteration count.")?;
     let iterations: u64 = rest[..end].parse().map_err(|_| "Bad iteration count.")?;
@@ -620,7 +621,7 @@ fn bcrypt_encode(bytes: &[u8]) -> String {
 const BCRYPT_MAGIC: [u32; 6] =
     [0x4f72_7068, 0x6561_6e42, 0x6568_6f6c, 0x6465_7253, 0x6372_7944, 0x6f75_6274];
 
-fn bcrypt(password: &[u8], setting: &str) -> Result<String, String> {
+fn bcrypt_setting(password: &[u8], setting: &str) -> Result<String, String> {
     let s = setting.as_bytes();
     if s.len() < 7 || s[0] != b'$' || s[1] != b'2' {
         return Err("Not a bcrypt setting.".to_string());
@@ -760,6 +761,215 @@ fn sunmd5(password: &[u8], setting: &str) -> Result<String, String> {
     Ok(out)
 }
 
+// ------------------------------------------------------------- helpers ---
+//
+// One function per method, with the cost and salt as arguments - in that
+// order throughout - instead of spelled into a setting string. Each builds the setting that method reads
+// and hashes under it, so its result is exactly what `crypt` returns for
+// that setting and what `verify` accepts. `salt: None` draws a fresh salt
+// of the method's customary length from the operating system.
+//
+// The helpers are stricter than `crypt`: a salt must be in the crypt
+// alphabet and within the method's length, and a cost must be in range,
+// or it is an error. `crypt` takes a stored hash as it is, clamping and
+// truncating the way the C does, because a hash that already exists has
+// to be read whatever it says; a new one has no reason to rely on that.
+
+/// A salt from the caller, checked, or `n` fresh characters.
+fn salt_or_fresh(salt: Option<&str>, min: usize, max: usize, fresh: usize)
+                 -> Result<String, String> {
+    match salt {
+        Some(s) => {
+            if s.len() < min || s.len() > max {
+                return Err(if min == max {
+                    format!("This method's salt is {min} characters, not {}.", s.len())
+                } else {
+                    format!("This method's salt is {min} to {max} characters, not {}.", s.len())
+                });
+            }
+            if let Some(bad) = s.bytes().find(|&b| index_in(CRYPT64, b).is_none()) {
+                return Err(format!("{:?} is not a salt character; the alphabet is ./0-9A-Za-z.",
+                                   bad as char));
+            }
+            Ok(s.to_string())
+        }
+        // 256 is a multiple of 64, so each byte's low six bits are uniform.
+        None => Ok(crate::random::bytes(fresh)?.iter()
+            .map(|&b| CRYPT64[(b & 0x3f) as usize] as char).collect()),
+    }
+}
+
+/// Traditional DES crypt: a two-character salt, 25 rounds, and only the
+/// first eight bytes of the password.
+///
+/// # Errors
+/// A salt that is not two characters of `./0-9A-Za-z`.
+pub fn des_crypt(password: &[u8], salt: Option<&str>) -> Result<String, String> {
+    descrypt(password, &salt_or_fresh(salt, 2, 2, 2)?)
+}
+
+/// bigcrypt: DES crypt over each eight bytes of the password, up to 128.
+/// For a password of eight bytes or fewer it is `des_crypt`.
+///
+/// # Errors
+/// A salt that is not two characters of `./0-9A-Za-z`.
+pub fn big_crypt(password: &[u8], salt: Option<&str>) -> Result<String, String> {
+    bigcrypt_setting(password, &salt_or_fresh(salt, 2, 2, 2)?)
+}
+
+/// BSDi extended DES: `rounds` DES encryptions (1 to 2^24 - 1) under a
+/// four-character salt.
+///
+/// # Errors
+/// `rounds` out of range, or a salt that is not four characters of
+/// `./0-9A-Za-z`.
+pub fn bsdi_crypt(password: &[u8], rounds: u32, salt: Option<&str>) -> Result<String, String> {
+    if !(1..1 << 24).contains(&rounds) {
+        return Err(format!("BSDi crypt's rounds are 1 to 16777215, not {rounds}."));
+    }
+    let mut setting = String::from("_");
+    b64_low_first(&mut setting, rounds, 4);
+    setting.push_str(&salt_or_fresh(salt, 4, 4, 4)?);
+    bsdicrypt(password, &setting)
+}
+
+/// md5-crypt, `$1$`: up to eight salt characters and a fixed 1,000 rounds.
+///
+/// # Errors
+/// A salt longer than eight characters or outside `./0-9A-Za-z`.
+pub fn md5_crypt(password: &[u8], salt: Option<&str>) -> Result<String, String> {
+    md5_crypt_setting(password, &format!("$1${}", salt_or_fresh(salt, 0, 8, 8)?))
+}
+
+fn sha_crypt(method: &ShaLike, password: &[u8], rounds: Option<u32>, salt: Option<&str>)
+             -> Result<String, String> {
+    let mut setting = method.prefix.to_string();
+    if let Some(r) = rounds {
+        if !(1000..=999_999_999).contains(&r) {
+            return Err(format!("The SHA-crypts' rounds are 1000 to 999999999, not {r}."));
+        }
+        setting.push_str(&format!("rounds={r}$"));
+    }
+    setting.push_str(&salt_or_fresh(salt, 0, 16, 16)?);
+    method.run(password, &setting)
+}
+
+/// SHA-256-crypt, `$5$`: up to sixteen salt characters. `rounds: None`
+/// is the default 5,000, left out of the string; `Some(n)` writes
+/// `rounds=n$`, even for 5,000, as the C does when one is given.
+///
+/// # Errors
+/// `rounds` outside 1,000 to 999,999,999, or a salt longer than sixteen
+/// characters or outside `./0-9A-Za-z`.
+pub fn sha256_crypt(password: &[u8], rounds: Option<u32>, salt: Option<&str>)
+                    -> Result<String, String> {
+    sha_crypt(&SHA256_CRYPT, password, rounds, salt)
+}
+
+/// SHA-512-crypt, `$6$`, the usual `/etc/shadow` hash on Linux; the
+/// parameters are `sha256_crypt`'s.
+///
+/// # Errors
+/// As `sha256_crypt`.
+pub fn sha512_crypt(password: &[u8], rounds: Option<u32>, salt: Option<&str>)
+                    -> Result<String, String> {
+    sha_crypt(&SHA512_CRYPT, password, rounds, salt)
+}
+
+/// The four bcrypt prefixes. They differ only for a password with a byte
+/// at or above 0x80 (see the module comment); `B` is the one to write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BcryptVariant {
+    /// `$2a$`: the correct reading, plus the safety bit for the passwords
+    /// `$2x$` would have collided.
+    A,
+    /// `$2b$`: the correct reading. OpenBSD's since 2014.
+    B,
+    /// `$2x$`: the sign-extension bug, reproduced.
+    X,
+    /// `$2y$`: the correct reading, under crypt_blowfish's name for it.
+    Y,
+}
+
+impl BcryptVariant {
+    /// `"2a"`, `"2b"`, `"2x"` or `"2y"`, with or without the `$`s.
+    ///
+    /// # Errors
+    /// Anything else.
+    pub fn from_name(name: &str) -> Result<BcryptVariant, String> {
+        match name.trim_matches('$') {
+            "2a" => Ok(BcryptVariant::A),
+            "2b" => Ok(BcryptVariant::B),
+            "2x" => Ok(BcryptVariant::X),
+            "2y" => Ok(BcryptVariant::Y),
+            other => Err(format!("Unknown bcrypt variant {other:?}; it is 2a, 2b, 2x or 2y.")),
+        }
+    }
+
+    fn letter(self) -> char {
+        match self {
+            BcryptVariant::A => 'a',
+            BcryptVariant::B => 'b',
+            BcryptVariant::X => 'x',
+            BcryptVariant::Y => 'y',
+        }
+    }
+}
+
+/// bcrypt: `2^cost` rounds of the expensive key schedule (cost 4 to 31),
+/// a 16 byte salt, and only the first 72 bytes of the password.
+///
+/// # Errors
+/// A cost out of range, or a salt that is not 16 bytes.
+pub fn bcrypt(password: &[u8], cost: u32, salt: Option<&[u8]>, variant: BcryptVariant)
+              -> Result<String, String> {
+    if !(4..=31).contains(&cost) {
+        return Err(format!("bcrypt's cost is 4 to 31, not {cost}."));
+    }
+    let salt = match salt {
+        Some(s) if s.len() == 16 => s.to_vec(),
+        Some(s) => return Err(format!("A bcrypt salt is 16 bytes, not {}.", s.len())),
+        None => crate::random::bytes(16)?,
+    };
+    let setting = format!("$2{}${cost:02}${}", variant.letter(), bcrypt_encode(&salt));
+    bcrypt_setting(password, &setting)
+}
+
+/// NetBSD's sha1crypt, `$sha1$`: `rounds` iterations of HMAC-SHA-1 (at
+/// least 1) and up to 64 salt characters.
+///
+/// # Errors
+/// Zero rounds, or a salt longer than 64 characters or outside
+/// `./0-9A-Za-z`.
+pub fn sha1_crypt(password: &[u8], rounds: u32, salt: Option<&str>) -> Result<String, String> {
+    if rounds == 0 {
+        return Err("sha1crypt needs at least one round.".to_string());
+    }
+    let salt = salt_or_fresh(salt, 1, 64, 8)?;
+    sha1_crypt_setting(password, &format!("$sha1${rounds}${salt}$"))
+}
+
+/// Sun's MD5 crypt, `$md5`: 4,096 rounds plus `extra_rounds`, and up to
+/// eight salt characters. `extra_rounds = 0` writes `$md5$salt$`, and any
+/// other value `$md5,rounds=N$salt$`, which is how the setting expresses
+/// it. The salt is written with its closing `$`, as Solaris and
+/// libxcrypt write it; the form without one hashes differently, and
+/// `crypt` reads both.
+///
+/// # Errors
+/// An empty salt, or one longer than eight characters or outside
+/// `./0-9A-Za-z`.
+pub fn sun_md5_crypt(password: &[u8], extra_rounds: u32, salt: Option<&str>)
+                     -> Result<String, String> {
+    let salt = salt_or_fresh(salt, 1, 8, 8)?;
+    let setting = if extra_rounds == 0 {
+        format!("$md5${salt}$")
+    } else {
+        format!("$md5,rounds={extra_rounds}${salt}$")
+    };
+    sunmd5(password, &setting)
+}
+
 // ------------------------------------------------------------ dispatch ---
 
 /// Hash `password` under `setting`, returning the full `crypt(3)` string.
@@ -771,12 +981,12 @@ pub fn crypt(password: &[u8], setting: &str) -> Result<String, String> {
         // `$md5,rounds=...` as well as `$md5$...`.
         let tag = &rest[..rest.find(['$', ',']).unwrap_or(rest.len())];
         return match tag {
-            "1" => md5_crypt(password, setting),
-            "2a" | "2b" | "2x" | "2y" => bcrypt(password, setting),
+            "1" => md5_crypt_setting(password, setting),
+            "2a" | "2b" | "2x" | "2y" => bcrypt_setting(password, setting),
             "3" => Ok(nt_crypt(password)),
             "5" => SHA256_CRYPT.run(password, setting),
             "6" => SHA512_CRYPT.run(password, setting),
-            "sha1" => sha1_crypt(password, setting),
+            "sha1" => sha1_crypt_setting(password, setting),
             "md5" => sunmd5(password, setting),
             other => Err(format!("Unknown crypt method ${other}$.")),
         };
@@ -786,7 +996,7 @@ pub fn crypt(password: &[u8], setting: &str) -> Result<String, String> {
     }
     // No prefix: traditional DES, or bigcrypt for a long password.
     if password.len() > 8 && setting.len() > 13 {
-        return bigcrypt(password, setting);
+        return bigcrypt_setting(password, setting);
     }
     descrypt(password, setting)
 }

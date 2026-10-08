@@ -1679,6 +1679,95 @@ pub fn unix_crypt(password: &[u8], setting: &str) -> Result<String, String> {
     kdf::unix_crypt::crypt(password, setting)
 }
 
+/// Traditional DES crypt under a two-character salt, or a fresh one.
+/// The `unix_crypt_*` functions take each method's cost and salt as
+/// arguments and return the same string `unix_crypt` returns for the
+/// setting they build; `kdf::unix_crypt` documents each.
+///
+/// # Errors
+/// A salt that is not two characters of `./0-9A-Za-z`.
+pub fn unix_crypt_des(password: &[u8], salt: Option<&str>) -> Result<String, String> {
+    kdf::unix_crypt::des_crypt(password, salt)
+}
+
+/// bigcrypt: DES crypt over each eight bytes of the password.
+///
+/// # Errors
+/// As `unix_crypt_des`.
+pub fn unix_crypt_bigcrypt(password: &[u8], salt: Option<&str>) -> Result<String, String> {
+    kdf::unix_crypt::big_crypt(password, salt)
+}
+
+/// BSDi extended DES, `rounds` from 1 to 2^24 - 1, a four-character salt.
+///
+/// # Errors
+/// `rounds` out of range or a malformed salt.
+pub fn unix_crypt_bsdi(password: &[u8], rounds: u32, salt: Option<&str>)
+                       -> Result<String, String> {
+    kdf::unix_crypt::bsdi_crypt(password, rounds, salt)
+}
+
+/// md5-crypt, `$1$`, up to eight salt characters.
+///
+/// # Errors
+/// A malformed salt.
+pub fn unix_crypt_md5(password: &[u8], salt: Option<&str>) -> Result<String, String> {
+    kdf::unix_crypt::md5_crypt(password, salt)
+}
+
+/// SHA-256-crypt, `$5$`; `rounds: None` is the default 5,000, unwritten.
+///
+/// # Errors
+/// `rounds` outside 1,000 to 999,999,999 or a malformed salt.
+pub fn unix_crypt_sha256(password: &[u8], rounds: Option<u32>, salt: Option<&str>)
+                         -> Result<String, String> {
+    kdf::unix_crypt::sha256_crypt(password, rounds, salt)
+}
+
+/// SHA-512-crypt, `$6$`; parameters as `unix_crypt_sha256`.
+///
+/// # Errors
+/// As `unix_crypt_sha256`.
+pub fn unix_crypt_sha512(password: &[u8], rounds: Option<u32>, salt: Option<&str>)
+                         -> Result<String, String> {
+    kdf::unix_crypt::sha512_crypt(password, rounds, salt)
+}
+
+/// bcrypt at `cost` (4 to 31) with a 16 byte salt, under `variant`
+/// (`"2a"`, `"2b"`, `"2x"` or `"2y"`).
+///
+/// # Errors
+/// A cost out of range, a salt that is not 16 bytes, or an unknown
+/// variant.
+pub fn unix_crypt_bcrypt(password: &[u8], cost: u32, salt: Option<&[u8]>, variant: &str)
+                         -> Result<String, String> {
+    let variant = kdf::unix_crypt::BcryptVariant::from_name(variant)?;
+    kdf::unix_crypt::bcrypt(password, cost, salt, variant)
+}
+
+/// The NT hash as `$3$$<hex>`; it has no salt and no cost.
+pub fn unix_crypt_nt(password: &[u8]) -> String {
+    kdf::unix_crypt::nt_crypt(password)
+}
+
+/// NetBSD's sha1crypt, `$sha1$`, `rounds` of at least 1.
+///
+/// # Errors
+/// Zero rounds or a malformed salt.
+pub fn unix_crypt_sha1(password: &[u8], rounds: u32, salt: Option<&str>)
+                       -> Result<String, String> {
+    kdf::unix_crypt::sha1_crypt(password, rounds, salt)
+}
+
+/// Sun's MD5 crypt, 4,096 rounds plus `extra_rounds`.
+///
+/// # Errors
+/// A malformed salt.
+pub fn unix_crypt_sun_md5(password: &[u8], extra_rounds: u32, salt: Option<&str>)
+                          -> Result<String, String> {
+    kdf::unix_crypt::sun_md5_crypt(password, extra_rounds, salt)
+}
+
 /// Whether `password` produces the stored `crypt(3)` hash, compared in
 /// constant time. `false` for a hash this cannot parse, so a parse
 /// failure cannot be mistaken for a match.

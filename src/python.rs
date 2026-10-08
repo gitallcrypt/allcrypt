@@ -1061,6 +1061,81 @@ fn unix_crypt(password: Bytes, setting: &str) -> PyResult<String> {
     api::unix_crypt(&password, setting).map_err(err)
 }
 
+/// Traditional DES crypt; ``salt`` is two characters, or ``None`` for a
+/// fresh one.
+#[pyfunction]
+#[pyo3(signature = (password, salt=None))]
+fn unix_crypt_des(password: Bytes, salt: Option<String>) -> PyResult<String> {
+    api::unix_crypt_des(&password, salt.as_deref()).map_err(err)
+}
+
+/// bigcrypt; ``salt`` is two characters, or ``None`` for a fresh one.
+#[pyfunction]
+#[pyo3(signature = (password, salt=None))]
+fn unix_crypt_bigcrypt(password: Bytes, salt: Option<String>) -> PyResult<String> {
+    api::unix_crypt_bigcrypt(&password, salt.as_deref()).map_err(err)
+}
+
+/// BSDi extended DES; ``salt`` is four characters, or ``None``.
+#[pyfunction]
+#[pyo3(signature = (password, rounds, salt=None))]
+fn unix_crypt_bsdi(password: Bytes, rounds: u32, salt: Option<String>) -> PyResult<String> {
+    api::unix_crypt_bsdi(&password, rounds, salt.as_deref()).map_err(err)
+}
+
+/// md5-crypt (``$1$``); ``salt`` up to eight characters, or ``None``.
+#[pyfunction]
+#[pyo3(signature = (password, salt=None))]
+fn unix_crypt_md5(password: Bytes, salt: Option<String>) -> PyResult<String> {
+    api::unix_crypt_md5(&password, salt.as_deref()).map_err(err)
+}
+
+/// SHA-256-crypt (``$5$``); ``rounds=None`` is the unwritten default.
+#[pyfunction]
+#[pyo3(signature = (password, rounds=None, salt=None))]
+fn unix_crypt_sha256(py: Python<'_>, password: Bytes, rounds: Option<u32>, salt: Option<String>)
+                     -> PyResult<String> {
+    py.allow_threads(|| api::unix_crypt_sha256(&password, rounds, salt.as_deref())).map_err(err)
+}
+
+/// SHA-512-crypt (``$6$``); ``rounds=None`` is the unwritten default.
+#[pyfunction]
+#[pyo3(signature = (password, rounds=None, salt=None))]
+fn unix_crypt_sha512(py: Python<'_>, password: Bytes, rounds: Option<u32>, salt: Option<String>)
+                     -> PyResult<String> {
+    py.allow_threads(|| api::unix_crypt_sha512(&password, rounds, salt.as_deref())).map_err(err)
+}
+
+/// bcrypt at ``cost``; ``salt`` is 16 bytes or ``None``.
+#[pyfunction]
+#[pyo3(signature = (password, cost, salt=None, variant="2b"))]
+fn unix_crypt_bcrypt(py: Python<'_>, password: Bytes, cost: u32, salt: Option<Bytes>, variant: &str)
+                     -> PyResult<String> {
+    let variant = variant.to_string();
+    py.allow_threads(|| api::unix_crypt_bcrypt(&password, cost, salt.as_deref(), &variant)).map_err(err)
+}
+
+/// The NT hash as ``$3$$<hex>``.
+#[pyfunction]
+fn unix_crypt_nt(password: Bytes) -> String {
+    api::unix_crypt_nt(&password)
+}
+
+/// NetBSD's sha1crypt (``$sha1$``).
+#[pyfunction]
+#[pyo3(signature = (password, rounds, salt=None))]
+fn unix_crypt_sha1(py: Python<'_>, password: Bytes, rounds: u32, salt: Option<String>) -> PyResult<String> {
+    py.allow_threads(|| api::unix_crypt_sha1(&password, rounds, salt.as_deref())).map_err(err)
+}
+
+/// Sun's MD5 crypt (``$md5``), 4,096 rounds plus ``extra_rounds``.
+#[pyfunction]
+#[pyo3(signature = (password, extra_rounds=0, salt=None))]
+fn unix_crypt_sun_md5(password: Bytes, extra_rounds: u32, salt: Option<String>)
+                      -> PyResult<String> {
+    api::unix_crypt_sun_md5(&password, extra_rounds, salt.as_deref()).map_err(err)
+}
+
 /// Whether ``password`` produces ``stored``, compared in constant time.
 #[pyfunction]
 fn unix_crypt_verify(password: Bytes, stored: &str) -> bool {
@@ -5045,6 +5120,16 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(argon2, m)?)?;
     m.add_function(wrap_pyfunction!(pbkdf2_recommended_iterations, m)?)?;
     m.add_function(wrap_pyfunction!(unix_crypt, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_des, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_bigcrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_bsdi, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_md5, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_sha256, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_sha512, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_bcrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_nt, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_sha1, m)?)?;
+    m.add_function(wrap_pyfunction!(unix_crypt_sun_md5, m)?)?;
     m.add_function(wrap_pyfunction!(unix_crypt_verify, m)?)?;
     m.add_function(wrap_pyfunction!(tls_master_secret, m)?)?;
     m.add_function(wrap_pyfunction!(ssl3_record_mac, m)?)?;

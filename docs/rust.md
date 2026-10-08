@@ -1346,8 +1346,33 @@ than quietly hashing its first fourteen bytes.
 `kdf::unix_crypt` reads and writes the password hashes in the world's
 `/etc/shadow` files, NIS maps and `.htpasswd`. One function dispatches on
 the setting's prefix, as the C library does: a bare salt for DES, `$1$`,
-`$5$`/`$6$`, `$2b$`, `$3$`, `$sha1$`, `$md5`, `_`. To make a new hash,
-pass a setting; to check a password, pass the stored hash.
+`$5$`/`$6$`, `$2b$`, `$3$`, `$sha1$`, `$md5`, `_`. To check a password,
+pass the stored hash.
+
+To make a new one, each method has a function taking its cost and salt
+as arguments - `des_crypt`, `big_crypt`, `bsdi_crypt`, `md5_crypt`,
+`sha256_crypt`, `sha512_crypt`, `bcrypt`, `nt_crypt`, `sha1_crypt`,
+`sun_md5_crypt` - which builds the setting and returns the same string
+`crypt` would. A salt of `None` is drawn fresh from the operating system.
+They refuse what `crypt` would clamp or cut (rounds out of range, a salt
+too long or outside `./0-9A-Za-z`), since a new hash has no reason to
+rely on that.
+
+```rust
+use allcrypt::kdf::unix_crypt::{bcrypt, sha512_crypt, verify, BcryptVariant};
+
+let shadow = sha512_crypt(b"correct horse", Some(10_000), None)?;
+assert!(shadow.starts_with("$6$rounds=10000$"));
+assert!(verify(b"correct horse", &shadow));
+
+let salt = [0x5au8; 16];
+let bc = bcrypt(b"correct horse", 8, Some(&salt), BcryptVariant::B)?;
+assert!(bc.starts_with("$2b$08$"));
+assert!(verify(b"correct horse", &bc));
+```
+
+The setting string is still the general form, and the one a stored hash
+arrives in:
 
 ```rust
 use allcrypt::kdf::unix_crypt::{crypt, verify};

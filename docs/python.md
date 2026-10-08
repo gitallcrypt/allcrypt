@@ -1083,6 +1083,31 @@ assert allcrypt.unix_crypt(b"pw", "$2b$08$abcdefghijklmnopqrstuu").startswith("$
 assert allcrypt.unix_crypt(b"pw", "$3$") == "$3$$" + allcrypt.nt_hash("pw").hex()
 ```
 
+To make a new hash without writing the setting by hand, each method has
+its own function taking the cost and salt as arguments; leave `salt` out
+for a fresh one. They return what `unix_crypt` would for the setting they
+build, and raise `ValueError` for a cost out of range or a salt that is
+too long or outside `./0-9A-Za-z`, where `unix_crypt` would clamp or cut.
+
+```python
+import allcrypt
+
+shadow = allcrypt.unix_crypt_sha512(b"correct horse", rounds=10_000)
+assert shadow.startswith("$6$rounds=10000$")
+assert allcrypt.unix_crypt_verify(b"correct horse", shadow)
+
+bc = allcrypt.unix_crypt_bcrypt(b"correct horse", cost=8, salt=bytes(16), variant="2b")
+assert bc.startswith("$2b$08$......................")
+
+assert allcrypt.unix_crypt_md5(b"pw", salt="abcdefgh").startswith("$1$abcdefgh$")
+assert allcrypt.unix_crypt_des(b"pw", salt="ab")[:2] == "ab"
+assert allcrypt.unix_crypt_bsdi(b"pw", rounds=725, salt="rasm").startswith("_J9..rasm")
+```
+
+The others are `unix_crypt_bigcrypt`, `unix_crypt_sha256`,
+`unix_crypt_nt`, `unix_crypt_sha1(password, rounds)` and
+`unix_crypt_sun_md5(password, extra_rounds=0)`.
+
 It covers traditional DES, BSDi, bigcrypt, md5crypt, the SHA-crypts,
 bcrypt (`$2a`/`$2b`/`$2x`/`$2y`), the NT hash, sha1crypt and Sun's MD5,
 matching the system `libcrypt` on all of them. These read the hashes that
