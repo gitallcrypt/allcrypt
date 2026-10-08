@@ -22,6 +22,21 @@ license = "0BSD"
 description = "Common and uncommon cryptographic algorithms in pure Rust, old and broken ones included, with Python and C bindings."
 repository = "https://github.com/gitallcrypt/allcrypt"
 readme = "README.md"
+keywords = ["cryptography", "crypto", "cipher", "hash", "tls"]
+categories = ["cryptography"]
+
+# Things not needed to build the rust package.
+# To build these things checkout the git.
+exclude = [
+    "examples/",
+    "python/",
+    "pytests/",
+    "scripts/",
+    "tests/",
+    "docs/",
+    "notes/",
+    "pyproject.toml"
+]
 # The oldest toolchain this builds on. Declared rather than implied:
 # `is_multiple_of` and `Option::is_none_or` were stabilised in 1.87 and
 # are now used throughout, so an older compiler fails with a handful of
