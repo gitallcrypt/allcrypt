@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "0BSD"
 rust-version = "1.87"
+publish = false
 
 # `libssl.so`. The name is what makes this work: LD_PRELOAD inserts
 # these symbols ahead of the real library's, so a program that calls
