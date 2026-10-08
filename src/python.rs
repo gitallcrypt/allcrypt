@@ -1149,6 +1149,49 @@ fn unix_crypt_verify(password: Bytes, stored: &str) -> bool {
     api::unix_crypt_verify(&password, stored)
 }
 
+/// MySQL's pre-4.1 ``OLD_PASSWORD()`` (``mysql323``): sixteen hex
+/// characters. Not for storing a password.
+#[pyfunction]
+fn mysql_old_password(password: Bytes) -> String {
+    api::mysql_old_password(&password)
+}
+
+/// MySQL 4.1+ ``PASSWORD()``: ``*`` and the uppercase hex of
+/// ``SHA1(SHA1(password))``.
+#[pyfunction]
+fn mysql_password(password: Bytes) -> String {
+    api::mysql_password(&password)
+}
+
+/// PostgreSQL's ``md5`` token: ``md5`` and the hex of
+/// ``md5(password + username)``.
+#[pyfunction]
+fn postgres_md5(password: Bytes, username: Bytes) -> String {
+    api::postgres_md5(&password, &username)
+}
+
+/// vBulletin and MyBB: ``md5(md5(password) + salt)``.
+#[pyfunction]
+fn vbulletin_password(password: Bytes, salt: Bytes) -> String {
+    api::vbulletin_password(&password, &salt)
+}
+
+/// The portable phpass hash, ``$P$`` (WordPress) or ``$H$`` (phpBB3).
+/// ``setting`` is the stored hash or its first twelve characters; the
+/// phpass loop releases the GIL.
+#[pyfunction]
+fn phpass(py: Python<'_>, password: Bytes, setting: &str) -> PyResult<String> {
+    let setting = setting.to_string();
+    py.allow_threads(|| api::phpass(&password, &setting)).map_err(err)
+}
+
+/// Whether ``password`` produces the stored phpass hash.
+#[pyfunction]
+fn phpass_verify(py: Python<'_>, password: Bytes, stored: &str) -> bool {
+    let stored = stored.to_string();
+    py.allow_threads(|| api::phpass_verify(&password, &stored))
+}
+
 /// Squeeze any number of bytes out of a SHAKE.
 ///
 /// `hashlib`'s `shake_128(...).digest(length)` in function form. Only
@@ -5139,6 +5182,12 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(unix_crypt_sha1, m)?)?;
     m.add_function(wrap_pyfunction!(unix_crypt_sun_md5, m)?)?;
     m.add_function(wrap_pyfunction!(unix_crypt_verify, m)?)?;
+    m.add_function(wrap_pyfunction!(mysql_old_password, m)?)?;
+    m.add_function(wrap_pyfunction!(mysql_password, m)?)?;
+    m.add_function(wrap_pyfunction!(postgres_md5, m)?)?;
+    m.add_function(wrap_pyfunction!(vbulletin_password, m)?)?;
+    m.add_function(wrap_pyfunction!(phpass, m)?)?;
+    m.add_function(wrap_pyfunction!(phpass_verify, m)?)?;
     m.add_function(wrap_pyfunction!(tls_master_secret, m)?)?;
     m.add_function(wrap_pyfunction!(ssl3_record_mac, m)?)?;
     m.add_function(wrap_pyfunction!(x25519_generate, m)?)?;

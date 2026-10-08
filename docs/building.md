@@ -811,6 +811,17 @@ methods implemented here, and requires `libcrypt` to reproduce each row.
 $ python3 scripts/make_unix_crypt_vectors.py     # rewrites vectors/unix_crypt.vec
 ```
 
+**Database and forum password hashes**: MariaDB 10.11.6's own
+`hash_password` (the pre-4.1 `OLD_PASSWORD`), extracted from
+`sql/password.c` and compiled; WordPress 6.4's `class-phpass.php` run
+under PHP; and PHP's `md5`/`sha1` for the MySQL 4.1, PostgreSQL and
+vBulletin constructions. Both fetched sources are pinned by SHA-256.
+
+```console
+$ scripts/witness/apppass/build.sh               # builds /opt/apppass
+$ python3 scripts/make_app_password_vectors.py   # rewrites vectors/app_passwords.vec
+```
+
 **Linear congruential generators**: the rand() of musl 1.2.5 and newlib
 4.4.0, and of MSVC as Wine 9.0's msvcrt reimplements it, compiled from
 their own sources (newlib's and Wine's per-thread state reached through

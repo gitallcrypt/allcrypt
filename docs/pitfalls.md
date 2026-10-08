@@ -102,6 +102,7 @@ to be someone's CVE.**
 - [7zzj. Unix crypt(3)](#7zzj-unix-crypt3)
 - [7zzk. RC6](#7zzk-rc6)
 - [7zzl. CAST-256](#7zzl-cast-256)
+- [7zzm. Database and forum password hashes](#7zzm-database-and-forum-password-hashes)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -9476,6 +9477,54 @@ quad-rounds too, and the test checks each one.
 This module uses `cast5`'s copy (read from RFC 2144), and a test parses
 RFC 2612's 1,024 words and requires them to be identical, so the two
 documents cannot have drifted apart unnoticed.
+
+---
+
+## 7zzm. Database and forum password hashes
+
+`src/kdf/app_passwords.rs`: MySQL `OLD_PASSWORD`/`PASSWORD`, PostgreSQL
+`md5`, phpass and vBulletin. Checked against MariaDB's `hash_password`,
+WordPress's `class-phpass.php`, and PHP's md5/sha1, `vectors/app_passwords.vec`.
+
+### These are verifiers to read, not to store
+
+**Status: accepted** (it is the point of the module). Every one of these
+is weak by a modern measure: `mysql_old_password` is a 64-bit
+non-cryptographic hash, `mysql_password`, `postgres_md5` and `vbulletin`
+are one or two rounds of MD5 or SHA-1 with no or a single salt, and even
+`phpass`'s iterated MD5 is far below Argon2 or scrypt. They are here to
+read dumps, and the module comment and docs say so rather than letting a
+caller reach for one to store a new password.
+
+### MySQL's `OLD_PASSWORD` is the same on 32- and 64-bit servers
+
+**Status: mitigated.** MySQL's `hash_password` is written in `unsigned
+long`, 64-bit on a modern server, but its result is masked to 31 bits
+per word and the low 31 bits are identical whether the loop runs in 32-
+or 64-bit arithmetic - every step is a ring operation mod 2^32 plus a
+left shift reading only low bits, so the low 32 bits stay congruent. A
+32-bit `u32` implementation therefore matches the 64-bit server, which
+three million random passwords and the compiled witness confirm. Writing
+it in 64-bit `usize` "to match the source" would be the mistake, not the
+fix.
+
+### `postgres_md5` binds the username
+
+**Status: mitigated.** The token is `md5(password . username)`, so the
+same password under two role names hashes differently and a renamed role
+cannot authenticate until its password is reset. A test asserts two
+names give two hashes, since leaving the username out would pass every
+positive vector that happened to share one.
+
+### phpass puts its own setting in the output
+
+**Status: mitigated.** The hash string begins with the twelve-character
+setting (id, cost, salt), and `verify` reads the salt and cost back out
+of a stored hash. Re-deriving with a fresh salt, or dropping the setting
+prefix, gives a self-consistent hash that verifies against nothing. The
+cost character outside phpass's 7..=30 is refused rather than run (2^31
+MD5s is not a hash, it is a hang), and a malformed setting is an error,
+not a panic.
 
 ---
 

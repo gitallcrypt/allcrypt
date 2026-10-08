@@ -1586,6 +1586,33 @@ def unix_crypt_verify(password: BytesLike, stored: str) -> bool:
     """Whether ``password`` produces ``stored``, in constant time.
     ``False`` for a hash string this does not understand."""
 
+def mysql_old_password(password: BytesLike) -> str:
+    """MySQL's pre-4.1 ``OLD_PASSWORD()`` (``mysql323``): sixteen hex
+    characters. Space and tab bytes are skipped. Not for storing a
+    password - see the module notes."""
+
+def mysql_password(password: BytesLike) -> str:
+    """MySQL 4.1+ ``PASSWORD()``: ``*`` and the uppercase hex of
+    ``SHA1(SHA1(password))``."""
+
+def postgres_md5(password: BytesLike, username: BytesLike) -> str:
+    """PostgreSQL's ``md5`` token: ``md5`` and the hex of
+    ``md5(password + username)``."""
+
+def vbulletin_password(password: BytesLike, salt: BytesLike) -> str:
+    """vBulletin and MyBB: ``md5(md5(password) + salt)``, thirty-two hex
+    characters."""
+
+def phpass(password: BytesLike, setting: str) -> str:
+    """The portable phpass hash, ``$P$`` (WordPress) or ``$H$`` (phpBB3).
+    ``setting`` is the stored hash or its first twelve characters: the
+    id, one cost character and eight salt characters. Raises
+    ``ValueError`` for a bad id or a cost outside 7..=30."""
+
+def phpass_verify(password: BytesLike, stored: str) -> bool:
+    """Whether ``password`` produces the stored phpass hash. ``False``
+    for a string phpass cannot parse."""
+
 def dual_ec_drbg(curve: str, hash: str, entropy: BytesLike, nonce: BytesLike,
                  personalization: BytesLike = b"",
                  requests: List[Tuple[int, BytesLike]] = []) -> List[bytes]:

@@ -17,6 +17,7 @@ The first two take the hash as a value so the caller picks the algorithm:
 names Streebog-256 and nothing else.
 */
 
+pub mod app_passwords;
 pub mod argon2;
 pub mod bcrypt_pbkdf;
 pub mod gost;

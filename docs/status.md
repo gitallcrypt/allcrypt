@@ -171,6 +171,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |BitLocker key stretching (password, recovery password)|✓|Windows's volumes, through the BitLocker example|
 |Unix `crypt(3)`: DES, BSDi, bigcrypt, md5crypt, SHA-256/512-crypt, bcrypt ($2a/$2b/$2x/$2y), NT, sha1crypt, Sun MD5|✓|Passlib's answers (libxcrypt's `ka-table`) and the system libcrypt, `vectors/unix_crypt.vec`|
 |NT hash and LM hash (MS-NLMP §3.3.1, NTOWFv1 and LMOWFv1)|✓|NT ✓; LM: Samba's and impacket's answers (`vectors/windows_hashes.vec`) and spec reference|
+|Database and forum hashes: MySQL `OLD_PASSWORD`/`PASSWORD`, PostgreSQL `md5`, phpass (`$P$`/`$H$`), vBulletin/MyBB|✓|MariaDB's `hash_password`, WordPress's `class-phpass.php`, and PHP's md5/sha1, `vectors/app_passwords.vec`|
 |IEEE 802.11 PSK, PRF, PTK and PMKID (WPA/WPA2/WPA3)|✓|IEEE 802.11i vectors; aircrack-ng, through the Wi-Fi example|
 |TLS 1.2 PRF (RFC 5246)|✓|✓|
 |TLS 1.0/1.1 PRF (RFC 2246)|✓|✓|

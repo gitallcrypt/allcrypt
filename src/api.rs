@@ -1659,9 +1659,10 @@ pub fn lm_hash(password: &[u8]) -> Result<Vec<u8>, String> {
     kdf::windows::lm_hash(password).map(|hash| hash.to_vec())
 }
 
-/// The NT hash of a password (MS-NLMP NTOWFv1): MD4 of the password as
-/// UTF-16 little endian. It is what NTLM and Kerberos's RC4-HMAC use as
-/// the user's key.
+/// The NTLMv2 one-way function (MS-NLMP NTOWFv2): HMAC-MD5 keyed by the
+/// NT hash of `password`, over the UTF-16LE of the uppercased `username`
+/// and then `domain`. The username is uppercased; the domain is not.
+/// This sixteen-byte key is what the NTLMv2 response is computed under.
 pub fn ntlmv2_hash(password: &str, username: &str, domain: &str) -> Vec<u8> {
     kdf::windows::ntlmv2_hash(password, username, domain)
 }
@@ -1797,6 +1798,51 @@ pub fn unix_crypt_sun_md5(password: &[u8], extra_rounds: u32, salt: Option<&str>
 /// failure cannot be mistaken for a match.
 pub fn unix_crypt_verify(password: &[u8], stored: &str) -> bool {
     kdf::unix_crypt::verify(password, stored)
+}
+
+// ------------------------------------------- database and forum hashes ---
+
+pub use crate::kdf::app_passwords;
+
+/// MySQL's pre-4.1 `OLD_PASSWORD()` (the `mysql323` scheme): sixteen
+/// lowercase hex characters. Not for storing a password - see
+/// `crate::kdf::app_passwords`.
+pub fn mysql_old_password(password: &[u8]) -> String {
+    app_passwords::mysql_old_password(password)
+}
+
+/// MySQL 4.1+ `PASSWORD()`: `*` and the uppercase hex of
+/// `SHA1(SHA1(password))`.
+pub fn mysql_password(password: &[u8]) -> String {
+    app_passwords::mysql_password(password)
+}
+
+/// PostgreSQL's `md5` authentication token: `md5` and the hex of
+/// `md5(password . username)`.
+pub fn postgres_md5(password: &[u8], username: &[u8]) -> String {
+    app_passwords::postgres_md5(password, username)
+}
+
+/// vBulletin and MyBB: `md5(md5(password) . salt)`, thirty-two lowercase
+/// hex characters.
+pub fn vbulletin_password(password: &[u8], salt: &[u8]) -> String {
+    app_passwords::vbulletin(password, salt)
+}
+
+/// The portable phpass hash, `$P$` (WordPress) or `$H$` (phpBB3).
+/// `setting` is the stored hash or its first twelve characters.
+///
+/// # Errors
+/// A setting that is not `$P$`/`$H$`, or a cost character outside
+/// phpass's 7..=30.
+pub fn phpass(password: &[u8], setting: &str) -> Result<String, String> {
+    app_passwords::phpass(password, setting)
+}
+
+/// Whether `password` produces the stored phpass hash, from its first
+/// twelve characters. `false` for a string phpass cannot parse.
+pub fn phpass_verify(password: &[u8], stored: &str) -> bool {
+    app_passwords::phpass_verify(password, stored)
 }
 
 /// PBKDF2 (RFC 8018 section 5.2).

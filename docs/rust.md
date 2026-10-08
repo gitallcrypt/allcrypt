@@ -1440,6 +1440,35 @@ It matches the system `libcrypt` and Passlib across every method; none is
 what to pick for new work, but all of them are already out there. See
 `vectors/unix_crypt.vec` and the module comment for what each is.
 
+### Database and forum password hashes
+
+`kdf::app_passwords` has the verifiers found in database and forum dumps:
+MySQL's `mysql_old_password` (pre-4.1 `OLD_PASSWORD()`) and
+`mysql_password` (4.1+ `PASSWORD()`), PostgreSQL's `postgres_md5`,
+`phpass` (WordPress's `$P$` and phpBB3's `$H$`) and `vbulletin`. They
+exist so a dump can be read; **none is fit for storing a password** -
+all but phpass are one or two rounds of MD5 or SHA-1, and phpass's
+iterated MD5 is far below a modern KDF. New work uses Argon2id or scrypt.
+
+```rust
+use allcrypt::kdf::app_passwords::{mysql_password, phpass, phpass_verify};
+
+// MySQL 4.1+: '*' and the uppercase hex of SHA1(SHA1(password)).
+assert_eq!(mysql_password(b"a"),
+           "*667F407DE7C6AD07358FA38DAED7828A72014B4E");
+
+// phpass: the setting (id, cost character, eight salt characters) leads
+// the output, and verify() reads it back from a stored hash.
+let stored = phpass(b"secret", "$P$Bsaltsalt")?;
+assert!(stored.starts_with("$P$Bsaltsalt"));
+assert!(phpass_verify(b"secret", &stored));
+```
+
+`mysql_old_password` skips space and tab bytes, as the server does, and
+is checked against MariaDB's own `hash_password`; `phpass` against
+WordPress's `class-phpass.php`; the MD5/SHA-1 schemes against PHP's own
+`md5`/`sha1`. See `vectors/app_passwords.vec`.
+
 ## Randomness
 
 `random` reads the operating system's generator. Use it for anything keyed.

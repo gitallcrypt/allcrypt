@@ -60,7 +60,12 @@ pub fn lm_hash(password: &[u8]) -> Result<[u8; 16], String> {
     Ok(hash)
 }
 
-//NTLMv2. Needs more testing.
+/// The NTLMv2 one-way function (MS-NLMP 3.3.2, NTOWFv2): HMAC-MD5 keyed
+/// by the NT hash of `password`, over the UTF-16LE of the uppercased
+/// `username` followed by `domain`. The username is uppercased and the
+/// domain is taken as given - uppercasing the domain gives a different
+/// key, which is the common way to get this wrong. The sixteen-byte
+/// result is what the NTLMv2 response and session base key are built on.
 pub fn ntlmv2_hash(password: &str, username: &str, domain: &str) -> Vec<u8> {
     let digest = nt_hash(password);
     let user: Vec<u8> = (username.to_uppercase() + domain).encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -141,10 +146,29 @@ mod tests {
         assert_eq!(nt_hash("P\u{e9}\u{20ac}\u{1f600}").to_vec(), md4.digest());
     }
 
+    /// MS-NLMP's own worked example (section 4.2.4.1.1): the NTOWFv2 of
+    /// password "Password", user "User", domain "Domain" is this value.
+    /// It is the specification's published vector.
     #[test]
-    fn test_ntlmv2_hash() {
-        let has_hex = "0C868A403BFD7A93A3001EF22EF02E3F";
-        let res = ntlmv2_hash("Password", "user", "Domain");
-        assert_eq!(has_hex, crate::to_hex(&res));
+    fn test_ntlmv2_hash_matches_the_ms_nlmp_example() {
+        assert_eq!(crate::to_hex(&ntlmv2_hash("Password", "User", "Domain")),
+                   "0C868A403BFD7A93A3001EF22EF02E3F");
+    }
+
+    /// NTOWFv2 uppercases the username and leaves the domain as given.
+    /// A single positive vector would pass an implementation that
+    /// uppercased both, or neither, or swapped the two fields - so each
+    /// property is checked on its own.
+    #[test]
+    fn test_ntlmv2_hash_uppercases_only_the_username() {
+        let base = ntlmv2_hash("Password", "User", "Domain");
+        // The username is folded to upper case: "user" is "User" is "USER".
+        assert_eq!(ntlmv2_hash("Password", "user", "Domain"), base);
+        assert_eq!(ntlmv2_hash("Password", "USER", "Domain"), base);
+        // The domain is not: changing its case changes the key.
+        assert_ne!(ntlmv2_hash("Password", "User", "DOMAIN"), base);
+        // Username and domain are distinct inputs, not concatenated and
+        // then cased - swapping them is a different key.
+        assert_ne!(ntlmv2_hash("Password", "Domain", "User"), base);
     }
 }

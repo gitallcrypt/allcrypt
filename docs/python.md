@@ -1130,6 +1130,29 @@ bcrypt (`$2a`/`$2b`/`$2x`/`$2y`), the NT hash, sha1crypt and Sun's MD5,
 matching the system `libcrypt` on all of them. These read the hashes that
 already exist; new work wants Argon2 or a high-cost bcrypt.
 
+### Database and forum password hashes
+
+The verifiers found in database and forum dumps. **None is fit for
+storing a password** - all but phpass are one or two rounds of MD5 or
+SHA-1; use Argon2id or scrypt for new work.
+
+```python
+import allcrypt
+
+# MySQL: pre-4.1 OLD_PASSWORD(), and 4.1+ PASSWORD().
+assert allcrypt.mysql_old_password(b"password") == "5d2e19393cc5ef67"
+assert allcrypt.mysql_password(b"a") == "*667F407DE7C6AD07358FA38DAED7828A72014B4E"
+
+# PostgreSQL's md5 token binds the username; vBulletin salts an md5.
+assert allcrypt.postgres_md5(b"secret", b"alice").startswith("md5")
+vb = allcrypt.vbulletin_password(b"secret", b"Nx9")
+
+# phpass, shared by WordPress ($P$) and phpBB3 ($H$).
+stored = allcrypt.phpass(b"secret", "$P$Bsaltsalt")
+assert allcrypt.phpass_verify(b"secret", stored)
+assert not allcrypt.phpass_verify(b"wrong", stored)
+```
+
 ### The file formats' own derivations
 
 OpenPGP's string-to-key, 7-Zip's AES key, KeePass's AES-KDF and LUKS's
