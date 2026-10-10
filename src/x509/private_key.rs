@@ -53,7 +53,6 @@ use crate::x509::oids;
 /// is no useful thing to do with a private key we cannot use. A
 /// certificate on an unknown curve is still a link in a chain; a private
 /// key on one is nothing at all.
-#[derive(Debug)]
 pub enum PrivateKey {
     /// `(p, q, e)` - the two primes and the public exponent, which is
     /// what `RsaPrivateKey::from_primes` wants. The CRT parameters in the
@@ -88,6 +87,28 @@ pub enum PrivateKey {
     /// (RFC 5208 with RFC 3279's Dss-Parms) or OpenSSL's traditional
     /// `DSA PRIVATE KEY`, whose stored `y` is checked against `g^x`.
     Dsa { p: BigUint, q: BigUint, g: BigUint, x: BigUint },
+}
+
+/// Names the algorithm and the curve or parameter set, and never the
+/// secret: a key in an `unwrap_err` message, a `panic!("{:?}")` in a
+/// test or a Python `repr` gives nothing away. A derived `Debug` printed
+/// `p`, `q`, the EC scalar, the EdDSA seed and the ML-DSA expanded key,
+/// and `ssh::private_key::PrivateKey` already prints its public half
+/// only; the two should not differ.
+impl core::fmt::Debug for PrivateKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PrivateKey::Rsa { p, q, .. } =>
+                write!(f, "PrivateKey(RSA {} bits)", p.bit_len() + q.bit_len()),
+            PrivateKey::Ec { curve, .. } => write!(f, "PrivateKey(EC {})", curve),
+            PrivateKey::Eddsa { curve, .. } => write!(f, "PrivateKey(EdDSA {})", curve),
+            PrivateKey::Xdh { curve, .. } => write!(f, "PrivateKey(XDH {})", curve),
+            PrivateKey::MlDsa { parameter_set, .. } =>
+                write!(f, "PrivateKey({})", parameter_set),
+            PrivateKey::Dsa { p, .. } =>
+                write!(f, "PrivateKey(DSA {} bits)", p.bit_len()),
+        }
+    }
 }
 
 impl PrivateKey {
@@ -575,7 +596,7 @@ fn pkcs1(data: &[u8]) -> Result<PrivateKey, String> {
             "PKCS#1 version {} is a multi-prime key, which this library does \
              not implement.", version));
     }
-    let _modulus = sequence.read_integer()?;
+    let modulus = sequence.read_integer()?;
     let e = sequence.read_integer()?;
     let _d = sequence.read_integer()?;
     let p = sequence.read_integer()?;
@@ -590,6 +611,15 @@ fn pkcs1(data: &[u8]) -> Result<PrivateKey, String> {
 
     if p.is_zero() || q.is_zero() {
         return Err("An RSA prime is zero.".to_string());
+    }
+    // The modulus is not kept, but it is the one number in the file
+    // that names *which* key this is - the certificate beside it
+    // carries the same `n` - so the primes have to multiply back to
+    // it, or the key signs as something the certificate does not name.
+    // `ssh::private_key` makes the same check on its RSA section.
+    if p.mul(&q) != modulus {
+        return Err("The RSA primes in this file do not multiply to its \
+                    modulus.".to_string());
     }
     Ok(PrivateKey::Rsa { p, q, e })
 }
@@ -618,6 +648,44 @@ const _: u32 = tag::SEQUENCE;
 mod tests {
     use super::*;
     use crate::hash_functions::HashFunction;
+
+    /// `{:?}` on a private key names the algorithm and nothing else.
+    ///
+    /// What was wrong: `PrivateKey` derived `Debug`, so every
+    /// `panic!("{:?}", key)` in these tests, every `unwrap_err` that
+    /// carried one and any Python `repr` wrote the primes, the EC
+    /// scalar or the EdDSA seed to the log. Nothing tested the format
+    /// because nothing had a reason to read it. The hand-written impl
+    /// is checked by formatting a key whose secret is a byte pattern
+    /// that cannot appear in the output by accident.
+    #[test]
+    fn test_debug_names_the_algorithm_and_hides_the_secret() {
+        let secret = vec![0xAB; 32];
+        let key = PrivateKey::Ec { curve: "p256", private: secret.clone() };
+        let text = format!("{:?}", key);
+        assert_eq!(text, "PrivateKey(EC p256)");
+        assert!(!text.contains("171"), "{}", text);       // 0xAB in decimal
+        assert!(!text.to_lowercase().contains("ab"), "{}", text);
+
+        let key = PrivateKey::Rsa {
+            p: BigUint::from_u64(0xC5A3), q: BigUint::from_u64(0xD7B1),
+            e: BigUint::from_u64(65537),
+        };
+        let text = format!("{:?}", key);
+        assert_eq!(text, "PrivateKey(RSA 32 bits)");
+        assert!(!text.contains("c5a3") && !text.contains("50595"), "{}", text);
+
+        let key = PrivateKey::Eddsa { curve: "ed25519", private: secret.clone() };
+        assert_eq!(format!("{:?}", key), "PrivateKey(EdDSA ed25519)");
+        let key = PrivateKey::Xdh { curve: "x448", private: secret.clone() };
+        assert_eq!(format!("{:?}", key), "PrivateKey(XDH x448)");
+        let key = PrivateKey::MlDsa { parameter_set: "ML-DSA-44", seed: Some(secret.clone()),
+                                      expanded: secret.clone() };
+        assert_eq!(format!("{:?}", key), "PrivateKey(ML-DSA-44)");
+        let key = PrivateKey::Dsa { p: BigUint::from_u64(0xC5A3), q: BigUint::from_u64(3),
+                                    g: BigUint::from_u64(2), x: BigUint::from_u64(0xAB) };
+        assert_eq!(format!("{:?}", key), "PrivateKey(DSA 16 bits)");
+    }
 
     /// Written by `openssl genpkey -algorithm EC -pkeyopt
     /// ec_paramgen_curve:P-256`, then checked against the scalar
@@ -835,6 +903,40 @@ eKWKolrZW8vh7c5STxY1mP9pBX/HjfWCqm9Y9mBLp4xcHJUjuM+nFxGzEhnyOnNN
             }
             other => panic!("expected an RSA key, got {:?}", other),
         }
+    }
+
+    /// A file whose primes do not multiply to its modulus is refused.
+    ///
+    /// What was wrong: `pkcs1` read the modulus and dropped it, so a
+    /// file whose `p` and `q` were not the factors of its `n` parsed
+    /// to a key that signs as a different key from the one the matching
+    /// certificate names - and nothing checked, since the CRT values
+    /// are recomputed from the primes. The `openssh-key-v1` reader
+    /// makes this check and the test above does it by hand; the
+    /// parser now does it. Built by editing the real key: the trailing
+    /// byte of `n` is changed, which cannot alter the INTEGER's
+    /// encoding.
+    #[test]
+    fn test_a_pkcs1_modulus_that_is_not_p_times_q_is_refused() {
+        let der = crate::pem::parse(RSA_PKCS1).unwrap()[0].contents.clone();
+        let mut outer = Reader::new(&der);
+        let mut sequence = outer.read_sequence().unwrap();
+        let mut fields: Vec<Vec<u8>> = Vec::new();
+        while !sequence.is_empty() {
+            fields.push(sequence.read_integer_bytes().unwrap().to_vec());
+        }
+        assert_eq!(fields.len(), 9);
+        *fields[1].last_mut().unwrap() ^= 0x01;   // the modulus's last byte
+
+        let mut writer = crate::asn1::Writer::new();
+        writer.write_sequence(|w| {
+            for field in &fields {
+                w.write_tlv(Tag::universal(tag::INTEGER), field);
+            }
+        });
+        let edited = crate::pem::wrap("RSA PRIVATE KEY", &writer.finish());
+        let error = parse(edited.as_bytes()).unwrap_err();
+        assert!(error.contains("do not multiply"), "{}", error);
     }
 
     /// RFC 5915 section 3 fixes the OCTET STRING at the curve's width,

@@ -122,6 +122,21 @@ impl Default for Policy {
 }
 
 impl Policy {
+    /// The largest RSA modulus, and the largest DSA `p`, a verifier will
+    /// do arithmetic on: 16384 bits, which is OpenSSL's limit and far
+    /// above any key a CA has issued.
+    ///
+    /// The floor (`min_rsa_bits`) is a strength question and belongs in
+    /// the policy; the ceiling is a denial-of-service question and does
+    /// not vary by deployment. A peer-supplied certificate or CRL can
+    /// carry any key it likes, and `verify_pkcs1v15` runs `mod_pow(e, n)`
+    /// with the peer's `e` and `n`: a two-million-bit modulus with
+    /// `e = n - 2` costs millions of two-megabit squarings before the
+    /// signature is reported bad. The cheap checks are supposed to
+    /// precede the expensive one, and "the key is of a plausible size"
+    /// is one of them.
+    pub const MAX_KEY_BITS: usize = 16384;
+
     /// A policy that accepts what an old server is likely to present.
     ///
     /// This exists because refusing to connect is not always an option -
@@ -238,6 +253,14 @@ pub fn verify_signed(signed: &[u8], algorithm: SignatureAlgorithm,
                                     requires at least {}.",
                                    n.bit_len(), policy.min_rsa_bits));
             }
+            // Before `RsaPublicKey::new` and the modular exponentiation,
+            // which is the whole point of the cap.
+            if n.bit_len() > Policy::MAX_KEY_BITS {
+                return Err(format!("Issuer's RSA key is {} bits; nothing above {} \
+                                    is verified, since the exponentiation alone \
+                                    would take longer than any handshake.",
+                                   n.bit_len(), Policy::MAX_KEY_BITS));
+            }
             let key = rsa::RsaPublicKey::new(n.clone(), e.clone())?;
             if rsa::verify_pkcs1v15(&key, hash_name, &digest, signature)? {
                 Ok(())
@@ -293,6 +316,12 @@ pub(crate) fn dsa_public_key(parameters: &Option<(BigUint, BigUint, BigUint)>, y
         return Err(format!("The DSA key's group is {} bits; the policy requires at \
                             least {} (min_rsa_bits, which applies to DSA's p too).",
                            p.bit_len(), policy.min_rsa_bits));
+    }
+    // `DsaParameters::new` checks that `g` has order `q` with a modular
+    // exponentiation over `p`, so the cap has to come first.
+    if p.bit_len() > Policy::MAX_KEY_BITS {
+        return Err(format!("The DSA key's group is {} bits; nothing above {} is \
+                            verified.", p.bit_len(), Policy::MAX_KEY_BITS));
     }
     DsaPublicKey::new(DsaParameters::new(p.clone(), q.clone(), g.clone())?, y.clone())
 }
@@ -620,14 +649,20 @@ fn check_issuer(issuer: &Certificate<'_>, depth_below: usize,
                                issuer.subject));
         }
         None => {
-            // Version 1 certificates have no extensions at all, which is how
-            // old roots look. Anything claiming version 3 must say so
-            // explicitly - absence there is a leaf, not a CA. Unless it is
-            // the trust anchor; see the note above.
-            if issuer.version == 3 && !is_trust_anchor {
-                return Err(format!("{} has no basicConstraints but claims \
-                                    version 3; refusing to treat it as a CA.",
-                                   issuer.subject));
+            // Absence is a leaf, not a CA, whatever the version. Version 1
+            // certificates have no extensions at all, which is how old
+            // roots look - and the trust anchor is allowed that; see the
+            // note above. An *intermediate* with no basicConstraints is
+            // different: RFC 5280 6.1.4 (k) says a version 1 or 2
+            // certificate in the middle of a path is a CA only if that
+            // was established out of band, and nothing here has done so.
+            // Old appliance and server certificates are commonly version
+            // 1, and every one of them issued by a trusted root would
+            // otherwise be able to sign a leaf for any name.
+            if !is_trust_anchor {
+                return Err(format!("{} has no basicConstraints (version {}); \
+                                    refusing to treat it as a CA.",
+                                   issuer.subject, issuer.version));
             }
         }
     }
@@ -949,13 +984,41 @@ fn status_of(certificate: &Certificate<'_>, issuer: &Certificate<'_>,
 
 // ------------------------------------------------------------ name matching ---
 
+/// Whether the subject common name counts as a host name for this
+/// certificate.
+///
+/// RFC 6125 6.4.4: a client "MUST NOT seek a match for a reference
+/// identifier of CN-ID if the presented identifiers include a DNS-ID,
+/// SRV-ID, URI-ID, or any application-specific identifier types
+/// supported by the client". So the common name is consulted only when
+/// the subjectAltName carries no dNSName and no uniformResourceIdentifier
+/// entry. A SAN holding only iPAddress or rfc822Name entries does not
+/// switch the fallback off: certificates that predate the SAN
+/// requirement, and old device certificates with an address in the SAN
+/// and the host in the CN, are what this library exists to talk to.
+///
+/// This is the one place the rule lives. `matches_hostname` honours the
+/// common name exactly when this says so, and the name-constraint check
+/// (`name_constraints::names_of`) folds the common name into the
+/// certificate's dNSName list under the same condition. The two must not
+/// drift: every name the verifier would accept a host under has to be a
+/// name the issuing CA's constraints were checked against, or a
+/// constrained CA can issue `SAN=[rfc822Name], CN=evil.test` and the
+/// dNSName constraint sees no DNS name at all.
+pub(crate) fn common_name_is_honoured(certificate: &Certificate<'_>) -> bool {
+    !certificate.extensions.subject_alt_names.iter().any(|name| {
+        matches!(name, GeneralName::Dns(_) | GeneralName::Uri(_))
+    })
+}
+
 /// Does this certificate cover `hostname`?
 ///
 /// RFC 6125, with the rules that matter:
 ///
-///   * If there is a subjectAltName, the common name is **not** looked at.
-///     Falling back to CN when a SAN exists is how a certificate for one
-///     name gets accepted for another.
+///   * If the subjectAltName holds a dNSName or a URI, the common name is
+///     **not** looked at (`common_name_is_honoured` has the exact rule).
+///     Falling back to CN when a SAN names the host is how a certificate
+///     for one name gets accepted for another.
 ///   * A wildcard matches exactly one label, only as the leftmost label,
 ///     and only one per name. `*.example.com` covers `a.example.com` and
 ///     not `a.b.example.com` and not `example.com`.
@@ -979,14 +1042,15 @@ pub fn matches_hostname(certificate: &Certificate<'_>, hostname: &str) -> bool {
         });
     }
 
-    let dns_names = certificate.extensions.dns_names();
-    if !dns_names.is_empty() {
-        return dns_names.iter().any(|pattern| matches_pattern(pattern, hostname));
+    if !common_name_is_honoured(certificate) {
+        return certificate.extensions.dns_names().iter()
+            .any(|pattern| matches_pattern(pattern, hostname));
     }
 
-    // No SAN at all: fall back to the common name. This is deprecated and
-    // browsers stopped doing it years ago, but certificates that predate
-    // the SAN requirement are exactly what this library exists to talk to.
+    // No dNSName or URI in the SAN: fall back to the common name. This is
+    // deprecated and browsers stopped doing it years ago, but certificates
+    // that predate the SAN requirement are exactly what this library
+    // exists to talk to.
     match certificate.subject.common_name() {
         Some(common_name) => matches_pattern(&common_name, hostname),
         None => false,
@@ -1038,13 +1102,21 @@ fn matches_pattern(pattern: &str, hostname: &str) -> bool {
     }
 
     // Within the leftmost label, `*` matches any run of characters that
-    // contains no dot - which it cannot, since we already split on dots.
+    // contains no dot - which it cannot, since the label was split on
+    // dots. Compared as bytes: the prefix and suffix lengths come from
+    // the certificate's pattern, and slicing a `&str` at a byte offset
+    // that falls inside a multi-byte character of the host name panics.
+    // ASCII case folding on bytes gives the same answer as on text for
+    // every ASCII byte and leaves every other byte alone, which is the
+    // "no Unicode folding" rule above.
     let (prefix, suffix) = first.split_once('*').unwrap();
+    let host_first = host_first.as_bytes();
     if host_first.len() < prefix.len() + suffix.len() {
         return false;
     }
-    host_first[..prefix.len()].eq_ignore_ascii_case(prefix)
-        && host_first[host_first.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    host_first[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+        && host_first[host_first.len() - suffix.len()..]
+               .eq_ignore_ascii_case(suffix.as_bytes())
 }
 
 /// Dotted IPv4 or an IPv6 literal, as the bytes a SAN would hold.
@@ -1117,6 +1189,57 @@ mod tests {
     use super::*;
     use crate::x509::tests_support;
 
+    /// An odd number of exactly `bits` bits.
+    fn odd_number_of(bits: usize) -> BigUint {
+        let mut bytes = vec![0u8; bits.div_ceil(8)];
+        bytes[0] = 1 << ((bits - 1) % 8);
+        *bytes.last_mut().unwrap() |= 1;
+        BigUint::from_bytes_be(&bytes)
+    }
+
+    /// A key above `Policy::MAX_KEY_BITS` is refused before any
+    /// arithmetic is done on it.
+    ///
+    /// What was wrong: the only size check on a verifying RSA key was
+    /// the floor, `min_rsa_bits`, and DSA had the same floor and no
+    /// ceiling at all. `rsa::verify_pkcs1v15` then ran `mod_pow(e, n)`
+    /// with the peer's `e` and `n`, so an intermediate carrying a
+    /// multi-million-bit modulus and `e` close to `n` held the verifier
+    /// for as long as the attacker liked. No existing test offered an
+    /// oversized key, because none of the real-key fixtures could be
+    /// that large in reasonable time - and the test here does not need
+    /// one to be, since the refusal must come before the key is used.
+    #[test]
+    fn test_an_oversized_key_is_refused_before_any_arithmetic() {
+        let policy = Policy::at(1_700_000_000);
+        let digest_input = b"anything";
+        let signature = [0u8; 1];
+
+        // One bit over: refused by the cap, with the cap named.
+        let n = odd_number_of(Policy::MAX_KEY_BITS + 1);
+        let key = PublicKey::Rsa { n, e: BigUint::from_u64(3) };
+        let error = verify_signed(digest_input, SignatureAlgorithm::RsaPkcs1("sha256"),
+                                  &signature, &key, &policy).unwrap_err();
+        assert!(error.contains(&Policy::MAX_KEY_BITS.to_string()), "{}", error);
+        assert!(error.contains("nothing above"), "{}", error);
+
+        // At the cap: past the size check, so the failure is the
+        // signature's and not the key's size.
+        let n = odd_number_of(Policy::MAX_KEY_BITS);
+        let key = PublicKey::Rsa { n, e: BigUint::from_u64(3) };
+        let error = verify_signed(digest_input, SignatureAlgorithm::RsaPkcs1("sha256"),
+                                  &signature, &key, &policy).unwrap_err();
+        assert!(!error.contains("nothing above"), "{}", error);
+
+        // DSA's p has the same ceiling, applied before
+        // `DsaParameters::new` exponentiates over it.
+        let p = odd_number_of(Policy::MAX_KEY_BITS + 1);
+        let parameters = Some((p, BigUint::from_u64(3), BigUint::from_u64(2)));
+        let error = dsa_public_key(&parameters, &BigUint::from_u64(2), &policy)
+            .unwrap_err();
+        assert!(error.contains("nothing above"), "{}", error);
+    }
+
     #[test]
     fn test_hostname_matching() {
         let exact = tests_support::leaf_with_sans(&["example.test", "www.example.test"]);
@@ -1165,7 +1288,41 @@ mod tests {
         }
     }
 
-    /// When a SAN is present the common name is not consulted. A
+    /// A host name holding a multi-byte character against a wildcard
+    /// pattern is a mismatch, not a panic.
+    ///
+    /// What was wrong: `matches_pattern` sliced the host's first label
+    /// as a `&str` at byte offsets taken from the certificate's pattern
+    /// (`host_first[..prefix.len()]`), and a `&str` slice that lands
+    /// inside a character panics. Nothing restricts the host name a
+    /// caller passes to ASCII, and the pattern is the peer's, so a SAN
+    /// of `a*.example.test` against a host of `é.example.test` took the
+    /// TLS client down. Every existing host name in the tests was ASCII,
+    /// where byte and character offsets coincide. The comparison is now
+    /// over bytes.
+    #[test]
+    fn test_a_non_ascii_hostname_against_a_wildcard_is_a_mismatch() {
+        let der = tests_support::leaf_with_sans(&["a*.example.test"]);
+        let certificate = Certificate::parse(&der).unwrap();
+        // `é` is two bytes, and the prefix `a` is one: the old slice
+        // ended inside the character.
+        assert!(!matches_hostname(&certificate, "é.example.test"));
+        // A whole character inside the wildcard's run is an ordinary
+        // match: the wildcard covers any bytes but a dot.
+        assert!(matches_hostname(&certificate, "aé.example.test"));
+        // The suffix side: `*é.example.test` against a host whose last
+        // byte is inside a character.
+        let der = tests_support::leaf_with_sans(&["*é.example.test"]);
+        let certificate = Certificate::parse(&der).unwrap();
+        assert!(!matches_hostname(&certificate, "xÿ.example.test"));
+        // And the byte comparison still folds ASCII case.
+        let der = tests_support::leaf_with_sans(&["a*b.example.test"]);
+        let certificate = Certificate::parse(&der).unwrap();
+        assert!(matches_hostname(&certificate, "AxxB.example.test"));
+        assert!(!matches_hostname(&certificate, "AxxC.example.test"));
+    }
+
+    /// When a SAN carries a dNSName the common name is not consulted. A
     /// certificate whose CN says one thing and whose SAN says another is
     /// only good for what the SAN says.
     #[test]
@@ -1411,6 +1568,53 @@ mod chain_tests {
         let chain = tests_support::chain(|_| {}, |b| b.is_ca = None, |_| {});
         let error = check(&chain, &policy()).unwrap_err();
         assert!(error.contains("basicConstraints"), "{}", error);
+    }
+
+    /// A version 1 intermediate is not a CA either.
+    ///
+    /// What was wrong: the "no basicConstraints" refusal in `check_issuer`
+    /// was gated on `version == 3`, so a version 1 certificate - which
+    /// has no extensions at all, and so neither basicConstraints nor a
+    /// keyUsage to fail on - passed every issuer check when it sat in
+    /// the middle of a path. Any version 1 end-entity certificate ever
+    /// issued by a trusted root could then sign a leaf for any name,
+    /// which is the 2002 bug for the version 1 case. The test above
+    /// builds every certificate as version 3, the only version the
+    /// builder could write, so the gate was never exercised. The
+    /// version 1 allowance belongs to the trust anchor alone
+    /// (`is_trust_anchor`), and the refusal is now version-independent.
+    #[test]
+    fn test_a_version_1_intermediate_cannot_act_as_a_ca() {
+        let chain = tests_support::chain(
+            |_| {},
+            |b| {
+                b.version = 1;
+                b.is_ca = None;
+                b.key_usage = None;
+            },
+            |_| {});
+        let intermediate = Certificate::parse(&chain.intermediate).unwrap();
+        assert_eq!(intermediate.version, 1,
+                   "the certificate under test has to be version 1");
+        assert!(intermediate.extensions.basic_constraints.is_none());
+        assert!(intermediate.extensions.key_usage.is_none());
+
+        let error = check(&chain, &policy()).unwrap_err();
+        assert!(error.contains("no basicConstraints"), "{}", error);
+
+        // The anchor keeps its allowance: a version 1 root that omits
+        // everything still issues a chain, as old private CAs do.
+        let chain = tests_support::chain(
+            |b| {
+                b.version = 1;
+                b.is_ca = None;
+                b.key_usage = None;
+            },
+            |_| {},
+            |_| {});
+        let root = Certificate::parse(&chain.root).unwrap();
+        assert_eq!(root.version, 1);
+        check(&chain, &policy()).expect("a version 1 trust anchor");
     }
 
     /// A trust anchor is an input to path validation, not a certificate that
@@ -1873,6 +2077,73 @@ mod chain_tests {
 
         let error = check(&chain, &policy()).unwrap_err();
         assert!(error.contains("no permitted subtree"), "{}", error);
+    }
+
+    /// **The constraint covers the common name whenever the verifier
+    /// honours it**, which is a wider condition than "no SAN at all".
+    ///
+    /// What was wrong: `names_of` folded the common name in only when
+    /// the SAN was empty, while `matches_hostname` fell back to the
+    /// common name whenever the SAN held no dNSName. The gap between the
+    /// two conditions is a SAN holding only an rfc822Name or an
+    /// iPAddress: `check_one` saw one name of an unconstrained form and
+    /// no DNS names, passed vacuously, and the leaf then matched
+    /// `evil.test` through its CN. The test above offered an empty SAN,
+    /// which both conditions agree on, so it could not tell the two
+    /// apart. Both halves now share `common_name_is_honoured`, and this
+    /// test pins them together on the inputs where they used to differ.
+    #[test]
+    fn test_a_constraint_covers_the_common_name_when_the_san_names_no_host() {
+        use crate::x509::builder::SanEntry;
+
+        // rfc822Name only: the verifier honours the CN, so the
+        // constraint must see it and refuse.
+        let chain = tests_support::chain(
+            |_| {},
+            |b| b.extra_extensions = vec![constraints(&[(2, b"example.test")], &[])],
+            |b| {
+                b.common_name = "evil.test".to_string();
+                b.dns_names = vec![];
+                b.extra_sans = vec![SanEntry::Email("a@example.test".to_string())];
+            });
+        let leaf = Certificate::parse(&chain.leaf).unwrap();
+        assert!(common_name_is_honoured(&leaf));
+        assert!(matches_hostname(&leaf, "evil.test"),
+                "the fallback this test is about is not happening, so the \
+                 test would pass for the wrong reason");
+        let error = check(&chain, &policy()).unwrap_err();
+        assert!(error.contains("no permitted subtree"), "{}", error);
+
+        // iPAddress only: the same.
+        let chain = tests_support::chain(
+            |_| {},
+            |b| b.extra_extensions = vec![constraints(&[(2, b"example.test")], &[])],
+            |b| {
+                b.common_name = "evil.test".to_string();
+                b.dns_names = vec![];
+                b.ip_addresses = vec![vec![192, 0, 2, 1]];
+            });
+        let leaf = Certificate::parse(&chain.leaf).unwrap();
+        assert!(common_name_is_honoured(&leaf));
+        assert!(matches_hostname(&leaf, "evil.test"));
+        let error = check(&chain, &policy()).unwrap_err();
+        assert!(error.contains("no permitted subtree"), "{}", error);
+
+        // URI only: RFC 6125 6.4.4 says a URI-ID switches the CN-ID off,
+        // so the verifier does not honour the CN and the chain is fine -
+        // the pair agree in the other direction too.
+        let chain = tests_support::chain(
+            |_| {},
+            |b| b.extra_extensions = vec![constraints(&[(2, b"example.test")], &[])],
+            |b| {
+                b.common_name = "evil.test".to_string();
+                b.dns_names = vec![];
+                b.extra_sans = vec![SanEntry::Uri("https://www.example.test/".to_string())];
+            });
+        let leaf = Certificate::parse(&chain.leaf).unwrap();
+        assert!(!common_name_is_honoured(&leaf));
+        assert!(!matches_hostname(&leaf, "evil.test"));
+        check(&chain, &policy()).unwrap();
     }
 
     /// A common name that is not host-shaped is not treated as a DNS

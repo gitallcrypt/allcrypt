@@ -38,6 +38,7 @@ use allcrypt::block_ciphers::BlockCipher;
 use allcrypt::ec::{curves, eddsa, sm2, x25519, x448, xeddsa};
 use allcrypt::nacl;
 use allcrypt::hash_functions::sha2::SHA256;
+use allcrypt::hash_functions::streebog::Streebog;
 use allcrypt::pq::{ml_dsa, ml_kem};
 use allcrypt::publickey_ciphers::dh;
 use allcrypt::publickey_ciphers::rsa::{self, RsaPrivateKey};
@@ -306,19 +307,15 @@ fn run(case: &str) {
             let mut em = key.raw(&BigUint::from_bytes_be(&ciphertext)).unwrap()
                 .to_bytes_be_padded(size).unwrap();
             classify(&em);
-            let plaintext = rsa::eme_oaep_decode(&em, "sha256", "sha256", b"label").unwrap();
-            // The message and its length are the output; the length was
-            // computed from the separator's position, so it is tainted too.
-            let length = [plaintext.len()];
-            declassify(&plaintext);
-            declassify(&length);
-            println!("{}", length[0]);
+            let length = oaep_output(rsa::eme_oaep_decode(&em, "sha256", "sha256", b"label"));
+            assert_eq!(length, 16, "the block decodes");
+            println!("{}", length);
             // And a block that fails, at the leading byte: Manger's oracle.
             em[0] = 1;
             classify(&em);
-            let refused = [rsa::eme_oaep_decode(&em, "sha256", "sha256", b"label").is_err()];
-            declassify(&refused);
-            println!("{}", refused[0]);
+            let refused = oaep_output(rsa::eme_oaep_decode(&em, "sha256", "sha256", b"label"))
+                == usize::MAX;
+            println!("{}", refused);
         }
 
         "ecdsa_sign" => {
@@ -326,6 +323,22 @@ fn run(case: &str) {
             let private = secret_hex("0d3f7b21c5d80a46f2e19b3c7d5a8064e1f2c3b4a5968778695a4b3c2d1e0f9a");
             let digest = [0x5au8; 32];
             let signature = curve.sign(&private, &digest, SHA256::new(&[])).unwrap();
+            publish(&signature.r);
+            publish(&signature.s);
+        }
+
+        "gost_sign" => {
+            // GOST R 34.10's `s = r d + k e` gives `d` from `k` by one
+            // subtraction and one division, so the nonce and the key are
+            // as secret as ECDSA's. Same shape as the row above: the
+            // nonce stays bytes into a Secret, k*G runs on ec::fixed,
+            // and the equation runs in the Montgomery domain over n.
+            // The digest is Streebog's and the curve a GOST one; the
+            // private key is the same secret as ecdsa_sign's.
+            let curve = curves::by_name("gost256-a").unwrap();
+            let private = secret_hex("0d3f7b21c5d80a46f2e19b3c7d5a8064e1f2c3b4a5968778695a4b3c2d1e0f9a");
+            let digest = [0x5au8; 32];
+            let signature = curve.gost_sign(&private, &digest, Streebog::new_256(&[])).unwrap();
             publish(&signature.r);
             publish(&signature.s);
         }
@@ -539,7 +552,7 @@ fn run(case: &str) {
                 "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4")
                 .try_into().unwrap();
             for form in [xeddsa::Form::Specification, xeddsa::Form::Signal] {
-                let signature = xeddsa::sign(form, &private, b"message", &[7u8; 64]);
+                let signature = xeddsa::sign(form, &private, b"message", &[7u8; 64]).unwrap();
                 publish_bytes(&signature);
             }
         }
@@ -717,6 +730,27 @@ fn publish_bytes(bytes: &[u8]) {
     println!("{}", bytes.iter().take(8).map(|b| format!("{b:02x}")).collect::<String>());
 }
 
+/// The caller's side of an OAEP decode: whether it succeeded, and the
+/// message, whose length is the separator's position. Both are the
+/// output, so branching on them and freeing the message are the
+/// caller's business and the rsa_oaep_decode row accepts them under this
+/// name. Never inlined, because a valgrind that attributes an inlined
+/// frame to its enclosing function - 3.18 does, for the `unwrap` and the
+/// `Vec`'s free here - would otherwise name all of `run`, behind which
+/// any leak in the harness could hide. What it returns is declassified,
+/// so `run` never branches on anything secret: the length, or
+/// `usize::MAX` for a refusal.
+#[inline(never)]
+fn oaep_output(result: Result<Vec<u8>, String>) -> usize {
+    let mut length = [usize::MAX];
+    if let Ok(message) = result {
+        length[0] = message.len();
+        declassify(&message);
+    }
+    declassify(&length);
+    length[0]
+}
+
 /// The control for `ct_check.py`'s division scan: a function that does
 /// nothing but divide two run-time values, so the scan is known to be able
 /// to see a `div` before it is believed about ML-KEM having none.
@@ -820,6 +854,7 @@ const CASES: &[&str] = &[
     "rsa_private",
     "rsa_oaep_decode",
     "ecdsa_sign",
+    "gost_sign",
     "eddsa_sign",
     "ed448_sign",
     "xeddsa_sign",

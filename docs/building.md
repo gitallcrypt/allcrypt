@@ -848,6 +848,17 @@ $ python3 scripts/make_rc6_vectors.py           # rewrites vectors/rc6.vec
 $ python3 scripts/make_cast256_vectors.py       # rewrites vectors/cast256.vec
 ```
 
+**Rijndael's wider blocks** have two witnesses, and a row is written
+only where both agree: Bouncy Castle's `RijndaelEngine` through the same
+driver, and phpseclib 1.0.23's pure-PHP `Crypt_Rijndael`, whose two
+files `scripts/witness/rijndaelphp/build.sh` fetches once and checks
+against their SHA-256.
+
+```console
+$ scripts/witness/rijndaelphp/build.sh          # builds /opt/rijndaelphp
+$ python3 scripts/make_rijndael_vectors.py      # rewrites vectors/rijndael.vec
+```
+
 **WireGuard**: wireguard-go (`WireGuard/wireguard-go`, its main branch)
 with the x/ modules at the versions its `go.mod` pins, all from GitHub,
 and `replace` lines for them and three empty stand-ins for modules the
@@ -1020,9 +1031,12 @@ python3 scripts/ct_check.py              # the whole table
 python3 scripts/ct_check.py pow_ct       # one case, with the reports
 ```
 
-Needs `valgrind` and `objdump` on the path and nothing else — no network, no
-extra crates. On Debian or Ubuntu that is `apt install valgrind binutils`;
-under WSL, install them inside the distribution rather than on Windows.
+Needs `valgrind` and binutils (`objdump`, `addr2line`, `c++filt`) on the
+path and nothing else — no network, no extra crates. On Debian or Ubuntu that
+is `apt install valgrind binutils`; under WSL, install them inside the
+distribution rather than on Windows. A valgrind older than 3.20 — Ubuntu
+22.04 ships 3.18 — prints Rust's v0 symbols mangled, and the script reads
+them back with `c++filt`; the table and the results are the same either way.
 
 The technique is ctgrind. Memcheck already tracks which bits of memory are
 "undefined" and complains when one reaches a conditional jump, a conditional

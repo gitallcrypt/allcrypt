@@ -63,7 +63,7 @@ const fn sbox_entry(x: u8) -> u8 {
         ^ inverse.rotate_left(4) ^ 0x63
 }
 
-const SBOX: [u8; 256] = {
+pub(crate) const SBOX: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut i = 0;
     while i < 256 {
@@ -73,7 +73,7 @@ const SBOX: [u8; 256] = {
     table
 };
 
-const INV_SBOX: [u8; 256] = {
+pub(crate) const INV_SBOX: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut i = 0;
     while i < 256 {

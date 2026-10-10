@@ -283,12 +283,21 @@ mod imp {
     /// that is the convention everything else follows and because a
     /// container image usually sets them when the paths are unusual.
     pub fn load() -> Result<TrustStore, String> {
-        if let Ok(path) = std::env::var("SSL_CERT_FILE") {
+        load_from(std::env::var("SSL_CERT_FILE").ok(),
+                  std::env::var("SSL_CERT_DIR").ok())
+    }
+
+    /// `load`, with the two variables' values passed in - so the
+    /// precedence can be tested without `std::env::set_var`, which is
+    /// unsound with other threads running.
+    pub(super) fn load_from(cert_file: Option<String>, cert_dir: Option<String>)
+                            -> Result<TrustStore, String> {
+        if let Some(path) = cert_file {
             if !path.is_empty() {
                 return TrustStore::from_pem_file(&path);
             }
         }
-        if let Ok(path) = std::env::var("SSL_CERT_DIR") {
+        if let Some(path) = cert_dir {
             if !path.is_empty() {
                 return TrustStore::from_directory(&path);
             }
@@ -317,7 +326,7 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use super::TrustStore;
+    use super::{TrustStore, MAX_SKIPPED_REASONS};
 
     // The "ROOT" system store, through wincrypt. No dependency: the three
     // calls needed are declared here the same way `random` declares
@@ -370,11 +379,24 @@ mod imp {
             }
             // SAFETY: the context is owned by the store and stays valid
             // until the next call to CertEnumCertificatesInStore, which is
-            // after this copy.
-            let der = unsafe {
-                core::slice::from_raw_parts((*context).pb_cert_encoded,
-                                            (*context).cb_cert_encoded as usize)
+            // after this copy. `from_raw_parts` requires a non-null
+            // pointer even for a zero length, and `pb_cert_encoded` is
+            // never null for an entry the store enumerates - but that is
+            // the store's promise rather than the type's, so it is
+            // checked rather than assumed, and an entry without bytes is
+            // counted as skipped like any other unreadable one.
+            let (pointer, length) = unsafe {
+                ((*context).pb_cert_encoded, (*context).cb_cert_encoded as usize)
             };
+            if pointer.is_null() {
+                trust.skipped += 1;
+                if trust.skipped_reasons.len() < MAX_SKIPPED_REASONS {
+                    trust.skipped_reasons.push(format!(
+                        "{} store entry with no encoded certificate bytes.", name));
+                }
+                continue;
+            }
+            let der = unsafe { core::slice::from_raw_parts(pointer, length) };
             found += 1;
             // The result is deliberately dropped rather than propagated:
             // `add_der` has already counted the failure in `skipped`, and
@@ -670,21 +692,36 @@ mod tests {
         }
     }
 
-    /// SSL_CERT_FILE must win over the built-in paths, because that is the
-    /// convention and because containers rely on it.
+    /// SSL_CERT_FILE must win over SSL_CERT_DIR and over the built-in
+    /// paths, because that is the convention and because containers
+    /// rely on it.
+    ///
+    /// The earlier form of this test called `from_pem_file` directly -
+    /// `std::env::set_var` is unsound with other threads running - and
+    /// so tested the file reader rather than the variable's precedence
+    /// its name promised. `imp::load_from` takes the two values as
+    /// arguments for exactly this reason.
     #[test]
     #[cfg(unix)]
     fn test_ssl_cert_file_is_honoured() {
         let path = std::env::temp_dir().join("allcrypt-test-roots.pem");
         std::fs::write(&path,
                        crate::pem::wrap("CERTIFICATE", &a_certificate("Env Root"))).unwrap();
+        let file = path.to_str().unwrap().to_string();
 
-        // Not using std::env::set_var, which is unsound with threads; the
-        // file path goes straight to the loader instead. What this checks
-        // is that the file form works, which is the part that could break.
-        let store = TrustStore::from_pem_file(path.to_str().unwrap()).unwrap();
+        // The file wins over a directory that does not exist, so the
+        // directory was never consulted.
+        let store = imp::load_from(Some(file.clone()),
+                                   Some("/nonexistent/allcrypt-certs".to_string()))
+            .unwrap();
         assert_eq!(store.subjects(), vec!["CN=Env Root".to_string()]);
-        assert_eq!(store.source(), path.to_str().unwrap());
+        assert_eq!(store.source(), file);
+
+        // An empty value is "unset", and the directory is then next.
+        let error = imp::load_from(Some(String::new()),
+                                   Some("/nonexistent/allcrypt-certs".to_string()))
+            .unwrap_err();
+        assert!(error.contains("allcrypt-certs"), "{}", error);
 
         std::fs::remove_file(&path).ok();
     }

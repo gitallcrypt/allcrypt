@@ -285,15 +285,9 @@ impl Poly1305 {
     /// 2^128 work into about 4,000 tries, one byte at a time. Every caller
     /// should use this rather than `==` on the result of `tag`.
     pub fn verify(&mut self, expected: &[u8]) -> bool {
-        let tag = self.tag();
-        if expected.len() != tag.len() {
-            return false;
-        }
-        let mut difference = 0u8;
-        for (a, b) in tag.iter().zip(expected.iter()) {
-            difference |= a ^ b;
-        }
-        difference == 0
+        // Through the one constant-time comparison the library has,
+        // which also refuses a tag of the wrong length.
+        !crate::bignum::ct::bytes_differ(&self.tag(), expected)
     }
 }
 

@@ -24,7 +24,11 @@ impl RC4 {
         rc4.setup_key();
         Ok(rc4)
     }
-    pub fn setup_key(&mut self) {
+    /// The key-scheduling algorithm alone. Private, because it leaves
+    /// `i` and `j` where they were: run after some output it re-keys
+    /// the permutation without restarting the generator, which is no
+    /// stream RC4 defines. `reset` does both.
+    fn setup_key(&mut self) {
         for i in 0..256 {
             self.key_mapping[i] = i as u8;
         }

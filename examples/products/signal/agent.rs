@@ -120,7 +120,8 @@ impl Agent {
             [command @ ("sign" | "xsign"), key, message, random] => {
                 let form = if *command == "sign" { Form::Signal } else { Form::Specification };
                 let signature = xeddsa::sign(form, &fixed(key)?, &unhex(message)?,
-                                             &fixed(random)?);
+                                             &fixed(random)?)
+                    .map_err(|_| Error::UNKNOWN)?;
                 Ok(format!("signature {}", hex(&signature)))
             }
             [command @ ("verify" | "xverify"), key, message, signature] => {

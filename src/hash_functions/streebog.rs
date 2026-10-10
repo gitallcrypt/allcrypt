@@ -288,8 +288,7 @@ pub struct Streebog {
     h: State,
     n: State,
     sigma: State,
-    buffer: [u8; BLOCK_SIZE],
-    buffered: usize,
+    buffer: super::buffer::BlockBuffer<BLOCK_SIZE>,
     digest_bits: usize,
 }
 
@@ -318,8 +317,7 @@ impl Streebog {
             h: to_state(&iv),
             n: [0u64; 8],
             sigma: [0u64; 8],
-            buffer: [0u8; BLOCK_SIZE],
-            buffered: 0,
+            buffer: super::buffer::BlockBuffer::default(),
             digest_bits,
         };
         hash.update(input);
@@ -350,28 +348,11 @@ impl HashFunction for Streebog {
     }
 
     fn update(&mut self, input: &[u8]) {
-        let mut rest = input;
-        if self.buffered > 0 {
-            let take = core::cmp::min(BLOCK_SIZE - self.buffered, rest.len());
-            self.buffer[self.buffered..self.buffered + take]
-                .copy_from_slice(&rest[..take]);
-            self.buffered += take;
-            rest = &rest[take..];
-            if self.buffered == BLOCK_SIZE {
-                let block = self.buffer;
-                self.absorb(&block);
-                self.buffered = 0;
-            }
-        }
-        while rest.len() >= BLOCK_SIZE {
-            let (block, remaining) = rest.split_at(BLOCK_SIZE);
-            self.absorb(block);
-            rest = remaining;
-        }
-        if !rest.is_empty() {
-            self.buffer[..rest.len()].copy_from_slice(rest);
-            self.buffered = rest.len();
-        }
+        // The block logic lives in `BlockBuffer`, once, rather than as
+        // another copy of the loop that has been wrong three times.
+        let mut buffer = core::mem::take(&mut self.buffer);
+        buffer.feed(input, |block| self.absorb(block));
+        self.buffer = buffer;
     }
 
     /// The finalisation: pad, then hash the length, then hash the sum.
@@ -381,20 +362,21 @@ impl HashFunction for Streebog {
     fn digest(&mut self) -> Vec<u8> {
         let mut state = self.clone();
 
+        let buffered = state.buffer.len();
         let mut padded = [0u8; BLOCK_SIZE];
-        padded[..state.buffered].copy_from_slice(&state.buffer[..state.buffered]);
+        padded[..buffered].copy_from_slice(state.buffer.buffered());
         // 0x01 immediately after the message, zeros to the end. A full
         // block still gets a whole padded block of its own: `update`
         // absorbs a block the moment it is complete, so `buffered` here is
         // 0..=63 and never 64.
-        padded[state.buffered] = 0x01;
+        padded[buffered] = 0x01;
 
         let m = to_state(&padded);
         state.h = g(&state.h, &state.n, &m);
         state.sigma = add512(&state.sigma, &m);
 
         let mut bits = [0u64; 8];
-        bits[0] = (state.buffered * 8) as u64;
+        bits[0] = (buffered * 8) as u64;
         state.n = add512(&state.n, &bits);
 
         let zero = [0u64; 8];

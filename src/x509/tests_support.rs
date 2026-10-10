@@ -103,6 +103,9 @@ pub struct Builder {
     /// directoryName constraint is a prefix of the RDN sequence, so a
     /// test of one needs more than one RDN.
     pub subject: Option<Vec<(&'static [u8], String)>>,
+    /// 1, 2 or 3. A version below 3 cannot carry extensions, so every
+    /// extension knob above has to be off for it.
+    pub version: u32,
     pub hash: String,
 }
 
@@ -120,6 +123,7 @@ impl Default for Builder {
             extra_extensions: vec![],
             extra_sans: vec![],
             subject: None,
+            version: 3,
             hash: "sha256".to_string(),
         }
     }
@@ -143,6 +147,7 @@ impl Builder {
         certificate.extended_key_usage = self.extended_key_usage.clone();
         certificate.extra_extensions = self.extra_extensions.clone();
         certificate.hash = &self.hash;
+        certificate.version = self.version;
         certificate.sans = self.dns_names.iter()
             .map(|name| SanEntry::Dns(name.clone()))
             .chain(self.ip_addresses.iter().map(|ip| SanEntry::Ip(ip.clone())))

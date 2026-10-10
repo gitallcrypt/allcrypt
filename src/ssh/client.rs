@@ -93,6 +93,11 @@ pub struct ClientConfig {
     pub macs: Vec<&'static str>,
     /// Without the `\r\n`.
     pub version: String,
+    /// Ask for a group exchange with RFC 4419's pre-standard request
+    /// (`KEX_DH_GEX_REQUEST_OLD`, which names `n` alone) instead of the
+    /// `min, n, max` form. Off by default; for a server old enough to
+    /// understand only the old form.
+    pub legacy_group_exchange_request: bool,
 }
 
 impl ClientConfig {
@@ -106,6 +111,7 @@ impl ClientConfig {
             ciphers: negotiate::CIPHERS.to_vec(),
             macs: negotiate::MACS.to_vec(),
             version: format!("SSH-2.0-allcrypt_{}", env!("CARGO_PKG_VERSION")),
+            legacy_group_exchange_request: false,
         }
     }
 }
@@ -413,7 +419,11 @@ impl Client {
                 let _ours = reader.uint32()?;
                 self.remote_channel = reader.uint32()?;
                 self.remote_window = u64::from(reader.uint32()?);
-                self.remote_max_packet = reader.uint32()?;
+                // A maximum packet size of zero would make every chunk
+                // empty and the flush below spin forever. Treated as 1,
+                // as the server side treats a client's zero: the peer
+                // said nothing fits, so send the least that is something.
+                self.remote_max_packet = reader.uint32()?.max(1);
                 let command = self.command.clone().unwrap_or_default();
                 let mut writer = Writer::new();
                 writer.byte(msg::CHANNEL_REQUEST).uint32(self.remote_channel)
@@ -474,8 +484,12 @@ impl Client {
                 let request = (2048, 4096, 8192);
                 exchange.gex_request = Some(request);
                 let mut writer = Writer::new();
-                writer.byte(msg::KEX_DH_GEX_REQUEST)
-                    .uint32(request.0).uint32(request.1).uint32(request.2);
+                if self.config.legacy_group_exchange_request {
+                    writer.byte(msg::KEX_DH_GEX_REQUEST_OLD).uint32(request.1);
+                } else {
+                    writer.byte(msg::KEX_DH_GEX_REQUEST)
+                        .uint32(request.0).uint32(request.1).uint32(request.2);
+                }
                 self.send(&writer.finish())?;
             }
             _ => {
@@ -510,8 +524,10 @@ impl Client {
                                     {min} to {max} asked for.", group.bits()));
             }
             group.check_prime(16)?;
+            let old = self.config.legacy_group_exchange_request;
             let ephemeral = Ephemeral::client(
-                method, Some(GroupExchange { min, preferred, max, group }), &mut *self.fill)?;
+                method, Some(GroupExchange { min, preferred, max, group, old }),
+                &mut *self.fill)?;
             let mut writer = Writer::new();
             writer.byte(msg::KEX_DH_GEX_INIT);
             ephemeral.write_public(&mut writer);
@@ -764,6 +780,12 @@ impl Client {
         while !self.pending_send.is_empty() && self.remote_window > 0 {
             let room = (self.remote_window as usize).min(self.remote_max_packet as usize)
                 .min(self.pending_send.len());
+            if room == 0 {
+                // Cannot happen with the three operands above all
+                // positive; kept so that the loop can only ever make
+                // progress, whatever the fields hold.
+                break;
+            }
             let chunk: Vec<u8> = self.pending_send.drain(..room).collect();
             let mut writer = Writer::new();
             writer.byte(msg::CHANNEL_DATA).uint32(self.remote_channel).string(&chunk);
@@ -777,5 +799,76 @@ impl Client {
             self.send(&writer.finish())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A client past the key exchange, as far as the channel-open
+    /// handshake, with no cipher on either direction so that packets can
+    /// be fed and read as plaintext.
+    fn client_waiting_for_channel_open() -> Client {
+        let config = ClientConfig::new("user", HostKeyCheck::AcceptAny);
+        let mut client = Client::with_random(
+            config, Box::new(|buf: &mut [u8]| { buf.fill(0); Ok(()) })).unwrap();
+        client.outgoing.clear();
+        client.exchange = None;
+        client.phase = Phase::ChannelOpen;
+        client.command = Some("cat".to_string());
+        client
+    }
+
+    /// A CHANNEL_OPEN_CONFIRMATION announcing a maximum packet size of
+    /// zero must not make `write` loop forever.
+    ///
+    /// What was wrong: `remote_max_packet` was stored unchecked, so the
+    /// chunk size in `flush_channel` was `min(window, 0, pending)` = 0,
+    /// every iteration drained nothing, sent an empty CHANNEL_DATA and
+    /// left the window untouched - a loop that never ended and grew
+    /// `outgoing` until memory ran out, on the first `write` after
+    /// CHANNEL_SUCCESS. The server side already clamped the same field
+    /// with `max(1)`; the replay tests could not reach the case because
+    /// sshd never sends a zero. The value is now clamped to 1 and the
+    /// loop also stops on a zero-sized chunk.
+    #[test]
+    fn test_a_zero_maximum_packet_size_does_not_hang_write() {
+        let mut client = client_waiting_for_channel_open();
+
+        let mut confirmation = Writer::new();
+        confirmation.byte(msg::CHANNEL_OPEN_CONFIRMATION)
+            .uint32(0)          // the client's channel
+            .uint32(7)          // the server's channel
+            .uint32(1024)       // initial window
+            .uint32(0);         // maximum packet size: the bad value
+        client.handle(&confirmation.finish()).unwrap();
+        assert_eq!(client.remote_max_packet, 1);
+        assert_eq!(client.phase, Phase::ExecReply);
+
+        client.handle(&[msg::CHANNEL_SUCCESS]).unwrap();
+        assert_eq!(client.phase, Phase::Session);
+        client.outgoing.clear();
+
+        // On the old code this call never returned.
+        client.write(b"abc").unwrap();
+        assert!(client.pending_send.is_empty());
+        assert_eq!(client.remote_window, 1024 - 3);
+
+        // Three one-byte CHANNEL_DATA packets, each carrying something.
+        let mut sent = 0;
+        let mut rest: &[u8] = &client.outgoing;
+        while !rest.is_empty() {
+            let length = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+            let payload_len = length - 1 - rest[4] as usize;
+            let payload = &rest[5..5 + payload_len];
+            assert_eq!(payload[0], msg::CHANNEL_DATA);
+            let mut reader = Reader::new(&payload[1..]);
+            assert_eq!(reader.uint32().unwrap(), 7);
+            assert_eq!(reader.string().unwrap().len(), 1);
+            sent += 1;
+            rest = &rest[4 + length..];
+        }
+        assert_eq!(sent, 3);
     }
 }

@@ -210,11 +210,17 @@ pub struct Transcript<'a> {
 
 /// A group exchange's negotiated parameters, which RFC 4419 puts in the
 /// hash: the client's `min, n, max` and the server's `p, g`.
+///
+/// `old` marks the pre-RFC `KEX_DH_GEX_REQUEST_OLD` form (message 30),
+/// which carries `n` alone; the hash then holds only `n` (RFC 4419
+/// section 3, "if the 'old' form was used"). The `min` and `max` of
+/// such an exchange are the server's defaults and are not hashed.
 pub struct GroupExchange {
     pub min: u32,
     pub preferred: u32,
     pub max: u32,
     pub group: DhGroup,
+    pub old: bool,
 }
 
 enum Secret {
@@ -350,8 +356,12 @@ impl Ephemeral {
             .string(transcript.server_kexinit)
             .string(transcript.host_key);
         if let Some(exchange) = &self.exchange {
-            writer.uint32(exchange.min).uint32(exchange.preferred).uint32(exchange.max)
-                .mpint(&exchange.group.p().to_bytes_be())
+            if exchange.old {
+                writer.uint32(exchange.preferred);
+            } else {
+                writer.uint32(exchange.min).uint32(exchange.preferred).uint32(exchange.max);
+            }
+            writer.mpint(&exchange.group.p().to_bytes_be())
                 .mpint(&exchange.group.g().to_bytes_be());
         }
         if self.method.values_are_mpints() {
@@ -511,7 +521,8 @@ mod tests {
         for spec in METHODS.iter().filter(|spec| spec.name != "diffie-hellman-group18-sha512") {
             let exchange = || match spec.method {
                 Method::DhGroupExchange { .. } => Some(GroupExchange {
-                    min: 1024, preferred: 2048, max: 8192, group: modp(2048).unwrap() }),
+                    min: 1024, preferred: 2048, max: 8192, group: modp(2048).unwrap(),
+                    old: false }),
                 _ => None,
             };
             let client = Ephemeral::client(spec.method, exchange(), &mut fill).unwrap();
@@ -521,6 +532,29 @@ mod tests {
             assert_eq!(client_k.encoded(), server_k.encoded(), "{}", spec.name);
             assert_eq!(client_h, server_h, "{}", spec.name);
         }
+    }
+
+    /// The old request form hashes `n` alone, so the two forms of the
+    /// same exchange have different hashes - a server that hashed
+    /// `min, n, max` for an old request would derive keys its client
+    /// does not share.
+    #[test]
+    fn test_the_old_group_exchange_request_hashes_n_alone() {
+        let method = Method::DhGroupExchange { hash: "sha256" };
+        let hash_for = |old: bool| {
+            let mut fill = |buf: &mut [u8]| { buf.fill(7); Ok(()) };
+            let exchange = GroupExchange {
+                min: 1024, preferred: 2048, max: 8192, group: modp(2048).unwrap(), old };
+            let client = Ephemeral::client(method, Some(exchange), &mut fill).unwrap();
+            let exchange = GroupExchange {
+                min: 1024, preferred: 2048, max: 8192, group: modp(2048).unwrap(), old };
+            let (reply, _, server_h) = server_respond(
+                method, Some(exchange), &transcript(), client.public(), &mut fill).unwrap();
+            let (_, client_h) = client.finish(&transcript(), &reply).unwrap();
+            assert_eq!(client_h, server_h);
+            client_h
+        };
+        assert_ne!(hash_for(true), hash_for(false));
     }
 
     /// The hybrid's K is a string; everything else's an mpint.

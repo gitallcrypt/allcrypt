@@ -57,6 +57,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use allcrypt::api::{parse_version, tls_selection as selection};
 use allcrypt::proxy::{self, Issuer, Trust};
 use allcrypt::tls::client::{ClientConfig, ClientConnection};
 use allcrypt::tls::server::{ServerConfig, ServerConnection, ServerKey};
@@ -68,6 +69,21 @@ use allcrypt::x509::Certificate;
 
 /// One TLS record is at most 16 KB plus its header and its tag.
 const CHUNK: usize = 17 * 1024;
+
+/// How long the browser has to send its request line and headers.
+/// `read_request` had no timeout at all, so a client that connected and
+/// sent nothing held its thread for good.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a relayed connection may sit idle, as `Pump::new` sets for
+/// the TLS bridge; `forward_plain`'s plain relay had none.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long either handshake may take, start to finish. A count of
+/// reads (64) refused a slow peer whose flight arrived in many small
+/// segments, which is the equipment this program is for; time is what
+/// actually needs bounding.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ----------------------------------------------------------------- log ---
 
@@ -283,17 +299,6 @@ impl Options {
     }
 }
 
-fn parse_version(name: &str) -> Result<Version, String> {
-    match name.to_ascii_uppercase().replace(['_', ' ', '.'], "").as_str() {
-        "SSLV3" | "SSL3" => Ok(Version::SSL30),
-        "TLSV1" | "TLSV10" | "TLS1" => Ok(Version::TLS10),
-        "TLSV11" => Ok(Version::TLS11),
-        "TLSV12" => Ok(Version::TLS12),
-        "TLSV13" => Ok(Version::TLS13),
-        other => Err(format!("Unknown TLS version {:?}.", other)),
-    }
-}
-
 fn default_ca_dir() -> PathBuf {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -410,9 +415,7 @@ impl Proxy {
             Some(path) => path,
             None => return,
         };
-        let opened = std::fs::OpenOptions::new().create(true).append(true)
-            .open(path);
-        match opened {
+        match open_keylog(path) {
             Ok(mut file) => { let _ = writeln!(file, "{}", line); }
             Err(reason) => self.log.plain(level::ERROR, format!(
                 "cannot write the key log {}: {}", path.display(), reason)),
@@ -442,8 +445,7 @@ fn run(options: Options) -> Result<(), String> {
 
     let log = Log { level: options.verbosity };
 
-    let mut roots = TrustStore::system()
-        .unwrap_or_else(|_| TrustStore::new());
+    let mut roots = system_roots(&log);
     for path in &options.extra_roots {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
@@ -541,6 +543,25 @@ fn load_or_make_ca(dir: &Path) -> Result<Issuer, String> {
     let certificate_path = dir.join("ca.der");
     let key_path = dir.join("ca.key");
 
+    // **One without the other is refused, not regenerated.** Generating
+    // here used to truncate a surviving `ca.key` - the key the
+    // browser's installed `ca.pem` belongs to - and the 0600 mode set
+    // at creation does not apply to a file that already exists.
+    match (certificate_path.exists(), key_path.exists()) {
+        (true, false) | (false, true) => {
+            let (present, missing) = if key_path.exists() {
+                (&key_path, &certificate_path)
+            } else {
+                (&certificate_path, &key_path)
+            };
+            return Err(format!(
+                "{} is there but {} is not. Refusing to generate a new CA \
+                 over it, which would replace the one the browser trusts; \
+                 restore the missing file, or move {} away to start afresh.",
+                present.display(), missing.display(), present.display()));
+        }
+        _ => {}
+    }
     if certificate_path.exists() && key_path.exists() {
         let certificate = std::fs::read(&certificate_path)
             .map_err(|e| format!("Cannot read {}: {}",
@@ -591,6 +612,47 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("Cannot write {}: {}", path.display(), e))
 }
 
+/// The system's trust store, or an empty one with the reason logged.
+///
+/// It was `unwrap_or_else(|_| TrustStore::new())` with the error thrown
+/// away, so a machine with no CA bundle judged every upstream
+/// "untrusted" and nothing said why. Carrying on is still right - the
+/// proxy's job includes reaching servers no root vouches for, and
+/// `--root` can supply one - but the reason is printed at ERROR.
+fn system_roots(log: &Log) -> TrustStore {
+    roots_or_logged(TrustStore::system(), log)
+}
+
+fn roots_or_logged(found: Result<TrustStore, String>, log: &Log) -> TrustStore {
+    match found {
+        Ok(roots) => roots,
+        Err(reason) => {
+            log.plain(level::ERROR, format!(
+                "no system trust store ({}); every upstream certificate will \
+                 be judged untrusted unless --root names its issuer.", reason));
+            TrustStore::new()
+        }
+    }
+}
+
+/// Open the key log for appending, creating it 0600.
+///
+/// Every line in it is a master secret, so it gets the same mode as
+/// `ca.key`. With the default mode it was 0644 under the usual umask,
+/// readable by every local account. An existing file keeps the mode it
+/// has: a file the user created on purpose is theirs to set.
+#[cfg(unix)]
+fn open_keylog(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path)
+}
+
+/// The same, where there is no mode to set (see `write_private`).
+#[cfg(not(unix))]
+fn open_keylog(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().create(true).append(true).open(path)
+}
+
 /// The same, where there is no mode to set.
 ///
 /// A file created under the user's profile inherits that directory's
@@ -606,6 +668,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 fn handle(proxy: &Proxy, id: u64, mut browser: TcpStream) -> Result<(), String> {
     browser.set_nodelay(true).ok();
+    browser.set_read_timeout(Some(REQUEST_TIMEOUT)).ok();
     let request = read_request(proxy, id, &mut browser)?;
     let (host, port) = (request.host.clone(), request.port);
 
@@ -697,6 +760,10 @@ fn forward_plain(proxy: &Proxy, id: u64, target: &str,
         upstream.write_all(&leftover).map_err(|e| e.to_string())?;
     }
 
+    // Both sockets, so a relay with nothing moving ends rather than
+    // holding two threads; the clones share the setting.
+    browser.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
+    upstream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
     let started = Instant::now();
     let back = upstream.try_clone().map_err(|e| e.to_string())?;
     let out = browser.try_clone().map_err(|e| e.to_string())?;
@@ -1173,16 +1240,6 @@ fn start_upstream(proxy: &Proxy, host: &str) -> Result<ClientConnection, String>
     ClientConnection::new(config, host).map_err(|e| e.describe())
 }
 
-fn selection(name: &str) -> Result<Selection, String> {
-    Ok(match name.to_ascii_lowercase().as_str() {
-        "modern" | "default" => Selection::modern(),
-        "legacy" => Selection::legacy(),
-        "all" | "everything" => Selection::all(),
-        list => Selection::named(&list.split(',').map(|n| n.trim())
-                                 .collect::<Vec<_>>())?,
-    })
-}
-
 // ------------------------------------------------------------ the sockets ---
 
 /// A socket, and the only place this program does I/O.
@@ -1204,7 +1261,7 @@ struct Pump {
 
 impl Pump {
     fn new(socket: TcpStream, log: Log, id: u64, side: &'static str) -> Pump {
-        socket.set_read_timeout(Some(Duration::from_secs(300))).ok();
+        socket.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
         Pump { socket, log, id, side, last_read: Vec::new() }
     }
 
@@ -1216,6 +1273,24 @@ impl Pump {
                     format!("-> {} {} bytes", self.side, bytes.len()));
         self.log.bytes(level::TRACE, self.id, &format!("-> {}", self.side), bytes);
         self.socket.write_all(bytes).map_err(|e| e.to_string())
+    }
+
+    /// `read_in`, but giving up at `deadline` rather than after the idle
+    /// timeout. The socket's own timeout is put back afterwards.
+    fn read_before(&mut self, buffer: &mut [u8], deadline: Instant)
+                   -> Result<usize, String> {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(self.report_failure(&format!(
+                "the handshake did not finish within {} seconds",
+                HANDSHAKE_TIMEOUT.as_secs())));
+        }
+        self.socket.set_read_timeout(Some(left.min(IDLE_TIMEOUT))).ok();
+        let read = self.read_in(buffer);
+        self.socket.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
+        read.map_err(|reason| self.report_failure(&format!(
+            "the handshake did not finish within {} seconds ({})",
+            HANDSHAKE_TIMEOUT.as_secs(), reason)))
     }
 
     fn read_in(&mut self, buffer: &mut [u8]) -> Result<usize, String> {
@@ -1262,13 +1337,14 @@ impl Pump {
     fn handshake_client(&mut self, connection: &mut ClientConnection)
                         -> Result<(), String> {
         let mut buffer = [0u8; CHUNK];
-        for _ in 0..64 {
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        loop {
             let out = connection.take_outgoing();
             self.write_out(&out)?;
             if !connection.is_handshaking() {
                 return Ok(());
             }
-            let read = self.read_in(&mut buffer)?;
+            let read = self.read_before(&mut buffer, deadline)?;
             if read == 0 {
                 return Err(self.report_failure(
                     "the server closed during the handshake without an alert. \
@@ -1282,13 +1358,13 @@ impl Pump {
                 return Err(self.report_failure(&error.describe()));
             }
         }
-        Err("the handshake did not settle in 64 rounds".into())
     }
 
     fn handshake_server(&mut self, connection: &mut ServerConnection)
                         -> Result<(), String> {
         let mut buffer = [0u8; CHUNK];
-        for _ in 0..64 {
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        loop {
             if let Err(error) = connection.process() {
                 let pending = connection.take_outgoing();
                 self.flush_alert(pending);
@@ -1299,14 +1375,13 @@ impl Pump {
             if connection.is_established() {
                 return Ok(());
             }
-            let read = self.read_in(&mut buffer)?;
+            let read = self.read_before(&mut buffer, deadline)?;
             if read == 0 {
                 return Err(self.report_failure(
                     "the browser closed during the handshake"));
             }
             connection.push_incoming(&buffer[..read]);
         }
-        Err("the handshake did not settle in 64 rounds".into())
     }
 }
 
@@ -1543,4 +1618,119 @@ fn hex(bytes: &[u8]) -> String {
 fn now_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir()
+            .join(format!("allcrypt-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    /// A server whose first flight arrives a byte at a time. The
+    /// handshake loops allowed 64 reads and then failed with "did not
+    /// settle in 64 rounds", however quickly the bytes came; a record of
+    /// a few hundred bytes in small segments is enough to hit that, and
+    /// no test had sent anything but whole flights. Here the peer
+    /// announces a 200-byte record, trickles 100 bytes of it in separate
+    /// writes and closes: the loop must still be reading when the close
+    /// arrives.
+    #[test]
+    fn test_a_handshake_is_bounded_by_time_not_by_reads() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_nodelay(true).unwrap();
+            let mut hello = [0u8; CHUNK];
+            let _ = socket.read(&mut hello).unwrap();
+            socket.write_all(&[0x16, 0x03, 0x03, 0x00, 0xc8]).unwrap();
+            for _ in 0..100 {
+                socket.write_all(&[0x02]).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let socket = TcpStream::connect(address).unwrap();
+        let mut pump = Pump::new(socket, Log { level: 0 }, 1, "server");
+        let mut config = ClientConfig::new(TrustStore::new(), now_seconds() as i64);
+        config.verify_certificate = false;
+        let mut client = ClientConnection::new(config, "old-box.test").unwrap();
+        let reason = pump.handshake_client(&mut client).unwrap_err();
+        peer.join().unwrap();
+        assert!(reason.contains("closed during the handshake"), "{reason}");
+    }
+
+    #[test]
+    fn test_a_handshake_past_its_deadline_stops() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut pump = Pump::new(socket, Log { level: 0 }, 1, "server");
+        let mut buffer = [0u8; 16];
+        let started = Instant::now();
+        assert!(pump.read_before(&mut buffer, Instant::now() + Duration::from_millis(100))
+                    .is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(listener);
+    }
+
+    /// A missing system store still yields an empty store rather than
+    /// stopping the proxy; the change is the ERROR line, which goes to
+    /// stderr and is not captured here.
+    #[test]
+    fn test_a_missing_system_store_falls_back_to_an_empty_one() {
+        let log = Log { level: level::ERROR };
+        let roots = roots_or_logged(Err("no bundle".to_string()), &log);
+        assert_eq!(roots.len(), 0);
+    }
+
+    /// With `ca.der` missing and `ca.key` present, a fresh CA was
+    /// generated and `write_private` truncated `ca.key`: the key behind
+    /// the `ca.pem` installed in the browser was destroyed. The check was
+    /// `exists() && exists()`, and no test left one file without the other.
+    #[test]
+    fn test_half_a_ca_is_refused_rather_than_overwritten() {
+        let directory = scratch_directory("half-ca");
+        std::fs::write(directory.join("ca.key"), b"the only copy").unwrap();
+        assert!(load_or_make_ca(&directory).is_err());
+        assert_eq!(std::fs::read(directory.join("ca.key")).unwrap(), b"the only copy");
+        assert!(!directory.join("ca.der").exists());
+
+        std::fs::remove_file(directory.join("ca.key")).unwrap();
+        std::fs::write(directory.join("ca.der"), b"a certificate").unwrap();
+        assert!(load_or_make_ca(&directory).is_err());
+        assert!(!directory.join("ca.key").exists());
+
+        // Neither file: a CA is made, and then loaded the second time.
+        std::fs::remove_file(directory.join("ca.der")).unwrap();
+        load_or_make_ca(&directory).unwrap();
+        load_or_make_ca(&directory).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// The key log holds every upstream master secret. It was opened
+    /// with the default mode, 0644 under the usual umask, while `ca.key`
+    /// beside it was 0600; nothing tested the mode of either.
+    #[cfg(unix)]
+    #[test]
+    fn test_the_key_log_is_created_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir()
+            .join(format!("allcrypt-keylog-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("keys.log");
+        let _ = std::fs::remove_file(&path);
+        let mut file = open_keylog(&path).unwrap();
+        writeln!(file, "CLIENT_RANDOM 00 00").unwrap();
+        drop(file);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(mode, 0o600, "the key log was created {mode:o}");
+    }
 }

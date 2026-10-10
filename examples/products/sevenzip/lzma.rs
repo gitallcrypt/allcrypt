@@ -315,6 +315,13 @@ impl State {
     }
 }
 
+/// Room for the output: the declared size, but a declared size is
+/// only a claim, so no more up front than the packed data could
+/// plausibly expand to; the vector grows past that as needed.
+fn reserve(size: usize, packed: usize) -> Vec<u8> {
+    Vec::with_capacity(size.min(packed.saturating_mul(64).max(1 << 16)))
+}
+
 /// 7z's LZMA coder: five bytes of properties (the packed `lc`/`lp`/`pb`
 /// byte and the dictionary size, little endian), then the stream.
 pub fn decode_lzma(properties: &[u8], data: &[u8], size: usize) -> Result<Vec<u8>, String> {
@@ -323,7 +330,7 @@ pub fn decode_lzma(properties: &[u8], data: &[u8], size: usize) -> Result<Vec<u8
     };
     let props = Properties::from_byte(*byte)?;
     let dict_size = (u32::from_le_bytes([*d0, *d1, *d2, *d3]) as usize).max(4096);
-    let mut out = Vec::with_capacity(size);
+    let mut out = reserve(size, data.len());
     let mut rc = RangeDecoder::new(data)?;
     State::new(props).run(&mut rc, &mut out, 0, size, dict_size)?;
     Ok(out)
@@ -352,7 +359,7 @@ pub fn lzma2_dict_size(properties: &[u8]) -> Result<usize, String> {
 /// own range coder.
 pub fn decode_lzma2(properties: &[u8], data: &[u8], size: usize) -> Result<Vec<u8>, String> {
     let dict_size = lzma2_dict_size(properties)?;
-    let mut out = Vec::with_capacity(size);
+    let mut out = reserve(size, data.len());
     let mut at = 0usize;
     let mut start = 0usize;
     let mut state: Option<State> = None;

@@ -138,19 +138,19 @@ fn test_blowfish_modes() {
     let pt = hex("37363534333231204e6f77206973207468652074696d6520666f722000000000");
 
     let mut out = vec![];
-    Blowfish::new(key.clone()).ecb_encrypt(&pt, &mut out).unwrap();
+    Blowfish::new(key.clone()).unwrap().ecb_encrypt(&pt, &mut out).unwrap();
     assert_eq!(to_hex(&out), "2afd7daa60626ba38616468cc29cf6e1291e817cc740982d6f87ac5f171aabea");
 
     let mut out = vec![];
-    Blowfish::new(key.clone()).cbc_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    Blowfish::new(key.clone()).unwrap().cbc_encrypt(&pt, &mut out, iv.clone()).unwrap();
     assert_eq!(to_hex(&out), "6b77b4d63006dee605b156e27403979358deb9e7154616d959f1652bd5ff92cc");
 
     let mut out = vec![];
-    Blowfish::new(key.clone()).cfb_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    Blowfish::new(key.clone()).unwrap().cfb_encrypt(&pt, &mut out, iv.clone()).unwrap();
     assert_eq!(to_hex(&out), "e73214a2822139caf26ecf6d2eb9e76e3da3de04d1517200519d57a6c3384ece");
 
     let mut out = vec![];
-    Blowfish::new(key).ofb_encrypt(&pt, &mut out, iv).unwrap();
+    Blowfish::new(key).unwrap().ofb_encrypt(&pt, &mut out, iv).unwrap();
     assert_eq!(to_hex(&out), "e73214a2822139ca62b343cc5b65587310dd908d0c241b2263c2cf80da46fbb8");
 }
 

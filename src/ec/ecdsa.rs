@@ -38,10 +38,16 @@ pub struct Signature {
 }
 
 impl Signature {
-    /// Fixed-width `r || s`, each padded to the curve's field size. This is
-    /// the form TLS 1.3, JWS and the NIST test vectors use.
+    /// Fixed-width `r || s`, each padded to the width of the group order.
+    /// This is the form TLS 1.3, JWS and the NIST test vectors use.
+    ///
+    /// The order's width, not the field's: `r` and `s` are integers
+    /// modulo `n`, and Hasse's bound lets `n` be a byte wider than `p`.
+    /// The two widths agree on every built-in curve, so nothing changes
+    /// there; on a registered curve where they differ, the field's width
+    /// could not hold a perfectly good `s`.
     pub fn to_bytes(&self, curve: &Curve) -> Result<Vec<u8>, String> {
-        let width = curve.field_bytes();
+        let width = curve.scalar_bytes();
         let mut out = self.r.to_bytes_be_padded(width)?;
         out.extend_from_slice(&self.s.to_bytes_be_padded(width)?);
         Ok(out)
@@ -50,7 +56,7 @@ impl Signature {
     /// The inverse of [`Signature::to_bytes`]. Rejects a wrong length rather
     /// than guessing where the split is.
     pub fn from_bytes(curve: &Curve, bytes: &[u8]) -> Result<Signature, String> {
-        let width = curve.field_bytes();
+        let width = curve.scalar_bytes();
         if bytes.len() != 2 * width {
             return Err(format!("Signature for {} must be {} bytes, got {}.",
                                curve.name, 2 * width, bytes.len()));
@@ -245,8 +251,11 @@ impl<H: HashFunction + Clone> NonceGenerator<H> {
         bits2int_bytes(&t, self.qlen)
     }
 
-    /// The candidate as a number, for callers that are not signing - the
-    /// GOST path, whose nonce handling is its own.
+    /// The candidate as a number, which normalises it. For the signers
+    /// whose arithmetic is still `BigUint` - SM2, open in
+    /// `docs/pitfalls.md` section 7d, and finite-field DSA - and for the
+    /// DSA test that recomputes a nonce. ECDSA and GOST R 34.10 take
+    /// `next_bytes`.
     pub(crate) fn next(&mut self) -> BigUint {
         BigUint::from_bytes_be(&self.next_bytes())
     }
@@ -608,5 +617,55 @@ mod tests {
         assert!(Signature::from_bytes(&curve, &[0u8; 63]).is_err());
         assert!(Signature::from_bytes(&curve, &[0u8; 65]).is_err());
         assert!(Signature::from_bytes(&curve, &[]).is_err());
+    }
+
+    /// The signature's byte width is the group order's, not the field's.
+    ///
+    /// `to_bytes` and `from_bytes` padded to `field_bytes()`, while the
+    /// GOST encoding next door uses `scalar_bytes()`; `Curve::
+    /// scalar_bytes` exists because Hasse's bound lets `n` exceed `p`.
+    /// The two are equal on every built-in curve, which is why no
+    /// vector noticed, and on a registered curve where `n` is a byte
+    /// wider than `p` a valid `s` above `p` failed with "Integer needs 2
+    /// bytes, field is 1". The curve here is `y^2 = x^3 + x + 4` over
+    /// `F_251`, which has prime order 271 - found by counting points -
+    /// so `n` needs two bytes and `p` one.
+    #[test]
+    fn test_signature_bytes_are_the_order_s_width() {
+        let curve = curves::from_parameters(curves::CurveParameters {
+            name: "order-wider-than-field".to_string(),
+            p: BigUint::from_u64(251),
+            a: BigUint::from_u64(1),
+            b: BigUint::from_u64(4),
+            gx: BigUint::from_u64(0),
+            gy: BigUint::from_u64(2),
+            n: BigUint::from_u64(271),
+            h: BigUint::from_u64(1),
+        }).unwrap();
+        assert_eq!((curve.field_bytes(), curve.scalar_bytes()), (1, 2),
+                   "the curve must have an order wider than its field");
+        // On every built-in curve the two widths agree, which is why the
+        // change leaves every vector as it was.
+        for builtin in curves::all() {
+            assert_eq!(builtin.field_bytes(), builtin.scalar_bytes(), "{}", builtin.name);
+        }
+
+        // The components are reduced modulo n, so either may need the
+        // second byte that the field's width does not have.
+        let wide = Signature { r: BigUint::from_u64(270), s: BigUint::from_u64(260) };
+        let bytes = wide.to_bytes(&curve).unwrap();
+        assert_eq!(bytes, [0x01, 0x0e, 0x01, 0x04]);
+        assert_eq!(Signature::from_bytes(&curve, &bytes).unwrap(), wide);
+        assert!(Signature::from_bytes(&curve, &[0u8; 2]).is_err(),
+                "the field's width is the wrong length now");
+
+        // And a real signature on the curve survives the round trip.
+        let digest = digest_of(b"a tiny curve");
+        let private = BigUint::from_u64(123);
+        let public = curve.scalar_mul(&curve.g, &private);
+        let signature = curve.sign(&private, &digest, sha256()).unwrap();
+        let again = Signature::from_bytes(&curve, &signature.to_bytes(&curve).unwrap()).unwrap();
+        assert_eq!(again, signature);
+        assert!(curve.verify(&public, &digest, &again).unwrap());
     }
 }

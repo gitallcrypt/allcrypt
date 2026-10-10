@@ -80,7 +80,16 @@ pub struct Transcript {
 
 impl Transcript {
     pub fn new(version: Version, prf: MacAlgorithm) -> Result<Transcript, String> {
-        let name = prf.hash_name().unwrap_or("sha256");
+        // **An error, not a default.** `hash_name` is `None` for `Aead`
+        // and `Gost`, which are MACs and not hashes; a suite row whose
+        // `prf` were ever set to one of those would get a SHA-256
+        // transcript and a Finished nobody else computes, with nothing
+        // said anywhere. Every row's `prf` is a hash today, which is
+        // exactly why the fallback would not be noticed when it stopped
+        // being true.
+        let name = prf.hash_name().ok_or_else(|| format!(
+            "{} is a MAC, not a hash, so it cannot be a transcript hash.",
+            prf.name()))?;
         Ok(Transcript {
             md5: AnyHash::new("md5")?,
             sha1: AnyHash::new("sha1")?,
@@ -280,7 +289,7 @@ pub fn extended_master_secret(version: Version, prf_hash: MacAlgorithm,
 }
 
 /// The key material one direction needs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DirectionKeys {
     pub mac_key: Vec<u8>,
     pub key: Vec<u8>,
@@ -289,11 +298,30 @@ pub struct DirectionKeys {
     pub iv: Vec<u8>,
 }
 
+impl core::fmt::Debug for DirectionKeys {
+    /// Deliberately says nothing but the lengths. These are the live
+    /// record keys of a connection, and a `{:?}` in a log line, an error
+    /// path or a failing `assert_eq!` is how key material escapes - the
+    /// same rule every other secret-carrying type in this module family
+    /// follows (`TrafficKeys`, `Aead13`, `Ticket`, `ServerKey`).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "DirectionKeys {{ {} byte mac_key, {} byte key, {} byte iv, \
+                   redacted }}", self.mac_key.len(), self.key.len(), self.iv.len())
+    }
+}
+
 /// The key block, split.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyBlock {
     pub client: DirectionKeys,
     pub server: DirectionKeys,
+}
+
+impl core::fmt::Debug for KeyBlock {
+    /// Redacted through `DirectionKeys`' own `Debug`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "KeyBlock {{ client: {:?}, server: {:?} }}", self.client, self.server)
+    }
 }
 
 /// Derive and split the key block.
@@ -692,6 +720,67 @@ mod tests {
         let block_swapped = key_block(Version::TLS12, suite(), &master,
                                       &server, &client).unwrap();
         assert_ne!(block, block_swapped);
+    }
+
+    /// A PRF that is not a hash is refused rather than quietly replaced
+    /// by SHA-256.
+    ///
+    /// What was wrong: `Transcript::new` did `hash_name().unwrap_or
+    /// ("sha256")`, so a suite whose `prf` slot held `Aead` or `Gost` -
+    /// a one-token slip in a sixty-row table - got a SHA-256 transcript
+    /// and a Finished nobody else computes, with no error anywhere. No
+    /// test could reach it because every row's `prf` is a hash, which is
+    /// also why the slip would go unnoticed. The function already
+    /// returned `Result`; it now uses it.
+    #[test]
+    fn test_a_prf_without_a_hash_is_refused_as_a_transcript() {
+        for prf in [MacAlgorithm::Aead, MacAlgorithm::Gost] {
+            assert!(prf.hash_name().is_none(), "{:?}", prf);
+            let error = Transcript::new(Version::TLS12, prf)
+                .err().unwrap_or_else(|| panic!("{:?} was accepted", prf));
+            assert!(error.contains("not a hash"), "{}", error);
+        }
+        // And every suite in the table still gets a transcript, which is
+        // what says no row was broken by the refusal.
+        for code in suites::Selection::all().codes() {
+            let suite = suites::by_code(*code).unwrap();
+            Transcript::new(suite.min_version, suite.prf)
+                .unwrap_or_else(|e| panic!("{}: {}", suite.name, e));
+        }
+    }
+
+    /// `{:?}` on a key block prints lengths and nothing else.
+    ///
+    /// What was wrong: `DirectionKeys` and `KeyBlock` derived `Debug`,
+    /// while every other secret-carrying type here hand-writes a
+    /// redacting one. Any `{:?}` on an error path, a log line or a
+    /// failing `assert_eq!` that touched a key block printed the MAC key,
+    /// the encryption key and the IV of a live connection. Nothing
+    /// caught it because no test formats a key block, and the derived
+    /// output is well formed. The bytes are distinctive so that a
+    /// derived `Debug` cannot pass by printing them in some other base.
+    #[test]
+    fn test_a_key_block_prints_no_key_material() {
+        let suite = suites::by_name("ECDHE-RSA-AES128-SHA").unwrap();
+        let master = vec![0xA7; 48];
+        let block = key_block(Version::TLS12, suite, &master, &[0x5C; 32],
+                              &[0x36; 32]).unwrap();
+        let printed = format!("{:?}", block);
+        assert!(printed.contains("redacted"), "{}", printed);
+        for keys in [&block.client, &block.server] {
+            for secret in [&keys.mac_key, &keys.key, &keys.iv] {
+                if secret.is_empty() {
+                    continue;
+                }
+                let hex: String = secret.iter().map(|b| format!("{:02x}", b)).collect();
+                let decimal = format!("{:?}", secret);
+                assert!(!printed.contains(&hex[..8]), "{}", printed);
+                assert!(!printed.contains(&decimal[1..12]), "{}", printed);
+            }
+        }
+        // The lengths are still there, which is what a log line needs.
+        assert!(printed.contains("20 byte mac_key"), "{}", printed);
+        assert!(printed.contains("16 byte key"), "{}", printed);
     }
 
     #[test]

@@ -335,9 +335,13 @@ mod tests {
     ///
     /// The one that matters, because it pins the primitive scrypt
     /// actually calls: eight rounds, a bare block in and out, no key
-    /// and no counter anywhere. Read out of the RFC text rather than
-    /// typed - an invented vector for a permutation agrees with itself
-    /// perfectly, which is how this project has been caught before.
+    /// and no counter anywhere. The two values below are transcribed
+    /// from the RFC, which is not vendored in `rfcs/`; what stands
+    /// behind the transcription is `kdf::scrypt`, whose BlockMix and
+    /// full scrypt vectors from sections 9 and 12 of the same document
+    /// run through this core and would fail with it mistyped. An
+    /// invented vector for a permutation agrees with itself perfectly,
+    /// which is how this project has been caught before.
     #[test]
     fn test_rfc7914_salsa20_8_core() {
         let input = unhex("7e879a214f3ec9867ca940e641718f26baee555b8c61c1b50df846116dcd3b1dee24f319df9b3d8514121e4b5ac5aa3276021d2909c74829edebc68db8b8c25e");

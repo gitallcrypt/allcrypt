@@ -52,6 +52,7 @@ against that software's own tools.
 |Magma (GOST R 34.12-2015)|✓|✓|
 |RC2 (RFC 2268)|✓|✓|
 |RC5 (RFC 2040)|✓|spec reference; RFC 2040's vectors|
+|Rijndael, 160 to 256 bit blocks (`rijndael-160` to `rijndael-256`)|✓|Bouncy Castle 1.77 and phpseclib 1.0.23 agree on 275 inputs, eleven for each of the 25 block and key sizes; `vectors/rijndael.vec`|
 |RC6 (RC6-32/20/b, AES finalist)|✓|Bouncy Castle 1.77 agrees on 513 inputs, every key length from 1 to 64 bytes and 41 more to 255; the submission's six vectors; `vectors/rc6.vec`|
 |SEED (RFC 4269)|✓|✓|
 |Serpent|✓|Botan's vectors; VeraCrypt, LUKS and KeePass files, by hand|
@@ -355,7 +356,7 @@ the version rather than of a suite.
 |Export-grade suites (RC2_40, DES40, RC4_40)|✓|spec reference|
 |Client, TLS 1.3, with HelloRetryRequest, resumption, 0-RTT and KeyUpdate|✓|✓|
 |Server, TLS 1.2: RSA, ECDHE_RSA, ECDHE_ECDSA|✓|✓|
-|Server, TLS 1.3, with HelloRetryRequest, session tickets and 0-RTT|✓|✓|
+|Server, TLS 1.3, with HelloRetryRequest, session tickets, 0-RTT and KeyUpdate|✓|✓|
 |Client certificates, TLS 1.0 to 1.3, both ends|✓|✓|
 |ALPN (RFC 7301), both ends|✓|✓|
 |OCSP stapling, both ends|✓|✓|

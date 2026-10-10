@@ -63,24 +63,38 @@ const CHAINING: usize = 128;
 /// The mode parameter: the tree is used up to this level.
 const L: u64 = 64;
 
+/// The feedback register's window: a power of two above the farthest
+/// tap (89 words back), so the register is a ring indexed by `i & 127`
+/// rather than the `N + 16 * rounds` word vector the specification
+/// writes out - up to 22 KB, which was allocated once per compression,
+/// once per block and per tree node, against the "no `vec![]` in a
+/// per-block loop" rule.
+const RING: usize = 128;
+
 /// One compression: the 89 input words in, 16 words out.
 fn compress(input: &[u64; N], rounds: usize) -> [u64; 16] {
     let t = 16 * rounds;
-    let mut a = vec![0u64; N + t];
+    let mut a = [0u64; RING];
     a[..N].copy_from_slice(input);
     let mut s = S0;
     for i in N..N + t {
         let step = (i - N) % 16;
-        let mut x = s ^ a[i - N] ^ a[i - TAPS[0]]
-            ^ (a[i - TAPS[1]] & a[i - TAPS[2]])
-            ^ (a[i - TAPS[3]] & a[i - TAPS[4]]);
+        // Every read is between 17 and 89 words back, and the slot
+        // written held word `i - 128`, which nothing reads again.
+        let mut x = s ^ a[(i - N) & (RING - 1)] ^ a[(i - TAPS[0]) & (RING - 1)]
+            ^ (a[(i - TAPS[1]) & (RING - 1)] & a[(i - TAPS[2]) & (RING - 1)])
+            ^ (a[(i - TAPS[3]) & (RING - 1)] & a[(i - TAPS[4]) & (RING - 1)]);
         x ^= x >> RIGHT[step];
-        a[i] = x ^ (x << LEFT[step]);
+        a[i & (RING - 1)] = x ^ (x << LEFT[step]);
         if step == 15 {
             s = s.rotate_left(1) ^ (s & S_STAR);
         }
     }
-    a[N + t - 16..].try_into().expect("16 words")
+    let mut out = [0u64; 16];
+    for (k, word) in out.iter_mut().enumerate() {
+        *word = a[(N + t - 16 + k) & (RING - 1)];
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -229,6 +243,42 @@ mod tests {
         let words: Vec<u64> = bytes.chunks_exact(8)
             .map(|c| u64::from_be_bytes(c.try_into().unwrap())).collect();
         assert_eq!(words, Q.to_vec());
+    }
+
+    /// The ring against the specification's unrolled register, which
+    /// is how `compress` was written before: a vector of `N + 16 r`
+    /// words, every one kept. The vectors in `tests/test_legacy_hashes.rs`
+    /// check the digests; this checks the register at every round count
+    /// the hash can ask for, including the ones no digest size uses,
+    /// since a ring that was one word too small would fail only where a
+    /// tap crosses its edge.
+    #[test]
+    fn test_the_ring_matches_the_unrolled_register() {
+        fn unrolled(input: &[u64; N], rounds: usize) -> [u64; 16] {
+            let t = 16 * rounds;
+            let mut a = vec![0u64; N + t];
+            a[..N].copy_from_slice(input);
+            let mut s = S0;
+            for i in N..N + t {
+                let step = (i - N) % 16;
+                let mut x = s ^ a[i - N] ^ a[i - TAPS[0]]
+                    ^ (a[i - TAPS[1]] & a[i - TAPS[2]])
+                    ^ (a[i - TAPS[3]] & a[i - TAPS[4]]);
+                x ^= x >> RIGHT[step];
+                a[i] = x ^ (x << LEFT[step]);
+                if step == 15 {
+                    s = s.rotate_left(1) ^ (s & S_STAR);
+                }
+            }
+            a[N + t - 16..].try_into().unwrap()
+        }
+        let mut input = [0u64; N];
+        for (k, word) in input.iter_mut().enumerate() {
+            *word = (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x5555;
+        }
+        for rounds in [1usize, 2, 7, 8, 9, 42, 96, 104, 168] {
+            assert_eq!(compress(&input, rounds), unrolled(&input, rounds), "{rounds} rounds");
+        }
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::bignum::BigUint;
 use crate::ec::Curve;
 use crate::hash_functions::HashFunction;
 use crate::publickey_ciphers::rsa::{self, RsaPrivateKey};
-use crate::x509::{oids, verify};
+use crate::x509::{ocsp, oids, verify};
 
 /// The key a certificate is signed with, and the one it carries.
 pub enum SigningKey<'a> {
@@ -391,6 +391,12 @@ pub struct CertificateBuilder<'a> {
     /// every certificate this builder makes, and the tests that pin
     /// those bytes are pinning them for reasons of their own.
     pub key_identifiers: bool,
+    /// The X.509 version to write: 1, 2 or 3. Only version 3 may carry
+    /// extensions, so `sign` refuses any other version once anything
+    /// above would produce one. Here for the verifier's tests, which
+    /// need a version 1 certificate in the middle of a path to prove it
+    /// is not treated as a CA.
+    pub version: u32,
     pub hash: &'a str,
 }
 
@@ -413,6 +419,7 @@ impl<'a> CertificateBuilder<'a> {
             sans: vec![],
             extra_extensions: vec![],
             key_identifiers: false,
+            version: 3,
             hash: "sha256",
         }
     }
@@ -433,6 +440,9 @@ impl<'a> CertificateBuilder<'a> {
         if let Some((false, Some(_))) = self.is_ca {
             return Err("pathLenConstraint on something that is not a CA."
                        .to_string());
+        }
+        if !(1..=3).contains(&self.version) {
+            return Err(format!("There is no X.509 version {}.", self.version));
         }
 
         let tbs = self.write_tbs(key)?;
@@ -455,6 +465,12 @@ impl<'a> CertificateBuilder<'a> {
         let algorithm = algorithm.finish();
 
         let extensions = self.write_extensions(key)?;
+        if self.version != 3 && !extensions.is_empty() {
+            // RFC 5280 4.1.2.9: extensions appear only in a version 3
+            // certificate, and the parser refuses anything else.
+            return Err(format!(
+                "A version {} certificate cannot carry extensions.", self.version));
+        }
 
         // Built before the closure, because `write_sequence` takes one
         // that cannot fail and an unnamed curve is now an error rather
@@ -465,8 +481,12 @@ impl<'a> CertificateBuilder<'a> {
 
         let mut writer = Writer::new();
         writer.write_sequence(|t| {
-            // version [0] EXPLICIT: 2 means v3.
-            t.write_constructed(Tag::context(0, true), |w| w.write_u32(2));
+            // version [0] EXPLICIT INTEGER DEFAULT v1: 2 means v3, and
+            // DER omits a value equal to the default.
+            if self.version != 1 {
+                let value = self.version - 1;
+                t.write_constructed(Tag::context(0, true), |w| w.write_u32(value));
+            }
             t.write_tlv(Tag::universal(asn1::tag::INTEGER), &self.serial);
             t.write_raw(&algorithm);
             match &self.issuer_raw {
@@ -873,6 +893,9 @@ pub struct CrlBuilder<'a> {
 
 #[derive(Clone, Default)]
 pub struct IssuingDistributionPointFields {
+    /// The `distributionPoint` field, as the URIs of a `fullName`. Empty
+    /// means the field is omitted and the CRL covers every point.
+    pub distribution_point_uris: Vec<String>,
     pub only_user_certs: bool,
     pub only_ca_certs: bool,
     /// The `ReasonFlags` bits, most significant first, as a BIT STRING
@@ -997,6 +1020,17 @@ impl<'a> CrlBuilder<'a> {
         if let Some(point) = &self.issuing_distribution_point {
             let mut value = Writer::new();
             value.write_sequence(|w| {
+                if !point.distribution_point_uris.is_empty() {
+                    // distributionPoint [0] DistributionPointName, whose
+                    // fullName [0] is a GeneralNames.
+                    w.write_constructed(Tag::context(0, true), |w| {
+                        w.write_constructed(Tag::context(0, true), |w| {
+                            for uri in &point.distribution_point_uris {
+                                w.write_tlv(Tag::context(6, false), uri.as_bytes());
+                            }
+                        });
+                    });
+                }
                 if point.only_user_certs {
                     w.write_tlv(Tag::context(1, false), &[0xFF]);
                 }
@@ -1088,6 +1122,9 @@ pub struct OcspSingleResponse {
     pub status: OcspStatus,
     pub this_update: &'static str,
     pub next_update: Option<&'static str>,
+    /// `singleExtensions`: OID, critical, DER value. Empty means the
+    /// field is omitted.
+    pub extensions: Vec<(Vec<u8>, bool, Vec<u8>)>,
 }
 
 impl OcspSingleResponse {
@@ -1099,6 +1136,10 @@ impl OcspSingleResponse {
                  issuer: &crate::x509::Certificate<'_>, hash: &'static str,
                  status: OcspStatus) -> Result<OcspSingleResponse, String> {
         use crate::hash_functions::HashFunction;
+        // `AnyHash::new` accepts every hash this library has, and a
+        // CertID can name only the four with an OID in `ocsp::hash_oid`;
+        // refused here, by the same function the response writer uses.
+        ocsp::hash_oid(hash)?;
         let digest = |data: &[u8]| -> Result<Vec<u8>, String> {
             let mut hasher = crate::api::AnyHash::new(hash)?;
             hasher.update(data);
@@ -1124,6 +1165,7 @@ impl OcspSingleResponse {
             status,
             this_update: "20230101000000Z",
             next_update: Some("20330101000000Z"),
+            extensions: Vec::new(),
         })
     }
 }
@@ -1171,6 +1213,13 @@ impl<'a> OcspResponseBuilder<'a> {
 
     /// The `BasicOCSPResponse` alone, which is what gets stapled.
     pub fn sign_basic(&self, key: &SigningKey<'_>) -> Result<Vec<u8>, String> {
+        // `cert_id_hash` is a public field, so `about`'s check can be
+        // bypassed; the names are checked again here, where there is a
+        // `Result` to return, rather than inside `write_response_data`'s
+        // closures, where there is not.
+        for single in &self.responses {
+            ocsp::hash_oid(single.cert_id_hash)?;
+        }
         let tbs = self.write_response_data();
         let signature = key.sign_signed_data(self.hash, &tbs)?;
         // The algorithm identifier is built first, because
@@ -1215,8 +1264,11 @@ impl<'a> OcspResponseBuilder<'a> {
                     list.write_sequence(|w| {
                         w.write_sequence(|id| {
                             id.write_sequence(|algorithm| {
+                                // Validated in `sign_basic` before this
+                                // closure, which cannot fail, is entered.
                                 algorithm.write_oid(
-                                    hash_oid(single.cert_id_hash));
+                                    ocsp::hash_oid(single.cert_id_hash)
+                                        .expect("hash name validated by sign_basic"));
                                 algorithm.write_null();
                             });
                             id.write_octet_string(&single.issuer_name_hash);
@@ -1253,6 +1305,19 @@ impl<'a> OcspResponseBuilder<'a> {
                                 write_time_generalized(w, next);
                             });
                         }
+                        if !single.extensions.is_empty() {
+                            w.write_constructed(Tag::context(1, true), |w| {
+                                w.write_sequence(|list| {
+                                    for (oid, critical, value) in &single.extensions {
+                                        list.write_sequence(|w| {
+                                            w.write_oid(oid);
+                                            if *critical { w.write_bool(true); }
+                                            w.write_octet_string(value);
+                                        });
+                                    }
+                                });
+                            });
+                        }
                     });
                 }
             });
@@ -1280,16 +1345,6 @@ fn write_time_generalized(w: &mut Writer, text: &str) {
     w.write_tlv(Tag::universal(asn1::tag::GENERALIZED_TIME), text.as_bytes());
 }
 
-fn hash_oid(hash: &str) -> &'static [u8] {
-    match hash {
-        "sha1" => oids::SHA1,
-        "sha256" => oids::SHA256,
-        "sha384" => oids::SHA384,
-        "sha512" => oids::SHA512,
-        other => panic!("no OCSP CertID hash OID for {:?}", other),
-    }
-}
-
 /// Key usage bits, for `CertificateBuilder::key_usage`.
 pub mod key_usage {
     pub const DIGITAL_SIGNATURE: u16 = 0x8000;
@@ -1305,6 +1360,38 @@ pub mod key_usage {
 mod tests {
     use super::*;
     use crate::x509::{tests_support, Certificate};
+
+    /// A CertID hash this library can compute but has no OID for is an
+    /// error from `about` and from `sign`, not a panic.
+    ///
+    /// What was wrong: `about` validated the name only through
+    /// `AnyHash::new`, which accepts `"md5"` or `"sha3-256"`, and the
+    /// builder's own copy of `hash_oid` then panicked inside a
+    /// `write_sequence` closure in `sign`. The existing OCSP tests all
+    /// used `"sha1"` or `"sha256"`. There is now one `hash_oid`, in
+    /// `ocsp`, returning `Result`; `about` calls it, and `sign_basic`
+    /// calls it again for every response because `cert_id_hash` is a
+    /// public field.
+    #[test]
+    fn test_an_ocsp_cert_id_hash_without_an_oid_is_an_error_not_a_panic() {
+        let chain = tests_support::chain(|_| {}, |_| {}, |_| {});
+        let leaf = Certificate::parse(&chain.leaf).unwrap();
+        let issuer = Certificate::parse(&chain.intermediate).unwrap();
+
+        match OcspSingleResponse::about(&leaf, &issuer, "md5", OcspStatus::Good) {
+            Err(error) => assert!(error.contains("No OCSP CertID hash OID"), "{}", error),
+            Ok(_) => panic!("md5 has no CertID OID and must be refused"),
+        }
+
+        // Set directly, past `about`.
+        let mut single = OcspSingleResponse::about(&leaf, &issuer, "sha256",
+                                                   OcspStatus::Good).unwrap();
+        single.cert_id_hash = "sha3-256";
+        let mut builder = OcspResponseBuilder::new("Test Intermediate");
+        builder.responses = vec![single];
+        let error = builder.sign(&chain.intermediate_key.signing()).unwrap_err();
+        assert!(error.contains("No OCSP CertID hash OID"), "{}", error);
+    }
 
     /// A certificate signed through `SigningKey::External` by a signer
     /// that is the library's own key is **byte for byte** the one the key

@@ -6,7 +6,10 @@ use super::HashFunction;
 pub struct SHA1 {
     state: [u32; 5],
     buffer: BlockBuffer<64>,
-    len: usize,
+    /// The message length **in bits**, as the padding carries it. A
+    /// `u64` on every target: a `usize` wraps at 2^32 bits (512 MiB) on
+    /// a 32-bit one, which is a wrong digest with no error.
+    len: u64,
     is_sha0: bool,
 }
 
@@ -21,7 +24,27 @@ impl SHA1 {
         sha.update(data);
         sha
     }
+    /// SHA-0: FIPS 180's original schedule, without the one bit rotate
+    /// FIPS 180-1 added. Everything else is SHA-1.
+    pub fn sha0(data: &[u8]) -> SHA1 {
+        let mut sha = SHA1::new(&[]);
+        sha.set_to_sha0();
+        sha.update(data);
+        sha
+    }
+
+    /// Switch a fresh hash to SHA-0's schedule. `sha0` is the usual way
+    /// to get one.
+    ///
+    /// # Panics
+    /// After data has been fed: a block already compressed under
+    /// SHA-1's schedule cannot be re-done under SHA-0's, so the result
+    /// would be a value that is neither hash. `SHA1::new(&[0; 64])`
+    /// then `set_to_sha0()` used to give exactly that, silently.
     pub fn set_to_sha0(&mut self) {
+        assert!(self.len == 0,
+                "set_to_sha0 after {} bits were fed; use SHA1::sha0 or call it first",
+                self.len);
         self.is_sha0 = true;
     }
     fn process_block(&self, state: &[u32; 5], block: &[u8]) -> (u32, u32, u32, u32, u32) {
@@ -129,7 +152,7 @@ impl HashFunction for SHA1 {
         let mut unprocessed_data = self.buffer.buffered().to_vec();
         unprocessed_data.push(0x80);
         unprocessed_data.extend_from_slice(&vec![0; (blocksize + (blocksize-8) - unprocessed_data.len()) % blocksize]);
-        unprocessed_data.extend_from_slice(&(self.len as u64).to_be_bytes());
+        unprocessed_data.extend_from_slice(&self.len.to_be_bytes());
         (state[0], state[1], state[2], state[3], state[4]) = 
             self.process_block(&self.state, &unprocessed_data);
         if unprocessed_data.len() > blocksize {
@@ -145,12 +168,53 @@ impl HashFunction for SHA1 {
         result
     }
     fn update(&mut self, input: &[u8]) {
-        self.len += input.len() * 8;
+        self.len = self.len.wrapping_add(input.len() as u64 * 8);
         // The buffer is moved out for the call so the closure can borrow
         // the rest of `self`.
         let mut buffer = core::mem::take(&mut self.buffer);
         let sha0 = self.is_sha0;
         buffer.feed_blocks(input, |run| compress_run(&mut self.state, run, sha0));
         self.buffer = buffer;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `set_to_sha0` after a block had been compressed under SHA-1's
+    /// schedule switched the schedule for the rest, giving a value no
+    /// implementation produces. `hash_all` and the tests always called
+    /// it on an empty hash, so nothing reached the mixed case.
+    #[test]
+    fn test_sha0_cannot_be_selected_after_a_block_was_compressed() {
+        let whole = SHA1::sha0(&[0u8; 64]).digest();
+        let mut fresh = SHA1::new(&[]);
+        fresh.set_to_sha0();
+        fresh.update(&[0u8; 64]);
+        assert_eq!(fresh.digest(), whole);
+        assert_ne!(SHA1::new(&[0u8; 64]).digest(), whole);
+        let mixed = std::panic::catch_unwind(|| {
+            let mut hash = SHA1::new(&[0u8; 64]);
+            hash.set_to_sha0();
+            hash.digest()
+        });
+        assert!(mixed.is_err(), "a hash that is neither SHA-0 nor SHA-1 was produced");
+    }
+
+    /// The bit counter was a `usize`, so on a 32-bit target it wrapped
+    /// at 2^32 bits (512 MiB) and the `+=` overflowed in a debug build:
+    /// a wrong digest with no error past that length. No test ran on
+    /// such a target, and on a 64-bit one the two types agree for any
+    /// message that fits in memory. The check is on the type itself.
+    #[test]
+    fn test_the_bit_counter_is_64_bits_wide() {
+        let mut hash = SHA1::new(&[]);
+        hash.update(&[0u8; 100]);
+        let bits: u64 = hash.len;
+        assert_eq!(bits, 800);
+        let mut pieces = SHA1::new(&[0u8; 37]);
+        pieces.update(&[0u8; 63]);
+        assert_eq!(pieces.digest(), hash.digest());
     }
 }

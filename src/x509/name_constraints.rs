@@ -104,7 +104,7 @@ per-name instead of per-subtree, and it cannot accidentally widen
 because nothing is ever merged.
 */
 
-use crate::x509::{Certificate, GeneralName, oids, read_general_name};
+use crate::x509::{Certificate, GeneralName, oids, read_general_name, verify};
 #[cfg(test)]
 use crate::asn1;
 use crate::asn1::{Reader, Tag};
@@ -226,18 +226,30 @@ fn dns_matches(base: &str, name: &str) -> bool {
     // is the narrower of the two readings - a constraint read too widely
     // admits names it should not.
     if let Some(suffix) = base.strip_prefix('.') {
-        return name.len() > suffix.len()
-            && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-            && name.as_bytes()[name.len() - suffix.len() - 1] == b'.';
+        return ends_with_label(name, suffix);
     }
     if name.len() == base.len() {
         return name.eq_ignore_ascii_case(base);
     }
     // The label boundary is what stops `evilexample.com` satisfying a
     // constraint of `example.com`.
-    name.len() > base.len()
-        && name[name.len() - base.len()..].eq_ignore_ascii_case(base)
-        && name.as_bytes()[name.len() - base.len() - 1] == b'.'
+    ends_with_label(name, base)
+}
+
+/// Does `name` end in `.suffix`, ASCII case-insensitively?
+///
+/// Compared as bytes. Both strings come from certificates - the suffix
+/// from the CA's constraint, the name from the leaf's SAN - and either
+/// may hold a multi-byte character, since `read_general_name` accepts
+/// any UTF-8. Slicing a `&str` at a byte offset taken from the *other*
+/// string panics when that offset falls inside a character; a byte
+/// slice cannot. ASCII folding on bytes is the same comparison as on
+/// text for ASCII and an exact one for everything else.
+fn ends_with_label(name: &str, suffix: &str) -> bool {
+    let (name, suffix) = (name.as_bytes(), suffix.as_bytes());
+    name.len() > suffix.len()
+        && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+        && name[name.len() - suffix.len() - 1] == b'.'
 }
 
 /// A host against a URI or rfc822Name base, where a leading period means
@@ -245,9 +257,10 @@ fn dns_matches(base: &str, name: &str) -> bool {
 fn host_matches(base: &str, candidate: &str) -> bool {
     let (base, candidate) = (host(base), host(candidate));
     if let Some(suffix) = base.strip_prefix('.') {
-        return candidate.len() > suffix.len()
-            && candidate[candidate.len() - suffix.len()..]
-                   .eq_ignore_ascii_case(suffix);
+        // "Strictly below" is a label boundary, not a string suffix:
+        // `.example.com` covers `host.example.com` and not
+        // `evilexample.com`.
+        return ends_with_label(candidate, suffix);
     }
     candidate.eq_ignore_ascii_case(base)
 }
@@ -418,22 +431,24 @@ fn names_of<'a>(certificate: &'a Certificate<'a>,
                 }
             }
         }
-        // Not in RFC 5280, and necessary here: `matches_hostname` falls
-        // back to the common name when there is no SAN, so a CA
-        // constrained to a DNS subtree could otherwise issue a
-        // certificate with no SAN and a CN of `evil.test`, and this
-        // library would accept it for `evil.test` while the dNSName
-        // constraint saw no DNS names at all. The constraint has to
-        // cover every name the verifier will honour, not every name the
-        // RFC lists.
-        if constrained_forms.contains(&2) {
-            if let Some(index) = certificate.subject.attributes.iter()
-                .position(|a| a.oid.as_bytes() == oids::COMMON_NAME) {
-                let attribute = &certificate.subject.attributes[index];
-                if let Ok(text) = core::str::from_utf8(attribute.value) {
-                    if looks_like_a_host(text) {
-                        names.push(GeneralName::Dns(text));
-                    }
+    }
+
+    // Not in RFC 5280, and necessary here: `matches_hostname` falls back
+    // to the common name when the SAN names no host (no dNSName, no
+    // URI), so a CA constrained to a DNS subtree could otherwise issue a
+    // certificate with a CN of `evil.test` and either no SAN or a SAN
+    // holding only an rfc822Name or iPAddress, and this library would
+    // accept it for `evil.test` while the dNSName constraint saw no DNS
+    // names at all. The constraint has to cover every name the verifier
+    // will honour, not every name the RFC lists - so the condition is
+    // the verifier's own predicate, not a reading of it.
+    if constrained_forms.contains(&2) && verify::common_name_is_honoured(certificate) {
+        if let Some(index) = certificate.subject.attributes.iter()
+            .position(|a| a.oid.as_bytes() == oids::COMMON_NAME) {
+            let attribute = &certificate.subject.attributes[index];
+            if let Ok(text) = core::str::from_utf8(attribute.value) {
+                if looks_like_a_host(text) {
+                    names.push(GeneralName::Dns(text));
                 }
             }
         }
@@ -607,6 +622,52 @@ mod tests {
         assert!(!host_matches(".example.com", "example.com"));
         assert!(host_matches(".example.com", "host.example.com"));
         assert!(host_matches(".example.com", "my.host.example.com"));
+    }
+
+    /// A leading-period URI or rfc822Name base is a domain, so the name
+    /// below it has to sit at a label boundary.
+    ///
+    /// What was wrong: `host_matches` checked only that the candidate
+    /// ended with the base's text, so a CA constrained to
+    /// `permitted rfc822Name .example.com` admitted any mailbox at
+    /// `evilexample.com` - the suffix attack `dns_matches` already
+    /// refuses, on the other two forms. The existing tests offered
+    /// hosts that were either exactly the domain or properly below it,
+    /// never one that merely ended in its spelling.
+    #[test]
+    fn test_a_leading_period_host_base_stops_at_a_label_boundary() {
+        assert!(!host_matches(".example.com", "evilexample.com"));
+        assert!(!email_matches(".example.com", "a@evilexample.com").unwrap());
+        // And the shapes that must still pass.
+        assert!(host_matches(".example.com", "evil.example.com"));
+        assert!(email_matches(".example.com", "a@evil.example.com").unwrap());
+    }
+
+    /// A name holding a multi-byte character is compared, not panicked
+    /// on.
+    ///
+    /// What was wrong: `dns_matches` and `host_matches` sliced one
+    /// `&str` at a byte offset computed from the other's length, and a
+    /// slice that lands inside a character panics. `read_general_name`
+    /// accepts any UTF-8, so a leaf SAN of `éxample.com` under a CA
+    /// constrained to `example.com` - a peer-supplied input that reaches
+    /// this code once the signatures verify - panicked in `verify_chain`
+    /// instead of being refused. Every name in the existing tests was
+    /// ASCII, where byte and character offsets coincide. The comparisons
+    /// are now over bytes.
+    #[test]
+    fn test_non_ascii_names_are_compared_not_panicked_on() {
+        // 12 bytes against an 11 byte base: the old slice began one
+        // byte into the two-byte `é`.
+        assert!(!dns_matches("example.com", "éxample.com"));
+        assert!(!dns_matches(".example.com", "éxample.com"));
+        assert!(!host_matches(".example.com", "éxample.com"));
+        // The constraint side can be the odd one too.
+        assert!(!dns_matches("éxample.com", "example.com"));
+        // A non-ASCII name inside a non-ASCII subtree still matches
+        // exactly, since only ASCII folds.
+        assert!(dns_matches("éxample.com", "a.éxample.com"));
+        assert!(!dns_matches("éxample.com", "a.Éxample.com"));
     }
 
     #[test]

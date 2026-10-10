@@ -299,13 +299,15 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
         self.mac_blocks_done = blocks_done;
     }
 
-    pub fn set_mac_iv(&mut self, iv: &[u8]) { 
-        self.mac_state = iv.to_vec();
-        /*for i in 0..2 {
-            for j in 0..4 {
-                self.mac_state[i*4+j] = iv[(1-i)*4+j];
-            }
-        }*/
+    /// The MAC's starting state, one block. The state stays one block
+    /// whatever is handed in: a shorter IV is zero padded and a longer
+    /// one cut, the way a mode's IV check would do before the state
+    /// is used.
+    pub fn set_mac_iv(&mut self, iv: &[u8]) {
+        let mut state = [0u8; 8];
+        let take = iv.len().min(8);
+        state[..take].copy_from_slice(&iv[..take]);
+        self.mac_state = state.to_vec();
     }
 
     fn k(&self, svalue: u32) -> u32 {
@@ -315,7 +317,8 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
         }
         rv
     }
-    fn mac_block(&self, input: &[u8]) -> Vec<u8> {
+    /// The MAC's 16 round transformation of one block.
+    fn mac_block(&self, input: &[u8; 8]) -> [u8; 8] {
         let mut n1 = u32::from_le_bytes(input[0..4].try_into().unwrap());
         let mut n2 = u32::from_le_bytes(input[4..8].try_into().unwrap());
 
@@ -324,10 +327,22 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
                 (n1, n2) = (self.k(u32::wrapping_add(n1, self.key32[j])).rotate_left(11) ^ n2, n1);
             }
         }
-        let mut result = vec![];
-        result.extend_from_slice(&n1.to_le_bytes());
-        result.extend_from_slice(&n2.to_le_bytes());
+        let mut result = [0u8; 8];
+        result[..4].copy_from_slice(&n1.to_le_bytes());
+        result[4..].copy_from_slice(&n2.to_le_bytes());
         result
+    }
+
+    /// One block into the running MAC state: XORed in, transformed,
+    /// counted.
+    fn mac_absorb(&mut self, block: &[u8; 8]) {
+        let mut input = [0u8; 8];
+        for (x, (b, state)) in input.iter_mut().zip(block.iter().zip(&self.mac_state)) {
+            *x = b ^ state;
+        }
+        let next = self.mac_block(&input);
+        self.mac_state.copy_from_slice(&next);
+        self.mac_blocks_done += 1;
     }
 }
 
@@ -398,18 +413,27 @@ impl BlockCipher for GostCrypto {
 }
 
 impl Mac for GostCrypto {
-    fn update(&mut self, input: &[u8]) {
-        self.mac_data_unprocessed.append(&mut input.to_vec());
-        if self.mac_data_unprocessed.len() < self.blocksize() {
-            return
+    /// Whole blocks straight from `input`; the ragged end waits in
+    /// `mac_data_unprocessed` for the next call, and a partial block
+    /// left from the previous call is completed first.
+    fn update(&mut self, mut input: &[u8]) {
+        const BLOCK: usize = 8;
+        if !self.mac_data_unprocessed.is_empty() {
+            let take = (BLOCK - self.mac_data_unprocessed.len()).min(input.len());
+            self.mac_data_unprocessed.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.mac_data_unprocessed.len() < BLOCK {
+                return;
+            }
+            let block: [u8; BLOCK] = self.mac_data_unprocessed[..].try_into().unwrap();
+            self.mac_absorb(&block);
+            self.mac_data_unprocessed.clear();
         }
-        for i in 0..(self.mac_data_unprocessed.len()/self.blocksize()) {
-            self.mac_state = self.mac_block(
-                &crate::xor(&self.mac_data_unprocessed[i*self.blocksize()..(i+1)*self.blocksize()],
-                 &self.mac_state));
+        let mut blocks = input.chunks_exact(BLOCK);
+        for block in &mut blocks {
+            self.mac_absorb(block.try_into().unwrap());
         }
-        self.mac_blocks_done += self.mac_data_unprocessed.len()/self.blocksize();
-        self.mac_data_unprocessed = self.mac_data_unprocessed.split_off(self.blocksize()*(self.mac_data_unprocessed.len()/self.blocksize()));
+        self.mac_data_unprocessed.extend_from_slice(blocks.remainder());
     }
 
     /// The tag as the message stands, **zero padded to at least two
@@ -440,17 +464,20 @@ impl Mac for GostCrypto {
             return self.mac_state.to_vec();
         }
 
-        let mut state = self.mac_state.to_vec();
+        let mut state: [u8; 8] = self.mac_state[..].try_into().unwrap();
         if partial {
-            let mut data = self.mac_data_unprocessed.to_owned();
-            data.resize(self.blocksize(), 0);
-            state = self.mac_block(&crate::xor(&data, &state));
+            let mut data = [0u8; 8];
+            data[..self.mac_data_unprocessed.len()].copy_from_slice(&self.mac_data_unprocessed);
+            for (d, s) in data.iter_mut().zip(&state) {
+                *d ^= s;
+            }
+            state = self.mac_block(&data);
         }
         if blocks == 1 {
-            state = self.mac_block(&crate::xor(&vec![0u8; self.blocksize()],
-                                               &state));
+            // The zero block XORed with the state is the state.
+            state = self.mac_block(&state);
         }
-        state
+        state.to_vec()
     }
 }
 #[cfg(test)]

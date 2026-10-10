@@ -28,7 +28,9 @@ processor without AES-NI the library falls back to the portable code, the
 row reports as before, and the run fails - correctly, since the claim
 does not hold there.
 
-Needs valgrind, and nothing else. No network.
+Needs valgrind and binutils - objdump and addr2line for the division
+scan, and c++filt to read the names a valgrind older than 3.20 leaves
+mangled. No network.
 """
 
 import os
@@ -124,7 +126,15 @@ CASES = [
                          # inlined here would hide behind them.
                          "index<u8>", "to_vec<u8, alloc::alloc::Global>",
                          "alloc::raw_vec::RawVecInner<A>::try_allocate_in", "alloc",
-                         "malloc", "memmove", "unlikely", "UnknownInlinedFun"},
+                         "malloc", "memmove", "unlikely", "UnknownInlinedFun",
+                         # The allocator's own size test, which a valgrind
+                         # without the inlined frame's name reports under
+                         # the allocator's symbol rather than `alloc`.
+                         "__rustc::__rdl_alloc",
+                         # The harness's side: the branch on success and
+                         # the message's free, both of the output. Its own
+                         # function so that neither is reported as `run`.
+                         "ct_bignum::oaep_output"},
      "the one branch on the folded verdict - success or failure, which "
      "the caller learns anyway - and the message's length, the "
      "separator's position, as the returned vector is sliced, allocated, "
@@ -237,6 +247,51 @@ CASES = [
      "the nonce-below-the-order test that chooses the base point's table. "
      "The field arithmetic and the nonce's magnitude are gone - k*G runs "
      "on ec::fixed and the nonce never becomes a BigUint."),
+    # GOST R 34.10-2012 signing, on the same path as ECDSA: the nonce
+    # from `next_bytes` into a Secret, k*G on ec::fixed, and
+    # `s = r*d + k*e` in the Montgomery domain over n. It ran `r*d` and
+    # `k*e` through BigUint's Knuth division - the private key and the
+    # nonce as dividends, on every signature - under a comment calling
+    # it the constant-time path, and had no row here, which is how that
+    # survived. What the row names is the ECDSA set, plus one thing of
+    # its own.
+    ("gost_sign", {
+        # The same sites as ecdsa_sign, argued there: the two folded
+        # range tests (the key's once, the nonce's per candidate) and
+        # the `unmask` they go through, the publication boundary for
+        # the nonce's point and for r and s, the key's limb count, and
+        # the base-point-table choice.
+        "allcrypt::ec::gost3410::<impl allcrypt::ec::Curve>::gost_sign",
+        "unmask",
+        "allcrypt::ec::fixed::publish",
+        "normalise", "UnknownInlinedFun",
+        "cmp",
+        "is_some_and<core::cmp::Ordering, fn(core::cmp::Ordering) -> bool>",
+        "allcrypt::ec::Curve::scalar_mul_secret_bytes",
+        # **Streebog's table lookups, on the private key.** RFC 6979
+        # derives the nonce with HMAC over `int2octets(x)`, and the
+        # hash here is Streebog, whose `lps` is a 256 entry table read
+        # once per byte of state. The byte selecting the entry is a
+        # function of the key, so the index is secret: a cache-timing
+        # channel in the hash function rather than in the signer, of
+        # the kind the AES rows measure. ecdsa_sign does not show it
+        # because SHA-256 has no data-indexed table. Closing it means a
+        # Streebog without table lookups on secret input; the row
+        # names it so that a regression in the signer cannot hide
+        # behind it. **Status: open** - the hash, not the signature
+        # equation.
+        "lps", "allcrypt::hash_functions::streebog::lps",
+        # The same table read with `lps` inlined into its one caller,
+        # `xlps`, which is the name some toolchains report it under
+        # (streebog.rs's `lps` line, through `xlps`).
+        "allcrypt::hash_functions::streebog::xlps",
+     },
+     "the ECDSA set - the rejection tests, the publication of the "
+     "nonce's point and of r and s, the key's limb count and the "
+     "base-point-table choice - and Streebog's S-box table indexed by "
+     "bytes of the private key inside the RFC 6979 HMAC chain, which is "
+     "open and belongs to the hash. The signing equation and the nonce's "
+     "magnitude are gone from the list."),
 
     # ---- ML-KEM ------------------------------------------------------
     #
@@ -403,6 +458,138 @@ REPORT = re.compile(r"^==\d+== [A-Z]")
 FRAME = re.compile(r"^==\d+==\s+at 0x[0-9A-Fa-f]+: (.+) \((?:[^()]*:\d+|in [^()]*)\)\s*$")
 
 
+# **One function, two spellings.** rustc demangles a method one of two
+# ways depending on the symbol-mangling scheme the toolchain uses: the
+# legacy scheme writes `allcrypt::ec::ecdsa::<impl allcrypt::ec::Curve>::sign`
+# (the module the `impl` block sits in, then the type), and the v0 scheme
+# writes `<allcrypt::ec::Curve>::sign::<allcrypt::hash_functions::sha2::SHA256>`
+# (the type, then the method, then its generic arguments). A toolchain
+# that changed scheme turned every method name in this table into a
+# "new" leak - `rsa_private`, `dh_shared` and `ecdsa_sign` all failed on
+# the same sites they name, with nothing in the library changed - while
+# free functions such as `normalise` and `unmask`, which both schemes
+# spell alike, kept matching. Both sides of every comparison go through
+# `canonical`, so a row is written once and holds under either.
+IMPL_BLOCK = re.compile(r"^(?:[\w:]+::)?<impl ([^<> ]+)>::(.+)$")
+BARE_TYPE = re.compile(r"^<([^<> ]+)>::(.+)$")
+
+
+# **A valgrind that cannot demangle.** valgrind 3.18 (Ubuntu 22.04's)
+# predates the v0 mangling scheme and prints those symbols raw -
+# `_RNvNtNtCs5vfiX6lVPxq_8allcrypt2ec5fixed7publish` for
+# `allcrypt::ec::fixed::publish` - so on such a machine no name in this
+# table could match, and every row that names sites failed while the
+# report counts were identical to a newer valgrind's. binutils, which the
+# division scan already needs, has a demangler that reads both schemes;
+# anything still mangled after it is a reason to stop, not a leak.
+MANGLED = re.compile(r"^_(?:R|ZN)[0-9A-Za-z_$.]+$")
+CRATE_HASH = re.compile(r"\[[0-9a-f]{16}\]")
+LEGACY_HASH = re.compile(r"::h[0-9a-f]{16}$")
+
+
+def demangled(names):
+    """`{name: readable name}` for every name in `names`; a name valgrind
+    already demangled maps to itself."""
+    raw = sorted(name for name in names if MANGLED.match(name))
+    result = {name: name for name in names}
+    if not raw:
+        return result
+    if shutil.which("c++filt") is None:
+        sys.exit("ct_check: valgrind printed mangled Rust names ({}) and "
+                 "c++filt (binutils) is not installed to read them."
+                 .format(raw[0]))
+    out = subprocess.run(["c++filt"], input="\n".join(raw) + "\n",
+                         capture_output=True, text=True, check=True).stdout.splitlines()
+    for name, readable in zip(raw, out):
+        readable = LEGACY_HASH.sub("", CRATE_HASH.sub("", readable.strip()))
+        if MANGLED.match(readable):
+            sys.exit("ct_check: valgrind printed {} mangled, and this c++filt "
+                     "cannot demangle it either. A valgrind of 3.20 or later, "
+                     "or binutils 2.37 or later, reads Rust's v0 symbols."
+                     .format(name))
+        result[name] = readable
+    return result
+
+
+def strip_trailing_generics(name):
+    """`name` without a final `<...>` or `::<...>`, matched by counting
+    brackets from the end. A regular expression cannot do it: a generic
+    argument can be `fn(Ordering) -> bool`, whose `->` is not a bracket."""
+    if not name.endswith(">"):
+        return name
+    depth = 0
+    i = len(name) - 1
+    while i >= 0:
+        ch = name[i]
+        if ch == ">" and not (i > 0 and name[i - 1] == "-"):
+            depth += 1
+        elif ch == "<":
+            depth -= 1
+            if depth == 0:
+                head = name[:i]
+                if head.endswith("::"):
+                    head = head[:-2]
+                # `<Type>::method` is not trailing generics: an opening
+                # bracket at the very start belongs to the path.
+                return head if head else name
+        i -= 1
+    return name
+
+
+def canonical(name):
+    """`Type::method` for a method in either demangling, with any trailing
+    generic arguments dropped; anything else unchanged. A trait method,
+    `<Type as Trait>::method`, is spelled the same way by both schemes
+    and is left alone."""
+    name = strip_trailing_generics(name.strip())
+    for pattern in (IMPL_BLOCK, BARE_TYPE):
+        match = pattern.match(name)
+        if match:
+            return "{}::{}".format(match.group(1), match.group(2))
+    return name
+
+
+def canonical_self_test():
+    """The pairs this was written for, so a third spelling - or an edit
+    that breaks one of these - fails here rather than as a leak report
+    nobody can explain."""
+    same = [
+        ("allcrypt::ec::ecdsa::<impl allcrypt::ec::Curve>::sign",
+         "<allcrypt::ec::Curve>::sign::<allcrypt::hash_functions::sha2::SHA256>"),
+        ("allcrypt::publickey_ciphers::rsa::RsaPrivateKey::raw",
+         "<allcrypt::publickey_ciphers::rsa::RsaPrivateKey>::raw"),
+        ("allcrypt::ec::Curve::scalar_mul_secret_bytes",
+         "<allcrypt::ec::Curve>::scalar_mul_secret_bytes"),
+        ("is_some_and<core::cmp::Ordering, fn(core::cmp::Ordering) -> bool>",
+         "is_some_and::<core::cmp::Ordering, fn(core::cmp::Ordering) -> bool>"),
+    ]
+    different = [
+        ("allcrypt::ec::Curve::sign", "allcrypt::ec::Curve::gost_sign"),
+        ("<allcrypt::ec::Curve as core::fmt::Debug>::fmt", "allcrypt::ec::Curve::fmt"),
+        ("normalise", "unmask"),
+    ]
+    if shutil.which("c++filt") is not None:
+        # Symbols as valgrind 3.18 prints them, from a real run.
+        same += [
+            ("allcrypt::ec::ecdsa::<impl allcrypt::ec::Curve>::sign",
+             demangled(["_RINvMs0_NtNtCs5vfiX6lVPxq_8allcrypt2ec5ecdsaNtB8_5Curve4sign"
+                        "NtNtNtBa_14hash_functions4sha26SHA256ECsjQDPo3FSvkt_9ct_bignum"])
+             ["_RINvMs0_NtNtCs5vfiX6lVPxq_8allcrypt2ec5ecdsaNtB8_5Curve4sign"
+              "NtNtNtBa_14hash_functions4sha26SHA256ECsjQDPo3FSvkt_9ct_bignum"]),
+            ("allcrypt::ec::fixed::publish",
+             demangled(["_RNvNtNtCs5vfiX6lVPxq_8allcrypt2ec5fixed7publish"])
+             ["_RNvNtNtCs5vfiX6lVPxq_8allcrypt2ec5fixed7publish"]),
+        ]
+    for a, b in same:
+        if canonical(a) != canonical(b):
+            sys.exit("ct_check: {!r} and {!r} name one function and no longer "
+                     "match ({!r} against {!r}).".format(a, b, canonical(a), canonical(b)))
+    for a, b in different:
+        if canonical(a) == canonical(b):
+            sys.exit("ct_check: {!r} and {!r} are different functions and "
+                     "now match as {!r}.".format(a, b, canonical(a)))
+
+
 def build():
     """Release build with debug info, so the reports name a line."""
     env = dict(os.environ, CARGO_PROFILE_RELEASE_DEBUG="2")
@@ -440,7 +627,8 @@ def sites(text):
         if match:
             found.add(match.group(1).strip())
             collecting = False        # only the innermost frame
-    return found
+    readable = demangled(found)
+    return {readable[name] for name in found}
 
 
 def run(case):
@@ -630,6 +818,7 @@ def division_scan():
 def main():
     if shutil.which("valgrind") is None:
         sys.exit("ct_check: valgrind is not installed. See docs/building.md.")
+    canonical_self_test()
     build()
     list_check()
     self_test()
@@ -653,17 +842,23 @@ def main():
         if isinstance(expectation, set):
             # It must leak - a clean result here means the harness stopped
             # looking - and every place it leaks must be named.
-            extra = sites(text) - expectation
+            named = {canonical(name) for name in expectation}
+            extra = {name for name in sites(text) if canonical(name) not in named}
             ok = count > 0 and not extra
-            wanted = "only the named"
+            label = "only the named"
         else:
             ok = (LEAKS if count else CLEAN) == expectation
-            wanted = expectation
+            label = expectation
         print("{:<22} {:>3} report(s)  expected {:<16} {}"
-              .format(case, count, wanted, "ok" if ok else "FAIL"))
+              .format(case, count, label, "ok" if ok else "FAIL"))
         if not ok:
             failures.append((case, expectation, count, why, text, extra))
         elif wanted and count:
+            # A row that passes shows its reports only when it was asked
+            # for by name. `wanted` once doubled as the label above, so by
+            # here it was always a non-empty string and a whole-table run
+            # printed every passing row's reports - some fourteen thousand
+            # lines, with the verdicts lost among them.
             print(text)
 
     if failures:

@@ -85,7 +85,12 @@ impl RsaPublicKey {
 /// The private half. Carries the CRT parameters because that is where the
 /// speedup is - a CRT private operation is about four times faster than the
 /// straightforward one, since it exponentiates two half-size values.
-#[derive(Clone, Debug)]
+///
+/// `Debug` is by hand and prints the public half only. `BigUint` derives
+/// `Debug`, so a derived impl here would print `p`, `q`, `d` and the CRT
+/// parameters - undoing the care `Montgomery` takes to print nothing but
+/// its limb count.
+#[derive(Clone)]
 pub struct RsaPrivateKey {
     pub public: RsaPublicKey,
     d: BigUint,
@@ -116,12 +121,28 @@ impl RsaPrivateKey {
     /// caller: a key file with inconsistent CRT parameters is a known way to
     /// make an implementation leak, and deriving them means there is nothing
     /// to be inconsistent with.
+    ///
+    /// **The primes must be the same width in 64-bit limbs.** PKCS#1 does
+    /// not require balanced primes, but the private operation here
+    /// reduces the blinded input modulo each prime at that prime's fixed
+    /// width, and `reduce_wide` needs `n < p * 2^(64 kp)` and `n < q *
+    /// 2^(64 kq)` - which together mean `kp == kq`. Every generated key
+    /// and every key a mainstream tool writes satisfies that; one that
+    /// does not is refused here, by name, rather than failing the
+    /// round-trip probe below with a message about limb widths.
     pub fn from_primes(p: BigUint, q: BigUint, e: BigUint) -> Result<RsaPrivateKey, String> {
         if p == q {
             return Err("The two primes must be different.".to_string());
         }
         if p.is_even() || q.is_even() || p.is_one() || q.is_one() {
             return Err("Both primes must be odd and greater than 1.".to_string());
+        }
+        if p.limbs().len() != q.limbs().len() {
+            return Err(format!(
+                "The two primes must be the same width in 64-bit limbs, and \
+                 these are {} and {} bits. The CRT private operation reduces \
+                 at each prime's fixed width, which an unbalanced key does \
+                 not fit.", p.bit_len(), q.bit_len()));
         }
 
         let one = BigUint::one();
@@ -265,9 +286,12 @@ impl RsaPrivateKey {
         // `p*q + q <= 2n` and one conditional subtraction finishes it - no
         // division by `n` is needed, which matters because the dividend
         // would have been the plaintext.
+        //
+        // The product is a `Secret` of `2*kn` limbs - wiped on drop, like
+        // every other intermediate here; with `m2` it is the plaintext.
         let product = h.resize(kn)?.mul_wide(&Secret::from_biguint(&self.q, kn)?);
-        let mut recombined = Secret::from_limbs(product[..kn].to_vec());
-        let high = product[kn..].iter().fold(0u64, |acc, &limb| acc | limb);
+        let mut recombined = Secret::from_limbs(product.limbs()[..kn].to_vec());
+        let high = product.limbs()[kn..].iter().fold(0u64, |acc, &limb| acc | limb);
         debug_assert_eq!(high, 0, "h*q must fit the modulus width");
         let (sum, carry) = recombined.add(&m2.resize(kn)?);
         recombined = mn.reduce_once(sum, carry);
@@ -342,6 +366,15 @@ impl RsaPrivateKey {
 
     pub fn crt_parameters(&self) -> (&BigUint, &BigUint, &BigUint) {
         (&self.dp, &self.dq, &self.qinv)
+    }
+}
+
+impl core::fmt::Debug for RsaPrivateKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RsaPrivateKey")
+            .field("public", &self.public)
+            .field("bits", &self.bits())
+            .finish_non_exhaustive()
     }
 }
 
@@ -521,8 +554,31 @@ pub fn decrypt_pkcs1v15(key: &RsaPrivateKey, ciphertext: &[u8]) -> Result<Vec<u8
         .to_bytes_be_padded(size)
         .map_err(|_| FAILURE.to_string())?;
 
-    // Gather every condition before branching on any of them, so the shape
-    // of the code does not itself describe which check failed.
+    pkcs1v15_unpad(&block)
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| FAILURE.to_string())
+}
+
+/// EME-PKCS1-v1_5 decoding (RFC 8017 section 7.2.2): the message out of
+/// `0x00 || 0x02 || PS || 0x00 || M`, or `None` for any block that is not
+/// of that shape. Shared by `decrypt_pkcs1v15` here and by
+/// `elgamal::decrypt_pkcs1v15`, which wraps the same padding around a
+/// different trapdoor; one copy means one place for the checks to be.
+///
+/// `None` says nothing about which check failed, and the caller turns it
+/// into its one uniform error. Every condition is gathered before
+/// anything branches on it, so the shape of the code does not itself
+/// describe the failure.
+///
+/// A block shorter than eleven bytes cannot hold the two header bytes,
+/// eight bytes of PS and the separator, so it is refused before anything
+/// is indexed. The block is the modulus width, and a modulus that small
+/// is reachable: `DhGroup::new` accepts any odd `p >= 5`, so an ElGamal
+/// key over `p = 7` decrypts to a one byte block.
+pub(crate) fn pkcs1v15_unpad(block: &[u8]) -> Option<&[u8]> {
+    if block.len() < 11 {
+        return None;
+    }
     let mut good = (block[0] == 0x00) as u8 & (block[1] == 0x02) as u8;
     let mut separator = 0usize;
     let mut found = 0u8;
@@ -537,9 +593,9 @@ pub fn decrypt_pkcs1v15(key: &RsaPrivateKey, ciphertext: &[u8]) -> Result<Vec<u8
     good &= (separator >= 10) as u8;
 
     if good != 1 {
-        return Err(FAILURE.to_string());
+        return None;
     }
-    Ok(block[separator + 1..].to_vec())
+    Some(&block[separator + 1..])
 }
 
 // ------------------------------------------------------------------ OAEP ---
@@ -1368,6 +1424,34 @@ mod tests {
                    "decryption errors must not distinguish failures: {:?}", messages);
     }
 
+    /// The decoder shared with ElGamal, on blocks no encryptor produces.
+    #[test]
+    fn test_pkcs1v15_unpad_refuses_a_block_too_short_to_index() {
+        // The decoder indexed `block[0]` and `block[1]` before anything
+        // had checked the width. No RSA key can reach that - `from_primes`
+        // round-trips 0xC0FFEE, so the modulus is at least four bytes -
+        // but ElGamal over a tiny group can, and the same code was
+        // duplicated there. Ten bytes is the largest width that cannot
+        // hold the header, eight bytes of PS and the separator.
+        for width in 0..11usize {
+            let mut block = vec![0xaau8; width];
+            if width >= 2 {
+                block[0] = 0x00;
+                block[1] = 0x02;
+            }
+            assert!(pkcs1v15_unpad(&block).is_none(),
+                    "a {width} byte block was accepted");
+        }
+        // Eleven is the floor: header, eight bytes of PS, separator and
+        // an empty message.
+        let mut block = vec![0x00, 0x02];
+        block.extend(std::iter::repeat_n(0xaau8, 8));
+        block.push(0x00);
+        assert_eq!(pkcs1v15_unpad(&block), Some(&[][..]));
+        block.push(0x41);
+        assert_eq!(pkcs1v15_unpad(&block), Some(&[0x41u8][..]));
+    }
+
     // -------------------------------------------------------------- OAEP ---
 
     /// OAEP round trips at every length the 512-bit test key takes, under
@@ -1551,6 +1635,61 @@ mod tests {
         assert!(RsaPublicKey::new(BigUint::from_u64(15), BigUint::one()).is_err());
         assert!(RsaPublicKey::new(BigUint::from_u64(15), BigUint::from_u64(4)).is_err());
         assert!(RsaPublicKey::new(BigUint::from_u64(16), BigUint::from_u64(3)).is_err());
+    }
+
+    /// Unequal prime widths are refused up front, with the reason.
+    ///
+    /// `raw` reduces the blinded input modulo each prime at that
+    /// prime's limb width, so a key whose primes differ in limb count
+    /// cannot be used - and was refused by the construction probe with
+    /// "Value needs 5 limbs, width is 4.", a message about an internal
+    /// buffer. Every test key and every generated key has balanced
+    /// primes, so the refusal was never read. The check is on limbs,
+    /// not bits: two primes of different bit lengths in the same limb
+    /// count are a key.
+    #[test]
+    fn test_primes_of_different_limb_widths_are_refused_by_name() {
+        let e = BigUint::from_u64(65537);
+        let two_limbs = next_prime(&BigUint::from_hex("c0ffee00c0ffee00c0ffee00c0ffee01").unwrap());
+        let three_limbs = next_prime(&BigUint::from_hex("c0ffee00c0ffee00c0ffee00c0ffee00c1").unwrap());
+        assert_eq!((two_limbs.limbs().len(), three_limbs.limbs().len()), (2, 3));
+        let error = RsaPrivateKey::from_primes(two_limbs.clone(), three_limbs, e.clone())
+            .unwrap_err();
+        assert!(error.contains("same width in 64-bit limbs"), "{error}");
+
+        // Different bit lengths in the same limb count are fine.
+        let shorter = next_prime(&BigUint::from_hex("c0ffee00c0ffee01").unwrap()
+                                 .add(&BigUint::one().shl(64)));
+        assert_eq!(shorter.limbs().len(), 2);
+        assert!(shorter.bit_len() < two_limbs.bit_len());
+        let key = RsaPrivateKey::from_primes(two_limbs, shorter, e).unwrap();
+        let probe = BigUint::from_u64(0xBEEF);
+        assert_eq!(key.public.raw(&key.raw(&probe).unwrap()).unwrap(), probe);
+    }
+
+    #[test]
+    fn test_debug_prints_the_public_half_only() {
+        // `RsaPrivateKey` derived `Debug`, and `BigUint` derives it too,
+        // so `{:?}` on a key - a `panic!("{:?}", key)` in a test, an
+        // `unwrap_err` on something holding one, a Python `repr` - wrote
+        // `p`, `q`, `d`, `dp`, `dq` and `qinv` to the log. `Montgomery`
+        // prints its limb count only, for exactly this reason, and
+        // `DsaPrivateKey` and `ElGamalPrivateKey` derive no `Debug` at
+        // all; RSA was the odd one out. Nothing checked the format
+        // because nothing had a reason to read it.
+        let key = test_key();
+        let shown = format!("{key:?}");
+        assert!(shown.contains(&format!("{:?}", key.public)),
+                "the public key is not in {shown}");
+        let (p, q) = key.primes();
+        let (dp, dq, qinv) = key.crt_parameters();
+        for (name, secret) in [("p", p), ("q", q), ("d", key.private_exponent()),
+                               ("dp", dp), ("dq", dq), ("qinv", qinv)] {
+            let text = format!("{secret:?}");
+            assert!(!shown.contains(&text), "{name} is in {shown}");
+            // The derived form's field name is as telling as its value.
+            assert!(!shown.contains(&format!("{name}:")), "{name} is named in {shown}");
+        }
     }
 
     /// Generation is slow, so this runs at the smallest allowed size. The

@@ -78,7 +78,7 @@ pub fn pbkdf2<H: HashFunction + Clone>(hash: H, password: &[u8], salt: &[u8],
     // message this short.
     let prf = Hmac::new(hash, password);
 
-    let mut out = Vec::with_capacity(length);
+    let mut out = crate::kdf::output_buffer(length, "PBKDF2")?;
     let mut block = 1u32;
     while out.len() < length {
         // U_1 = PRF(P, S || INT(i)), with INT big endian and i counting
@@ -259,19 +259,31 @@ pub fn pkcs12_bmp_password(password: &str) -> Vec<u8> {
 ///
 /// `password` must already be a BMPString; see `pkcs12_bmp_password`.
 ///
+/// The RFC's `v` is the hash's input block, 64 bytes for MD5, SHA-1 and
+/// SHA-256 and 128 for SHA-384/512 - **and 64 for MD2**, by the table in
+/// Appendix B.2, even though MD2's compression function takes 16 byte
+/// blocks (which is what `block_size()` reports, correctly, for HMAC).
+/// So `v` is the block size with a floor of 64 bytes, and
+/// `pkcs12_kdf(Md2::new(&[]), ..)` is the RFC's construction rather
+/// than a self-consistent one that agrees with nobody.
+///
 /// # Errors
-/// Zero iterations.
+/// Zero iterations, an output past `kdf::MAX_OUTPUT_BYTES`, or a hash
+/// with no fixed output length (a SHAKE), which has no `u`.
 pub fn pkcs12_kdf<H: HashFunction + Clone>(hash: H, password: &[u8], salt: &[u8],
                                            purpose: Pkcs12Purpose, iterations: u32,
                                            length: usize) -> Result<Vec<u8>, String> {
     if iterations == 0 {
         return Err("The PKCS#12 KDF needs at least one iteration.".to_string());
     }
+    let u = hash.digest_len();      // the RFC's u, the hash output
+    if u == 0 {
+        return Err("The PKCS#12 KDF needs a hash with a fixed output length.".to_string());
+    }
+    let v = hash.block_size().max(64);      // the RFC's v, with the MD2 floor
     if length == 0 {
         return Ok(Vec::new());
     }
-    let u = hash.digest_len();      // the RFC's u, the hash output
-    let v = hash.block_size();      // the RFC's v, the hash block
 
     // Step 1: D, v bytes all equal to the purpose byte.
     let d = vec![purpose.id(); v];
@@ -288,7 +300,7 @@ pub fn pkcs12_kdf<H: HashFunction + Clone>(hash: H, password: &[u8], salt: &[u8]
     let mut i_blocks = s;
     i_blocks.extend_from_slice(&p);
 
-    let mut out = Vec::with_capacity(length);
+    let mut out = crate::kdf::output_buffer(length, "The PKCS#12 KDF")?;
     while out.len() < length {
         // Step 6a: A = H^r(D || I).
         let mut round = hash.clone();
@@ -554,6 +566,21 @@ mod tests {
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     }
 
+    /// `pbkdf2` reserved its whole output with `Vec::with_capacity`
+    /// before the first HMAC, and the only ceiling was RFC 8018's
+    /// `(2^32 - 1) * hLen` - 137 GB for SHA-256 - so `dklen = 10^11`
+    /// from Python aborted the process at the allocator. The existing
+    /// tests asked for a few dozen bytes. The request here is refused
+    /// by the cap before any allocation.
+    #[test]
+    fn test_an_oversized_output_is_an_error_not_an_abort() {
+        let reason = pbkdf2(sha2::SHA256::new(&[]), b"pw", b"salt", 1,
+                            crate::kdf::MAX_OUTPUT_BYTES + 1).unwrap_err();
+        assert!(reason.contains("at most"), "{reason}");
+        assert!(pbkdf2(sha2::SHA256::new(&[]), b"pw", b"salt", 1, 100_000_000_000)
+                    .is_err());
+    }
+
     /// RFC 6070, the PBKDF2-HMAC-SHA-1 test vectors.
     ///
     /// The fifth vector of the RFC (c = 16,777,216) is deliberately not
@@ -724,6 +751,35 @@ mod tests {
         }
         assert!(pbkdf2_recommended_iterations("no such hash") >= 600_000,
                 "an unknown hash should get a conservative answer, not a weak one");
+    }
+
+    /// `pkcs12_kdf` took the RFC's `v` from `block_size()`, which for
+    /// MD2 is 16 - right for HMAC, and not what RFC 7292 Appendix B.2
+    /// fixes for the KDF (512 bits for MD2 as for MD5 and SHA-1). Only
+    /// SHA-1 is used in the tree, so the generic signature's MD2 path
+    /// was a construction that agreed with nobody. The expected value
+    /// is the RFC's own first step written out with v = 64: D is 64
+    /// purpose bytes, and S and P are repeated to 64 byte blocks.
+    #[test]
+    fn test_pkcs12_kdf_uses_a_64_byte_block_for_md2() {
+        use crate::hash_functions::md2::Md2;
+        let password = pkcs12_bmp_password("pw");
+        let salt = [7u8; 8];
+        let by_hand = {
+            let mut round = Md2::new(&[]);
+            round.update(&[Pkcs12Purpose::Key.id(); 64]);
+            round.update(&repeat_to_blocks(&salt, 64));
+            round.update(&repeat_to_blocks(&password, 64));
+            round.digest()
+        };
+        let got = pkcs12_kdf(Md2::new(&[]), &password, &salt, Pkcs12Purpose::Key, 1, 16)
+            .unwrap();
+        assert_eq!(got, by_hand);
+        // And the floor leaves SHA-1's 64 and SHA-512's 128 alone.
+        assert_eq!(sha2::SHA512::new(&[], 512).block_size().max(64), 128);
+        // A hash with no fixed output length has no `u`.
+        let shake = crate::hash_functions::keccak::Keccak::shake(128, 0).unwrap();
+        assert!(pkcs12_kdf(shake, &password, &salt, Pkcs12Purpose::Key, 1, 16).is_err());
     }
 
     /// Equal salt halves would make 3DES's first and third keys equal;

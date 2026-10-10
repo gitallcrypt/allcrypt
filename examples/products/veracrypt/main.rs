@@ -589,16 +589,28 @@ fn open(volume: &[u8], options: &Options) -> Result<Opened, String> {
 impl Opened {
     /// Where the data area starts, in bytes, and the sector number the
     /// first data sector's IV is computed from.
-    fn data_area(&self, volume_len: usize) -> (usize, u64) {
+    ///
+    /// The header's fields are under the password, so a wrong one is
+    /// never seen here; a volume made to be opened with a known
+    /// password can still carry an offset outside itself, and that is
+    /// refused rather than sliced.
+    fn data_area(&self, volume_len: usize) -> Result<(usize, u64), String> {
         let h = &self.header;
         let legacy_hidden = self.header_offset + 1536 == volume_len;
+        let outside = || format!("The header puts the data outside the {volume_len} byte \
+                                  volume.");
         let offset = if legacy_hidden {
-            volume_len - h.hidden_volume_size as usize - 1536
+            usize::try_from(h.hidden_volume_size).ok()
+                .and_then(|size| volume_len.checked_sub(size)?.checked_sub(1536))
+                .ok_or_else(outside)?
         } else if h.data_offset == 0 {
             512
         } else {
-            h.data_offset as usize
+            usize::try_from(h.data_offset).map_err(|_| outside())?
         };
+        if offset > volume_len {
+            return Err(outside());
+        }
         // XTS numbers data units from the start of the volume; LRW
         // from the start of the data; TrueCrypt's CBC from the header's
         // data offset field, 512 when it is empty - so a legacy hidden
@@ -609,11 +621,11 @@ impl Opened {
             Mode::Cbc | Mode::OuterCbc => (if h.data_offset == 0 { 512 }
                                            else { h.data_offset } / UNIT as u64),
         };
-        (offset, first_iv)
+        Ok((offset, first_iv))
     }
 
     fn decrypt_data(&self, volume: &[u8], limit: Option<usize>) -> Result<Vec<u8>, String> {
-        let (offset, first_iv) = self.data_area(volume.len());
+        let (offset, first_iv) = self.data_area(volume.len())?;
         // Headers before version 3 record no size: the data runs to
         // the end of the volume.
         let size = match (self.header.data_size, self.header.volume_size) {
@@ -625,7 +637,9 @@ impl Opened {
             length = length.min(limit);
         }
         length -= length % UNIT;
-        let mut data = volume[offset..offset + length].to_vec();
+        let mut data = volume.get(offset..offset + length).ok_or_else(|| {
+            format!("The data area, {length} bytes at {offset}, is not in the volume.")
+        })?.to_vec();
         let keys = &self.header.keys;
         match self.ea.mode {
             Mode::Xts => xts_units(&self.ea, keys, first_iv, &mut data, false)?,
@@ -796,7 +810,7 @@ fn run(args: &[String]) -> Result<(), String> {
                       sector {}, flags {:#x}{}",
                      String::from_utf8_lossy(&h.magic), h.version, h.required_version,
                      opened.kdf.describe(pim), opened.ea.name(),
-                     opened.data_area(volume.len()).0,
+                     opened.data_area(volume.len())?.0,
                      if h.data_size > 0 { h.data_size } else { h.volume_size },
                      h.sector_size, h.flags,
                      if h.hidden_volume_size > 0 { "; holds a hidden volume" } else { "" });
@@ -879,6 +893,38 @@ mod tests {
         let backup = &volume[size - DATA_START..];
         assert!(try_header(backup, &options(b"pw", pim, kdf.name, truecrypt)).unwrap().is_some());
         assert!(open(&volume, &options(b"pW", pim, kdf.name, truecrypt)).is_err(), "{what}");
+    }
+
+    /// A header's data offset, or a legacy hidden volume's size, was
+    /// turned into a slice of the volume without a check: an offset past
+    /// the end made `volume[offset..offset]` panic, and a hidden size
+    /// larger than the volume underflowed. The header is under the
+    /// password, so every fixture that opens has its data inside the
+    /// volume; the case is a volume handed over with its password.
+    #[test]
+    fn test_a_data_area_outside_the_volume_is_refused() {
+        let ea = EAS.iter().find(|e| e.mode == Mode::Xts).unwrap();
+        let kdf = kdf_named("sha512", false);
+        let params = Format { ea: *ea, kdf, pim: 0, truecrypt: true };
+        let size = 2 * DATA_START + 8192;
+        let (volume, _) = format(&params, b"pw", &[], size, &[7u8; 3000], &mut counter_stream(1))
+            .unwrap();
+        let mut opened = open(&volume, &options(b"pw", 0, kdf.name, true)).unwrap();
+        assert!(opened.decrypt_data(&volume, None).is_ok());
+        for offset in [size as u64 + 1, size as u64 + 512, u64::MAX] {
+            opened.header.data_offset = offset;
+            let error = opened.decrypt_data(&volume, None).err().unwrap_or_else(|| panic!("{offset}"));
+            assert!(error.contains("outside"), "{offset}: {error}");
+        }
+        // The last 1536 bytes of a legacy hidden volume are its header,
+        // and the data lies `hidden_volume_size` before them.
+        opened.header.data_offset = 0;
+        opened.header_offset = size - 1536;
+        opened.header.hidden_volume_size = size as u64;
+        let error = opened.decrypt_data(&volume, None).err().unwrap();
+        assert!(error.contains("outside"), "{error}");
+        opened.header.hidden_volume_size = 4096;
+        assert_eq!(opened.data_area(size).unwrap().0, size - 1536 - 4096);
     }
 
     /// Every XTS algorithm, cascades included, written and read back

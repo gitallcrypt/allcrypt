@@ -302,7 +302,14 @@ impl Params {
             return Err(format!("AES with {}-byte blocks and {}-bit keys.", params.block_size,
                                params.key_bits));
         }
-        hash_name(&params.hash)?;
+        // The hash size is how many bytes of the verifier and of the
+        // HMAC are compared, so it must be the hash's own length: a
+        // smaller one compares less, and zero compares nothing.
+        let digest_len = digest(hash_name(&params.hash)?, &[])?.len();
+        if params.hash_size != digest_len {
+            return Err(format!("hashSize is {} and {} produces {digest_len} bytes.",
+                               params.hash_size, params.hash));
+        }
         Ok(params)
     }
 

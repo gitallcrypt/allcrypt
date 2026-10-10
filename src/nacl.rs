@@ -133,10 +133,7 @@ impl Keystream {
     fn apply(&mut self, buf: &mut [u8]) -> Result<(), String> {
         match self {
             Keystream::Salsa(cipher) => cipher.apply(buf).map_err(|(_, e)| e),
-            Keystream::Chacha(cipher) => {
-                cipher.apply(buf);
-                Ok(())
-            }
+            Keystream::Chacha(cipher) => cipher.apply(buf).map_err(|(_, e)| e),
         }
     }
 }

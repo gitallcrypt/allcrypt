@@ -6,7 +6,10 @@ use super::HashFunction;
 pub struct MD5 {
     state: [u32; 4],
     buffer: BlockBuffer<64>,
-    len: usize,
+    /// The message length **in bits**, as the padding carries it. A
+    /// `u64` on every target: a `usize` wraps at 2^32 bits (512 MiB) on
+    /// a 32-bit one, which is a wrong digest with no error.
+    len: u64,
 }
 
 const A: u32 = 0x67452301;
@@ -89,7 +92,7 @@ impl HashFunction for MD5 {
         16
     }
     fn update(&mut self, input: &[u8]) {
-        self.len += input.len() * 8;
+        self.len = self.len.wrapping_add(input.len() as u64 * 8);
         // The buffer is moved out for the call so the closure can borrow
         // the rest of `self`.
         let mut buffer = core::mem::take(&mut self.buffer);
@@ -109,7 +112,7 @@ impl HashFunction for MD5 {
         let mut unprocessed_data = self.buffer.buffered().to_vec();
         unprocessed_data.push(0x80);
         unprocessed_data.extend_from_slice(&vec![0; (64 + 56 - unprocessed_data.len()) % 64]);
-        unprocessed_data.extend_from_slice(&(self.len as u64).to_le_bytes());
+        unprocessed_data.extend_from_slice(&self.len.to_le_bytes());
         (self.state[0], self.state[1], self.state[2], self.state[3]) = self.process_block(&unprocessed_data);
         if unprocessed_data.len() > blocksize {
             (self.state[0], self.state[1], self.state[2], self.state[3]) = 
@@ -122,5 +125,28 @@ impl HashFunction for MD5 {
         result.extend_from_slice(&self.state[3].to_le_bytes());
         self.state = old_state;
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bit counter was a `usize`, so on a 32-bit target it wrapped
+    /// at 2^32 bits (512 MiB) and the `+=` overflowed in a debug build:
+    /// a wrong digest with no error past that length. No test ran on
+    /// such a target, and on a 64-bit one the two types agree for any
+    /// message that fits in memory. The check is on the type itself.
+    #[test]
+    fn test_the_bit_counter_is_64_bits_wide() {
+        let mut hash = MD5::new(&[]);
+        hash.update(&[0u8; 100]);
+        let bits: u64 = hash.len;
+        assert_eq!(bits, 800);
+        // And the counter is what the padding carries: the same bytes
+        // fed in two pieces give the same digest as one call.
+        let mut pieces = MD5::new(&[0u8; 37]);
+        pieces.update(&[0u8; 63]);
+        assert_eq!(pieces.digest(), hash.digest());
     }
 }

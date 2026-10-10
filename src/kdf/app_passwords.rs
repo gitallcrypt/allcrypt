@@ -167,8 +167,12 @@ fn encode64(input: &[u8], count: usize) -> String {
 /// begins with that setting.
 ///
 /// # Errors
-/// A setting that is not `$P$`/`$H$`, or whose cost character is outside
-/// phpass's accepted 7..=30 (an iteration count of 2^7 to 2^30).
+/// A setting that is not `$P$`/`$H$`, whose cost character is outside
+/// phpass's accepted 7..=30 (an iteration count of 2^7 to 2^30), or whose
+/// salt is not eight ASCII bytes. phpass writes the salt from its own
+/// base64 alphabet, so a multi-byte character there is a malformed
+/// stored string, and refusing it is also what keeps the twelve-byte
+/// setting prefix on a character boundary.
 pub fn phpass(password: &[u8], setting: &str) -> Result<String, String> {
     let s = setting.as_bytes();
     if s.len() < 12 || s[0] != b'$' || (s[1] != b'P' && s[1] != b'H') || s[2] != b'$' {
@@ -180,21 +184,28 @@ pub fn phpass(password: &[u8], setting: &str) -> Result<String, String> {
         return Err(format!("phpass's cost is 7 to 30, and this one is {cost_log2}."));
     }
     let salt = &s[4..12];
+    let prefix = match setting.get(..12) {
+        Some(prefix) if salt.iter().all(u8::is_ascii) => prefix,
+        _ => return Err("A phpass salt is eight ASCII characters.".to_string()),
+    };
     let mut hash = md5_of(&[salt, password]);
     for _ in 0..(1u32 << cost_log2) {
         hash = md5_of(&[&hash, password]);
     }
-    Ok(format!("{}{}", &setting[..12], encode64(&hash, 16)))
+    Ok(format!("{}{}", prefix, encode64(&hash, 16)))
 }
 
 /// Whether `password` produces the stored phpass hash, using its first
 /// twelve characters as the setting. `false` for a stored string phpass
 /// does not understand, so a parse failure cannot read as a match.
 pub fn phpass_verify(password: &[u8], stored: &str) -> bool {
-    if stored.len() < 12 {
+    // `get` rather than a byte-length check and a slice: a stored string
+    // from a database dump can hold a multi-byte character at byte 11,
+    // and slicing inside it would panic rather than report a mismatch.
+    let Some(setting) = stored.get(..12) else {
         return false;
-    }
-    match phpass(password, &stored[..12]) {
+    };
+    match phpass(password, setting) {
         Ok(h) => bytes_equal(h.as_bytes(), stored.as_bytes()),
         Err(_) => false,
     }
@@ -237,6 +248,26 @@ mod tests {
         assert!(phpass(b"x", "$P$0saltsalt").is_err());   // cost 0 < 7
         assert!(phpass(b"x", "$1$saltsalt").is_err());
         assert!(!phpass_verify(b"x", "not a hash"));
+    }
+
+    #[test]
+    fn test_phpass_refuses_a_multi_byte_character_inside_the_setting() {
+        // `phpass` sliced the setting at byte 12 and `phpass_verify`
+        // checked only the byte length before slicing the stored string
+        // the same way, so a stored hash with a two-byte character
+        // straddling byte 12 panicked with "not a char boundary" instead
+        // of failing. Every existing test used an ASCII salt, on which a
+        // byte index and a character index agree.
+        let setting = "$P$Bsaltsal\u{e9}";
+        assert_eq!(setting.len(), 13);
+        assert!(phpass(b"x", setting).is_err());
+        assert!(!phpass_verify(b"x", setting));
+        let stored = format!("{setting}{}", "0".repeat(21));
+        assert!(!phpass_verify(b"x", &stored));
+        // A multi-byte character after the setting is a mismatch, not a
+        // panic: the setting prefix itself is still ASCII.
+        let hash = phpass(b"secret", "$P$Bsaltsalt").unwrap();
+        assert!(!phpass_verify(b"secret", &format!("{}\u{e9}", &hash[..33])));
     }
 
     #[test]

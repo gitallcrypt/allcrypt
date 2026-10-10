@@ -234,14 +234,18 @@ impl Ticket {
         }
         let hash = reader.vector8().map_err(|e| e.describe())?;
         // Interned, because `Ticket::hash` is `&'static str` - the key
-        // schedule takes names by reference and the set is closed.
-        let hash = match hash {
-            b"sha256" => "sha256",
-            b"sha384" => "sha384",
-            other => return Err(format!(
-                "A stored ticket names hash {:?}, which is not one TLS 1.3 \
-                 uses.", String::from_utf8_lossy(other))),
-        };
+        // schedule takes names by reference and the set is closed. The
+        // set is **the one `tls13_hash_name` produces**, reached through
+        // its inverse, so this decoder accepts exactly what `encode`
+        // can write: a list kept here named SHA-256 and SHA-384 only,
+        // and a ticket from an RFC 9367 (Streebog-256) connection was
+        // written, stored, and refused on reload as "not one TLS 1.3
+        // uses".
+        let hash = core::str::from_utf8(hash).map_err(|_| format!(
+            "A stored ticket's hash name is not UTF-8: {:?}.", hash))?;
+        let hash = MacAlgorithm::for_tls13_hash(hash)
+            .and_then(crate::tls::handshake13::tls13_hash_name)
+            .map_err(|e| format!("A stored ticket names hash {:?}: {}", hash, e))?;
         let suite = reader.u16().map_err(|e| e.describe())?;
         let lifetime = reader.u32().map_err(|e| e.describe())?;
         let age_add = reader.u32().map_err(|e| e.describe())?;
@@ -683,6 +687,44 @@ mod tests {
         let back = Ticket::decode(&ancient.encode().unwrap()).unwrap();
         assert_eq!(back.issued_at, -86_400);
         assert_eq!(back.max_early_data, None);
+    }
+
+    /// A stored ticket round trips under **every** hash a TLS 1.3 suite
+    /// here can have, not only the two SHA-2 ones.
+    ///
+    /// What was wrong: `encode` wrote whatever `Ticket::hash` held and
+    /// `decode` interned only `sha256` and `sha384`, so a ticket issued
+    /// on an RFC 9367 suite - whose hash is Streebog-256 - was written
+    /// and then refused on reload as naming a hash TLS 1.3 does not use.
+    /// The round-trip test above used SHA-384, and the GOST 1.3 tests
+    /// resume nothing, so the two ends of the storage format were never
+    /// compared on the third name. The list of names is taken from the
+    /// suite table rather than written here, so a fourth hash joins the
+    /// loop by itself.
+    #[test]
+    fn test_a_stored_ticket_round_trips_under_every_tls13_hash() {
+        use crate::tls::handshake13::tls13_hash_name;
+        let mut names: Vec<&'static str> = crate::tls::suites::Selection::all()
+            .codes().iter()
+            .filter_map(|code| crate::tls::suites::by_code(*code))
+            .filter(|suite| suite.min_version == crate::tls::Version::TLS13)
+            .filter_map(|suite| tls13_hash_name(suite.prf).ok())
+            .collect();
+        names.sort();
+        names.dedup();
+        assert!(names.contains(&"streebog256"),
+                "the suite table has no Streebog-256 suite: {:?}", names);
+        assert!(names.len() >= 3, "{:?}", names);
+        for name in names {
+            let stored = ticket(name, 1_234_567, 7_200).encode().unwrap();
+            let back = Ticket::decode(&stored)
+                .unwrap_or_else(|e| panic!("{}: {}", name, e));
+            assert_eq!(back.hash, name);
+        }
+        // And a name no suite produces is still refused.
+        let mut ticket = ticket("sha256", 0, 3600);
+        ticket.hash = "sha1";
+        assert!(Ticket::decode(&ticket.encode().unwrap()).is_err());
     }
 
     #[test]

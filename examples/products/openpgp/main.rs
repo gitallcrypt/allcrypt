@@ -706,6 +706,40 @@ mod tests {
         Passphrases(vec![b"password".to_vec()])
     }
 
+    /// A v6 PKESK's key identifier is a version octet and a
+    /// fingerprint, 21 or 33 bytes, or nothing for an anonymous
+    /// recipient. The parser took any length above one and then cut
+    /// the key ID out of the fingerprint's first or last 8 bytes, so a
+    /// length of 2 to 8 underflowed the slice and panicked - on every
+    /// PKESK of a message, before any key is tried. The RFC's sample and
+    /// every recorded message carry a 33, so no test had another
+    /// length.
+    #[test]
+    fn test_a_v6_pkesk_identifier_of_the_wrong_length_is_refused() {
+        let message = armored(&section(RFC9580, "A.8.5."));
+        let packets = packet::parse(&message).unwrap();
+        let body = packets[0].body.clone();
+        assert_eq!((body[0], body[1], body[2]), (6, 33, 6));
+        assert!(pubkey::Pkesk::parse(&body).is_ok());
+        for n in [1, 2, 5, 8, 20, 22, 32, 34] {
+            let mut short = body.clone();
+            short[1] = n;
+            let error = pubkey::Pkesk::parse(&short).err().unwrap_or_else(|| panic!("{n}"));
+            assert!(error.contains("key identifier"), "{n}: {error}");
+        }
+        // 21 bytes belong to a v4 key, 33 to v5 and v6, not the other
+        // way round.
+        let mut mismatched = body.clone();
+        mismatched[1] = 21;
+        assert!(pubkey::Pkesk::parse(&mismatched).is_err());
+        mismatched[2] = 4;
+        assert!(pubkey::Pkesk::parse(&mismatched).is_ok());
+        let mut anonymous = body.clone();
+        anonymous[1] = 0;
+        let pkesk = pubkey::Pkesk::parse(&anonymous).unwrap();
+        assert!(pkesk.fingerprint.is_empty() && pkesk.key_id == [0; 8]);
+    }
+
     /// RFC 9580 A.9 to A.11: SKESK v6 and SEIPD v2 under EAX, OCB and
     /// GCM, with every intermediate value the appendix prints. The S2K
     /// hashes 65 MB of SHA-256, a few seconds unoptimised.
@@ -1015,6 +1049,31 @@ mod tests {
         let mut h = s.hasher();
         h.update(b"OpenPGp");
         assert!(s.verify_digest(&key, &s.finish(h, None)).is_err());
+
+        // The critical bit was read and never consulted, so a signature
+        // whose signer said "do not accept this unless you understand
+        // subpacket X" verified as good when X was not understood - a
+        // signature target, say. No fixture carries a critical
+        // subpacket of a type this program ignores, so the bit was never
+        // exercised. The trailer is fixed at parse time, so a subpacket
+        // added to the struct changes nothing else about the check.
+        let mut marked = s.clone();
+        marked.hashed.push(sig::Subpacket { kind: 31, critical: false, data: vec![1, 8, 0] });
+        marked.verify_digest(&key, &digest).unwrap();
+        marked.hashed.last_mut().unwrap().critical = true;
+        let error = marked.verify_digest(&key, &digest).unwrap_err();
+        assert!(error.contains("critical subpacket of type 31"), "{error}");
+        // A critical subpacket of a kind this program does act on is fine.
+        let mut known = s.clone();
+        known.hashed.iter_mut().for_each(|p| p.critical = true);
+        known.verify_digest(&key, &digest).unwrap();
+        // The values were read from the front of the fields and the rest
+        // never looked at, so a signature packet with bytes after its
+        // last MPI verified; no fixture has any.
+        let mut trailing = s.clone();
+        trailing.fields.push(0);
+        let error = trailing.verify_digest(&key, &digest).unwrap_err();
+        assert!(error.contains("follow the signature"), "{error}");
 
         // A.3: every self-signature verifies, so the subkey is usable
         // and is where mail goes.

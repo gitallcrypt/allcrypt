@@ -119,8 +119,13 @@ impl BigUint {
         Ok(out)
     }
 
+    /// Parse hex, with or without one `0x` or `0X` prefix. Whitespace
+    /// around the digits is ignored; nothing inside them is.
     pub fn from_hex(s: &str) -> Result<BigUint, String> {
-        let s = s.trim().trim_start_matches("0x");
+        let s = s.trim();
+        // One prefix, not any number of them: `trim_start_matches("0x")`
+        // read `0x0x1f` as `1f`, and the upper-case form was refused.
+        let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
         if s.is_empty() {
             return Ok(BigUint::zero());
         }
@@ -781,6 +786,24 @@ mod tests {
         assert_eq!(BigUint::zero().to_bytes_be(), Vec::<u8>::new());
         // leading zeros on input must not change the value
         assert_eq!(BigUint::from_bytes_be(&[0, 0, 1]), BigUint::one());
+    }
+
+    /// `from_hex` takes one `0x` or `0X` prefix and no more.
+    ///
+    /// It used `trim_start_matches("0x")`, which strips any number of
+    /// prefixes, so `0x0x1f` parsed as `1f` instead of being refused;
+    /// and the upper-case `0X` was "Not a hex string". No test fed it
+    /// a prefix at all - every caller in the crate passes bare digits -
+    /// so neither end of the behaviour was pinned.
+    #[test]
+    fn test_from_hex_takes_one_prefix_of_either_case() {
+        assert_eq!(n("0x1f"), BigUint::from_u64(0x1f));
+        assert_eq!(n("0X1f"), BigUint::from_u64(0x1f));
+        assert_eq!(n("  0x1f "), BigUint::from_u64(0x1f));
+        assert_eq!(n("0x"), BigUint::zero());
+        assert!(BigUint::from_hex("0x0x1f").is_err(), "two prefixes accepted");
+        assert!(BigUint::from_hex("0X0x1f").is_err(), "two prefixes accepted");
+        assert!(BigUint::from_hex("0x 1f").is_err(), "space after the prefix accepted");
     }
 
     #[test]

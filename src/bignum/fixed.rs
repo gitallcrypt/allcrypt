@@ -146,9 +146,12 @@ pub(crate) trait Arith<const N: usize>: Copy {
     /// reduction passes - `N(N-1)/2` fewer products than `mul(a, a)`.
     #[inline(always)]
     fn square(&self, a: &[u64; N]) -> [u64; N] {
-        // Two limbs per input limb, up to the nine `ec::fixed` uses.
+        // Two limbs per input limb, up to the nine `ec::fixed` uses. The
+        // bound is checked at compile time, per instantiation: a
+        // `Mont<10>` fails to build rather than panicking on its first
+        // square, which a run-time `assert!` let it do.
         const WIDE: usize = 18;
-        assert!(2 * N <= WIDE, "squaring is for up to nine limbs");
+        const { assert!(2 * N <= WIDE, "squaring is for up to nine limbs") };
         let n = self.modulus();
         let mut wide = [0u64; WIDE];
         for i in 0..N {
@@ -387,5 +390,24 @@ mod tests {
                0x1FF]);
         let x = [5, 0xFFFF_FFFF_0000_0000, 3, 0xFFFF_FFFF_0000_0000];
         assert_eq!(P256.square(&x), P256.mul(&x, &x));
+    }
+
+    /// The width bound on `square` is checked when a `Mont<N>` is
+    /// instantiated, not when it first squares.
+    ///
+    /// It was a run-time `assert!`, so `Mont<10>` compiled and panicked
+    /// on first use; `ec::fixed` only instantiates up to nine limbs, so
+    /// nothing reached it. The bound is now an inline `const` block,
+    /// which a `Mont<10>` fails to compile against ("evaluation
+    /// panicked: squaring is for up to nine limbs", checked by adding
+    /// one and building). A compile failure cannot be a `#[test]`; this
+    /// one records that the widest instantiation that must build does,
+    /// and squares.
+    #[test]
+    fn test_nine_limbs_is_the_widest_square() {
+        let f = Mont::<9>::new([u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX,
+                                u64::MAX, u64::MAX, 0x1FF]).unwrap();
+        let x = f.sub(&[0; 9], &f.one());
+        assert_eq!(f.square(&x), f.mul(&x, &x));
     }
 }

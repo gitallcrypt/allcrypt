@@ -41,11 +41,29 @@ than regenerating them, because the command that generates them is
 already failing on some of these and will eventually fail on the rest.
 */
 
-use crate::asn1::{Oid, Reader};
+use crate::asn1::{tag, Oid, Reader, Tag};
 use crate::block_ciphers::{BlockCipher, CbcState};
 use crate::hash_functions::{md5::MD5, sha1::SHA1, sha2};
 use crate::kdf::password::{pbkdf1, pbkdf2, pkcs12_kdf, Pkcs12Purpose};
 use crate::x509::oids;
+
+/// The largest iteration count a key file may ask for: 2^24, ten times
+/// `pbkdf2_recommended_iterations` for SHA-1 and far above anything
+/// OpenSSL or the JDK write. The count is a `u32` in every scheme here,
+/// and a crafted file with 4 billion iterations stalls the reader for
+/// hours; files are user-chosen, so this is a bound rather than a
+/// defence, and it costs nothing.
+pub const MAX_ITERATIONS: u32 = 1 << 24;
+
+/// The iteration count from a parameter block, bounded.
+fn read_iterations(reader: &mut Reader<'_>) -> Result<u32, String> {
+    let iterations = reader.read_u32()?;
+    if iterations > MAX_ITERATIONS {
+        return Err(format!("The file asks for {} iterations; nothing above {} is \
+                            run.", iterations, MAX_ITERATIONS));
+    }
+    Ok(iterations)
+}
 
 /// What a scheme needs from its key derivation, once the OID is known.
 #[derive(Clone, Copy)]
@@ -104,7 +122,7 @@ pub fn decrypt(der: &[u8], password: &[u8]) -> Result<Vec<u8>, String> {
         let mut params = reader.read_sequence()?;
         reader.finish()?;
         let salt = params.read_octet_string()?;
-        let iterations = params.read_u32()?;
+        let iterations = read_iterations(&mut params)?;
         params.finish()?;
         return jdk_pbe_md5_3des_decrypt(password, salt, iterations, ciphertext);
     }
@@ -201,7 +219,7 @@ fn pbkdf2_from_parameters(parameters: &[u8], password: &[u8], want_key_len: usiz
         format!("PBKDF2 salt: {} (the `otherSource` form is not supported; \
                  nothing is known to write it)", reason)
     })?;
-    let iterations = params.read_u32()?;
+    let iterations = read_iterations(&mut params)?;
 
     // keyLength is optional and, when present, is advisory: the cipher
     // decides how much key it needs. Read to keep the parse in step,
@@ -209,7 +227,7 @@ fn pbkdf2_from_parameters(parameters: &[u8], password: &[u8], want_key_len: usiz
     // length disagrees with its own cipher is malformed and silently
     // preferring either answer hides that.
     let mut stated_key_len = None;
-    if let Some(crate::asn1::Tag { number: 2, .. }) = params.peek_tag() {
+    if params.peek_tag() == Some(Tag::universal(tag::INTEGER)) {
         stated_key_len = Some(params.read_u32()? as usize);
     }
     if let Some(stated) = stated_key_len {
@@ -276,8 +294,9 @@ fn pbes2_cipher(oid: &[u8]) -> Option<Recipe> {
         o if o == oids::DES_CBC =>
             Recipe { key_len: 8, iv_len: 8, cipher: CipherKind::Des },
         o if o == oids::RC2_CBC =>
-            // Overwritten from the parameters below; 16 bytes / 128 bits
-            // is RC2's own default when the version field is absent.
+            // A placeholder: `pbes2_cipher_parameters` replaces both
+            // numbers from the RC2-CBC-Parameter, where an absent
+            // version means 32 effective bits (RFC 8018 B.2.3), not 128.
             Recipe { key_len: 16, iv_len: 8,
                      cipher: CipherKind::Rc2 { effective_bits: 128 } },
         _ => return None,
@@ -300,14 +319,14 @@ fn pbes2_cipher_parameters(recipe: Recipe, parameters: &[u8])
         let mut sequence = reader.read_sequence()?;
         reader.finish()?;
         let mut version = None;
-        if let Some(crate::asn1::Tag { number: 2, .. }) = sequence.peek_tag() {
+        if sequence.peek_tag() == Some(Tag::universal(tag::INTEGER)) {
             version = Some(sequence.read_u32()?);
         }
         let iv = sequence.read_octet_string()?.to_vec();
         sequence.finish()?;
         let effective_bits = match version {
             None => 32,
-            Some(version) => rc2_version_to_bits(version),
+            Some(version) => rc2_version_to_bits(version)?,
         };
         let key_len = effective_bits.div_ceil(8) as usize;
         return Ok((Recipe { key_len, iv_len: 8,
@@ -328,11 +347,18 @@ fn pbes2_cipher_parameters(recipe: Recipe, parameters: &[u8])
 /// of the least guessable encodings in any of these standards - the
 /// table is not a formula and the three entries are the three that
 /// matter (40, 64 and 128 bit effective keys).
-fn rc2_version_to_bits(version: u32) -> u32 {
-    match version {
+fn rc2_version_to_bits(version: u32) -> Result<u32, String> {
+    Ok(match version {
         160 => 40,
         120 => 64,
         58 => 128,
+        // RC2's key is at most 128 bytes (RFC 2268), so an effective
+        // length past 1024 bits names a key the cipher cannot hold -
+        // and the value sizes the derived key, so an unbounded one is
+        // a derivation of up to half a gigabyte.
+        other if other > 1024 => return Err(format!(
+            "RC2 parameters name {} effective key bits; the cipher's key is \
+             at most 1024.", other)),
         other if other >= 256 => other,
         // Anything else below 256 is not in the table. Treated as the
         // value itself rather than refused, because a file that used an
@@ -340,7 +366,7 @@ fn rc2_version_to_bits(version: u32) -> u32 {
         // the worst case is a wrong key rather than a wrong answer -
         // the padding check below catches it.
         other => other,
-    }
+    })
 }
 
 // -------------------------------------------------------------- PBES1 ---
@@ -375,7 +401,7 @@ fn pbes1(parameters: &[u8], ciphertext: &[u8], password: &[u8],
     let mut params = reader.read_sequence()?;
     reader.finish()?;
     let salt = params.read_octet_string()?;
-    let iterations = params.read_u32()?;
+    let iterations = read_iterations(&mut params)?;
     params.finish()?;
 
     if salt.len() != 8 {
@@ -436,7 +462,7 @@ fn pkcs12_pbe(parameters: &[u8], ciphertext: &[u8], password: &[u8], recipe: Rec
     let mut params = reader.read_sequence()?;
     reader.finish()?;
     let salt = params.read_octet_string()?;
-    let iterations = params.read_u32()?;
+    let iterations = read_iterations(&mut params)?;
     params.finish()?;
 
     // The password arrives here as bytes but PKCS#12 hashes a BMPString,
@@ -847,7 +873,7 @@ pub fn parameters(der: &[u8]) -> Result<Parameters, String> {
     let mut kdf_params = kdf.read_sequence()?;
     let salt = kdf_params.read_octet_string()?.to_vec();
     let iterations = kdf_params.read_u32()?;
-    if let Some(crate::asn1::Tag { number: 2, .. }) = kdf_params.peek_tag() {
+    if kdf_params.peek_tag() == Some(Tag::universal(tag::INTEGER)) {
         kdf_params.read_u32()?;
     }
     let prf = if kdf_params.is_empty() {
@@ -976,6 +1002,83 @@ fn dotted(oid: &Oid) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The optional `keyLength` is recognised by its whole tag, not by
+    /// its tag number.
+    ///
+    /// What was wrong: three copies of the same peek matched
+    /// `Tag { number: 2, .. }`, so any tag numbered 2 - a context
+    /// `[2]`, say - was taken for the INTEGER and handed to `read_u32`,
+    /// which then failed with a message about the integer rather than
+    /// about the field that was actually there. Every other peek in the
+    /// crate compares the full tag. The existing tests read real files,
+    /// whose optional field is either absent or a proper INTEGER.
+    #[test]
+    fn test_pbkdf2_key_length_is_matched_by_its_whole_tag() {
+        use crate::asn1::Writer;
+        let build = |key_length: Option<&[u8]>, odd_tag: bool| {
+            let mut writer = Writer::new();
+            writer.write_sequence(|w| {
+                w.write_octet_string(b"salt");
+                w.write_u32(2);
+                if let Some(bytes) = key_length {
+                    w.write_tlv(Tag::universal(tag::INTEGER), bytes);
+                }
+                if odd_tag {
+                    w.write_tlv(Tag::context(2, false), &[16]);
+                }
+            });
+            writer.finish()
+        };
+
+        // A proper keyLength that agrees with the cipher is read, and
+        // the derived key is PBKDF2's own.
+        let key = pbkdf2_from_parameters(&build(Some(&[16]), false), b"pw", 16).unwrap();
+        let expected = pbkdf2(SHA1::new(&[]), b"pw", b"salt", 2, 16).unwrap();
+        assert_eq!(key, expected);
+
+        // A context [2] where keyLength would be is not keyLength: the
+        // failure is the PRF's AlgorithmIdentifier being absent, not an
+        // INTEGER being malformed.
+        let error = pbkdf2_from_parameters(&build(None, true), b"pw", 16).unwrap_err();
+        assert!(!error.contains("universal 2,"), "{}", error);
+        assert!(error.contains("found context 2"), "{}", error);
+    }
+
+    /// An iteration count or an RC2 key length that would stall the
+    /// reader is refused before any work is done.
+    ///
+    /// What was wrong: every scheme's iteration count was a bare `u32`
+    /// handed to the KDF, and `rc2_version_to_bits` returned any value
+    /// of 256 or more as the effective key length, which sizes the
+    /// derived key - so a crafted file could ask for four billion
+    /// iterations or a half-gigabyte RC2 key. Files are user-chosen,
+    /// so this is a bound rather than a defence; the existing tests
+    /// read files OpenSSL and the JDK wrote, whose counts are small.
+    #[test]
+    fn test_iteration_counts_and_rc2_key_lengths_are_bounded() {
+        use crate::asn1::Writer;
+        let pbkdf2_params = |iterations: u32| {
+            let mut writer = Writer::new();
+            writer.write_sequence(|w| {
+                w.write_octet_string(b"salt");
+                w.write_u32(iterations);
+            });
+            writer.finish()
+        };
+        let error = pbkdf2_from_parameters(&pbkdf2_params(MAX_ITERATIONS + 1),
+                                           b"pw", 16).unwrap_err();
+        assert!(error.contains("iterations"), "{}", error);
+        // The bound itself is run (with a tiny count below it here, so
+        // that the test stays fast): the refusal is for the count, not
+        // for the shape of the parameters.
+        pbkdf2_from_parameters(&pbkdf2_params(2), b"pw", 16).unwrap();
+
+        assert_eq!(rc2_version_to_bits(58).unwrap(), 128);
+        assert_eq!(rc2_version_to_bits(1024).unwrap(), 1024);
+        let error = rc2_version_to_bits(1025).unwrap_err();
+        assert!(error.contains("at most 1024"), "{}", error);
+    }
 
     /// The JKS protector round-trips at every length either side of its
     /// 20-byte blocks, and refuses the wrong password by its check.

@@ -2,6 +2,12 @@
 
 Kept next to the built module so editors and mypy can see the API without
 importing the compiled artifact.
+
+Errors: a value the library refuses raises ``CryptoError`` (a
+``ValueError``). A **negative** number where a length, count, size or
+index is expected is refused one step earlier, by the conversion to an
+unsigned integer, and raises ``OverflowError`` instead - which is not a
+``ValueError``, so ``except ValueError`` does not catch it.
 """
 
 import enum
@@ -300,6 +306,18 @@ class EcKey:
     def verify(self, digest: BytesLike, signature: BytesLike) -> bool:
         """Verify with this key's own public half."""
 
+    def vko(self, peer_public: BytesLike, ukm: BytesLike, digest_bits: int = 256,
+            cofactor: str = "as-specified") -> bytes:
+        """GOST VKO key agreement (RFC 7836): the shared key with
+        ``peer_public`` under the user keying material ``ukm``, hashed
+        with Streebog of ``digest_bits`` (256 or 512)."""
+
+    def sign_gost(self, digest: BytesLike, digestmod: str = "streebog256") -> bytes:
+        """GOST R 34.10-2012 over an already computed digest: ``s || r``."""
+
+    def verify_gost(self, digest: BytesLike, signature: BytesLike) -> bool:
+        """Verify a GOST R 34.10-2012 ``s || r`` with this key's public half."""
+
     def public_key(self) -> "EcPublicKey": ...
 
     @property
@@ -345,6 +363,9 @@ class EcPublicKey:
     def public_bytes(self, compressed: bool = False) -> bytes: ...
     def verify(self, digest: BytesLike, signature: BytesLike) -> bool:
         """False for a wrong signature; raises for one that is malformed."""
+
+    def verify_gost(self, digest: BytesLike, signature: BytesLike) -> bool:
+        """The same for a GOST R 34.10-2012 signature, ``s || r``."""
 
     def sm2_verify(self, message: BytesLike, signature: BytesLike,
                    id: Optional[BytesLike] = None) -> bool:
@@ -824,7 +845,7 @@ class TlsClient:
 
     def __init__(self, hostname: str, roots: TrustStore, now: int,
                  ciphers: str = "modern", verify: bool = True,
-                 min_version: str = "TLSv1.2", max_version: str = "TLSv1.2",
+                 min_version: str = "TLSv1.2", max_version: str = "TLSv1.3",
                  allow_sha1: bool = False, allow_md5: bool = False,
                  allow_expired: bool = False, verify_hostname: bool = True,
                  min_rsa_bits: int = 2048, min_dh_bits: int = 2048,
@@ -832,7 +853,7 @@ class TlsClient:
                  request_encrypt_then_mac: bool = True,
                  tickets: Sequence[BytesLike] = [],
                  client_certificate: Optional[Sequence[BytesLike]] = None,
-                 client_key: Optional[Union["EcKey", "RsaKey", "MlDsaKey"]] = None,
+                 client_key: Optional[Union["EcKey", "RsaKey", "EddsaKey", "MlDsaKey"]] = None,
                  early_data: BytesLike = b"",
                  alpn: List[str] = [],
                  request_stapled_ocsp: bool = True,
@@ -918,6 +939,12 @@ class TlsClient:
         ``require_stapled_ocsp`` is **not** a CRL requirement: nothing
         here fetches a CRL, so requiring one would refuse every chain.
         """
+
+    def channel_binding(self, kind: str) -> Optional[bytes]:
+        """Channel binding material: ``"tls-unique"`` (RFC 5929, TLS 1.2
+        and below) or ``"tls-exporter"`` (RFC 9266, TLS 1.3). ``None`` when
+        the negotiated version does not define that binding or the
+        handshake has not got there yet."""
 
     def push_incoming(self, data: BytesLike) -> None: ...
     def take_outgoing(self) -> bytes:
@@ -1925,6 +1952,15 @@ def tls12_prf(secret: BytesLike, label: BytesLike, seed: BytesLike, length: int,
 def tls10_prf(secret: BytesLike, label: BytesLike, seed: BytesLike, length: int) -> bytes:
     """The TLS 1.0/1.1 PRF (RFC 2246 section 5); hashes fixed by the spec."""
 
+def tls_master_secret(version: str, premaster: BytesLike, client_random: BytesLike,
+                      server_random: BytesLike) -> bytes:
+    """The master secret for a named version, SSLv3's own derivation included."""
+
+def ssl3_record_mac(hash_name: str, mac_key: BytesLike, sequence: int, content_type: int,
+                    fragment: BytesLike) -> bytes:
+    """SSLv3's record MAC (RFC 6101 section 5.2.3.1): not HMAC, and without
+    the record's version."""
+
 def pad_pkcs7(data: BytesLike, block_size: int) -> bytes: ...
 def unpad_pkcs7(data: BytesLike, block_size: int) -> bytes: ...
 
@@ -1974,6 +2010,8 @@ def bitlocker_decrypt_sector(method: str, key: BytesLike, byte_offset: int,
     """The inverse of ``bitlocker_encrypt_sector``."""
 def nt_hash(password: str) -> bytes:
     """The NT hash (NTOWFv1): MD4 of the password as UTF-16 little endian."""
+def ntlmv2_hash(password: str, username: str, domain: str) -> bytes:
+    """The NTLMv2 hash (NTOWFv2) of a password, user name and domain."""
 def lm_hash(password: BytesLike) -> bytes:
     """The LM hash (LMOWFv1) of a password given as bytes in the OEM code
     page it was made under, at most 14 of them. ASCII letters are
@@ -2077,7 +2115,7 @@ def curve_parameters(name: str) -> Dict[str, str]:
     boundary where that is easiest to get wrong.
     """
 
-def gost_sbox(name: str) -> Tuple[Tuple[int, ...], ...]:
+def gost_sbox(name: str) -> List[List[int]]:
     """The eight substitution rows of a GOST parameter set, built in or
     registered - so a new one can start from one that exists."""
 

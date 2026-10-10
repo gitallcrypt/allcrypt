@@ -39,11 +39,17 @@ CURVES = [("P-256", ec.SECP256R1(), 32), ("P-384", ec.SECP384R1(), 48),
 
 
 def encodings(key):
-    """Every shape `cryptography` will write this key in."""
+    """Every shape `cryptography` will write this key in.
+
+    The labels are spelled out rather than read from `.name`: in
+    python-cryptography 50.0 these are no longer Python enums and have
+    no `.name`, and the four tests built on this helper failed before
+    reading a single key."""
     out = {}
-    for encoding in (PEM, DER):
-        for form in (PKCS8, SEC1_OR_PKCS1):
-            out[(encoding.name, form.name)] = key.private_bytes(
+    for encoding_label, encoding in (("PEM", PEM), ("DER", DER)):
+        for form_label, form in (("PKCS8", PKCS8),
+                                 ("TraditionalOpenSSL", SEC1_OR_PKCS1)):
+            out[(encoding_label, form_label)] = key.private_bytes(
                 encoding, form, NOTHING)
     return out
 

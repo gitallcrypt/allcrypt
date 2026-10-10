@@ -205,7 +205,10 @@ pub fn read(data: &[u8]) -> Result<Storage, String> {
     }
     let fat_sectors = u32_at(data, 0x2c) as usize;
     let first_directory = u32_at(data, 0x30);
-    let cutoff = u64::from(u32_at(data, 0x38));
+    // [MS-CFB] 2.2 fixes the cutoff at 4096; a larger one in the field
+    // would only size a reservation for a stream that then walks the
+    // mini FAT.
+    let cutoff = u64::from(u32_at(data, 0x38)).min(4096);
     let first_minifat = u32_at(data, 0x3c);
     let mut difat_next = u32_at(data, 0x44);
     let difat_count = u32_at(data, 0x48) as usize;
@@ -215,9 +218,16 @@ pub fn read(data: &[u8]) -> Result<Storage, String> {
     // The DIFAT: 109 entries in the header, then a chain of sectors each
     // ending in the next one's number.
     let mut difat: Vec<u32> = (0..HEADER_DIFAT).map(|i| u32_at(data, 0x4c + 4 * i)).collect();
-    for _ in 0..difat_count {
+    // The count is the header's claim; the file has only so many
+    // sectors, and a chain longer than that has come back on itself.
+    let sectors_in_file = data.len() / reader.sector_size();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..difat_count.min(sectors_in_file) {
         if difat_next == ENDOFCHAIN || difat_next == FREESECT {
             break;
+        }
+        if !seen.insert(difat_next) {
+            return Err(format!("The DIFAT chain loops at sector {difat_next}."));
         }
         let sector = reader.sector(difat_next)?;
         difat.extend((0..per_sector - 1).map(|i| u32_at(sector, 4 * i)));
@@ -296,21 +306,28 @@ pub fn read(data: &[u8]) -> Result<Storage, String> {
     };
 
     // Walk the tree. Each entry may be visited once; a second visit is
-    // a cycle.
+    // a cycle. The siblings are a red-black tree in a well-formed file
+    // and may be a chain in another, so the in-order walk keeps its own
+    // stack rather than recursing once per entry.
     let mut visited = vec![false; entries.len()];
-    fn siblings(entries: &[RawEntry], at: u32, visited: &mut [bool], out: &mut Vec<usize>)
+    fn siblings(entries: &[RawEntry], start: u32, visited: &mut [bool], out: &mut Vec<usize>)
                 -> Result<(), String> {
-        if at == NOSTREAM {
-            return Ok(());
+        let mut stack = Vec::new();
+        let mut at = start;
+        loop {
+            while at != NOSTREAM {
+                let index = at as usize;
+                if index >= entries.len() || visited[index] {
+                    return Err("The directory tree has a cycle or a dangling link.".to_string());
+                }
+                visited[index] = true;
+                stack.push(index);
+                at = entries[index].left;
+            }
+            let Some(index) = stack.pop() else { return Ok(()) };
+            out.push(index);
+            at = entries[index].right;
         }
-        let index = at as usize;
-        if index >= entries.len() || visited[index] {
-            return Err("The directory tree has a cycle or a dangling link.".to_string());
-        }
-        visited[index] = true;
-        siblings(entries, entries[index].left, visited, out)?;
-        out.push(index);
-        siblings(entries, entries[index].right, visited, out)
     }
     fn build(entries: &[RawEntry], index: usize, visited: &mut [bool],
              data: &dyn Fn(&RawEntry) -> Result<Vec<u8>, String>, depth: usize)
@@ -751,6 +768,63 @@ mod tests {
             in_order(&flat, root, &mut order);
             assert_eq!(order, indices);
         }
+    }
+
+    /// The DIFAT chain was followed as many times as the header's count
+    /// said, with nothing against a sector that names itself as the
+    /// next: with the count at its maximum that was four billion
+    /// rounds of 127 entries each. The FAT chains and the directory
+    /// walk were bounded; the files the fixtures came from all have a
+    /// DIFAT that ends, so no test followed one that did not.
+    #[test]
+    fn test_a_loop_in_the_difat_chain_is_an_error() {
+        let tree = Storage::new("Root Entry").with_stream("S", vec![1; 100]);
+        let mut bytes = write(&tree).unwrap();
+        assert_eq!(read(&bytes).unwrap(), tree);
+        // One more sector, whose last entry is its own number.
+        let own = (bytes.len() / 512 - 1) as u32;
+        bytes.extend_from_slice(&[0xff; 508]);
+        bytes.extend_from_slice(&own.to_le_bytes());
+        bytes[0x44..0x48].copy_from_slice(&own.to_le_bytes());
+        bytes[0x48..0x4c].copy_from_slice(&u32::MAX.to_le_bytes());
+        let error = read(&bytes).unwrap_err();
+        assert!(error.contains("DIFAT chain loops"), "{error}");
+        // A count larger than the file, over a chain that does end, is
+        // only a count.
+        let end = bytes.len() - 4;
+        bytes[end..].copy_from_slice(&ENDOFCHAIN.to_le_bytes());
+        assert_eq!(read(&bytes).unwrap(), tree);
+    }
+
+    /// The sibling walk recursed along `left` and `right`, so a
+    /// directory whose entries chain through `left` cost one frame per
+    /// entry and a long enough chain ran out of stack. The writer
+    /// balances its trees and so do real producers, so no fixture had a
+    /// chain. The walk is run on a small stack to make the limit sharp.
+    #[test]
+    fn test_a_directory_chained_through_left_links_is_read() {
+        let n = 20_000u32;
+        let mut tree = Storage::new("Root Entry");
+        for i in 0..n {
+            tree = tree.with_stream(&format!("s{i:05}"), Vec::new());
+        }
+        let mut bytes = write(&tree).unwrap();
+        // The writer lays the directory out in one run: entry 0 is the
+        // root and 1..=n the streams, in the directory's order. Chain
+        // them: root -> 1, each -> the next through `left`.
+        let directory = 512 * (u32_at(&bytes, 0x30) as usize + 1);
+        let link = |bytes: &mut [u8], entry: u32, field: usize, to: u32| {
+            let at = directory + 128 * entry as usize + field;
+            bytes[at..at + 4].copy_from_slice(&to.to_le_bytes());
+        };
+        link(&mut bytes, 0, 76, 1);
+        for i in 1..=n {
+            link(&mut bytes, i, 68, if i < n { i + 1 } else { NOSTREAM });
+            link(&mut bytes, i, 72, NOSTREAM);
+        }
+        let read_back = std::thread::Builder::new().stack_size(256 * 1024)
+            .spawn(move || read(&bytes).map(|s| s.children.len())).unwrap().join().unwrap();
+        assert_eq!(read_back.unwrap(), n as usize);
     }
 
     #[test]

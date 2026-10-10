@@ -129,7 +129,8 @@ pub fn rc4_key(tk: &[u8; 16], ta: &[u8; 6], tsc: u64) -> [u8; 16] {
 }
 
 /// RC4 under the frame's key over the plaintext and its CRC-32 ICV.
-pub fn encrypt_mpdu(tk: &[u8; 16], ta: &[u8; 6], tsc: u64, plaintext: &[u8]) -> Vec<u8> {
+pub fn encrypt_mpdu(tk: &[u8; 16], ta: &[u8; 6], tsc: u64, plaintext: &[u8])
+                    -> Result<Vec<u8>, String> {
     super::wep::seal(&rc4_key(tk, ta, tsc), plaintext)
 }
 
@@ -199,7 +200,7 @@ mod tests {
     #[test]
     fn test_mpdu_round_trip_and_icv() {
         let (tk, ta) = ([7u8; 16], [1, 2, 3, 4, 5, 6]);
-        let sealed = encrypt_mpdu(&tk, &ta, 0x1_0002, b"payload");
+        let sealed = encrypt_mpdu(&tk, &ta, 0x1_0002, b"payload").unwrap();
         assert_eq!(sealed.len(), 7 + 4);
         assert_eq!(decrypt_mpdu(&tk, &ta, 0x1_0002, &sealed).unwrap(), b"payload");
         assert!(decrypt_mpdu(&tk, &ta, 0x1_0003, &sealed).is_err());

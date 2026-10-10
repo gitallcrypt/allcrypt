@@ -711,6 +711,16 @@ pub struct ClientConnection {
     /// (RFC 8446 section 4.1.4), and without this a server could loop a
     /// client indefinitely.
     saw_retry_request: bool,
+    /// What the HelloRetryRequest chose - its suite code and the group it
+    /// asked for - kept so that the real ServerHello can be held to it.
+    /// RFC 8446 4.1.4: a client "MUST abort the handshake with an
+    /// illegal_parameter alert" if that ServerHello selects a different
+    /// suite, a version other than 1.3, or a key share from another group.
+    retry_choice: Option<(u16, u16)>,
+    /// Whether the server's TLS 1.3 compatibility ChangeCipherSpec has
+    /// arrived. RFC 8446 appendix D.4 has each side send exactly one,
+    /// so a second is a peer - or a middlebox - injecting records.
+    saw_compat_ccs: bool,
     /// The cookie a HelloRetryRequest asked to have echoed.
     retry_cookie: Option<Vec<u8>>,
     /// The ephemeral keys offered in the 1.3 key_share, kept so the
@@ -903,6 +913,8 @@ impl ClientConnection {
             transcript_prefix: Vec::new(),
             negotiated_group: None,
             saw_retry_request: false,
+            retry_choice: None,
+            saw_compat_ccs: false,
             retry_cookie: None,
             key_shares,
             tls13: None,
@@ -999,18 +1011,6 @@ impl ClientConnection {
         self.encrypt_then_mac
     }
 
-    /// The curve an ephemeral key exchange used, or `None` for a static RSA
-    /// key exchange, which has no group.
-    ///
-    /// Worth exposing rather than leaving inferable from the suite name: a
-    /// suite says ECDHE but not *which* curve, and the curve is the part
-    /// that decides the strength. A server that picked secp256r1 when we
-    /// would rather have had secp384r1 is a thing a caller may want to
-    /// refuse, and it cannot refuse what it cannot see.
-    /// The name is the IANA one (`secp256r1`), not this library's curve name
-    /// (`P-256`), because it is the protocol's answer to what was
-    /// negotiated and the two vocabularies should not be mixed.
-    ///
     /// The session tickets this connection was given, for a later one.
     ///
     /// Empty until the handshake is finished, and usually until a
@@ -1025,12 +1025,6 @@ impl ClientConnection {
         &self.tickets
     }
 
-    /// Take the tickets, leaving none behind.
-    ///
-    /// The shape a caller actually wants: a ticket is offered **once**,
-    /// so reading them without removing them invites offering the same
-    /// one twice, which lets a passive observer link the two
-    /// connections (RFC 8446 appendix C.4).
     /// Channel binding material for this connection, RFC 5929 and RFC
     /// 9266.
     ///
@@ -1098,6 +1092,12 @@ impl ClientConnection {
         }
     }
 
+    /// Take the tickets, leaving none behind.
+    ///
+    /// The shape a caller actually wants: a ticket is offered **once**,
+    /// so reading them without removing them invites offering the same
+    /// one twice, which lets a passive observer link the two
+    /// connections (RFC 8446 appendix C.4).
     pub fn take_tickets(&mut self) -> Vec<Ticket> {
         core::mem::take(&mut self.tickets)
     }
@@ -1115,9 +1115,21 @@ impl ClientConnection {
         self.resumed
     }
 
-    /// A finite-field DHE group has no IANA name to report before
-    /// TLS 1.3 - the server sends the numbers themselves - so it is
-    /// reported by its size, which is the property anybody asking this
+    /// The group an ephemeral key exchange used, or `None` for a static
+    /// RSA key exchange, which has no group.
+    ///
+    /// Worth exposing rather than leaving inferable from the suite name: a
+    /// suite says ECDHE but not *which* curve, and the curve is the part
+    /// that decides the strength. A server that picked secp256r1 when we
+    /// would rather have had secp384r1 is a thing a caller may want to
+    /// refuse, and it cannot refuse what it cannot see.
+    ///
+    /// The name is the IANA one (`secp256r1`), not this library's curve
+    /// name (`P-256`), because it is the protocol's answer to what was
+    /// negotiated and the two vocabularies should not be mixed. A
+    /// finite-field DHE group has no IANA name to report before TLS 1.3,
+    /// since the server sends the numbers themselves, so it is reported
+    /// by its size (`dh2048`), which is the property anybody asking this
     /// question about a DHE connection actually wants.
     pub fn named_group(&self) -> Option<String> {
         // TLS 1.3 first: it has no ServerKeyExchange, so neither of the
@@ -1482,14 +1494,35 @@ impl ClientConnection {
             (State::Established, HandshakeType::KeyUpdate) =>
                 self.handle_key_update(message),
 
-            (_, HandshakeType::HelloRequest) =>
-                // A renegotiation request. We do not renegotiate, and
-                // saying no is a warning rather than a failure.
-                self.send_alert(Alert::warning(AlertDescription::NO_RENEGOTIATION)),
+            (_, HandshakeType::HelloRequest) => self.handle_hello_request(),
 
             (state, message_type) =>
                 Err(Error::unexpected(state.describe(), &message_type.name())),
         }
+    }
+
+    /// A HelloRequest: the server asking for a renegotiation.
+    ///
+    /// Three answers, by version and state. TLS 1.3 has no such message:
+    /// renegotiation was removed, and the type is not in its registry of
+    /// legal post-handshake messages, so one arriving there is
+    /// `unexpected_message` like any other message out of place. At 1.2
+    /// and below on an established connection, this client does not
+    /// renegotiate and says so with a `no_renegotiation` warning (RFC
+    /// 5246 7.4.1.1), which is a refusal rather than a failure. And in
+    /// the middle of a handshake the same section says the client
+    /// ignores it: a server that asks to start over while a handshake is
+    /// running gets no answer, and the handshake continues.
+    fn handle_hello_request(&mut self) -> Result<(), Error> {
+        if self.negotiated_version == Some(Version::TLS13) || self.saw_retry_request {
+            return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
+                "A HelloRequest arrived on a TLS 1.3 connection, which has no \
+                 renegotiation and no such message."));
+        }
+        if self.state == State::Established {
+            return self.send_alert(Alert::warning(AlertDescription::NO_RENEGOTIATION));
+        }
+        Ok(())
     }
 
     /// A TLS 1.3 KeyUpdate (RFC 8446 section 4.6.3).
@@ -1659,6 +1692,7 @@ impl ClientConnection {
         self.key_shares = vec![EphemeralKey::generate(wanted)
                                .map_err(Error::local)?];
         self.saw_retry_request = true;
+        self.retry_choice = Some((hello.cipher_suite, wanted));
 
         let extensions = self.hello_extensions()?;
         let second = ClientHello {
@@ -1705,12 +1739,61 @@ impl ClientConnection {
         if hello.random == hs13::HELLO_RETRY_REQUEST_RANDOM {
             return self.handle_retry_request(&hello, message);
         }
+        // **After a retry, the real ServerHello is held to it.** The
+        // retry already committed both ends to a suite - the second
+        // hello's transcript hash is under that suite's hash - and to
+        // TLS 1.3, which is the only version a HelloRetryRequest exists
+        // in. A ServerHello choosing anything else would be a 1.2
+        // handshake over a 1.3 transcript prefix, failing later and far
+        // from the cause, or a downgrade. RFC 8446 4.1.4 names
+        // illegal_parameter for all of it. The group is checked where
+        // the share is read, in `handle_server_hello_13`.
+        if let Some((suite, _)) = self.retry_choice {
+            if version != Version::TLS13 {
+                return Err(Error::new(AlertDescription::ILLEGAL_PARAMETER, format!(
+                    "After a HelloRetryRequest the ServerHello chose {}; the \
+                     retry committed the handshake to TLS 1.3.", version.name())));
+            }
+            if hello.cipher_suite != suite {
+                return Err(Error::new(AlertDescription::ILLEGAL_PARAMETER, format!(
+                    "After a HelloRetryRequest naming {} the ServerHello chose \
+                     {}; the suite is settled by the retry.",
+                    suites::describe_code(suite),
+                    suites::describe_code(hello.cipher_suite))));
+            }
+        }
 
         if version < self.config.min_version || version > self.config.max_version {
             return Err(Error::new(AlertDescription::PROTOCOL_VERSION, format!(
                 "The server chose {}, outside the {}..={} this client offered.",
                 version.name(), self.config.min_version.name(),
                 self.config.max_version.name())));
+        }
+
+        // **A server that supports more than it chose says so in its
+        // random** (RFC 8446 4.1.3), and the marker is checked against
+        // what this client offered: a hello that reached the server
+        // with `supported_versions` stripped arrives as a 1.2 hello,
+        // and the 1.2 handshake that follows signs the randoms rather
+        // than the hello's extensions, so nothing later can notice.
+        // A client offering 1.3 refuses either marker (a MUST for the
+        // one matching the version chosen, a SHOULD for the other); a
+        // client offering 1.2 refuses the 1.1 marker, which is the
+        // RFC's SHOULD for it.
+        {
+            use crate::tls::handshake13::{DOWNGRADE_TO_TLS11, DOWNGRADE_TO_TLS12};
+            let tail = &hello.random[24..];
+            let ceiling = self.config.max_version;
+            let refused = (ceiling >= Version::TLS13 && version <= Version::TLS12
+                           && (tail == DOWNGRADE_TO_TLS12 || tail == DOWNGRADE_TO_TLS11))
+                || (ceiling == Version::TLS12 && version < Version::TLS12
+                    && tail == DOWNGRADE_TO_TLS11);
+            if refused {
+                return Err(Error::new(AlertDescription::ILLEGAL_PARAMETER, format!(
+                    "The server chose {} and its random says it supports more, \
+                     which is what a hello cut down on the way looks like \
+                     (RFC 8446 4.1.3).", version.name())));
+            }
         }
 
         // A suite we did not offer is either a broken server or a
@@ -1939,6 +2022,14 @@ impl ClientConnection {
                 "A TLS 1.3 ServerHello must carry a key_share; without one there \
                  is no key exchange and nothing authenticates the connection."))?;
         let answer = hs13::parse_server_key_share(&share.body)?;
+        if let Some((_, group)) = self.retry_choice {
+            if answer.group != group {
+                return Err(Error::new(AlertDescription::ILLEGAL_PARAMETER, format!(
+                    "The HelloRetryRequest asked for {} and the ServerHello \
+                     answered with a {} key share.",
+                    groups::name(group), groups::name(answer.group))));
+            }
+        }
 
         // The share must answer one we sent. A server naming a group we
         // only listed in supported_groups has no key of ours to combine
@@ -2968,6 +3059,17 @@ impl ClientConnection {
     /// with a man in the middle.
     fn handle_server_key_exchange(&mut self, message: &HandshakeMessage)
                                   -> Result<(), Error> {
+        // Once. `WaitServerFlight` stays where it is after this message,
+        // so without this a second ServerKeyExchange replaced the
+        // parameters of the first - both signed, so not exploitable, but
+        // a server padding its flight with a message RFC 5246 7.4.3
+        // sends exactly once, and the CertificateRequest and
+        // CertificateStatus handlers already refuse a second copy.
+        if self.server_ecdh.is_some() || self.server_dh.is_some()
+            || self.server_rsa.is_some() {
+            return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
+                                  "A second ServerKeyExchange."));
+        }
         let suite = self.suite.ok_or_else(|| Error::local("No suite."))?;
         let version = self.negotiated_version
             .ok_or_else(|| Error::local("No version."))?;
@@ -3944,11 +4046,38 @@ impl ClientConnection {
         // its compatibility ChangeCipherSpec in between. Without this
         // the retry path fails with "a ChangeCipherSpec while waiting
         // for the ServerHello", which is true and unhelpful.
+        //
+        // Dropped, not ignored: RFC 8446 5 allows it only after the first
+        // ClientHello and **before the peer's Finished**, and one
+        // received after that "MUST be treated as an unexpected record
+        // type". Without the state check an on-path attacker could inject
+        // plaintext records into an established connection forever and
+        // have every one swallowed. Appendix D.4 has each side send
+        // exactly one - after the HelloRetryRequest when there is one,
+        // else after the ServerHello - which is what `saw_compat_ccs`
+        // holds the server to.
         if self.negotiated_version == Some(Version::TLS13) || self.saw_retry_request {
             if payload != [1] {
                 return Err(Error::new(AlertDescription::DECODE_ERROR,
                     "A ChangeCipherSpec is a single byte with value 1."));
             }
+            // `WaitServerHello` is only the retry path: the record arrives
+            // between the HelloRetryRequest and the real ServerHello.
+            let before_finished = match self.state {
+                State::WaitServerHello => self.saw_retry_request,
+                State::WaitEncryptedExtensions
+                | State::WaitCertificate13
+                | State::WaitCertificateVerify
+                | State::WaitServerFinished13 => true,
+                _ => false,
+            };
+            if !before_finished || self.saw_compat_ccs {
+                return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
+                    format!("A ChangeCipherSpec arrived while {}; at TLS 1.3 one \
+                             is allowed, before the server's Finished.",
+                            self.state.describe())));
+            }
+            self.saw_compat_ccs = true;
             return Ok(());
         }
         if self.state != State::WaitChangeCipherSpec {
@@ -4651,6 +4780,119 @@ mod tests {
         builder.sign(&SigningKey::Ec { curve: &curve, private: &private }).unwrap()
     }
 
+    /// Our own server, and a client whose hello carries **no** key share,
+    /// so the server has to send a HelloRetryRequest.
+    ///
+    /// RFC 8446 4.2.8 allows an empty share list, and nothing else forces
+    /// a retry between these two ends: the pair of shares every browser
+    /// sends covers whatever this library's server prefers, so a handshake
+    /// between them never retries on its own - which is why
+    /// `server::tests::test_tls13_hello_retry_request` completes in the
+    /// ordinary two round trips and exercises no retry at all. The hello
+    /// written at construction is discarded and a second one written over
+    /// an emptied share list.
+    fn retrying_pair() -> (ClientConnection, crate::tls::server::ServerConnection) {
+        use crate::tls::server::{ServerConfig, ServerConnection, ServerKey};
+        use crate::x509::builder::{CertificateBuilder, SigningKey, SubjectKey};
+
+        let curve = crate::ec::curves::p256();
+        let (private, public) = curve.generate_key_pair().unwrap();
+        let point = curve.encode_point(&public, false).unwrap();
+        let leaf = CertificateBuilder::new(
+            "retry.test", SubjectKey::Ec { curve: &curve, point: &point })
+            .sign(&SigningKey::Ec { curve: &curve, private: &private }).unwrap();
+        let server = ServerConnection::new(ServerConfig::new(
+            vec![leaf], ServerKey::Ec { curve: "P-256", private })).unwrap();
+
+        let mut config = config();
+        config.verify_certificate = false;
+        let mut client = ClientConnection::new(config, "retry.test").unwrap();
+        client.take_outgoing();
+        client.key_shares = Vec::new();
+        client.send_client_hello().unwrap();
+        (client, server)
+    }
+
+    /// Pump the two ends until neither has anything to say, collecting
+    /// every byte the server wrote.
+    fn pump_collecting_server_output(
+        client: &mut ClientConnection,
+        server: &mut crate::tls::server::ServerConnection) -> Vec<u8> {
+        let mut from_server = Vec::new();
+        for _ in 0..6 {
+            let to_server = client.take_outgoing();
+            server.push_incoming(&to_server);
+            server.process().expect("the server refused the client");
+            let flight = server.take_outgoing();
+            if to_server.is_empty() && flight.is_empty() {
+                break;
+            }
+            from_server.extend_from_slice(&flight);
+            client.push_incoming(&flight);
+            client.process().expect("the client refused the server");
+        }
+        from_server
+    }
+
+    /// A HelloRetryRequest from this library's own server completes.
+    ///
+    /// What was wrong: the server fed the second ClientHello into the
+    /// transcript twice - once in `handle_handshake`, which updates the
+    /// transcript whenever one exists and after a retry one does, and
+    /// once more in `handle_client_hello_13`, which added the hello it
+    /// had just been handed. The handshake keys were then derived over a
+    /// transcript no client computes, and the client's first encrypted
+    /// record failed to authenticate. No test saw it because the only
+    /// retry the suite drove was OpenSSL retrying *this client*, and the
+    /// server's own retry test never produced a retry (see
+    /// `retrying_pair`).
+    #[test]
+    fn test_a_hello_retry_request_from_our_own_server_completes() {
+        let (mut client, mut server) = retrying_pair();
+        pump_collecting_server_output(&mut client, &mut server);
+        assert!(client.saw_retry_request, "no HelloRetryRequest arrived");
+        assert!(client.is_established(), "client: {:?}", client.state());
+        assert!(server.is_established(), "server: {}", server.state());
+
+        // And the application keys agree, which the Finished alone does
+        // not show.
+        client.write(b"after the retry").unwrap();
+        server.push_incoming(&client.take_outgoing());
+        server.process().unwrap();
+        assert_eq!(server.take_incoming(), b"after the retry");
+        server.write(b"and back").unwrap();
+        client.push_incoming(&server.take_outgoing());
+        client.process().unwrap();
+        assert_eq!(client.take_incoming(), b"and back");
+    }
+
+    /// After a HelloRetryRequest the server sends its compatibility
+    /// ChangeCipherSpec once - after the retry, as RFC 8446 appendix D.4
+    /// places it, and not again after the real ServerHello.
+    ///
+    /// Pinned on the bytes because this client refuses a second
+    /// ChangeCipherSpec, so a server that still sent two would fail only
+    /// its own client, after a retry, over a record it sent itself.
+    #[test]
+    fn test_the_retry_path_sends_one_change_cipher_spec() {
+        let (mut client, mut server) = retrying_pair();
+        let from_server = pump_collecting_server_output(&mut client, &mut server);
+        assert!(client.saw_retry_request, "no HelloRetryRequest arrived");
+        assert!(client.is_established(), "client: {:?}", client.state());
+
+        let mut ccs = 0;
+        let mut at = 0;
+        while at + 5 <= from_server.len() {
+            let length = u16::from_be_bytes([from_server[at + 3],
+                                             from_server[at + 4]]) as usize;
+            if from_server[at] == ContentType::ChangeCipherSpec.to_byte() {
+                ccs += 1;
+            }
+            at += 5 + length;
+        }
+        assert_eq!(ccs, 1, "the server sent {} ChangeCipherSpec records", ccs);
+    }
+
     /// A HelloRetryRequest is answered with a second hello carrying the
     /// group the server asked for - and the transcript is rebuilt, not
     /// appended to.
@@ -4717,6 +4959,80 @@ mod tests {
         assert_eq!(&synthetic.raw[1..4], &[0, 0, 32]);
     }
 
+    /// After a HelloRetryRequest, the real ServerHello must keep the
+    /// retry's suite, stay at TLS 1.3 and answer with the requested
+    /// group.
+    ///
+    /// What was wrong: nothing after `saw_retry_request` compared the
+    /// ServerHello with the retry. A 1.2 ServerHello took the 1.2 path
+    /// over a transcript prefix holding a synthetic `message_hash` and
+    /// failed later with nothing to say a retry caused it; a different
+    /// suite went into the key schedule under a hash the retry had not
+    /// committed to. RFC 8446 4.1.4 requires `illegal_parameter` for
+    /// each. No test saw it because the only retries driven were honest
+    /// ones, OpenSSL's and this library's server's, and each of them
+    /// answers with exactly what it asked for.
+    #[test]
+    fn test_a_server_hello_after_a_retry_must_match_the_retry() {
+        use crate::tls::handshake13::encode_server_supported_version;
+        let group = groups::SECP384R1;
+        let fresh = || {
+            let mut connection = ClientConnection::new(config(), "example.test")
+                .unwrap();
+            connection.take_outgoing();
+            connection.dispatch_handshake(&retry_request(0x1301, group, None))
+                .unwrap();
+            assert_eq!(connection.retry_choice, Some((0x1301, group)));
+            connection
+        };
+        let share = |group: u16| {
+            let key = EphemeralKey::generate(group).unwrap();
+            Extension { kind: extension::KEY_SHARE,
+                        body: hs13::encode_server_key_share(&key.entry()).unwrap() }
+        };
+        let supported = Extension { kind: extension::SUPPORTED_VERSIONS,
+                                    body: encode_server_supported_version(Version::TLS13) };
+        let hello = |suite: u16, extensions: Vec<Extension>| {
+            let hello = ServerHello {
+                legacy_version: Version::TLS12,
+                random: [7u8; 32],
+                session_id: Vec::new(),
+                cipher_suite: suite,
+                compression_method: 0,
+                extensions,
+            };
+            HandshakeMessage::new(HandshakeType::ServerHello, hello.encode().unwrap())
+                .unwrap()
+        };
+
+        // A different suite from the one the retry named.
+        let error = fresh().dispatch_handshake(
+            &hello(0x1302, vec![supported.clone(), share(group)])).unwrap_err();
+        assert_eq!(error.alert, Some(AlertDescription::ILLEGAL_PARAMETER));
+        assert!(error.detail.contains("settled by the retry"), "{}", error.detail);
+
+        // TLS 1.2: no supported_versions, so the legacy field decides.
+        let error = fresh().dispatch_handshake(
+            &hello(0x1301, vec![share(group)])).unwrap_err();
+        assert_eq!(error.alert, Some(AlertDescription::ILLEGAL_PARAMETER));
+        assert!(error.detail.contains("TLS 1.3"), "{}", error.detail);
+
+        // A share for a group other than the one asked for.
+        let error = fresh().dispatch_handshake(
+            &hello(0x1301, vec![supported.clone(), share(groups::SECP256R1)]))
+            .unwrap_err();
+        assert_eq!(error.alert, Some(AlertDescription::ILLEGAL_PARAMETER));
+        assert!(error.detail.contains("asked for"), "{}", error.detail);
+
+        // And the matching answer gets past all three checks: it fails
+        // only further on, at the key schedule's certificate, which is
+        // the next state and not a retry complaint.
+        let mut connection = fresh();
+        connection.dispatch_handshake(&hello(0x1301, vec![supported, share(group)]))
+            .unwrap();
+        assert_eq!(connection.state, State::WaitEncryptedExtensions);
+    }
+
     /// The retries that must be refused.
     #[test]
     fn test_a_hello_retry_request_that_cannot_help_is_refused() {
@@ -4781,6 +5097,47 @@ mod tests {
         };
         HandshakeMessage::new(HandshakeType::ServerHello, hello.encode().unwrap())
             .unwrap()
+    }
+
+    /// A HelloRequest is refused at TLS 1.3, declined with a warning on
+    /// an established 1.2 connection, and ignored mid-handshake.
+    ///
+    /// What was wrong: every HelloRequest, at any version and in any
+    /// state, was answered with a `no_renegotiation` warning. At 1.3 the
+    /// message does not exist and belongs with every other message out
+    /// of place; mid-handshake RFC 5246 7.4.1.1 says to ignore it. No
+    /// server in the tests sends one, so the messages are dispatched by
+    /// hand.
+    #[test]
+    fn test_a_hello_request_is_answered_by_version_and_state() {
+        let request = HandshakeMessage::new(HandshakeType::HelloRequest, vec![])
+            .unwrap();
+
+        let mut connection = ClientConnection::new(config(), "example.test").unwrap();
+        connection.take_outgoing();
+        connection.state = State::Established;
+        connection.negotiated_version = Some(Version::TLS13);
+        let error = connection.dispatch_handshake(&request).unwrap_err();
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE));
+
+        let mut connection = ClientConnection::new(config(), "example.test").unwrap();
+        connection.take_outgoing();
+        connection.state = State::Established;
+        connection.negotiated_version = Some(Version::TLS12);
+        connection.dispatch_handshake(&request).unwrap();
+        let out = connection.take_outgoing();
+        assert_eq!(out.first(), Some(&ContentType::Alert.to_byte()));
+        let alert = Alert::parse(&out[5..]).unwrap();
+        assert_eq!(alert, Alert::warning(AlertDescription::NO_RENEGOTIATION));
+        assert!(connection.is_established());
+
+        let mut connection = ClientConnection::new(config(), "example.test").unwrap();
+        connection.take_outgoing();
+        assert_eq!(connection.state, State::WaitServerHello);
+        connection.dispatch_handshake(&request).unwrap();
+        assert!(connection.take_outgoing().is_empty(),
+                "a HelloRequest mid-handshake was answered");
+        assert_eq!(connection.state, State::WaitServerHello);
     }
 
     /// A TLS 1.3 KeyUpdate steps the reading epoch, and only that.
@@ -5767,6 +6124,33 @@ mod tests {
                                             body).unwrap();
         let mut writer = RecordWriter::new(Version::TLS12);
         writer.write(ContentType::Handshake, &message.raw).unwrap()
+    }
+
+    /// A second ServerKeyExchange in one flight is refused.
+    ///
+    /// What was wrong: the state did not move after a ServerKeyExchange,
+    /// so a second one was parsed and its parameters replaced the
+    /// first's. The sibling messages (CertificateRequest,
+    /// CertificateStatus) each refuse a second copy and this one did
+    /// not. No real server sends two, so the first is stood in for by
+    /// the parameters it would have left behind, and the second is a
+    /// message that would otherwise be refused for its *group* - the
+    /// alert tells the two refusals apart.
+    #[test]
+    fn test_a_second_server_key_exchange_is_refused() {
+        let mut connection = up_to_server_key_exchange();
+        connection.server_ecdh = Some(crate::tls::handshake::ServerEcdhParams {
+            group: groups::SECP256R1,
+            point: vec![4; 65],
+            raw_params: Vec::new(),
+            scheme: None,
+            signature: Vec::new(),
+        });
+        connection.push_incoming(&server_key_exchange_bytes(groups::SECP256K1));
+        let error = connection.process().unwrap_err();
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                   "{}", error.detail);
+        assert!(error.detail.contains("second ServerKeyExchange"), "{}", error.detail);
     }
 
     /// A server that picks a curve the client did not offer is choosing the

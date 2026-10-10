@@ -34,6 +34,33 @@ use crate::hash_functions::{md5::MD5, sha1::SHA1, HashFunction};
 use crate::mac::hmac::Hmac;
 use crate::Mac;
 
+/// The most bytes any derivation here produces in one call: 1 GiB.
+///
+/// Several constructions have a far larger ceiling of their own (PBKDF2
+/// with SHA-256 can address 137 GB) or none at all (P_hash), and every
+/// one reserves its output before the first MAC. A length from a caller
+/// (the Python and C surfaces take one) therefore reached the
+/// allocator unchecked, where failure is an abort rather than an error.
+/// No key is a gigabyte; the cap is a bound on damage, not on use.
+pub const MAX_OUTPUT_BYTES: usize = 1 << 30;
+
+/// An empty output buffer with room for `length` bytes, or an error:
+/// above `MAX_OUTPUT_BYTES`, or if the allocator refuses.
+///
+/// `try_reserve_exact` rather than `with_capacity` because the latter
+/// calls `handle_alloc_error` on failure, which aborts the process and
+/// cannot be caught from Python or C.
+pub(crate) fn output_buffer(length: usize, what: &str) -> Result<Vec<u8>, String> {
+    if length > MAX_OUTPUT_BYTES {
+        return Err(format!("{} produces at most {} bytes in one call; asked for {}.",
+                           what, MAX_OUTPUT_BYTES, length));
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(length).map_err(|_| format!(
+        "Could not allocate {} bytes for the {} output.", length, what))?;
+    Ok(out)
+}
+
 // ------------------------------------------------------------------ HKDF ---
 
 /// HKDF-Extract (RFC 5869 section 2.2): condense the input keying material
@@ -97,9 +124,23 @@ pub fn hkdf<H: HashFunction + Clone>(hash: H, salt: &[u8], ikm: &[u8], info: &[u
 ///                        HMAC_hash(secret, A(2) + seed) + ...
 /// A(0) = seed,  A(i) = HMAC_hash(secret, A(i-1))
 /// ```
+///
+/// # Panics
+/// `length` above `MAX_OUTPUT_BYTES`, or an output buffer the allocator
+/// refuses. TLS asks for key blocks of a few hundred bytes; a length
+/// from outside goes through `try_p_hash`.
 pub fn p_hash<H: HashFunction + Clone>(hash: H, secret: &[u8], seed: &[u8],
                                        length: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(length);
+    match try_p_hash(hash, secret, seed, length) {
+        Ok(out) => out,
+        Err(reason) => panic!("{reason}"),
+    }
+}
+
+/// `p_hash`, with the cap and the allocation reported as an error.
+pub fn try_p_hash<H: HashFunction + Clone>(hash: H, secret: &[u8], seed: &[u8],
+                                           length: usize) -> Result<Vec<u8>, String> {
+    let mut out = output_buffer(length, "P_hash")?;
     let mut a = seed.to_vec();          // A(0)
     while out.len() < length {
         // A(i) = HMAC(secret, A(i-1))
@@ -113,17 +154,30 @@ pub fn p_hash<H: HashFunction + Clone>(hash: H, secret: &[u8], seed: &[u8],
         let take = core::cmp::min(block.len(), length - out.len());
         out.extend_from_slice(&block[..take]);
     }
-    out
+    Ok(out)
 }
 
 /// The TLS 1.2 PRF: `P_hash(secret, label + seed)`. The hash is whatever the
 /// negotiated cipher suite specifies, usually SHA-256.
+///
+/// # Panics
+/// As `p_hash`; `try_tls12_prf` reports the cap as an error.
 pub fn tls12_prf<H: HashFunction + Clone>(hash: H, secret: &[u8], label: &[u8],
                                           seed: &[u8], length: usize) -> Vec<u8> {
+    match try_tls12_prf(hash, secret, label, seed, length) {
+        Ok(out) => out,
+        Err(reason) => panic!("{reason}"),
+    }
+}
+
+/// `tls12_prf`, with the cap and the allocation reported as an error.
+pub fn try_tls12_prf<H: HashFunction + Clone>(hash: H, secret: &[u8], label: &[u8],
+                                              seed: &[u8], length: usize)
+                                              -> Result<Vec<u8>, String> {
     let mut label_and_seed = Vec::with_capacity(label.len() + seed.len());
     label_and_seed.extend_from_slice(label);
     label_and_seed.extend_from_slice(seed);
-    p_hash(hash, secret, &label_and_seed, length)
+    try_p_hash(hash, secret, &label_and_seed, length)
 }
 
 /// The TLS 1.0/1.1 PRF (RFC 2246 section 5): split the secret in half, run
@@ -131,7 +185,19 @@ pub fn tls12_prf<H: HashFunction + Clone>(hash: H, secret: &[u8], label: &[u8],
 ///
 /// An odd length secret shares its middle byte between the halves, which the
 /// RFC specifies explicitly.
+///
+/// # Panics
+/// As `p_hash`; `try_tls10_prf` reports the cap as an error.
 pub fn tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8> {
+    match try_tls10_prf(secret, label, seed, length) {
+        Ok(out) => out,
+        Err(reason) => panic!("{reason}"),
+    }
+}
+
+/// `tls10_prf`, with the cap and the allocation reported as an error.
+pub fn try_tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], length: usize)
+                     -> Result<Vec<u8>, String> {
     let half = secret.len().div_ceil(2);
     let s1 = &secret[..half];
     let s2 = &secret[secret.len() - half..];
@@ -140,15 +206,36 @@ pub fn tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec
     label_and_seed.extend_from_slice(label);
     label_and_seed.extend_from_slice(seed);
 
-    let md5 = p_hash(MD5::new(&[]), s1, &label_and_seed, length);
-    let sha1 = p_hash(SHA1::new(&[]), s2, &label_and_seed, length);
-    md5.iter().zip(sha1.iter()).map(|(a, b)| a ^ b).collect()
+    let md5 = try_p_hash(MD5::new(&[]), s1, &label_and_seed, length)?;
+    let sha1 = try_p_hash(SHA1::new(&[]), s2, &label_and_seed, length)?;
+    Ok(md5.iter().zip(sha1.iter()).map(|(a, b)| a ^ b).collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hash_functions::sha2;
+
+    /// `p_hash` reserved its whole output with `Vec::with_capacity`
+    /// and had no ceiling at all, so a length from Python's `tls12_prf`
+    /// or `tls10_prf` in the gigabytes aborted the process at the
+    /// allocator. The existing tests derived TLS-sized key blocks. The
+    /// requests here are refused by the cap before any allocation, and
+    /// the `try_` forms agree with the plain ones inside it.
+    #[test]
+    fn test_an_oversized_prf_output_is_an_error_not_an_abort() {
+        let too_long = MAX_OUTPUT_BYTES + 1;
+        let reason = try_p_hash(sha2::SHA256::new(&[]), b"s", b"seed", too_long)
+            .unwrap_err();
+        assert!(reason.contains("at most"), "{reason}");
+        assert!(try_tls12_prf(sha2::SHA256::new(&[]), b"s", b"l", b"seed", too_long)
+                    .is_err());
+        assert!(try_tls10_prf(b"s", b"l", b"seed", usize::MAX).is_err());
+        assert_eq!(try_tls12_prf(sha2::SHA256::new(&[]), b"s", b"l", b"seed", 100).unwrap(),
+                   tls12_prf(sha2::SHA256::new(&[]), b"s", b"l", b"seed", 100));
+        assert_eq!(try_tls10_prf(b"s", b"l", b"seed", 100).unwrap(),
+                   tls10_prf(b"s", b"l", b"seed", 100));
+    }
 
     /// RFC 5869 test case 1: SHA-256, 22 byte IKM, with salt and info.
     #[test]

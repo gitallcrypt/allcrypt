@@ -33,7 +33,7 @@ fn main() {
         .collect();
     for key_len in [16usize, 24, 32] {
         let key = filler(key_len, 1);
-        let ocb = Ocb::new("aes", &key).unwrap();
+        let mut ocb = Ocb::new("aes", &key).unwrap();
         for nonce_len in [12usize, 13, 14, 15] {
             for aad_len in [0usize, 1, 15, 16, 17, 32, 61] {
                 let aad = filler(aad_len, 3);

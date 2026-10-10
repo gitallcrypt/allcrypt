@@ -212,7 +212,9 @@ The output buffer is appended to, never cleared, so you can build up a result
 across several calls without the modes trampling what is already there.
 
 Available ciphers: `aes::AesCrypto` (16, 24 or 32 byte keys),
-`blowfish::Blowfish` (1..=56 bytes), `blowfish::BlowfishLe` (the same
+`blowfish::Blowfish` (1..=72 bytes: the specification says 56, and the
+leniency to 72 - the width of the P-array - is the one most implementations
+share), `blowfish::BlowfishLe` (the same
 cipher reading its block as little-endian words, as TrueCrypt does; named
 `blowfish-le` in the facade), `des::Des` (8 bytes),
 `des::TripleDes` (8, 16 or 24), `gost::GostCrypto` (32 bytes plus an
@@ -441,6 +443,33 @@ assert_eq!(a, b);
 RFC 2612's appendix is parsed at test time down to every quad-round's
 keys and output, and Bouncy Castle agrees over all five key lengths.
 
+### Rijndael with wider blocks
+
+AES is Rijndael with a 128 bit block. The submission also takes 160,
+192, 224 and 256 bit blocks, each with a key of 16, 20, 24, 28 or 32
+bytes, and those survive in data written before FIPS 197 or by mcrypt's
+`MCRYPT_RIJNDAEL_256`. The round count is `max(Nb, Nk) + 6` in 32 bit
+words, so a 256 bit block takes fourteen rounds even under a 128 bit
+key, and ShiftRows' offsets change at 224 and 256 bits.
+
+```rust
+use allcrypt::block_ciphers::rijndael::Rijndael;
+use allcrypt::block_ciphers::BlockCipher;
+
+let mut wide = Rijndael::new(32, vec![0u8; 32])?;
+let mut out = Vec::new();
+wide.block_encrypt(&[0u8; 32], &mut out);
+assert_eq!(out.len(), 32);
+assert_eq!(out[..4], [0xc6, 0x22, 0x7e, 0x77]);
+assert!(Rijndael::new(36, vec![0u8; 16]).is_err());
+```
+
+In the catalogue they are `rijndael-128` to `rijndael-256`, named by
+block size as mcrypt named them; the chaining modes take them with a
+one-block IV. It is not constant time; for the 128 bit block use `aes`.
+Bouncy Castle and phpseclib agree on every row of
+`vectors/rijndael.vec`.
+
 ### RC6
 
 RC6-32/20/b, the AES finalist from the RC5 family: a 128 bit block,
@@ -542,7 +571,7 @@ use allcrypt::block_ciphers::blowfish::Blowfish;
 use allcrypt::block_ciphers::{BlockCipher, Cbc};
 
 let iv = vec![0u8; 8];
-let mut cipher = Blowfish::new(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+let mut cipher = Blowfish::new(vec![1, 2, 3, 4, 5, 6, 7, 8])?;
 let mut out = vec![];
 {
     let mut stream = Cbc::encryptor(&mut cipher, &iv)?;
@@ -671,7 +700,7 @@ block too**, because RFC 9058 gives a field polynomial for each size.
 use allcrypt::block_ciphers::mgm::Mgm;
 
 let key = vec![0x2bu8; 32];
-let mgm = Mgm::new("kuznyechik", &key)?;
+let mut mgm = Mgm::new("kuznyechik", &key)?;
 
 // The nonce is **one block with the top bit clear**: that bit is the
 // domain separator between MGM's two counter chains, so it is not part
@@ -682,14 +711,14 @@ assert_eq!(tag.len(), 16);
 assert_eq!(mgm.decrypt(&icn, b"headers", &sealed, &tag)?, b"the payload");
 
 // Magma: the same mode, a different field, and an 8 byte everything.
-let magma = Mgm::new("magma", &key)?;
+let mut magma = Mgm::new("magma", &key)?;
 let (sealed, tag) = magma.encrypt(&[0x11u8; 8], b"headers", b"payload")?;
 assert_eq!(tag.len(), 8);
 assert_eq!(magma.decrypt(&[0x11u8; 8], b"headers", &sealed, &tag)?,
            b"payload");
 
 // RFC 9058 section 4 allows a tag from 32 bits up to the block.
-let short = Mgm::with_tag_len("kuznyechik", &key, 8)?;
+let mut short = Mgm::with_tag_len("kuznyechik", &key, 8)?;
 assert_eq!(short.encrypt(&icn, b"h", b"m")?.1.len(), 8);
 ```
 
@@ -706,7 +735,7 @@ not be safe rather than because it would be awkward:
 ```rust
 use allcrypt::block_ciphers::mgm::Mgm;
 
-let mgm = Mgm::new("magma", &[0x33u8; 32])?;
+let mut mgm = Mgm::new("magma", &[0x33u8; 32])?;
 assert!(mgm.encrypt(&[0x01u8; 8], b"", b"").is_err());
 assert!(mgm.encrypt(&[0x81u8; 8], b"a", b"b").is_err());
 ```
@@ -720,14 +749,14 @@ the default AEAD of OpenPGP's encrypted data packets.
 ```rust
 use allcrypt::block_ciphers::ocb::Ocb;
 
-let ocb = Ocb::new("aes", &[0x2bu8; 16])?;
+let mut ocb = Ocb::new("aes", &[0x2bu8; 16])?;
 let nonce = [0x11u8; 15];                      // up to 120 bits
 let (sealed, tag) = ocb.encrypt(&nonce, b"headers", b"the payload")?;
 assert_eq!(ocb.decrypt(&nonce, b"headers", &sealed, &tag)?, b"the payload");
 
 // The tag length is written into the nonce block, so a 12 byte tag is
 // not the 16 byte one cut short: it is a different ciphertext as well.
-let short = Ocb::with_tag_len("aes", &[0x2bu8; 16], 12)?;
+let mut short = Ocb::with_tag_len("aes", &[0x2bu8; 16], 12)?;
 let (other, short_tag) = short.encrypt(&nonce, b"headers", b"the payload")?;
 assert_ne!(other, sealed);
 assert_ne!(&tag[..12], &short_tag[..]);
@@ -934,7 +963,7 @@ assert_eq!(ptk.len(), 48);
 
 // TKIP mixes a fresh RC4 key per frame; WEP's encapsulation decrypts it.
 let rc4_key = tkip::rc4_key(&[7; 16], &[1, 2, 3, 4, 5, 6], 0x1_0002);
-let sealed = wep::seal(&rc4_key, b"payload");
+let sealed = wep::seal(&rc4_key, b"payload")?;
 assert_eq!(wep::open(&rc4_key, &sealed)?, b"payload");
 ```
 
@@ -1879,12 +1908,12 @@ use allcrypt::ec::{x25519, xeddsa::{self, Form}};
 let (private, public) = x25519::generate_key_pair()?;
 let mut random = [0u8; 64];
 allcrypt::random::fill(&mut random)?;
-let signature = xeddsa::sign(Form::Signal, &private, b"a message", &random);
+let signature = xeddsa::sign(Form::Signal, &private, b"a message", &random)?;
 xeddsa::verify(Form::Signal, &public, b"a message", &signature)?;
 
 // A specification signature verifies under the Signal verifier for
 // every key; the converse holds only for half of them.
-let signature = xeddsa::sign(Form::Specification, &private, b"a message", &random);
+let signature = xeddsa::sign(Form::Specification, &private, b"a message", &random)?;
 xeddsa::verify(Form::Signal, &public, b"a message", &signature)?;
 ```
 

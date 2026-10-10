@@ -122,12 +122,18 @@ struct Stream {
     cipher: GostCrypto,
     /// The counter block, `(N1, N2)` little endian, as it stands before
     /// the next gamma block is made from it.
-    counter: Vec<u8>,
+    ///
+    /// Fixed arrays, not `Vec`s: a stream advances one block per eight
+    /// bytes, and a `clone` of a `Vec` there is an allocation per block
+    /// - the thing the mode code is written to avoid.
+    counter: [u8; BLOCK],
     /// The counter value that produced the *last* gamma block - one
     /// step behind `counter`. Meshing needs this one, not the next:
     /// see the note in `apply`.
-    previous: Vec<u8>,
+    previous: [u8; BLOCK],
     /// Gamma produced and not yet used, and how much of it is spent.
+    /// Cleared and refilled in place; `block_encrypt` appends to a `Vec`,
+    /// and the capacity stays with it after the first block.
     gamma: Vec<u8>,
     used: usize,
     /// Octets since the last meshing. RFC 4357 counts *data*, so this
@@ -144,11 +150,13 @@ impl Stream {
         // RFC 5830 section 6: the IV is encrypted once to make the
         // starting counter, and the counter is stepped before the first
         // gamma block. `ctr_init` on the cipher does both.
-        let mut counter = Vec::new();
-        cipher.ctr_init(iv, &mut counter)?;
-        let previous = counter.clone();
+        let mut initial = Vec::new();
+        cipher.ctr_init(iv, &mut initial)?;
+        let counter: [u8; BLOCK] = initial.as_slice().try_into().map_err(|_| format!(
+            "GOST's starting counter is {} bytes, not {}.", initial.len(), BLOCK))?;
         Ok(Stream { sbox: sbox.to_string(), key: key.to_vec(), cipher, counter,
-                    previous, gamma: Vec::new(), used: 0, since_mesh: 0 })
+                    previous: counter, gamma: Vec::with_capacity(BLOCK), used: 0,
+                    since_mesh: 0 })
     }
 
     fn apply(&mut self, data: &mut [u8]) -> Result<(), String> {
@@ -180,7 +188,8 @@ impl Stream {
                 self.key = key;
                 self.cipher = GostCrypto::new(self.key.clone(),
                                               self.sbox.clone())?;
-                self.counter = iv;
+                self.counter = iv.as_slice().try_into().map_err(|_| format!(
+                    "The meshed IV is {} bytes, not {}.", iv.len(), BLOCK))?;
                 self.cipher.ctr_next(&mut self.counter);
                 self.gamma.clear();
                 self.used = 0;
@@ -188,9 +197,8 @@ impl Stream {
             }
             if self.used == self.gamma.len() {
                 self.gamma.clear();
-                let counter = self.counter.clone();
-                self.previous = counter.clone();
-                self.cipher.block_encrypt(&counter, &mut self.gamma);
+                self.previous = self.counter;
+                self.cipher.block_encrypt(&self.previous, &mut self.gamma);
                 if self.gamma.len() != BLOCK {
                     return Err(format!("GOST produced {} bytes for an {} byte \
                                         block.", self.gamma.len(), BLOCK));

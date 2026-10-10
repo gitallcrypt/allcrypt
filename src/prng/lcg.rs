@@ -219,9 +219,36 @@ pub struct LCG {
 impl LCG {
     /// A generator with any parameters. The output is `(state & mask) >>
     /// mask.trailing_zeros()`, and `get_bytes` takes the low byte of each
-    /// output. `m` must not be 0.
+    /// output.
+    ///
+    /// # Panics
+    /// The parameters `try_new` refuses: `m < 2` or `mask == 0`. A
+    /// parameter from outside goes through `try_new`, which is what
+    /// `api::lcg_custom` does.
     pub fn new(state: u128, a: u128, c: u128, m: u128, mask: u128) -> LCG {
-        LCG {
+        match LCG::try_new(state, a, c, m, mask) {
+            Ok(lcg) => lcg,
+            Err(reason) => panic!("{reason}"),
+        }
+    }
+
+    /// `new`, with the parameters checked here rather than one layer
+    /// out: `m == 0` made `step` divide by zero, and `mask == 0` made
+    /// `mask.trailing_zeros()` 128 and the output shift by that - both
+    /// panics on first use rather than at construction.
+    ///
+    /// # Errors
+    /// `m < 2` (a modulus of 1 has one state) or `mask == 0` (an output
+    /// of no bits).
+    pub fn try_new(state: u128, a: u128, c: u128, m: u128, mask: u128)
+                   -> Result<LCG, String> {
+        if m < 2 {
+            return Err(format!("An LCG's modulus is at least 2, not {m}."));
+        }
+        if mask == 0 {
+            return Err("An LCG's output mask selects no bits.".to_string());
+        }
+        Ok(LCG {
             state,
             a,
             c,
@@ -230,7 +257,7 @@ impl LCG {
             mask_shift: mask.trailing_zeros(),
             signed: false,
             named: None,
-        }
+        })
     }
 
     /// One of `NAMED`, seeded by its own rule.
@@ -635,5 +662,20 @@ mod tests {
         let mut j = JavaRandom::new(0);
         assert!(j.next_int_bounded(0).is_err());
         assert!(j.next_int_bounded(-5).is_err());
+    }
+
+    /// `LCG::new` accepted `m == 0` and `mask == 0`, each a panic on
+    /// the first output (a division by zero, a shift by 128), and the
+    /// guard lived only in `api::lcg_custom`. The tests built
+    /// generators with valid parameters only.
+    #[test]
+    fn test_a_degenerate_modulus_or_mask_is_refused_at_construction() {
+        assert!(LCG::try_new(1, 3, 5, 0, 0xff).is_err(), "m = 0");
+        assert!(LCG::try_new(1, 3, 5, 1, 0xff).is_err(), "m = 1");
+        assert!(LCG::try_new(1, 3, 5, 7, 0).is_err(), "mask = 0");
+        let mut lcg = LCG::try_new(1, 3, 5, 7, 0xff).unwrap();
+        let mut out = Vec::new();
+        lcg.get_raw_output(&mut out);
+        assert_eq!(out, vec![(3 + 5) % 7], "a * 1 + c mod m");
     }
 }

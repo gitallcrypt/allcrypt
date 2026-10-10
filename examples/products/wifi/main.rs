@@ -516,7 +516,7 @@ mod tests {
             f.extend_from_slice(&[0, 0]);           // SC
             f.extend_from_slice(&[0x01, 0x02, 0x03, 0x00]);   // IV, keyid 0
             let snap = b"\xaa\xaa\x03\x00\x00\x00\x08\x00payload";
-            f.extend(wep::encrypt(key, &[0x01, 0x02, 0x03], snap));
+            f.extend(wep::encrypt(key, &[0x01, 0x02, 0x03], snap).unwrap());
             f
         };
         let station = Station::default();

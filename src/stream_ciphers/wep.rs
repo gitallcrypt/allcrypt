@@ -20,11 +20,13 @@ fn rc4(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// RC4 under `rc4_key` over `plaintext || CRC-32(plaintext)`.
-pub fn seal(rc4_key: &[u8], plaintext: &[u8]) -> Vec<u8> {
+/// RC4 under `rc4_key` over `plaintext || CRC-32(plaintext)`. The key
+/// is RC4's to refuse: empty, or longer than the 256 bytes its key
+/// schedule reads.
+pub fn seal(rc4_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let mut data = plaintext.to_vec();
     data.extend_from_slice(&crate::checksum::crc32(plaintext).to_le_bytes());
-    rc4(rc4_key, &data).expect("an RC4 key of one byte or more")
+    rc4(rc4_key, &data)
 }
 
 /// The inverse of `seal`; a wrong key or an altered frame fails the ICV.
@@ -43,8 +45,9 @@ pub fn open(rc4_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, String> {
 
 /// WEP proper: the RC4 key is the frame's 3-byte IV followed by the
 /// 5- or 13-byte shared key (WEP-40 and WEP-104), or any other length a
-/// vendor allowed.
-pub fn encrypt(key: &[u8], iv: &[u8; 3], plaintext: &[u8]) -> Vec<u8> {
+/// vendor allowed - up to 253 bytes, since RC4 reads at most 256 and
+/// the IV takes three of them.
+pub fn encrypt(key: &[u8], iv: &[u8; 3], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     seal(&[&iv[..], key].concat(), plaintext)
 }
 
@@ -59,18 +62,37 @@ mod tests {
     #[test]
     fn test_round_trip_and_icv() {
         let key = [0x1f; 5];
-        let sealed = encrypt(&key, &[1, 2, 3], b"hello");
+        let sealed = encrypt(&key, &[1, 2, 3], b"hello").unwrap();
         assert_eq!(sealed.len(), 9);
         assert_eq!(decrypt(&key, &[1, 2, 3], &sealed).unwrap(), b"hello");
         assert!(decrypt(&key, &[1, 2, 4], &sealed).is_err());
         assert!(decrypt(&key, &[1, 2, 3], &sealed[..3]).is_err());
     }
 
+    /// `seal` used to `expect` an RC4 key of one byte or more, and the
+    /// message named the only case it had in mind: RC4 also refuses a
+    /// key past 256 bytes, and `encrypt` puts three bytes of IV in front
+    /// of the shared key, so a 254 byte key - "any other length a
+    /// vendor allowed" - panicked instead of being refused, and from
+    /// Python that was a PanicException rather than a ValueError. The
+    /// tests only used the 5 and 13 byte keys of WEP-40 and WEP-104.
+    /// Now the refusal is an error: 253 bytes is the longest key that
+    /// fits, 254 is refused, and so is an empty RC4 key handed to
+    /// `seal` directly.
+    #[test]
+    fn test_a_key_rc4_refuses_is_an_error() {
+        assert!(encrypt(&[7u8; 253], &[1, 2, 3], b"x").is_ok());
+        assert!(encrypt(&[7u8; 254], &[1, 2, 3], b"x").is_err());
+        assert!(decrypt(&[7u8; 254], &[1, 2, 3], &[0; 5]).is_err());
+        assert!(seal(&[], b"x").is_err());
+        assert!(seal(&[0u8; 257], b"x").is_err());
+    }
+
     /// The RC4 key is IV first, then the shared key; the ICV is the
     /// CRC-32 little endian.
     #[test]
     fn test_layout() {
-        let sealed = encrypt(b"ABCDE", &[9, 8, 7], b"x");
+        let sealed = encrypt(b"ABCDE", &[9, 8, 7], b"x").unwrap();
         let mut plain = Vec::new();
         RC4::new(b"\x09\x08\x07ABCDE".to_vec()).unwrap().crypt(&sealed, &mut plain);
         assert_eq!(plain[0], b'x');
@@ -84,7 +106,7 @@ mod tests {
     fn test_the_icv_does_not_authenticate() {
         let key = [3u8; 13];
         let plain = b"pay 100 to alice";
-        let mut sealed = encrypt(&key, &[0, 0, 1], plain);
+        let mut sealed = encrypt(&key, &[0, 0, 1], plain).unwrap();
         let mut delta = vec![0u8; plain.len()];
         delta[4] = b'1' ^ b'9';
         let crc = |d: &[u8]| crate::checksum::crc32(d) ^ crate::checksum::crc32(&vec![0; d.len()]);

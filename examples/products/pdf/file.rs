@@ -104,6 +104,19 @@ fn be(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0, |acc, &b| (acc << 8) | u64::from(b))
 }
 
+/// An offset or count the file gives as an integer object: absent, or
+/// a non-negative value. A negative one would become a huge `usize`
+/// through `as`, so it is refused by name.
+fn non_negative(object: Option<&Object>, what: &str) -> Result<Option<usize>, String> {
+    match object {
+        None => Ok(None),
+        Some(object) => {
+            let value = object.as_int().ok_or(format!("/{what} is not an integer."))?;
+            usize::try_from(value).map(Some).map_err(|_| format!("/{what} is negative: {value}."))
+        }
+    }
+}
+
 impl Document {
     pub fn parse(mut data: Vec<u8>) -> Result<Document, String> {
         // Leading junk before the header - a mail or HTTP wrapper - is
@@ -123,6 +136,10 @@ impl Document {
         let mut parser = Parser::new(&doc.data, startxref + 9);
         let offset: usize = std::str::from_utf8(parser.token()).ok().and_then(|t| t.parse().ok())
             .ok_or("startxref is not followed by an offset.")?;
+        if offset >= doc.data.len() {
+            return Err(format!("startxref points past the end of the file: {offset} of {} \
+                                bytes.", doc.data.len()));
+        }
         let mut next = Some(offset);
         let mut seen = std::collections::HashSet::new();
         while let Some(at) = next {
@@ -143,7 +160,7 @@ impl Document {
     }
 
     fn read_section_in(&mut self, data: &[u8], at: usize) -> Result<Option<usize>, String> {
-        let mut parser = Parser::new(data, at);
+        let mut parser = Parser::at_offset(data, at)?;
         let first_trailer = self.trailer.is_empty();
         let trailer;
         if parser.token() == b"xref" {
@@ -160,7 +177,8 @@ impl Document {
                     let offset = parser.token();
                     let generation = parser.token();
                     let kind = parser.token();
-                    let number = start + i;
+                    let number = start.checked_add(i)
+                        .ok_or("An xref subsection's object numbers pass 2^32.")?;
                     if kind == b"n" && !self.xref.contains_key(&number) {
                         let offset = std::str::from_utf8(offset).ok().and_then(|t| t.parse().ok())
                             .ok_or("A malformed xref entry.")?;
@@ -178,8 +196,8 @@ impl Document {
             };
             // A hybrid file's cross-reference stream fills in what the
             // table leaves out.
-            if let Some(stream_at) = get(&trailer, "XRefStm").and_then(Object::as_int) {
-                let mut sub = Parser::new(data, stream_at as usize);
+            if let Some(stream_at) = non_negative(get(&trailer, "XRefStm"), "XRefStm")? {
+                let mut sub = Parser::at_offset(data, stream_at)?;
                 sub.token();
                 sub.token();
                 sub.keyword("obj")?;
@@ -188,7 +206,7 @@ impl Document {
                 }
             }
         } else {
-            let mut parser = Parser::new(data, at);
+            let mut parser = Parser::at_offset(data, at)?;
             parser.token();
             parser.token();
             parser.keyword("obj")?;
@@ -206,14 +224,19 @@ impl Document {
                 crate::object::remove(&mut self.trailer, key);
             }
         }
-        Ok(get(&trailer, "Prev").and_then(Object::as_int).map(|p| p as usize))
+        non_negative(get(&trailer, "Prev"), "Prev")
     }
 
     fn read_xref_stream(&mut self, dict: &Dict, raw: &[u8]) -> Result<(), String> {
         let decoded = decode_flate_with_predictor(dict, raw)?;
+        // Each field is a big-endian integer of up to 8 bytes (ISO
+        // 32000-2 table 17 lets a field be absent, width 0). A negative
+        // width would wrap through `as usize`, so each is checked here.
         let widths: Vec<usize> = match get(dict, "W") {
             Some(Object::Array(items)) => items.iter().filter_map(Object::as_int)
-                .map(|w| w as usize).collect(),
+                .map(|w| usize::try_from(w).ok().filter(|w| *w <= 8)
+                     .ok_or(format!("/W holds a width of {w}; 0 to 8 are possible.")))
+                .collect::<Result<_, _>>()?,
             _ => return Err("A cross-reference stream without /W.".to_string()),
         };
         if widths.len() != 3 {
@@ -227,7 +250,9 @@ impl Document {
         let entry_len: usize = widths.iter().sum();
         let mut at = 0;
         for pair in index.chunks(2) {
-            let (start, count) = (pair[0] as u32, *pair.get(1).unwrap_or(&0) as u32);
+            let as_u32 = |value: i64| u32::try_from(value)
+                .map_err(|_| format!("/Index holds {value}, which is not an object count."));
+            let (start, count) = (as_u32(pair[0])?, as_u32(*pair.get(1).unwrap_or(&0))?);
             for i in 0..count {
                 let entry = decoded.get(at..at + entry_len)
                     .ok_or("A cross-reference stream shorter than its /Index.")?;
@@ -235,7 +260,8 @@ impl Document {
                 let kind = if widths[0] == 0 { 1 } else { be(&entry[..widths[0]]) };
                 let second = be(&entry[widths[0]..widths[0] + widths[1]]);
                 let third = be(&entry[widths[0] + widths[1]..]);
-                let number = start + i;
+                let number = start.checked_add(i)
+                    .ok_or("A cross-reference stream's object numbers pass 2^32.")?;
                 if self.xref.contains_key(&number) {
                     continue;
                 }
@@ -258,31 +284,48 @@ impl Document {
         }
     }
 
-    /// The raw object as stored, undecrypted, with its generation.
-    fn raw(&self, number: u32) -> Result<(Object, u16), String> {
+    /// The raw object as stored, undecrypted, with its generation, and
+    /// the objects whose parsing led here. Reading one object
+    /// can need another: a stream's `/Length` may be a reference, and an
+    /// object in an object stream needs its container. A file can make
+    /// either point back at the object being read - `/Length 5 0 R` in
+    /// object 5, or object 7 located inside object 7 - so the chain is
+    /// refused when it repeats, and bounded in length against a long
+    /// one.
+    fn raw_in(&self, number: u32, chain: &[u32]) -> Result<(Object, u16), String> {
+        if chain.contains(&number) {
+            return Err(format!("Object {number} is needed to read itself: {chain:?}."));
+        }
+        if chain.len() >= 16 {
+            return Err(format!("Reading object {} needs more than 16 other objects.", chain[0]));
+        }
+        let mut chain = chain.to_vec();
+        chain.push(number);
         match self.xref.get(&number) {
             None => Ok((Object::Null, 0)),
             Some(Location::Offset(at, generation)) => {
-                let mut parser = Parser::new(&self.data, *at);
+                let mut parser = Parser::at_offset(&self.data, *at)
+                    .map_err(|e| format!("Object {number}: {e}"))?;
                 parser.token();
                 parser.token();
                 parser.keyword("obj")?;
                 let lengths = |n: u32, _g: u16| -> Option<i64> {
-                    self.raw(n).ok().and_then(|(o, _)| o.as_int())
+                    self.raw_in(n, &chain).ok().and_then(|(o, _)| o.as_int())
                 };
                 Ok((parser.object(&lengths)?, *generation))
             }
             Some(Location::InStream(stream, index)) => {
-                let (container, _) = self.object(*stream)?;
+                let (container, _) = self.object_in(*stream, &chain)?;
                 let (dict, data) = match container {
                     Object::Stream(dict, data) => (dict, data),
                     _ => return Err(format!("Object {number}'s object stream is not a stream.")),
                 };
                 let decoded = decode_flate_with_predictor(&dict, &data)?;
-                let n = get(&dict, "N").and_then(Object::as_int).unwrap_or(0) as usize;
-                let first = get(&dict, "First").and_then(Object::as_int).unwrap_or(0) as usize;
+                let n = non_negative(get(&dict, "N"), "N")?.unwrap_or(0);
+                let first = non_negative(get(&dict, "First"), "First")?.unwrap_or(0);
                 let mut header = Parser::new(&decoded, 0);
-                let mut offsets = Vec::with_capacity(n);
+                // Each pair in the header takes at least four bytes.
+                let mut offsets = Vec::with_capacity(n.min(decoded.len() / 4));
                 for _ in 0..n {
                     let num: u32 = std::str::from_utf8(header.token()).ok()
                         .and_then(|t| t.parse().ok()).ok_or("A malformed object stream.")?;
@@ -296,7 +339,9 @@ impl Document {
                     return Err(format!("Object stream {stream} holds {num} where {number} was \
                                         expected."));
                 }
-                let mut parser = Parser::new(&decoded, first + off);
+                let at = first.checked_add(off).ok_or("An object stream offset overflows.")?;
+                let mut parser = Parser::at_offset(&decoded, at)
+                    .map_err(|e| format!("Object {number} in object stream {stream}: {e}"))?;
                 Ok((parser.object(&|_, _| None)?, 0))
             }
         }
@@ -304,7 +349,11 @@ impl Document {
 
     /// An object, decrypted, with its generation.
     pub fn object(&self, number: u32) -> Result<(Object, u16), String> {
-        let (object, generation) = self.raw(number)?;
+        self.object_in(number, &[])
+    }
+
+    fn object_in(&self, number: u32, chain: &[u32]) -> Result<(Object, u16), String> {
+        let (object, generation) = self.raw_in(number, chain)?;
         let in_stream = matches!(self.xref.get(&number), Some(Location::InStream(..)));
         match &self.security {
             Some(security) if !in_stream && Some(number) != self.encrypt_object => {
@@ -543,6 +592,141 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(crate::fixtures::dir().join("pdf").join(name)).unwrap()
+    }
+
+    /// `text` replaced by `with`, once, in a file; the file is text at
+    /// that point, and nothing checksums it.
+    fn replaced(data: &[u8], text: &[u8], with: &[u8]) -> Vec<u8> {
+        let at = crate::object::find(data, text).unwrap_or_else(|| panic!("{text:?}"));
+        let mut out = data[..at].to_vec();
+        out.extend_from_slice(with);
+        out.extend_from_slice(&data[at + text.len()..]);
+        out
+    }
+
+    /// `Parser::new` took any offset, and `token` sliced the data from
+    /// it, so an offset past the end of the file - `startxref`, `/Prev`
+    /// (a negative one became huge through `as usize`), `/XRefStm`, or a
+    /// cross-reference entry - panicked where a damaged file should be
+    /// refused. The fixtures were all written by qpdf, pdftk or this
+    /// example, with every offset inside the file, so no test reached
+    /// one that was not.
+    #[test]
+    fn test_an_offset_past_the_end_of_the_file_is_refused() {
+        // A linearized file: the first section's trailer carries /Prev.
+        let data = fixture("qpdf-tests-enc-R2_V1.pdf");
+        assert!(Document::parse(data.clone()).is_ok());
+        let length = data.len();
+
+        let negative = replaced(&data, b"/Prev 15195", b"/Prev -5195");
+        let error = Document::parse(negative).err().unwrap();
+        assert!(error.contains("/Prev is negative"), "{error}");
+
+        let beyond = replaced(&data, b"/Prev 15195", format!("/Prev {}", length + 1).as_bytes());
+        let error = Document::parse(beyond).err().unwrap();
+        assert!(error.contains("past the end"), "{error}");
+
+        let tail = crate::object::find(&data[length - 40..], b"startxref").unwrap() + length - 40;
+        let digits: Vec<u8> = data[tail + 10..].iter().copied()
+            .take_while(u8::is_ascii_digit).collect();
+        assert!(!digits.is_empty());
+        // The number may grow the file by a few bytes.
+        let mut far = data[..tail + 10].to_vec();
+        far.extend_from_slice(format!("{}", length + 100).as_bytes());
+        far.extend_from_slice(&data[tail + 10 + digits.len()..]);
+        let error = Document::parse(far).err().unwrap();
+        assert!(error.contains("past the end"), "{error}");
+
+        // One cross-reference entry's offset, its first digit made a 9.
+        let entry = b"0000013970 00000 n";
+        let doc = Document::parse(data.clone()).unwrap();
+        let (number, _) = doc.xref.iter()
+            .find(|(_, at)| **at == Location::Offset(13970, 0)).unwrap();
+        let moved = replaced(&data, entry, b"9000013970 00000 n");
+        let doc = Document::parse(moved).unwrap();
+        let error = doc.object(*number).err().unwrap();
+        assert!(error.contains("past the end"), "{error}");
+    }
+
+    /// `/W` widths came through `as usize`, so `-1` became `usize::MAX`:
+    /// the entry length wrapped and the first field's slice panicked. An
+    /// `/Index` start near 2^32 overflowed the object number. The
+    /// fixtures' cross-reference streams all have `/W [1 2 1]` and start
+    /// at 0, so no test had a width or a start outside the format.
+    #[test]
+    fn test_a_cross_reference_stream_with_impossible_widths_is_refused() {
+        let data = fixture("qpdf-R2-plain-objstm.pdf");
+        assert!(Document::parse(data.clone()).is_ok());
+        let error = Document::parse(replaced(&data, b"/W [ 1 2 1 ]", b"/W [-1 2 1 ]")).err()
+            .unwrap();
+        assert!(error.contains("/W holds a width of -1"), "{error}");
+        let error = Document::parse(replaced(&data, b"/W [ 1 2 1 ]", b"/W [ 1 9 1 ]")).err()
+            .unwrap();
+        assert!(error.contains("/W holds a width of 9"), "{error}");
+        // The dictionary is text and nothing points past it, so it may
+        // grow: an /Index whose numbers pass 2^32.
+        let error = Document::parse(replaced(&data, b"/W [ 1 2 1 ]",
+                                             b"/W [ 1 2 1 ] /Index [ 4294967295 2 ]")).err()
+            .unwrap();
+        assert!(error.contains("pass 2^32"), "{error}");
+        let error = Document::parse(replaced(&data, b"/W [ 1 2 1 ]",
+                                             b"/W [ 1 2 1 ] /Index [ -1 2 ]")).err().unwrap();
+        assert!(error.contains("/Index holds -1"), "{error}");
+    }
+
+    /// A file of the given object bodies, numbered from 1, with a
+    /// classic cross-reference table.
+    fn file_of(bodies: &[&[u8]]) -> Vec<u8> {
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in bodies.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let start = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f\r\n", bodies.len() + 1)
+                              .as_bytes());
+        for offset in offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<</Size {}>>\nstartxref\n{start}\n%%EOF\n",
+                                      bodies.len() + 1).as_bytes());
+        out
+    }
+
+    /// A stream's `/Length` may be an indirect reference, resolved by
+    /// reading that object; an object in an object stream is read by
+    /// reading its container first. Nothing stopped either from
+    /// pointing back at the object being read, so `/Length 1 0 R` in
+    /// object 1, or object 2 located inside object stream 2, recursed
+    /// without bound and overflowed the stack. The `/Prev` chain was
+    /// guarded against loops; these two were not, and no fixture
+    /// written by a real producer has one.
+    #[test]
+    fn test_an_object_that_refers_to_itself_is_refused() {
+        let data = file_of(&[b"<</Length 1 0 R>>\nstream\nabc\nendstream",
+                             b"<</Length 2 0 R /Type /ObjStm /N 1 /First 4>>\nstream\n3 0 x\n\
+                               endstream"]);
+        let mut doc = Document::parse(data).unwrap();
+        // The length is unresolvable, so the stream ends at `endstream`.
+        match doc.object(1).unwrap().0 {
+            Object::Stream(_, data) => assert_eq!(data, b"abc"),
+            other => panic!("{other:?}"),
+        }
+        doc.xref.insert(2, Location::InStream(2, 0));
+        let error = doc.object(2).err().unwrap();
+        assert!(error.contains("needed to read itself"), "{error}");
+        // A loop through another object is a loop too.
+        doc.xref.insert(2, Location::InStream(3, 0));
+        doc.xref.insert(3, Location::InStream(2, 0));
+        let error = doc.object(2).err().unwrap();
+        assert!(error.contains("needed to read itself"), "{error}");
     }
 
     #[test]

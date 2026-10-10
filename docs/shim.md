@@ -170,7 +170,7 @@ There is no other channel — the command line belongs to the program.
 
 | | |
 |---|---|
-| `ALLCRYPT_CIPHERS` | `all` (default), `modern`, `legacy`, or a comma separated list |
+| `ALLCRYPT_CIPHERS` | `all` (default), `modern`, `legacy`, or a comma separated list; an unknown name refuses the connection |
 | `ALLCRYPT_MIN_VERSION` | `SSLv3`, `TLSv1` (default), `TLSv1.1`, `TLSv1.2`, `TLSv1.3` |
 | `ALLCRYPT_MAX_VERSION` | default `TLSv1.3` |
 | `ALLCRYPT_MIN_RSA_BITS` | default 1024 |
@@ -181,11 +181,16 @@ There is no other channel — the command line belongs to the program.
 | `ALLCRYPT_LOG` | append the same lines to a file |
 
 An OpenSSL cipher string passed by the program is **not** translated.
-`SSL_CTX_set_cipher_list("HIGH:!aNULL:!RC4")` succeeds and is ignored,
-with a note under `ALLCRYPT_VERBOSE`; the suites offered come from
-`ALLCRYPT_CIPHERS`. Failing the call instead would make curl and wget
-abort outright, which means no connection rather than one whose suite
-list came from somewhere else.
+`SSL_CTX_set_cipher_list("HIGH:!aNULL:!RC4")` succeeds and is ignored -
+and says so every time, on stderr unless `ALLCRYPT_QUIET` and as
+`cipher string not honoured: <string>` in `ALLCRYPT_LOG`, for the
+connection-level `SSL_set_cipher_list` and `SSL_set_ciphersuites` as
+well; the suites offered come from `ALLCRYPT_CIPHERS`. This is the one
+security-relevant request the shim reports rather than refuses: failing
+the call would make curl and wget abort outright, which means no
+connection rather than one whose suite list came from somewhere else.
+A NULL suite, which `all` includes, is reported whenever one is
+negotiated.
 
 ## What it refuses rather than ignores
 
@@ -207,12 +212,16 @@ check happened. So:
   once per link and lets the program override the verdict; calling it
   with a fabricated `X509_STORE_CTX` would be worse than not calling it.
 
+**ALPN is negotiated.** The list a program sets with
+`SSL_CTX_set_alpn_protos` (or per connection with `SSL_set_alpn_protos`)
+is offered, a malformed list is refused, and `SSL_get0_alpn_selected`
+reports the server's choice - so a libcurl built with HTTP/2 offers `h2`
+and speaks it when the server selects it.
+
 ## What is simply absent
 
 - **Session resumption.** `SSL_get_session` returns null, which every
   program handles — it is the normal case for a first connection.
-- **ALPN.** `SSL_get0_alpn_selected` reports nothing agreed, so libcurl
-  falls back to HTTP/1.1, which works everywhere.
 - **The server side.** `SSL_CTX_new(TLS_server_method())` returns null
   with a message pointing at `allcrypt-proxy`.
 - **Key logging** for Wireshark. The library supports it; the callback

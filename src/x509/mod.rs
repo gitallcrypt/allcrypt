@@ -697,9 +697,14 @@ fn parse_basic_constraints(value: &[u8]) -> Result<(bool, Option<u32>), String> 
     };
     sequence.finish()?;
 
-    if path_len.is_some() && !is_ca {
-        return Err("pathLenConstraint on a certificate that is not a CA.".to_string());
-    }
+    // A pathLenConstraint on something that is not a CA is a CA's
+    // mistake - RFC 5280 4.2.1.9 says CAs MUST NOT write one - and it
+    // is recorded rather than refused: parsing reads and `verify`
+    // judges, and a certificate with cA=FALSE cannot issue anything
+    // whatever its pathLen says, so the field constrains nothing and
+    // refusing the certificate for it would refuse a leaf for an
+    // extension that cannot be used against anyone. `path_len()`
+    // reports it only for a CA.
     Ok((is_ca, path_len))
 }
 
@@ -950,6 +955,7 @@ impl<'a> Certificate<'a> {
         // printed, never used in arithmetic, so there is nothing to gain by
         // insisting.
         let serial = body.read_integer_bytes()?;
+        let inner_algorithm_raw = body.clone().read_raw()?;
         let signature_algorithm = read_algorithm(&mut body)?;
         let issuer = Name::parse(&mut body)?;
 
@@ -980,6 +986,7 @@ impl<'a> Certificate<'a> {
         };
         body.finish()?;
 
+        let outer_algorithm_raw = certificate.clone().read_raw()?;
         let outer_algorithm = read_algorithm(&mut certificate)?;
         let signature = certificate.read_bit_string()?;
         certificate.finish()?;
@@ -987,8 +994,12 @@ impl<'a> Certificate<'a> {
         // RFC 5280 §4.1.1.2: the two algorithm identifiers must be the same.
         // If they can differ, an attacker picks a weak one on the outside
         // for the verifier and leaves a strong one inside for anyone
-        // inspecting the certificate.
-        if signature_algorithm != outer_algorithm {
+        // inspecting the certificate. Compared as the bytes that arrived,
+        // not as the parsed enum: two different unrecognised OIDs both
+        // parse to `Unknown`, and two PSS identifiers with different
+        // parameter blocks both parse to `Unsupported`, and neither pair
+        // is "the same".
+        if inner_algorithm_raw != outer_algorithm_raw {
             return Err(format!(
                 "Signature algorithm mismatch: {} inside the TBS, {} outside.",
                 signature_algorithm.describe(), outer_algorithm.describe()));
@@ -1427,6 +1438,36 @@ mod tests {
         assert!(error.contains("mismatch"), "{}", error);
     }
 
+    /// Two *different* unrecognised algorithms are a mismatch too.
+    ///
+    /// What was wrong: the two identifiers were compared as the parsed
+    /// `SignatureAlgorithm`, and every OID the table does not know maps
+    /// to the one `Unknown` variant, so any two unknown OIDs compared
+    /// equal - as did two PSS identifiers with different parameters.
+    /// The test above used two known algorithms, which the enum does
+    /// tell apart. The comparison is now over the bytes that arrived,
+    /// as RFC 5280 4.1.1.2 asks.
+    #[test]
+    fn test_two_different_unknown_algorithms_are_a_mismatch() {
+        let inner = asn1::encode_oid("1.3.6.1.4.1.99999.1").unwrap();
+        let outer = asn1::encode_oid("1.3.6.1.4.1.99999.2").unwrap();
+        let der = build(|p| {
+            p.inner_algorithm = inner.clone();
+            p.outer_algorithm = outer.clone();
+        });
+        let error = Certificate::parse(&der).unwrap_err();
+        assert!(error.contains("mismatch"), "{}", error);
+
+        // The same unknown OID on both sides still parses: unknown is
+        // recorded, not refused, so the verifier can say what it was.
+        let der = build(|p| {
+            p.inner_algorithm = inner.clone();
+            p.outer_algorithm = inner.clone();
+        });
+        let certificate = Certificate::parse(&der).unwrap();
+        assert_eq!(certificate.signature_algorithm, SignatureAlgorithm::Unknown);
+    }
+
     #[test]
     fn test_version_rules() {
         // v1 with no extensions is fine.
@@ -1459,15 +1500,22 @@ mod tests {
             assert_eq!(certificate.extensions.path_len(), path_len);
         }
 
-        // A path length on something that is not a CA is meaningless and is
-        // refused rather than silently ignored.
+        // A path length on something that is not a CA is a CA's mistake
+        // (RFC 5280 4.2.1.9) and is recorded, not refused: the parser
+        // reads and the verifier judges, and `check_issuer` refuses a
+        // cA=FALSE issuer whatever the field says. This used to be a
+        // parse error, which made a leaf unreadable for an extension
+        // that could not be used against anyone.
         let mut writer = Writer::new();
         writer.write_sequence(|w| w.write_u32(2));
-        let bad = writer.finish();
+        let odd = writer.finish();
         let der = build(|p| {
-            p.extensions = vec![(oids::BASIC_CONSTRAINTS.to_vec(), true, bad)];
+            p.extensions = vec![(oids::BASIC_CONSTRAINTS.to_vec(), true, odd)];
         });
-        assert!(Certificate::parse(&der).is_err());
+        let certificate = Certificate::parse(&der).unwrap();
+        assert_eq!(certificate.extensions.basic_constraints, Some((false, Some(2))));
+        assert!(!certificate.extensions.is_ca());
+        assert_eq!(certificate.extensions.path_len(), None);
     }
 
     #[test]

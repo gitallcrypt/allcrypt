@@ -314,17 +314,46 @@ pub fn read_extensions(reader: &mut Reader<'_>) -> Result<Vec<Extension>> {
     }
     let mut block = reader.sub16()?;
     let mut extensions: Vec<Extension> = Vec::new();
+    let mut seen = ExtensionSet::new();
 
     while !block.is_empty() {
         let kind = block.u16()?;
         let body = block.vector16()?.to_vec();
-        if extensions.iter().any(|existing| existing.kind == kind) {
+        if !seen.insert(kind) {
             return Err(CodecError::illegal(format!(
                 "Extension {} appears more than once.", extension::name(kind))));
         }
         extensions.push(Extension { kind, body });
     }
     Ok(extensions)
+}
+
+/// The extension types seen so far while reading one message, for the
+/// duplicate check: one bit per possible type.
+///
+/// A bitmap rather than a scan of the list read so far, because the
+/// scan was quadratic in the number of extensions and this runs on bytes
+/// nobody has authenticated yet: a 64 KB hello holding sixteen thousand
+/// empty extensions cost on the order of 10^8 comparisons before the
+/// handshake could refuse it. Eight kilobytes on the stack, cleared once
+/// per message, makes it one bit test per extension.
+pub(crate) struct ExtensionSet {
+    bits: [u64; 1024],
+}
+
+impl ExtensionSet {
+    pub(crate) fn new() -> ExtensionSet {
+        ExtensionSet { bits: [0; 1024] }
+    }
+
+    /// Record `kind`; `false` if it was already there.
+    pub(crate) fn insert(&mut self, kind: u16) -> bool {
+        let word = usize::from(kind >> 6);
+        let bit = 1u64 << (kind & 63);
+        let fresh = self.bits[word] & bit == 0;
+        self.bits[word] |= bit;
+        fresh
+    }
 }
 
 /// The **optional** form: an empty list writes nothing at all.
@@ -489,6 +518,18 @@ impl ServerHello {
         let extensions = read_extensions(&mut reader)?;
         reader.expect_empty("ServerHello")?;
 
+        // **A malformed `supported_versions` is a decode error, here.**
+        // `negotiated_version` is infallible and used everywhere, and a
+        // body of the wrong length used to fall through to the legacy
+        // field there - a server answering a 1.3 offer with a corrupt
+        // extension was read as choosing 1.2, which is a downgrade
+        // nobody said anything about. Checked once, at parse time, with
+        // the function that knows the ServerHello form of the extension.
+        if let Some(extension) = find_extension(&extensions,
+                                                extension::SUPPORTED_VERSIONS) {
+            crate::tls::handshake13::parse_server_supported_version(&extension.body)?;
+        }
+
         Ok(ServerHello { legacy_version, random, session_id, cipher_suite,
                          compression_method, extensions })
     }
@@ -509,6 +550,10 @@ impl ServerHello {
     /// A TLS 1.3 ServerHello still says 1.2 in the version field, to get
     /// past middleboxes; the real answer is in the extension. Reading only
     /// the legacy field means silently treating a 1.3 connection as 1.2.
+    ///
+    /// `parse` has already refused a body that is not exactly two bytes,
+    /// so the length check here is only for a `ServerHello` built by
+    /// hand; it falls to the legacy field rather than panicking.
     pub fn negotiated_version(&self) -> Version {
         if let Some(extension) = find_extension(&self.extensions,
                                                 extension::SUPPORTED_VERSIONS) {
@@ -1473,6 +1518,37 @@ mod tests {
         assert_eq!(hello.negotiated_version(), Version::TLS13);
     }
 
+    /// A ServerHello whose `supported_versions` is not exactly two bytes
+    /// is refused at parse time, not read as the legacy version.
+    ///
+    /// What was wrong: `negotiated_version` fell through to the legacy
+    /// field for a body of any other length, so a corrupt or malicious
+    /// extension turned a 1.3 answer into a 1.2 one with no error. The
+    /// round-trip tests encode well-formed hellos, so the branch was
+    /// never taken; the bodies here are built by editing the encoded
+    /// message's extension in place.
+    #[test]
+    fn test_a_malformed_supported_versions_is_a_decode_error() {
+        let good = ServerHello {
+            legacy_version: Version::TLS12,
+            random: [0u8; 32],
+            session_id: vec![],
+            cipher_suite: 0x1302,
+            compression_method: 0,
+            extensions: vec![Extension { kind: extension::SUPPORTED_VERSIONS,
+                                         body: vec![3, 4] }],
+        };
+        assert_eq!(ServerHello::parse(&good.encode().unwrap()).unwrap()
+                       .negotiated_version(), Version::TLS13);
+        for body in [vec![], vec![3], vec![3, 4, 0], vec![0, 2, 3, 4]] {
+            let mut bad = good.clone();
+            bad.extensions[0].body = body.clone();
+            let error = ServerHello::parse(&bad.encode().unwrap())
+                .err().unwrap_or_else(|| panic!("{:?} was accepted", body));
+            assert_eq!(error.alert, AlertDescription::DECODE_ERROR, "{:?}", body);
+        }
+    }
+
     #[test]
     fn test_hellos_reject_nonsense() {
         // No cipher suites at all.
@@ -1505,6 +1581,48 @@ mod tests {
 
     /// A repeated extension raises the question of which one is honoured,
     /// which is exactly the kind of ambiguity an attacker looks for.
+    /// The duplicate-extension bitmap says "seen" for exactly the kinds
+    /// inserted, across the whole 16 bit range, and a message carrying
+    /// every possible extension type once is still read.
+    ///
+    /// What was wrong: `read_extensions` scanned the list read so far
+    /// for every new extension, which is quadratic, on bytes nobody has
+    /// authenticated yet - a 64 KB hello of empty extensions cost on the
+    /// order of 10^8 comparisons. The duplicate test only checks that a
+    /// repeat is refused, which both shapes do.
+    #[test]
+    fn test_the_extension_set_covers_the_whole_range() {
+        let mut seen = ExtensionSet::new();
+        for kind in 0..=u16::MAX {
+            assert!(seen.insert(kind), "{} was already seen", kind);
+        }
+        for kind in 0..=u16::MAX {
+            assert!(!seen.insert(kind), "{} was forgotten", kind);
+        }
+        // Edges of the words, where a shift or an index can be off by one.
+        let mut seen = ExtensionSet::new();
+        for kind in [0, 63, 64, 65, 0x7fff, 0x8000, u16::MAX] {
+            assert!(seen.insert(kind));
+            assert!(!seen.insert(kind));
+        }
+        assert!(seen.insert(1));
+
+        // As many distinct empty extensions as a two byte length allows
+        // - the hello that was quadratic - read without complaint.
+        let count = 0xffff / 4;
+        let mut body = Writer::new();
+        for kind in 0..count as u16 {
+            body.u16(kind);
+            body.u16(0);
+        }
+        let mut outer = Writer::new();
+        outer.vector16(&body.finish()).unwrap();
+        let bytes = outer.finish();
+        let mut reader = Reader::new(&bytes);
+        let extensions = read_extensions(&mut reader).unwrap();
+        assert_eq!(extensions.len(), count);
+    }
+
     #[test]
     fn test_duplicate_extensions_are_refused() {
         let mut writer = Writer::new();

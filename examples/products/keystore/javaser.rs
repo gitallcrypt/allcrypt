@@ -67,7 +67,27 @@ struct Reader<'a> {
     data: &'a [u8],
     at: usize,
     handles: Vec<Handle>,
+    /// Objects, arrays and class descriptors open at once: a chain of
+    /// superclasses counts like a chain of fields.
     depth: usize,
+    /// Bytes copied out of back-references. A referenced value came out
+    /// of the input once, so the total is bounded by a multiple of the
+    /// input's length rather than by how often it is named.
+    referenced: usize,
+}
+
+const MAX_DEPTH: usize = 32;
+
+/// What a value costs to copy, for the back-reference bound.
+fn weight(value: &Value) -> usize {
+    match value {
+        Value::Null => 1,
+        Value::Primitive(b) | Value::Bytes(b) => b.len(),
+        Value::String(s) => s.len(),
+        Value::Object(name, fields) => {
+            name.len() + fields.iter().map(|(n, v)| n.len() + weight(v)).sum::<usize>()
+        }
+    }
 }
 
 impl Reader<'_> {
@@ -100,7 +120,22 @@ impl Reader<'_> {
             .ok_or_else(|| "Java serialization: a reference to nothing.".to_string())
     }
 
+    fn enter(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(format!("Java serialization: nested more than {MAX_DEPTH} deep."));
+        }
+        Ok(())
+    }
+
     fn class_desc(&mut self) -> Result<Option<ClassDesc>, String> {
+        self.enter()?;
+        let desc = self.class_desc_inner()?;
+        self.depth -= 1;
+        Ok(desc)
+    }
+
+    fn class_desc_inner(&mut self) -> Result<Option<ClassDesc>, String> {
         match self.u8()? {
             TC_NULL => Ok(None),
             TC_REFERENCE => {
@@ -165,19 +200,22 @@ impl Reader<'_> {
     }
 
     fn content(&mut self) -> Result<Value, String> {
-        self.depth += 1;
-        if self.depth > 32 {
-            return Err("Java serialization: nested more than 32 deep.".to_string());
-        }
+        self.enter()?;
         let value = match self.u8()? {
             TC_NULL => Value::Null,
             TC_REFERENCE => {
                 let index = self.u32()?;
-                match self.handle(index)? {
+                let value = match self.handle(index)? {
                     Handle::Value(v) => v.clone(),
                     Handle::Class(_) => return Err("Java serialization: a reference to a class \
                                                     where a value was expected.".to_string()),
+                };
+                self.referenced = self.referenced.saturating_add(weight(&value));
+                if self.referenced > self.data.len().saturating_mul(8) {
+                    return Err("Java serialization: back-references copy more than eight times \
+                                the stream's length.".to_string());
                 }
+                value
             }
             TC_STRING => {
                 let s = Value::String(self.utf()?);
@@ -221,7 +259,7 @@ pub fn read(data: &[u8]) -> Result<(Value, usize), String> {
     if !data.starts_with(&MAGIC) {
         return Err("Not a Java serialization stream.".to_string());
     }
-    let mut reader = Reader { data, at: 4, handles: Vec::new(), depth: 0 };
+    let mut reader = Reader { data, at: 4, handles: Vec::new(), depth: 0, referenced: 0 };
     let value = reader.content()?;
     Ok((value, reader.at))
 }
@@ -392,5 +430,83 @@ mod tests {
         assert_eq!(used, sealed.len());
         assert_eq!(unseal_parts(&value).unwrap(),
                    (vec![1, 2, 3], vec![4; 40], "PBEWithMD5AndTripleDES".to_string()));
+    }
+
+    fn utf(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    /// A class descriptor of `fields`, each a byte array, with
+    /// `superclass` descriptors above it, every one empty.
+    fn class(out: &mut Vec<u8>, fields: usize, superclasses: usize) {
+        out.push(TC_CLASSDESC);
+        utf(out, "C");
+        out.extend_from_slice(&[0; 8]);
+        out.push(SC_SERIALIZABLE);
+        out.extend_from_slice(&(fields as u16).to_be_bytes());
+        for i in 0..fields {
+            out.push(b'[');
+            utf(out, &format!("f{i}"));
+            out.push(TC_STRING);
+            utf(out, "[B");
+        }
+        out.push(TC_ENDBLOCKDATA);
+        if superclasses == 0 {
+            out.push(TC_NULL);
+        } else {
+            class(out, 0, superclasses - 1);
+        }
+    }
+
+    /// `content` counted its depth and `class_desc` did not, so a chain
+    /// of superclass descriptors - twelve bytes each - recursed once
+    /// per link until the stack ran out. A back-reference returned a
+    /// copy of the value it named, so one array named by a thousand
+    /// fields cost a thousand copies. The stores the fixtures hold
+    /// were written by keytool, whose objects are three deep and share
+    /// only class descriptors, so neither shape was ever read.
+    #[test]
+    fn test_superclass_chains_and_back_references_are_bounded() {
+        // Forty superclasses, then no fields to read.
+        let mut deep = MAGIC.to_vec();
+        deep.push(TC_OBJECT);
+        class(&mut deep, 0, 40);
+        let error = read(&deep).unwrap_err();
+        assert!(error.contains("nested"), "{error}");
+        let mut shallow = MAGIC.to_vec();
+        shallow.push(TC_OBJECT);
+        class(&mut shallow, 0, 20);
+        assert!(read(&shallow).is_ok());
+
+        // One kilobyte array, then fields that each name it again.
+        let stream = |fields: usize| {
+            let mut out = MAGIC.to_vec();
+            out.push(TC_OBJECT);
+            class(&mut out, fields, 0);
+            // Handles so far: the class, then one type string per
+            // field, then the object; the array's descriptor and the
+            // array come next.
+            out.push(TC_ARRAY);
+            out.push(TC_CLASSDESC);
+            utf(&mut out, "[B");
+            out.extend_from_slice(&[0; 8]);
+            out.push(SC_SERIALIZABLE);
+            out.extend_from_slice(&0u16.to_be_bytes());
+            out.push(TC_ENDBLOCKDATA);
+            out.push(TC_NULL);
+            out.extend_from_slice(&1024u32.to_be_bytes());
+            out.extend_from_slice(&[9; 1024]);
+            let array_handle = BASE_HANDLE + fields as u32 + 3;
+            for _ in 1..fields {
+                out.push(TC_REFERENCE);
+                out.extend_from_slice(&array_handle.to_be_bytes());
+            }
+            out
+        };
+        let (value, _) = read(&stream(10)).unwrap();
+        assert_eq!(value.field("f9"), Some(&Value::Bytes(vec![9; 1024])));
+        let error = read(&stream(10_000)).unwrap_err();
+        assert!(error.contains("back-references"), "{error}");
     }
 }

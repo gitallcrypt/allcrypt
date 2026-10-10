@@ -551,8 +551,14 @@ pub fn encode_oid(dotted: &str) -> Result<Vec<u8>, String> {
         return Err("First two OID arcs are out of range.".to_string());
     }
 
+    // X.660 leaves the second arc under 2 unbounded, so the sum is not:
+    // `2.<u128::MAX>` is a well-formed string whose first subidentifier
+    // does not fit.
+    let first = arcs[0].checked_mul(40)
+        .and_then(|value| value.checked_add(arcs[1]))
+        .ok_or_else(|| "The second OID arc is too large to encode.".to_string())?;
     let mut out = Vec::new();
-    push_base128(&mut out, arcs[0] * 40 + arcs[1]);
+    push_base128(&mut out, first);
     for arc in &arcs[2..] {
         push_base128(&mut out, *arc);
     }
@@ -1057,6 +1063,29 @@ mod tests {
         assert!(encode_oid("1.40").is_err(), "second arc above 39 under arc 1");
         assert!(encode_oid("1").is_err(), "needs two arcs");
         assert!(encode_oid("1.2.x").is_err());
+    }
+
+    /// A second arc under 2 that does not fit the first subidentifier
+    /// is an error, not an overflow.
+    ///
+    /// What was wrong: `arcs[0] * 40 + arcs[1]` was unchecked, and X.660
+    /// leaves the second arc under 2 unbounded, so
+    /// `"2.340282366920938463463374607431768211455"` (2 followed by
+    /// `u128::MAX`) panicked in a debug build and encoded wrong bytes in
+    /// a release one. The string reaches this function from
+    /// `registry::register`, that is from a library user's own text. The
+    /// range test above only covered the first arc and the second arc
+    /// under 0 and 1, which are bounded by the standard.
+    #[test]
+    fn test_a_second_arc_that_overflows_the_first_subidentifier_is_an_error() {
+        let dotted = format!("2.{}", u128::MAX);
+        let error = encode_oid(&dotted).unwrap_err();
+        assert!(error.contains("too large"), "{}", error);
+        // The largest that fits under arc 2 still encodes, and decodes
+        // back to the same arcs.
+        let largest = format!("2.{}", u128::MAX - 80);
+        let encoded = encode_oid(&largest).unwrap();
+        assert_eq!(Oid::new(&encoded).unwrap().to_string(), largest);
     }
 
     #[test]

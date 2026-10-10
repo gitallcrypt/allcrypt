@@ -78,6 +78,12 @@ key block's IV; `src/tls/record_mgm.rs` does that.
 use crate::api::AnyBlockCipher;
 use crate::block_ciphers::BlockCipher;
 
+/// Blocks handed to the cipher at a time. The keystream blocks `E_K(Y_i)`
+/// and the hash blocks `E_K(Z_i)` are each independent of the others -
+/// the counters depend only on `i` - so a batch goes through
+/// `encrypt_blocks`, which is what keeps AES on its constant-time path.
+const BATCH: usize = 16;
+
 /// The low coefficients of the reduction polynomial, by block size.
 ///
 /// `w^128 + w^7 + w^2 + w + 1` and `w^64 + w^4 + w^3 + w + 1`, RFC 9058
@@ -114,12 +120,22 @@ fn times_w(value: &mut [u8], reduction: u8) {
 ///
 /// Horner over the bits of `a` from the highest degree down, which is
 /// left to right through the string.
-pub(crate) fn gf_mul(a: &[u8], b: &[u8], reduction: u8) -> Vec<u8> {
-    debug_assert_eq!(a.len(), b.len());
+#[cfg(test)]
+fn gf_mul(a: &[u8], b: &[u8], reduction: u8) -> Vec<u8> {
     let mut product = vec![0u8; a.len()];
+    gf_mul_into(a, b, reduction, &mut product);
+    product
+}
+
+/// `a (x) b` into `product`, the caller's block-sized buffer, so a MAC
+/// over many blocks allocates nothing per block.
+fn gf_mul_into(a: &[u8], b: &[u8], reduction: u8, product: &mut [u8]) {
+    debug_assert_eq!(a.len(), b.len());
+    debug_assert_eq!(a.len(), product.len());
+    product.fill(0);
     for byte in a {
         for bit in (0..8).rev() {
-            times_w(&mut product, reduction);
+            times_w(product, reduction);
             // `wrapping_neg` on 0 or 1 gives 0x00 or 0xff: the same
             // masked form the rest of this file uses, so no branch
             // depends on the multiplicand.
@@ -129,7 +145,6 @@ pub(crate) fn gf_mul(a: &[u8], b: &[u8], reduction: u8) -> Vec<u8> {
             }
         }
     }
-    product
 }
 
 /// `incr_r`: add one to the **right** half, modulo 2^{n/2}.
@@ -159,28 +174,32 @@ fn incr_l(block: &mut [u8]) {
     }
 }
 
-/// One MGM operation over a named cipher.
+/// One MGM key over a named cipher, serving any number of messages.
 ///
-/// Holds the cipher name and key rather than a built cipher, like
-/// `Eax`, so one `Mgm` can serve several messages without the caller
-/// rebuilding a key schedule - the schedule is built once per call
-/// inside, which is where the borrow can be exclusive.
+/// The keyed cipher is built once, at construction, and `encrypt` and
+/// `decrypt` take `&mut self` to use it; a key schedule per message
+/// was the cost of holding the name and key instead.
 pub struct Mgm {
-    cipher_name: String,
-    key: Vec<u8>,
+    cipher: AnyBlockCipher,
     block_size: usize,
     reduction: u8,
     tag_len: usize,
 }
 
+impl core::fmt::Debug for Mgm {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Mgm {{ {}, keys redacted }}", self.cipher.name())
+    }
+}
+
 impl Mgm {
     /// The full-width tag, which is the block size.
     pub fn new(cipher_name: &str, key: &[u8]) -> Result<Mgm, String> {
-        let block_size = AnyBlockCipher::new(cipher_name, key, None)?.blocksize();
+        let cipher = AnyBlockCipher::new(cipher_name, key, None)?;
+        let block_size = cipher.blocksize();
         let reduction = reduction_for(block_size)?;
         Ok(Mgm {
-            cipher_name: cipher_name.to_string(),
-            key: key.to_vec(),
+            cipher,
             block_size,
             reduction,
             tag_len: block_size,
@@ -243,10 +262,6 @@ impl Mgm {
         Ok(())
     }
 
-    fn cipher(&self) -> Result<AnyBlockCipher, String> {
-        AnyBlockCipher::new(&self.cipher_name, &self.key, None)
-    }
-
     /// `E_K` of one block, into a fresh vector.
     fn ek(cipher: &mut AnyBlockCipher, block: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(block.len());
@@ -257,11 +272,12 @@ impl Mgm {
     /// The counter-mode half, in place. Used for both directions - a
     /// counter mode is its own inverse, which is why encryption and
     /// decryption differ only in what order they do this and the tag.
-    fn apply_keystream(&self, cipher: &mut AnyBlockCipher, icn: &[u8],
-                       data: &mut [u8]) {
+    fn apply_keystream(block_size: usize, cipher: &mut AnyBlockCipher, icn: &[u8],
+                       data: &mut [u8]) -> Result<(), String> {
         if data.is_empty() {
-            return;
+            return Ok(());
         }
+        let bs = block_size;
         // Y_1 = E_K(0 || ICN). The ICN's top bit is already zero, so
         // this is the ICN itself - written as a mask rather than left
         // implicit, because the value the *document* names is `0 || ICN`
@@ -270,15 +286,23 @@ impl Mgm {
         counter[0] &= 0x7f;
         let mut y = Self::ek(cipher, &counter);
 
-        for chunk in data.chunks_mut(self.block_size) {
-            let gamma = Self::ek(cipher, &y);
-            // `zip` stops at the shorter, which is what makes the final
-            // partial block MSB_u(E_K(Y_q)) without a special case.
+        // A batch of counters, enciphered together, XORed in. The last
+        // batch's last block may be partial: the keystream runs a whole
+        // block and `zip` stops at the data, which is MSB_u(E_K(Y_q))
+        // without a special case.
+        let mut gamma = Vec::with_capacity(BATCH * bs);
+        for chunk in data.chunks_mut(BATCH * bs) {
+            gamma.clear();
+            for _ in 0..chunk.len().div_ceil(bs) {
+                gamma.extend_from_slice(&y);
+                incr_r(&mut y);
+            }
+            cipher.encrypt_blocks(&mut gamma)?;
             for (byte, mask) in chunk.iter_mut().zip(&gamma) {
                 *byte ^= mask;
             }
-            incr_r(&mut y);
         }
+        Ok(())
     }
 
     /// The multilinear half: the tag over `aad` then `ciphertext`.
@@ -286,73 +310,85 @@ impl Mgm {
     /// **The ciphertext, not the plaintext.** MGM is encrypt-then-MAC,
     /// and authenticating the plaintext here would round-trip against
     /// itself perfectly.
-    fn tag_for(&self, cipher: &mut AnyBlockCipher, icn: &[u8], aad: &[u8],
-               ciphertext: &[u8]) -> Vec<u8> {
+    fn tag_for(&mut self, icn: &[u8], aad: &[u8], ciphertext: &[u8])
+               -> Result<Vec<u8>, String> {
+        let bs = self.block_size;
+        let cipher = &mut self.cipher;
         // Z_1 = E_K(1 || ICN).
         let mut separated = icn.to_vec();
         separated[0] |= 0x80;
         let mut z = Self::ek(cipher, &separated);
 
-        let mut sum = vec![0u8; self.block_size];
+        let mut sum = vec![0u8; bs];
         // A partial block is padded with zeros to the right, which is
         // safe here only because the lengths go into the last
         // multiplicand: without them, `A` and `A || 0x00` would have the
         // same tag.
-        let mut padded = vec![0u8; self.block_size];
+        let mut padded = vec![0u8; bs];
+        // The H_i = E_K(Z_i) for a batch of blocks at once; the Z
+        // counter runs on across the two parts, as the document's
+        // numbering does.
+        let mut hs = Vec::with_capacity(BATCH * bs);
+        let mut term = vec![0u8; bs];
         for part in [aad, ciphertext] {
-            for chunk in part.chunks(self.block_size) {
-                let block = if chunk.len() == self.block_size {
-                    chunk
-                } else {
-                    padded[..chunk.len()].copy_from_slice(chunk);
-                    padded[chunk.len()..].fill(0);
-                    &padded[..]
-                };
-                let h = Self::ek(cipher, &z);
-                let term = gf_mul(&h, block, self.reduction);
-                for (s, t) in sum.iter_mut().zip(&term) {
-                    *s ^= t;
+            for group in part.chunks(BATCH * bs) {
+                hs.clear();
+                for _ in 0..group.len().div_ceil(bs) {
+                    hs.extend_from_slice(&z);
+                    incr_l(&mut z);
                 }
-                incr_l(&mut z);
+                cipher.encrypt_blocks(&mut hs)?;
+                for (chunk, h) in group.chunks(bs).zip(hs.chunks_exact(bs)) {
+                    let block = if chunk.len() == bs {
+                        chunk
+                    } else {
+                        padded[..chunk.len()].copy_from_slice(chunk);
+                        padded[chunk.len()..].fill(0);
+                        &padded[..]
+                    };
+                    gf_mul_into(h, block, self.reduction, &mut term);
+                    for (s, t) in sum.iter_mut().zip(&term) {
+                        *s ^= t;
+                    }
+                }
             }
         }
 
         // len(A) || len(C), each n/2 bytes, **in bits**.
-        let half = self.block_size / 2;
-        let mut lengths = vec![0u8; self.block_size];
+        let half = bs / 2;
+        let mut lengths = vec![0u8; bs];
         let bits_a = (aad.len() as u128) * 8;
         let bits_c = (ciphertext.len() as u128) * 8;
         for i in 0..half {
             lengths[half - 1 - i] = (bits_a >> (8 * i)) as u8;
-            lengths[self.block_size - 1 - i] = (bits_c >> (8 * i)) as u8;
+            lengths[bs - 1 - i] = (bits_c >> (8 * i)) as u8;
         }
 
         let h = Self::ek(cipher, &z);
-        let term = gf_mul(&h, &lengths, self.reduction);
+        gf_mul_into(&h, &lengths, self.reduction, &mut term);
         for (s, t) in sum.iter_mut().zip(&term) {
             *s ^= t;
         }
 
         let mut tag = Self::ek(cipher, &sum);
         tag.truncate(self.tag_len);
-        tag
+        Ok(tag)
     }
 
     /// Encrypt, returning `(ciphertext, tag)`.
-    pub fn encrypt(&self, icn: &[u8], aad: &[u8], plaintext: &[u8])
+    pub fn encrypt(&mut self, icn: &[u8], aad: &[u8], plaintext: &[u8])
                    -> Result<(Vec<u8>, Vec<u8>), String> {
         self.check_icn(icn)?;
         self.check_not_both_empty(aad, plaintext)?;
 
-        let mut cipher = self.cipher()?;
         let mut ciphertext = plaintext.to_vec();
-        self.apply_keystream(&mut cipher, icn, &mut ciphertext);
-        let tag = self.tag_for(&mut cipher, icn, aad, &ciphertext);
+        Self::apply_keystream(self.block_size, &mut self.cipher, icn, &mut ciphertext)?;
+        let tag = self.tag_for(icn, aad, &ciphertext)?;
         Ok((ciphertext, tag))
     }
 
     /// Decrypt, checking the tag **before** producing any plaintext.
-    pub fn decrypt(&self, icn: &[u8], aad: &[u8], ciphertext: &[u8],
+    pub fn decrypt(&mut self, icn: &[u8], aad: &[u8], ciphertext: &[u8],
                    tag: &[u8]) -> Result<Vec<u8>, String> {
         self.check_icn(icn)?;
         self.check_not_both_empty(aad, ciphertext)?;
@@ -361,8 +397,7 @@ impl Mgm {
                                self.tag_len, tag.len()));
         }
 
-        let mut cipher = self.cipher()?;
-        let expected = self.tag_for(&mut cipher, icn, aad, ciphertext);
+        let expected = self.tag_for(icn, aad, ciphertext)?;
         // Constant time and over the whole tag: a comparison that stops
         // at the first differing byte is a forgery oracle.
         if crate::bignum::ct::bytes_differ(&expected, tag) {
@@ -374,7 +409,7 @@ impl Mgm {
         // release-of-unverified-plaintext, which is the one thing an
         // AEAD exists to prevent.
         let mut plaintext = ciphertext.to_vec();
-        self.apply_keystream(&mut cipher, icn, &mut plaintext);
+        Self::apply_keystream(self.block_size, &mut self.cipher, icn, &mut plaintext)?;
         Ok(plaintext)
     }
 }
@@ -524,7 +559,7 @@ mod tests {
             let want_c = example.need("C:");
             let want_tag = example.need("Tag T:");
 
-            let mgm = Mgm::new(example.cipher, &key).unwrap();
+            let mut mgm = Mgm::new(example.cipher, &key).unwrap();
             let (ciphertext, tag) = mgm.encrypt(&icn, &aad, &plaintext)
                 .unwrap_or_else(|e| panic!("{}: {e}", example.name));
 
@@ -761,7 +796,7 @@ mod tests {
     fn test_every_input_reaches_the_tag() {
         let key = [0x11u8; 32];
         let icn = [0x22u8; 16];
-        let mgm = Mgm::new("kuznyechik", &key).unwrap();
+        let mut mgm = Mgm::new("kuznyechik", &key).unwrap();
         let (base, tag) = mgm.encrypt(&icn, b"header", b"message").unwrap();
 
         // A different nonce.
@@ -776,7 +811,7 @@ mod tests {
         // A different message.
         assert_ne!(mgm.encrypt(&icn, b"header", b"messagf").unwrap().1, tag);
         // A different key.
-        let other = Mgm::new("kuznyechik", &[0x12u8; 32]).unwrap();
+        let mut other = Mgm::new("kuznyechik", &[0x12u8; 32]).unwrap();
         assert_ne!(other.encrypt(&icn, b"header", b"message").unwrap().1, tag);
 
         // And every single-bit change to the ciphertext is refused.
@@ -798,7 +833,7 @@ mod tests {
     /// Both empty is refused rather than answered.
     #[test]
     fn test_empty_data_and_empty_aad_together_are_refused() {
-        let mgm = Mgm::new("kuznyechik", &[0x33u8; 32]).unwrap();
+        let mut mgm = Mgm::new("kuznyechik", &[0x33u8; 32]).unwrap();
         let icn = [0x44u8; 16];
         assert!(mgm.encrypt(&icn, b"", b"").is_err());
         assert!(mgm.decrypt(&icn, b"", b"", &[0u8; 16]).is_err());
@@ -812,7 +847,7 @@ mod tests {
     /// An ICN with its top bit set is refused rather than masked.
     #[test]
     fn test_a_full_width_nonce_is_refused() {
-        let mgm = Mgm::new("magma", &[0x55u8; 32]).unwrap();
+        let mut mgm = Mgm::new("magma", &[0x55u8; 32]).unwrap();
         let mut icn = [0x01u8; 8];
         assert!(mgm.encrypt(&icn, b"a", b"b").is_ok());
         icn[0] |= 0x80;
@@ -842,7 +877,7 @@ mod tests {
         let full = Mgm::new("kuznyechik", &key).unwrap()
             .encrypt(&icn, b"h", b"m").unwrap().1;
         for length in [4usize, 8, 12, 16] {
-            let short = Mgm::with_tag_len("kuznyechik", &key, length).unwrap();
+            let mut short = Mgm::with_tag_len("kuznyechik", &key, length).unwrap();
             let (ciphertext, tag) = short.encrypt(&icn, b"h", b"m").unwrap();
             assert_eq!(tag, full[..length], "a truncated tag is a prefix");
             assert_eq!(short.decrypt(&icn, b"h", &ciphertext, &tag).unwrap(),
@@ -858,7 +893,7 @@ mod tests {
     #[test]
     fn test_round_trip_at_every_length() {
         for cipher in ["kuznyechik", "magma"] {
-            let mgm = Mgm::new(cipher, &[0x77u8; 32]).unwrap();
+            let mut mgm = Mgm::new(cipher, &[0x77u8; 32]).unwrap();
             let icn = vec![0x12u8; mgm.block_size()];
             let message: Vec<u8> = (0..=90u8).collect();
             for length in 0..message.len() {
@@ -867,6 +902,30 @@ mod tests {
                 assert_eq!(ciphertext.len(), length);
                 assert_eq!(mgm.decrypt(&icn, b"aad", &ciphertext, &tag).unwrap(),
                            message[..length].to_vec());
+            }
+        }
+    }
+
+    /// One `Mgm` holds its keyed cipher, where each call used to build
+    /// the key schedule again. What the saving changes is that state
+    /// could leak from one message into the next, so this runs messages
+    /// of several lengths, decryptions, and a decryption that fails,
+    /// through one object and checks each against a fresh one.
+    #[test]
+    fn test_one_object_serves_many_messages() {
+        for (name, block) in [("kuznyechik", 16usize), ("magma", 8)] {
+            let mut shared = Mgm::new(name, &[0x77; 32]).unwrap();
+            let icn = vec![0x0fu8; block];
+            for length in [100usize, 0, 1, 7, 8, 15, 16, 17, 33] {
+                let message = vec![length as u8; length];
+                let (ciphertext, tag) = shared.encrypt(&icn, b"aad", &message).unwrap();
+                let mut fresh = Mgm::new(name, &[0x77; 32]).unwrap();
+                assert_eq!(fresh.encrypt(&icn, b"aad", &message).unwrap(),
+                           (ciphertext.clone(), tag.clone()), "{name}, length {length}");
+                let mut wrong = tag.clone();
+                wrong[0] ^= 1;
+                assert!(shared.decrypt(&icn, b"aad", &ciphertext, &wrong).is_err());
+                assert_eq!(shared.decrypt(&icn, b"aad", &ciphertext, &tag).unwrap(), message);
             }
         }
     }

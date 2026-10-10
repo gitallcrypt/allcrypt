@@ -480,6 +480,19 @@ impl ServerConfig {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     WaitClientHello,
+    /// TLS 1.2 only, and only after this server asked: the client's
+    /// Certificate, which RFC 5246 7.4.6 makes the first message of the
+    /// client's second flight whenever a CertificateRequest went out -
+    /// possibly empty, but never absent.
+    ///
+    /// A state of its own rather than "a Certificate is also accepted
+    /// while waiting for the ClientKeyExchange", because that shape let
+    /// a client skip the message: the ClientKeyExchange was accepted
+    /// from the same state, so a client that was asked and sent nothing
+    /// at all completed the handshake with `require_client_certificate`
+    /// never consulted. The requirement was only checked inside the
+    /// handler for a message the client could choose not to send.
+    WaitClientCertificate12,
     WaitClientKeyExchange,
     /// TLS 1.3 only. No state is shared with the 1.2 machine.
     ///
@@ -508,6 +521,8 @@ impl State {
     fn describe(self) -> &'static str {
         match self {
             State::WaitClientHello => "waiting for the ClientHello",
+            State::WaitClientCertificate12 =>
+                "waiting for the client's Certificate (TLS 1.2)",
             State::WaitClientCertificateVerify12 =>
                 "waiting for the client's CertificateVerify (TLS 1.2)",
             State::WaitEndOfEarlyData13 =>
@@ -605,12 +620,20 @@ pub struct ServerConnection {
     /// it lives in `server13.rs`; none of it is reachable from the 1.2
     /// path, which is the point of the split.
     tls13: Option<crate::tls::server13::Tls13>,
-    /// The first ClientHello, kept only so that a HelloRetryRequest can
-    /// replace it in the transcript with the synthetic `message_hash`
-    /// message RFC 8446 4.4.1 requires.
+    /// The first ClientHello's body, kept across a HelloRetryRequest so
+    /// that the second hello can be checked against it (RFC 8446 4.1.2:
+    /// the same hello, except for what the retry entitles the client to
+    /// change). Empty until a retry goes out.
     first_hello: Vec<u8>,
     /// One retry and no more. A second lets a peer loop us.
     sent_retry_request: bool,
+    /// The group the HelloRetryRequest asked for, which the second
+    /// hello has to carry a share for.
+    retry_group: Option<u16>,
+    /// Whether the client's TLS 1.3 compatibility ChangeCipherSpec has
+    /// arrived. RFC 8446 appendix D.4 has each side send exactly one,
+    /// so a second is a peer - or a middlebox - injecting records.
+    saw_compat_ccs: bool,
     /// The key this server seals its session tickets under, generated once
     /// per connection object. A server that wants tickets to survive a
     /// restart, or to work across a fleet, passes the same key in - see
@@ -700,6 +723,8 @@ impl ServerConnection {
             tls13: None,
             first_hello: Vec::new(),
             sent_retry_request: false,
+            retry_group: None,
+            saw_compat_ccs: false,
             ticket_key,
             transcript_prefix: Vec::new(),
             client_certificates: Vec::new(),
@@ -822,6 +847,14 @@ impl ServerConnection {
         if error.alert != AlertDescription::BAD_RECORD_MAC {
             return false;
         }
+        // Belt and braces with the clearing in `handle_record`: once the
+        // handshake is over, nothing arriving can be early data, whatever
+        // the budget says. RFC 8446 5.2: a record that fails to
+        // authenticate on an established connection MUST terminate it.
+        if !self.is_handshaking() {
+            self.skipping_early_data = None;
+            return false;
+        }
         let budget = match self.skipping_early_data {
             Some(budget) => budget,
             None => return false,
@@ -929,6 +962,17 @@ impl ServerConnection {
                      -> Result<(), Error> {
         match record.content_type {
             ContentType::Handshake => {
+                // **A handshake record that authenticated ends the skip.**
+                // The budget is only ever set after early data was
+                // declined, and in that case the reader was given the
+                // client's handshake keys at the ServerHello - so a
+                // handshake record that decrypted was written under those
+                // keys, which the client only moves to once it has
+                // stopped writing early data. Everything that fails to
+                // authenticate from here on is an attacker or a broken
+                // peer, not a record the client could not have known
+                // would be refused.
+                self.skipping_early_data = None;
                 self.messages.push(&record.payload);
                 while let Some(message) = self.messages.next_message()? {
                     self.handle_handshake(message)?;
@@ -944,11 +988,41 @@ impl ServerConnection {
                 // is only legal in the clear, which is enforced by
                 // `Aead13::decrypt` refusing the type inside a
                 // protected record rather than by a check here.
+                //
+                // Dropped, not ignored: RFC 8446 5 allows it only after
+                // the first ClientHello and **before the peer's Finished**,
+                // and one received after that "MUST be treated as an
+                // unexpected record type". Without the state check an
+                // on-path attacker could inject plaintext records into an
+                // established connection forever and have every one
+                // swallowed. Appendix D.4 has each side send exactly one,
+                // which is what `saw_compat_ccs` holds it to.
                 if self.version == Some(Version::TLS13) || self.sent_retry_request {
                     if record.payload != [1] {
                         return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
                             "A ChangeCipherSpec must be exactly one byte, 0x01."));
                     }
+                    // Before the client's Finished. `WaitClientHello` is
+                    // only the retry path: the client's record arrives
+                    // between the HelloRetryRequest and its second hello
+                    // (or, when it offered early data, right after its
+                    // first), and on both paths `sent_retry_request` is
+                    // already set by the time the record is read.
+                    let before_finished = match self.state {
+                        State::WaitClientHello => self.sent_retry_request,
+                        State::WaitEndOfEarlyData13
+                        | State::WaitClientCertificate13
+                        | State::WaitClientCertificateVerify13
+                        | State::WaitClientFinished13 => true,
+                        _ => false,
+                    };
+                    if !before_finished || self.saw_compat_ccs {
+                        return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
+                            format!("A ChangeCipherSpec arrived while {}; at TLS \
+                                     1.3 one is allowed, before the client's \
+                                     Finished.", self.state.describe())));
+                    }
+                    self.saw_compat_ccs = true;
                     return Ok(());
                 }
                 if self.state != State::WaitChangeCipherSpec {
@@ -1056,7 +1130,12 @@ impl ServerConnection {
         match (self.state, message.message_type) {
             (State::WaitClientHello, HandshakeType::ClientHello) =>
                 self.handle_client_hello(&message),
-            (State::WaitClientKeyExchange, HandshakeType::Certificate) =>
+            // **Only from this state, and only this message from it.** A
+            // Certificate while waiting for the ClientKeyExchange is one
+            // nobody asked for, and a ClientKeyExchange while waiting for
+            // the Certificate is a client skipping the answer; both fall
+            // to the arm at the bottom.
+            (State::WaitClientCertificate12, HandshakeType::Certificate) =>
                 self.handle_client_certificate_12(&message),
             (State::WaitClientCertificateVerify12,
              HandshakeType::CertificateVerify) =>
@@ -1073,6 +1152,8 @@ impl ServerConnection {
                 self.handle_client_certificate_verify_13(&message),
             (State::WaitClientFinished13, HandshakeType::Finished) =>
                 self.handle_finished_13(&message),
+            (State::Established, HandshakeType::KeyUpdate) =>
+                self.handle_key_update(&message),
             (state, kind) => Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
                 format!("A {} arrived while {}.", kind.name(), state.describe()))),
         }
@@ -1097,6 +1178,15 @@ impl ServerConnection {
         let suite = self.choose_suite(&hello, version)?;
         self.version = Some(version);
         self.suite = Some(suite);
+        // **The downgrade marker goes in before anything uses the
+        // random.** RFC 8446 4.1.3: a server that could have spoken a
+        // higher version writes it into the last eight bytes of its
+        // random, where the ServerKeyExchange signature and the master
+        // secret both cover it, so a client that offered more can tell
+        // its hello was cut down on the way.
+        if let Some(marker) = crate::tls::handshake13::downgrade_marker(self.config.max_version, version) {
+            self.server_random[24..].copy_from_slice(&marker);
+        }
         self.writer.set_version(version);
 
         // The transcript begins now, with the hello that has just
@@ -1131,9 +1221,33 @@ impl ServerConnection {
         // RFC 5746: answering with an empty renegotiation_info is how a
         // server says it understands the extension. Without it a client
         // cannot tell a fresh handshake from a renegotiation, which is
-        // the 2009 attack.
-        extensions.push(Extension { kind: extension::RENEGOTIATION_INFO,
-                                    body: vec![0] });
+        // the 2009 attack. **Only when the client signalled** - by the
+        // SCSV or by the extension (3.6): a server must not answer an
+        // extension the client did not offer, and a client that sent
+        // neither is one that does not know the extension and may refuse
+        // a hello carrying it. And the extension's body, when present,
+        // must be empty on an initial handshake: a non-empty one claims
+        // this is a renegotiation of a connection that does not exist.
+        // The extension is examined first, whatever the SCSV says: a
+        // client sending both with a non-empty body is still claiming a
+        // renegotiation.
+        let sent_extension = match find_extension(&hello.extensions,
+                                                  extension::RENEGOTIATION_INFO) {
+            Some(extension) if extension.body != [0] => {
+                return Err(Error::new(AlertDescription::HANDSHAKE_FAILURE,
+                    "The client's renegotiation_info is not empty, so it \
+                     claims to be renegotiating a connection this server \
+                     does not have (RFC 5746 3.6)."));
+            }
+            Some(_) => true,
+            None => false,
+        };
+        let signalled_renegotiation = sent_extension
+            || hello.cipher_suites.contains(&suites::RENEGOTIATION_SCSV);
+        if signalled_renegotiation {
+            extensions.push(Extension { kind: extension::RENEGOTIATION_INFO,
+                                        body: vec![0] });
+        }
         if self.encrypt_then_mac {
             extensions.push(Extension { kind: extension::ENCRYPT_THEN_MAC,
                                         body: Vec::new() });
@@ -1235,7 +1349,14 @@ impl ServerConnection {
         let records = self.writer.write(ContentType::Handshake, &bytes)?;
         self.outgoing.extend_from_slice(&records);
 
-        self.state = State::WaitClientKeyExchange;
+        // Having asked, the next message is the answer - a Certificate,
+        // empty or not - and nothing else. Only when nothing was asked
+        // is the ClientKeyExchange the next message.
+        self.state = if self.requested_client_certificate {
+            State::WaitClientCertificate12
+        } else {
+            State::WaitClientKeyExchange
+        };
         Ok(())
     }
 
@@ -1248,8 +1369,9 @@ impl ServerConnection {
         let ceiling = self.config.max_version;
         let floor = self.config.min_version;
 
-        let offered: Vec<Version> = match find_extension(
-                &hello.extensions, extension::SUPPORTED_VERSIONS) {
+        let extension = find_extension(&hello.extensions,
+                                       extension::SUPPORTED_VERSIONS);
+        let offered: Vec<Version> = match extension {
             Some(extension) =>
                 crate::tls::handshake13::parse_client_supported_versions(
                     &extension.body)?,
@@ -1257,6 +1379,24 @@ impl ServerConnection {
             // everything down to the floor is implied.
             None => vec![hello.legacy_version],
         };
+
+        // RFC 7507: a client that is retrying with a lower version than
+        // it supports says so with TLS_FALLBACK_SCSV, and a server able to
+        // speak something higher than the client's best offer answers
+        // `inappropriate_fallback` - the client was downgraded by
+        // something between the two, not by this server. Judged on the
+        // highest version the client *offered*, whatever this server's
+        // floor and ceiling do with it.
+        if hello.cipher_suites.contains(&suites::FALLBACK_SCSV) {
+            let highest = offered.iter().copied().max().unwrap_or(hello.legacy_version);
+            if highest < ceiling {
+                return Err(Error::new(AlertDescription::INAPPROPRIATE_FALLBACK, format!(
+                    "The client sent TLS_FALLBACK_SCSV with {} as its highest \
+                     version, and this server speaks {}: the client is \
+                     retrying after a downgrade (RFC 7507).",
+                    highest.name(), ceiling.name())));
+            }
+        }
 
         let mut best: Option<Version> = None;
         for version in offered {
@@ -1269,8 +1409,13 @@ impl ServerConnection {
         }
         // A client whose legacy field is above our ceiling still gets
         // the ceiling, which is the ordinary downgrade a 1.2 server does
-        // for a 1.3 client that sent no extension.
-        if best.is_none() && hello.legacy_version >= ceiling {
+        // for a client that sent no extension. **Only** for one that sent
+        // none: with `supported_versions` the list is the whole offer
+        // (RFC 8446 4.2.1), and a client listing 1.3 alone has said it
+        // will not speak 1.2, whatever its legacy field says. Offering
+        // 1.2 anyway was refused by the client, but it was this server
+        // choosing a version it had been told not to.
+        if best.is_none() && extension.is_none() && hello.legacy_version >= ceiling {
             best = Some(ceiling);
         }
         best.ok_or_else(|| Error::new(AlertDescription::PROTOCOL_VERSION, format!(
@@ -1502,6 +1647,20 @@ impl ServerConnection {
     /// same reason they are at 1.3.
     fn handle_client_certificate_12(&mut self, message: &HandshakeMessage)
                                     -> Result<(), Error> {
+        // **Unreachable through the state machine, and kept anyway**, in
+        // the same spirit as the check at the top of
+        // `handle_client_certificate_verify_12`: `WaitClientCertificate12`
+        // is only entered after a CertificateRequest went out. What this
+        // guards is a certificate nobody asked for being recorded as the
+        // peer's identity. Without a request the transcript kept no
+        // messages, so the CertificateVerify that would follow could only
+        // be checked over nothing - a signature over `Hash("")`, which is
+        // a constant per key and replayable by anyone who has seen one.
+        if !self.requested_client_certificate {
+            return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
+                "A Certificate arrived from a client that was not asked \
+                 for one."));
+        }
         let chain = CertificateChain::parse(&message.body)?;
         self.client_certificates = chain.certificates;
         if self.client_certificates.is_empty() {
@@ -1565,6 +1724,19 @@ impl ServerConnection {
         // took it on the way in, because a running hash cannot be
         // rewound and the raw bytes are not kept anywhere else.
         let signed = core::mem::take(&mut self.before_certificate_verify);
+        // **Nothing recorded means nothing to verify against**, and a
+        // signature over the empty concatenation is a constant per key:
+        // anyone who has captured one can replay it with the matching
+        // certificate and be recorded as that identity. The transcript
+        // only keeps messages when a CertificateRequest is going out, so
+        // this is empty exactly when no request was made - the client has
+        // the same guard before it signs.
+        if signed.is_empty() {
+            return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
+                "A CertificateVerify arrived with no handshake messages \
+                 recorded to check it against, which means no \
+                 CertificateRequest went out."));
+        }
         let leaf = self.client_certificates.first()
             .ok_or_else(|| Error::local("No client certificate to verify."))?;
         crate::tls::server13::verify_signature_12(leaf, verify.scheme, &signed,
@@ -1655,9 +1827,11 @@ impl ServerConnection {
         let shared = match suite.key_exchange {
             KeyExchange::Rsa => {
                 let mut reader = crate::tls::codec::Reader::new(&message.body);
-                // TLS 1.0 sent the encrypted premaster with no length
-                // prefix; every version since has one. SSLv3 is the only
-                // one this would get wrong and it is below the floor.
+                // The encrypted premaster carries a two byte length
+                // prefix from TLS 1.0 on (RFC 2246 7.4.7.1 was ambiguous
+                // and RFC 4346 7.4.7.1 says 1.0 implementations MUST use
+                // it); SSLv3 sent it bare. SSLv3 is below this server's
+                // floor, so the prefixed form is the only one read.
                 let encrypted = reader.vector16()?.to_vec();
                 reader.expect_empty("ClientKeyExchange")?;
                 // Drawn here, where a failure can end the handshake: it
@@ -1790,6 +1964,18 @@ impl ServerConnection {
     fn handle_client_hello_13(&mut self, hello: &ClientHello,
                               message: &HandshakeMessage) -> Result<(), Error> {
         self.version = Some(Version::TLS13);
+        // **After a retry, the second hello is held to the first.** A
+        // client may change only what the retry asked it to change, and
+        // has to carry a share for the group the retry named; anything
+        // else is a hello this server never retried, and acting on it
+        // would let a peer switch suites, names or offers between the
+        // two.
+        if self.sent_retry_request {
+            let first = ClientHello::parse(&self.first_hello)?;
+            let group = self.retry_group.ok_or_else(|| Error::local(
+                "A HelloRetryRequest went out with no group recorded."))?;
+            server13::check_second_hello(&first, hello, group)?;
+        }
         // The record header says 1.2 for the rest of the connection. The
         // reader is deliberately *not* pinned with `expect_version`: the
         // 1.3 record layer checks the header itself, as part of the AEAD's
@@ -1819,24 +2005,33 @@ impl ServerConnection {
             None => return self.send_retry_request(hello, message),
         };
         self.suite = Some(negotiated.suite);
-        let hash = server13::hash_of(negotiated.suite)?;
 
         // The transcript starts either with this hello, or - if this is the
         // second one after a retry - with what was already accumulated:
         // `message_hash` and the HelloRetryRequest. The first ClientHello
         // is not in it and must not be.
+        //
+        // **The hello goes in exactly once.** `handle_handshake` feeds
+        // every message into the transcript when there is one, and after
+        // a retry there is: so on that path this hello is already in, and
+        // only a transcript made here still needs it. Adding it on both
+        // paths hashed the second hello twice, which agreed with no
+        // client and showed as the first encrypted record failing to
+        // authenticate.
         let mut transcript = match self.transcript.take() {
             Some(transcript) => transcript,
-            None => Transcript::new(Version::TLS13, negotiated.suite.prf)
-                .map_err(Error::local)?,
+            None => {
+                let mut transcript = Transcript::new(Version::TLS13,
+                                                     negotiated.suite.prf)
+                    .map_err(Error::local)?;
+                transcript.update(&message.raw);
+                transcript
+            }
         };
-        transcript.update(&message.raw);
-        self.first_hello = message.raw.clone();
         // Taken here, before anything of ours goes in: the client's early
         // traffic secret is over the ClientHello alone, because that is
         // all the client had when it wrote those records.
         let hello_only_hash = transcript.hash();
-        let _ = hash;
 
         self.server_name = read_server_name(hello);
         self.offered_alpn = read_alpn(hello);
@@ -1858,7 +2053,8 @@ impl ServerConnection {
                                           &mut outgoing,
                                           self.negotiated_alpn.as_deref(),
                                           &hello_only_hash,
-                                          self.stapling);
+                                          self.stapling,
+                                          self.sent_retry_request);
         self.outgoing = outgoing;
         self.transcript = Some(transcript);
         let state = state?;
@@ -1924,6 +2120,8 @@ impl ServerConnection {
         self.suite = Some(suite);
         self.transcript = Some(transcript);
         self.sent_retry_request = true;
+        self.first_hello = message.body.clone();
+        self.retry_group = Some(group);
         // Back to the same state: the next message is another ClientHello.
         self.state = State::WaitClientHello;
         Ok(())
@@ -2116,6 +2314,59 @@ impl ServerConnection {
         Ok(())
     }
 
+    /// A TLS 1.3 KeyUpdate from the client (RFC 8446 4.6.3).
+    ///
+    /// The mirror of `ClientConnection::handle_key_update`, and the same
+    /// three rules. The message says only that the *sender* has changed
+    /// its key, so it steps the **reader** and nothing else - a writer
+    /// stepped here would encrypt under a key the client has not
+    /// derived, and the failure would look like a MAC error on a record
+    /// this end sent. `update_requested` additionally asks this end to
+    /// change its own, which is a KeyUpdate of ours sent under the *old*
+    /// key and then the writer stepped, in that order. The reply carries
+    /// `update_not_requested`: two implementations that both asked would
+    /// update each other forever.
+    ///
+    /// RFC 8446 4.6.3 makes receiving this mandatory ("implementations
+    /// MUST support"), and OpenSSL, Go and BoringSSL clients send one
+    /// well before the AEAD's record limit on a long connection, so a
+    /// server without it drops every long-lived client at the same
+    /// point with `unexpected_message`.
+    fn handle_key_update(&mut self, message: &HandshakeMessage)
+                         -> Result<(), Error> {
+        use crate::tls::handshake13::KeyUpdateRequest;
+        let request = KeyUpdateRequest::parse(&message.body)?;
+
+        match self.reader.protection_mut() {
+            Protection::Aead13(state) => state.update().map_err(Error::local)?,
+            other => return Err(Error::new(AlertDescription::UNEXPECTED_MESSAGE,
+                format!("A KeyUpdate arrived on a {} connection, which has no \
+                         key epochs.", other.name()))),
+        }
+
+        if request == KeyUpdateRequest::Requested {
+            let reply = HandshakeMessage::new(
+                HandshakeType::KeyUpdate, KeyUpdateRequest::NotRequested.encode())?;
+            // Out under the old key, then step: the client does not
+            // change its reading key until it has seen this message.
+            let bytes = self.writer.write(ContentType::Handshake, &reply.raw)?;
+            self.outgoing.extend_from_slice(&bytes);
+            match self.writer.protection_mut() {
+                Protection::Aead13(state) => state.update().map_err(Error::local)?,
+                other => return Err(Error::local(format!(
+                    "The writer is {} in a 1.3 connection.", other.name()))),
+            }
+        }
+
+        // A KeyUpdate is not part of the handshake transcript: RFC 8446
+        // 4.4.1 ends it at the client's Finished. `handle_handshake` fed
+        // the bytes in before dispatching, as the client's does, and that
+        // is inert here because nothing reads the transcript after the
+        // tickets have gone out - the resumption secret was taken at the
+        // Finished, which is the last point at which it is right.
+        Ok(())
+    }
+
     /// Send the NewSessionTickets, if this server issues any.
     ///
     /// Each carries a PSK derived with its own nonce, so two tickets from
@@ -2126,10 +2377,10 @@ impl ServerConnection {
         if count == 0 {
             return Ok(());
         }
-        let (hash, prf, suite) = {
+        let (prf, suite) = {
             let state = self.tls13.as_ref().ok_or_else(||
                 Error::local("No TLS 1.3 state when issuing tickets."))?;
-            (state.hash, state.prf, state.suite)
+            (state.prf, state.suite)
         };
         let transcript = self.transcript.as_ref()
             .ok_or_else(|| Error::local("No transcript when issuing tickets."))?
@@ -2139,7 +2390,6 @@ impl ServerConnection {
                 Error::local("No TLS 1.3 state when issuing tickets."))?;
             state.schedule.resumption_master(&transcript).map_err(Error::local)?
         };
-        let _ = hash;
 
         for _ in 0..count {
             let ticket = crate::tls::tickets::issue(
@@ -2635,6 +2885,100 @@ mod tests {
         assert_eq!(server.take_incoming(), b"GET /early");
     }
 
+    /// Once early data has been declined and the handshake has finished,
+    /// a record that fails to authenticate is fatal.
+    ///
+    /// What was wrong: the skip budget set when early data was declined
+    /// was only ever cleared by being exhausted. It survived the client's
+    /// Finished and the move to `Established`, so for the rest of the
+    /// connection up to 48 KB of records failing their AEAD check were
+    /// discarded without a word - an injected or tampered application
+    /// record vanished where RFC 8446 5.2 requires `bad_record_mac` and
+    /// termination. The existing test for declined early data checked
+    /// that the handshake completes and that honest data flows, and
+    /// nothing ever presented a bad record *after* the handshake on a
+    /// connection that had declined.
+    #[test]
+    fn test_a_bad_record_after_declined_early_data_is_fatal() {
+        let now = 1_700_000_000;
+        let pki = pki();
+        let mut config = resuming_config(&pki, now);
+        config.max_early_data = 16_384;
+        let mut server = ServerConnection::new(config).unwrap();
+        let mut client = ClientConnection::new(resuming_client(&pki, now),
+                                               "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        let tickets = client.take_tickets();
+
+        let mut server = ServerConnection::new(resuming_config(&pki, now)).unwrap();
+        let mut resuming = resuming_client(&pki, now);
+        resuming.tickets = tickets;
+        resuming.early_data = b"GET /early".to_vec();
+        let mut client = ClientConnection::new(resuming, "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        assert!(server.is_established(), "server: {}", server.state());
+        assert!(!server.accepted_early_data());
+
+        // A genuine application record from the client, with the last
+        // byte of its ciphertext flipped. The tag is at the end, so the
+        // record is well formed and fails only its authentication.
+        client.write(b"GET /real").unwrap();
+        let mut record = client.take_outgoing();
+        let last = record.len() - 1;
+        record[last] ^= 0x01;
+        server.push_incoming(&record);
+        let error = server.process()
+            .expect_err("a tampered record was discarded after the handshake");
+        assert_eq!(error.alert, Some(AlertDescription::BAD_RECORD_MAC),
+                   "{}", error.detail);
+        assert!(!server.is_established());
+        assert!(server.take_incoming().is_empty());
+    }
+
+    /// Early data is refused when the client's reported ticket age does
+    /// not match the ticket's real age; the PSK is still accepted.
+    ///
+    /// What was wrong: `obfuscated_ticket_age` was parsed and never
+    /// compared with anything, so the only bound on replaying a captured
+    /// 0-RTT flight was the ticket's lifetime - up to seven days - and
+    /// the optional replay register. RFC 8446 4.2.10 and 8.3 have the
+    /// server check the reported age against its own record and accept
+    /// early data only inside a small window. The early-data tests all
+    /// ran both ends on one clock, so the reported age always matched.
+    /// Here the client's clock runs sixty seconds ahead of the server's:
+    /// to the server the ticket is brand new and the client says it is a
+    /// minute old, which is what a flight captured and replayed a minute
+    /// later looks like.
+    #[test]
+    fn test_early_data_is_refused_when_the_reported_age_is_wrong() {
+        let now = 1_700_000_000;
+        let pki = pki();
+        let mut config = resuming_config(&pki, now);
+        config.max_early_data = 16_384;
+        let mut server = ServerConnection::new(config).unwrap();
+        let mut client = ClientConnection::new(resuming_client(&pki, now),
+                                               "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        let tickets = client.take_tickets();
+
+        for (skew, expected) in [(60, false), (5, true)] {
+            let mut config = resuming_config(&pki, now);
+            config.max_early_data = 16_384;
+            let mut server = ServerConnection::new(config).unwrap();
+            let mut resuming = resuming_client(&pki, now + skew);
+            resuming.tickets = tickets.clone();
+            resuming.early_data = b"GET /early".to_vec();
+            let mut client = ClientConnection::new(resuming, "leaf.test").unwrap();
+            pump(&mut client, &mut server);
+
+            assert!(server.is_established(), "skew {}: {}", skew, server.state());
+            assert!(client.is_established(), "skew {}: {:?}", skew, client.state());
+            assert!(client.resumed(), "skew {}: the PSK was refused", skew);
+            assert_eq!(server.accepted_early_data(), expected,
+                       "skew {}: early data", skew);
+        }
+    }
+
     /// The same flight twice is accepted once.
     ///
     /// Bytes for bytes: the second connection is fed the *recorded*
@@ -2757,6 +3101,151 @@ mod tests {
                    Some("ECDHE-ECDSA-AES128-GCM-SHA256"));
         assert_eq!(client.negotiated_suite().map(|s| s.openssl_name),
                    Some("ECDHE-ECDSA-AES128-GCM-SHA256"));
+    }
+
+    /// A client offering only TLS 1.3 in `supported_versions` is refused
+    /// by a 1.2-only server with `protocol_version`, not answered at 1.2.
+    ///
+    /// What was wrong: the legacy-field fallback ran whether or not a
+    /// `supported_versions` list was present, so a server capped at 1.2
+    /// answered a 1.3-only offer (whose legacy field is 0x0303) with a
+    /// 1.2 ServerHello. RFC 8446 4.2.1 requires a server seeing the
+    /// extension to negotiate only from it. The client refuses the
+    /// answer, so no handshake test saw a difference; the check here is
+    /// on the alert the server sends.
+    #[test]
+    fn test_a_tls13_only_offer_is_not_answered_at_tls12() {
+        let pki = pki();
+        let mut config = server_config(&pki);
+        config.max_version = Version::TLS12;
+        let mut server = ServerConnection::new(config).unwrap();
+        let mut client_config = client_config(&pki);
+        client_config.min_version = Version::TLS13;
+        client_config.max_version = Version::TLS13;
+        let mut client = ClientConnection::new(client_config, "leaf.test").unwrap();
+        server.push_incoming(&client.take_outgoing());
+        let error = server.process().expect_err("a 1.3-only offer was answered");
+        assert_eq!(error.alert, Some(AlertDescription::PROTOCOL_VERSION),
+                   "{}", error.detail);
+        assert_eq!(server.version(), None);
+    }
+
+    /// The client's ClientHello, re-encoded after `edit` has changed it,
+    /// as the one record the server reads first.
+    fn edited_client_hello(client: &mut ClientConnection,
+                           edit: impl FnOnce(&mut crate::tls::handshake::ClientHello))
+                           -> Vec<u8> {
+        let flight = client.take_outgoing();
+        let mut reader = HandshakeReader::new();
+        reader.push(&flight[5..]);
+        let message = reader.next_message().unwrap().expect("no ClientHello");
+        let mut hello = ClientHello::parse(&message.body).unwrap();
+        edit(&mut hello);
+        let message = HandshakeMessage::new(HandshakeType::ClientHello,
+                                            hello.encode().unwrap()).unwrap();
+        let mut writer = RecordWriter::new(Version::TLS10);
+        writer.write(ContentType::Handshake, &message.raw).unwrap()
+    }
+
+    /// The ServerHello out of the server's first flight.
+    fn first_server_hello(server: &mut ServerConnection) -> ServerHello {
+        let flight = server.take_outgoing();
+        let mut reader = HandshakeReader::new();
+        reader.push(&flight[5..]);
+        let message = reader.next_message().unwrap().expect("no ServerHello");
+        assert_eq!(message.message_type, HandshakeType::ServerHello);
+        ServerHello::parse(&message.body).unwrap()
+    }
+
+    /// `renegotiation_info` is answered only to a client that signalled
+    /// it, and a client claiming an existing renegotiation is refused.
+    ///
+    /// What was wrong: the TLS 1.2 ServerHello carried
+    /// `renegotiation_info` unconditionally, which RFC 5746 3.6 forbids
+    /// (a server must not answer what was not offered), and a client
+    /// `renegotiation_info` with a non-empty body - a claim to be
+    /// renegotiating a connection this server never had - was not
+    /// refused. This library's client always sends the SCSV, so no
+    /// handshake test saw either; the hellos are edited here.
+    #[test]
+    fn test_renegotiation_info_is_answered_only_when_signalled() {
+        let pki = pki();
+        // Signalled by the SCSV, which is what the client sends: answered.
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        server.push_incoming(&client.take_outgoing());
+        server.process().unwrap();
+        let answer = first_server_hello(&mut server);
+        assert!(find_extension(&answer.extensions,
+                               extension::RENEGOTIATION_INFO).is_some());
+
+        // Neither the SCSV nor the extension: not answered.
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        let hello = edited_client_hello(&mut client, |hello| {
+            hello.cipher_suites.retain(|code| *code != suites::RENEGOTIATION_SCSV);
+        });
+        server.push_incoming(&hello);
+        server.process().unwrap();
+        let answer = first_server_hello(&mut server);
+        assert!(find_extension(&answer.extensions,
+                               extension::RENEGOTIATION_INFO).is_none(),
+                "renegotiation_info was answered to a client that did not \
+                 signal it");
+
+        // The extension with a non-empty body: refused.
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        let hello = edited_client_hello(&mut client, |hello| {
+            hello.extensions.insert(0, Extension {
+                kind: extension::RENEGOTIATION_INFO, body: vec![12; 13] });
+        });
+        server.push_incoming(&hello);
+        let error = server.process().expect_err("a claimed renegotiation");
+        assert_eq!(error.alert, Some(AlertDescription::HANDSHAKE_FAILURE),
+                   "{}", error.detail);
+    }
+
+    /// TLS_FALLBACK_SCSV from a client offering less than this server
+    /// speaks is `inappropriate_fallback`; from one offering as much, it
+    /// is nothing.
+    ///
+    /// What was wrong: `suites::FALLBACK_SCSV` was defined and never
+    /// consulted, so RFC 7507's alert could never be sent and a client
+    /// retrying after a downgrade attack got the downgraded handshake it
+    /// was warning about. This library's client never sends the SCSV,
+    /// so no handshake test could reach it.
+    #[test]
+    fn test_fallback_scsv_below_the_ceiling_is_refused() {
+        let pki = pki();
+        // A 1.2 offer with the SCSV against a 1.3 server: refused.
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        let hello = edited_client_hello(&mut client, |hello| {
+            hello.cipher_suites.push(suites::FALLBACK_SCSV);
+        });
+        server.push_incoming(&hello);
+        let error = server.process().expect_err("a fallback was accepted");
+        assert_eq!(error.alert, Some(AlertDescription::INAPPROPRIATE_FALLBACK),
+                   "{}", error.detail);
+
+        // The same offer against a server capped at 1.2: the client's best
+        // is the server's best, so there was no downgrade to report.
+        let mut config = server_config(&pki);
+        config.max_version = Version::TLS12;
+        let mut server = ServerConnection::new(config).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        let hello = edited_client_hello(&mut client, |hello| {
+            hello.cipher_suites.push(suites::FALLBACK_SCSV);
+        });
+        server.push_incoming(&hello);
+        server.process().expect("the SCSV at the server's own ceiling");
+        assert_eq!(server.version(), Some(Version::TLS12));
     }
 
     /// A client with nothing in common is refused with a handshake
@@ -2914,6 +3403,437 @@ mod tests {
         }
     }
 
+    /// A plaintext ChangeCipherSpec record, as a middlebox-compatibility
+    /// one is written.
+    fn plaintext_ccs() -> Vec<u8> {
+        let mut writer = RecordWriter::new(
+            crate::tls::record13::LEGACY_RECORD_VERSION);
+        writer.write(ContentType::ChangeCipherSpec, &[1]).unwrap()
+    }
+
+    /// At TLS 1.3 the compatibility ChangeCipherSpec is dropped only
+    /// before the peer's Finished, and only once; afterwards it is an
+    /// unexpected record at both ends.
+    ///
+    /// What was wrong: both state machines dropped any plaintext
+    /// ChangeCipherSpec on a 1.3 connection with no look at the state,
+    /// so an on-path attacker could inject unlimited plaintext records
+    /// into an established connection and have every one swallowed,
+    /// where RFC 8446 5 requires one received after the peer's Finished
+    /// to be treated as an unexpected record type. The handshake tests
+    /// missed it because every ChangeCipherSpec they see is the one
+    /// each end sends, in the one place it is legal; nothing ever
+    /// presented one after the handshake or a second one during it.
+    #[test]
+    fn test_a_tls13_change_cipher_spec_is_refused_after_the_finished() {
+        let pki = pki();
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut config = client_config(&pki);
+        config.max_version = Version::TLS13;
+        let mut client = ClientConnection::new(config, "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        assert!(server.is_established() && client.is_established());
+        assert_eq!(server.version(), Some(Version::TLS13));
+
+        // Injected into an established connection, in each direction.
+        server.push_incoming(&plaintext_ccs());
+        let error = server.process()
+            .expect_err("the server swallowed a ChangeCipherSpec after the handshake");
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                   "{}", error.detail);
+        assert!(!server.is_established());
+
+        client.push_incoming(&plaintext_ccs());
+        let error = client.process()
+            .expect_err("the client swallowed a ChangeCipherSpec after the handshake");
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                   "{}", error.detail);
+        assert!(!client.is_established());
+    }
+
+    /// The second compatibility ChangeCipherSpec during a handshake is
+    /// refused at both ends: RFC 8446 appendix D.4 has each side send
+    /// exactly one.
+    #[test]
+    fn test_a_second_tls13_change_cipher_spec_is_refused() {
+        let pki = pki();
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut config = client_config(&pki);
+        config.max_version = Version::TLS13;
+        let mut client = ClientConnection::new(config, "leaf.test").unwrap();
+
+        // The server's flight, with its ChangeCipherSpec doubled: the
+        // record is the second one in the flight, after the ServerHello.
+        server.push_incoming(&client.take_outgoing());
+        server.process().unwrap();
+        let flight = server.take_outgoing();
+        let hello_len = 5 + u16::from_be_bytes([flight[3], flight[4]]) as usize;
+        assert_eq!(flight[hello_len], ContentType::ChangeCipherSpec.to_byte());
+        let mut doubled = flight[..hello_len].to_vec();
+        doubled.extend_from_slice(&plaintext_ccs());
+        doubled.extend_from_slice(&flight[hello_len..]);
+        client.push_incoming(&doubled);
+        let error = client.process()
+            .expect_err("the client dropped a second ChangeCipherSpec");
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                   "{}", error.detail);
+
+        // And the client's, against a fresh pair: its flight starts
+        // with the ChangeCipherSpec, so one more in front doubles it.
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut config = client_config(&pki);
+        config.max_version = Version::TLS13;
+        let mut client = ClientConnection::new(config, "leaf.test").unwrap();
+        let flight = client_second_flight(&mut client, &mut server);
+        assert_eq!(flight[0], ContentType::ChangeCipherSpec.to_byte());
+        server.push_incoming(&plaintext_ccs());
+        server.push_incoming(&flight);
+        let error = server.process()
+            .expect_err("the server dropped a second ChangeCipherSpec");
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                   "{}", error.detail);
+        assert!(!server.is_established());
+    }
+
+    /// A client's TLS 1.3 KeyUpdate steps the server's reading epoch,
+    /// and only that; `update_requested` is answered under the old key.
+    ///
+    /// What was wrong: the server had no arm for a KeyUpdate at all, so
+    /// the first one from a client - which OpenSSL, Go and BoringSSL
+    /// send on any long connection - was `unexpected_message` and the
+    /// connection ended. RFC 8446 4.6.3 makes receiving one mandatory.
+    /// Nothing caught it because this library's client never sends a
+    /// KeyUpdate, and the Python harness cannot make OpenSSL send one
+    /// (Python exposes no `SSL_key_update`). Driven here the way the
+    /// client's own test is: an established 1.3 connection assembled by
+    /// hand, with the peer's two epochs kept in step beside it, and the
+    /// assertions about records decrypting rather than about an error.
+    #[test]
+    fn test_a_client_key_update_steps_the_reading_epoch_only() {
+        use crate::tls::keys13::TrafficKeys;
+        use crate::tls::record13::Aead13;
+
+        let keys = |secret: &[u8]| TrafficKeys::derive("sha256", secret, 16, 12).unwrap();
+        let client_secret = [0x11u8; 32];
+        let server_secret = [0x22u8; 32];
+
+        let pki = pki();
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        server.state = State::Established;
+        server.version = Some(Version::TLS13);
+        server.reader.change_cipher_spec(Protection::Aead13(
+            Aead13::new("aes-gcm", "sha256", keys(&client_secret), 16).unwrap()));
+        server.writer.change_cipher_spec(Protection::Aead13(
+            Aead13::new("aes-gcm", "sha256", keys(&server_secret), 16).unwrap()));
+
+        // The client's side of both directions, kept in step by hand.
+        let mut peer_writes = Aead13::new("aes-gcm", "sha256",
+                                          keys(&client_secret), 16).unwrap();
+        let mut peer_reads = Aead13::new("aes-gcm", "sha256",
+                                         keys(&server_secret), 16).unwrap();
+        let record_of = |aead: &mut Aead13, kind: ContentType, payload: &[u8]| {
+            let body = aead.encrypt(kind, payload, 0).unwrap();
+            let mut record = vec![ContentType::ApplicationData.to_byte(), 3, 3];
+            record.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            record.extend_from_slice(&body);
+            record
+        };
+
+        // --- update_not_requested: the reader moves, the writer does not ---
+        let update = HandshakeMessage::new(HandshakeType::KeyUpdate, vec![0]).unwrap();
+        server.push_incoming(&record_of(&mut peer_writes, ContentType::Handshake,
+                                        &update.raw));
+        server.process().expect("a KeyUpdate was refused");
+        assert!(server.is_established());
+        assert!(server.take_outgoing().is_empty(),
+                "an unrequested KeyUpdate must not be answered");
+
+        peer_writes.update().unwrap();
+        server.push_incoming(&record_of(&mut peer_writes, ContentType::ApplicationData,
+                                        b"after one update"));
+        server.process().unwrap();
+        assert_eq!(server.take_incoming(), b"after one update");
+
+        // The writer is untouched, so the client still reads it at the
+        // old epoch.
+        server.write(b"still the old key").unwrap();
+        let ours = server.take_outgoing();
+        assert_eq!(peer_reads.decrypt(&ours[5..]).unwrap().1, b"still the old key");
+
+        // --- update_requested: answered, then the writer moves ---
+        let update = HandshakeMessage::new(HandshakeType::KeyUpdate, vec![1]).unwrap();
+        server.push_incoming(&record_of(&mut peer_writes, ContentType::Handshake,
+                                        &update.raw));
+        server.process().unwrap();
+        let reply = server.take_outgoing();
+        assert!(!reply.is_empty(), "a requested KeyUpdate must be answered");
+
+        // The reply is under the **old** key, and says update_not_requested.
+        let (kind, payload) = peer_reads.decrypt(&reply[5..]).unwrap();
+        assert_eq!(kind, ContentType::Handshake);
+        let answer = HandshakeMessage::new(HandshakeType::KeyUpdate, vec![0]).unwrap();
+        assert_eq!(payload, answer.raw,
+                   "the reply must carry update_not_requested, or two \
+                    implementations would update each other forever");
+        peer_reads.update().unwrap();
+
+        peer_writes.update().unwrap();
+        server.push_incoming(&record_of(&mut peer_writes, ContentType::ApplicationData,
+                                        b"after two"));
+        server.process().unwrap();
+        assert_eq!(server.take_incoming(), b"after two");
+
+        server.write(b"new key").unwrap();
+        let ours = server.take_outgoing();
+        assert_eq!(peer_reads.decrypt(&ours[5..]).unwrap().1, b"new key");
+
+        // And a malformed one is fatal: an unknown request_update value.
+        let bad = HandshakeMessage::new(HandshakeType::KeyUpdate, vec![2]).unwrap();
+        server.push_incoming(&record_of(&mut peer_writes, ContentType::Handshake,
+                                        &bad.raw));
+        assert!(server.process().is_err());
+        assert!(!server.is_established());
+    }
+
+    /// A server that asks for a client certificate, with or without
+    /// requiring one.
+    fn asking_config(pki: &Pki, require: bool) -> ServerConfig {
+        let mut config = server_config(pki);
+        config.request_client_certificate = true;
+        config.require_client_certificate = require;
+        config
+    }
+
+    /// A client holding the test leaf as its own identity. No roots are
+    /// configured on the server side, so the chain is not judged; what
+    /// the server checks is the signature over the handshake.
+    fn client_with_identity(pki: &Pki) -> ClientConfig {
+        let mut config = client_config(pki);
+        config.client_certificate = Some(crate::tls::client::ClientIdentity {
+            chain: vec![pki.leaf_der.clone()],
+            key: crate::tls::client::ClientKey::Ec {
+                curve: "P-256", private: pki.leaf_private.clone() },
+        });
+        config
+    }
+
+    /// Run the handshake up to the client's second flight and return
+    /// that flight, unsent, so a test can edit it before the server sees
+    /// it.
+    fn client_second_flight(client: &mut ClientConnection,
+                            server: &mut ServerConnection) -> Vec<u8> {
+        server.push_incoming(&client.take_outgoing());
+        server.process().expect("the ClientHello was refused");
+        client.push_incoming(&server.take_outgoing());
+        client.process().expect("the server's first flight was refused");
+        client.take_outgoing()
+    }
+
+    /// The same bytes with every record removed whose first payload byte
+    /// is `handshake_type`. Plaintext records only: the client writes one
+    /// handshake message per record and nothing before its
+    /// ChangeCipherSpec is encrypted.
+    fn without_handshake_records(bytes: &[u8], handshake_type: HandshakeType)
+                                 -> Vec<u8> {
+        let mut kept = Vec::new();
+        let mut at = 0;
+        while at + 5 <= bytes.len() {
+            let length = u16::from_be_bytes([bytes[at + 3], bytes[at + 4]]) as usize;
+            let end = at + 5 + length;
+            let record = &bytes[at..end];
+            let drop = record[0] == ContentType::Handshake.to_byte()
+                && record.get(5) == Some(&handshake_type.to_byte());
+            if !drop {
+                kept.extend_from_slice(record);
+            }
+            at = end;
+        }
+        kept
+    }
+
+    /// A client that was asked for a certificate and answers with one
+    /// completes the handshake, and the server records the chain.
+    ///
+    /// The positive half of the three tests below: the dedicated
+    /// `WaitClientCertificate12` state has to let the ordinary flight
+    /// through, or the refusals below would be refusing everything.
+    #[test]
+    fn test_a_requested_client_certificate_is_accepted_at_tls12() {
+        let pki = pki();
+        let mut server = ServerConnection::new(asking_config(&pki, true)).unwrap();
+        let mut client = ClientConnection::new(client_with_identity(&pki),
+                                               "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        assert!(server.is_established(), "server: {}", server.state());
+        assert!(client.is_established(), "client: {:?}", client.state());
+        assert_eq!(server.version(), Some(Version::TLS12));
+        assert_eq!(server.peer_certificates(), &[pki.leaf_der.clone()][..]);
+    }
+
+    /// A client that was asked and sends no Certificate message at all
+    /// is refused, whether or not a certificate was *required*.
+    ///
+    /// What was wrong: the state after the server's first flight accepted
+    /// either a Certificate or a ClientKeyExchange, and the only place
+    /// `require_client_certificate` was consulted was inside the handler
+    /// for the Certificate. A client that simply left the message out
+    /// completed the handshake with `is_established()` true and
+    /// `peer_certificates()` empty, on a server configured to refuse
+    /// exactly that. The existing tests missed it because this library's
+    /// client always answers a request - with an empty chain when it has
+    /// nothing - and OpenSSL does the same, so no peer ever omitted the
+    /// message. The flight here is the client's own, with the Certificate
+    /// record cut out of it.
+    ///
+    /// RFC 5246 7.4.6 makes the message mandatory once requested, so the
+    /// refusal is `unexpected_message` on the ClientKeyExchange, and it
+    /// does not depend on `require_client_certificate`: that flag decides
+    /// what an *empty* answer costs, and no answer is a different thing.
+    /// The old code failed this flight too, but only at the Finished and
+    /// with `decrypt_error`, because the client's transcript held the
+    /// message the server never saw - which is what the alert assertion
+    /// tells apart.
+    #[test]
+    fn test_a_client_that_omits_its_certificate_is_refused_at_tls12() {
+        for require in [true, false] {
+            let pki = pki();
+            let mut server =
+                ServerConnection::new(asking_config(&pki, require)).unwrap();
+            let mut client = ClientConnection::new(client_config(&pki),
+                                                   "leaf.test").unwrap();
+            let flight = client_second_flight(&mut client, &mut server);
+            let cut = without_handshake_records(&flight, HandshakeType::Certificate);
+            assert!(cut.len() < flight.len(), "no Certificate record was cut");
+
+            server.push_incoming(&cut);
+            let error = server.process()
+                .expect_err("a ClientKeyExchange with no Certificate before it");
+            assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                       "require={}: {}", require, error.detail);
+            assert!(error.detail.contains("client_key_exchange"), "{}",
+                    error.detail);
+            assert!(!server.is_established());
+            assert!(server.peer_certificates().is_empty());
+        }
+    }
+
+    /// A client that was asked and answers with an empty chain is refused
+    /// when a certificate is required, and accepted when it is not.
+    ///
+    /// Pinned beside the omission test because the two are the same
+    /// promise - "no certificate, no connection" - made against two
+    /// different flights, and a fix that moved the check out of the
+    /// Certificate handler could lose this one.
+    #[test]
+    fn test_an_empty_client_certificate_is_refused_only_when_required() {
+        let pki = pki();
+        let mut server = ServerConnection::new(asking_config(&pki, true)).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        let flight = client_second_flight(&mut client, &mut server);
+        server.push_incoming(&flight);
+        let error = server.process().expect_err("an empty chain was accepted");
+        assert_eq!(error.alert, Some(AlertDescription::HANDSHAKE_FAILURE),
+                   "{}", error.detail);
+        assert!(!server.is_established());
+
+        let mut server = ServerConnection::new(asking_config(&pki, false)).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        assert!(server.is_established(), "server: {}", server.state());
+        assert!(server.peer_certificates().is_empty());
+    }
+
+    /// A Certificate from a client that was never asked is refused.
+    ///
+    /// What was wrong: the dispatch accepted a Certificate in
+    /// `WaitClientKeyExchange` whether or not a CertificateRequest had
+    /// gone out. The transcript only keeps raw messages when one is
+    /// going out, so a CertificateVerify following the unsolicited
+    /// Certificate was checked over an *empty* concatenation - a
+    /// signature over `Hash("")`, which is a constant per key and lets
+    /// anyone who has captured one replay the pair and be recorded as
+    /// that identity in `peer_certificates()`. No test sent an
+    /// unsolicited certificate because this library's client never
+    /// does; the record here is built by hand.
+    #[test]
+    fn test_an_unsolicited_client_certificate_is_refused_at_tls12() {
+        let pki = pki();
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut client = ClientConnection::new(client_config(&pki),
+                                               "leaf.test").unwrap();
+        let flight = client_second_flight(&mut client, &mut server);
+        assert!(!server.requested_client_certificate);
+        assert_eq!(server.state, State::WaitClientKeyExchange);
+
+        let body = CertificateChain {
+            certificates: vec![pki.leaf_der.clone()] }.encode().unwrap();
+        let message = HandshakeMessage::new(HandshakeType::Certificate, body)
+            .unwrap();
+        let mut writer = RecordWriter::new(Version::TLS12);
+        let record = writer.write(ContentType::Handshake, &message.raw).unwrap();
+
+        server.push_incoming(&record);
+        server.push_incoming(&flight);
+        let error = server.process().expect_err("an unsolicited Certificate");
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                   "{}", error.detail);
+        assert!(error.detail.contains("certificate arrived"), "{}", error.detail);
+        assert!(server.peer_certificates().is_empty(),
+                "an unsolicited certificate was recorded as the peer's");
+        assert!(!server.is_established());
+    }
+
+    /// A CertificateVerify over nothing is refused even when the state
+    /// machine is bypassed.
+    ///
+    /// The dispatch change above makes this unreachable, so the handler
+    /// is called directly with the connection placed in the state by
+    /// hand - which is exactly how the old code was reached through the
+    /// unsolicited-Certificate path. The signature is a real one from
+    /// the leaf's key over `SHA-256("")`: it verified on the old code,
+    /// which is the whole problem, and the new check refuses it before
+    /// any verification happens.
+    #[test]
+    fn test_a_certificate_verify_over_an_empty_transcript_is_refused() {
+        let pki = pki();
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        server.version = Some(Version::TLS12);
+        server.state = State::WaitClientCertificateVerify12;
+        server.expect_certificate_verify = true;
+        server.client_certificates = vec![pki.leaf_der.clone()];
+        // No transcript, so `handle_handshake` records nothing and the
+        // concatenation the signature is checked over stays empty.
+        assert!(server.transcript.is_none());
+
+        let identity = crate::tls::client::ClientIdentity {
+            chain: vec![pki.leaf_der.clone()],
+            key: crate::tls::client::ClientKey::Ec {
+                curve: "P-256", private: pki.leaf_private.clone() },
+        };
+        use crate::hash_functions::HashFunction;
+        let mut hasher = crate::api::AnyHash::new("sha256").unwrap();
+        hasher.update(&[]);
+        let digest = hasher.digest();
+        let signature = identity.sign_digest_12(0x0403, "sha256", &digest).unwrap();
+        // The signature is genuine, so the refusal below is about the
+        // transcript being empty and not about the signature.
+        crate::tls::server13::verify_signature_12(
+            &pki.leaf_der, SignatureScheme::ECDSA_SHA256, &[], &signature)
+            .expect("a signature over the empty concatenation verifies");
+
+        let body = crate::tls::handshake::CertificateVerify12 {
+            scheme: SignatureScheme::ECDSA_SHA256, signature }.encode().unwrap();
+        let message = HandshakeMessage::new(HandshakeType::CertificateVerify, body)
+            .unwrap();
+        let error = server.handle_handshake(message)
+            .expect_err("a CertificateVerify over nothing was accepted");
+        assert_eq!(error.alert, Some(AlertDescription::UNEXPECTED_MESSAGE),
+                   "{}", error.detail);
+        assert_ne!(server.state, State::WaitChangeCipherSpec);
+    }
+
     /// Garbage never panics, whatever it is.
     #[test]
     fn test_garbage_never_panics() {
@@ -2926,5 +3846,95 @@ mod tests {
             server.push_incoming(&bytes);
             let _ = server.process();
         }
+    }
+
+    /// Split a flight of plaintext handshake records into the handshake
+    /// messages inside them, as (type, body) pairs. Test-only: the
+    /// records must be unprotected and each must hold whole messages.
+    fn plaintext_messages(flight: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        let mut at = 0;
+        while at + 5 <= flight.len() {
+            assert_eq!(flight[at], 22, "a plaintext handshake record");
+            let length = usize::from(u16::from_be_bytes([flight[at + 3], flight[at + 4]]));
+            let mut inner = &flight[at + 5..at + 5 + length];
+            while inner.len() >= 4 {
+                let size = (usize::from(inner[1]) << 16) | (usize::from(inner[2]) << 8)
+                    | usize::from(inner[3]);
+                messages.push((inner[0], inner[4..4 + size].to_vec()));
+                inner = &inner[4 + size..];
+            }
+            at += 5 + length;
+        }
+        messages
+    }
+
+    /// One handshake message in one plaintext record.
+    fn plaintext_record(kind: u8, body: &[u8]) -> Vec<u8> {
+        let mut message = vec![kind];
+        message.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        message.extend_from_slice(body);
+        let mut record = vec![22, 3, 1];
+        record.extend_from_slice(&(message.len() as u16).to_be_bytes());
+        record.extend_from_slice(&message);
+        record
+    }
+
+    /// RFC 8446 4.1.3's downgrade marker, written and checked.
+    ///
+    /// **The attack, not a description of it.** A 1.3 client and a 1.3
+    /// server, with the client's `supported_versions` removed on the
+    /// way: the server sees a 1.2 hello and answers 1.2, and the 1.2
+    /// handshake signs the randoms rather than the hello's extensions,
+    /// so nothing later in it can notice. Neither end wrote or read the
+    /// marker before, and no test drove a hello that had been altered
+    /// between the two - every version test pins both ends to the
+    /// version under test, which never produces a downgrade at all.
+    #[test]
+    fn test_a_stripped_supported_versions_is_detected_by_the_downgrade_marker() {
+        let pki = pki();
+        let mut server = ServerConnection::new(server_config(&pki)).unwrap();
+        let mut config = client_config(&pki);
+        config.max_version = Version::TLS13;
+        let mut client = ClientConnection::new(config, "leaf.test").unwrap();
+
+        let flight = client.take_outgoing();
+        let messages = plaintext_messages(&flight);
+        assert_eq!(messages.len(), 1);
+        let mut hello = ClientHello::parse(&messages[0].1).unwrap();
+        let before = hello.extensions.len();
+        hello.extensions.retain(|e| e.kind != extension::SUPPORTED_VERSIONS);
+        assert_eq!(hello.extensions.len(), before - 1,
+                   "the client offered 1.3, so it sent supported_versions");
+        server.push_incoming(&plaintext_record(1, &hello.encode().unwrap()));
+        server.process().expect("a 1.2 hello is a hello the server answers");
+
+        let answer = server.take_outgoing();
+        let server_hello = plaintext_messages(&answer).into_iter()
+            .find(|(kind, _)| *kind == 2).expect("a ServerHello");
+        let server_hello = ServerHello::parse(&server_hello.1).unwrap();
+        assert_eq!(server_hello.negotiated_version(), Version::TLS12);
+        assert_eq!(&server_hello.random[24..], b"DOWNGRD\x01",
+                   "a server that supports 1.3 marks a 1.2 answer");
+
+        client.push_incoming(&answer);
+        let error = client.process().expect_err("the client offered 1.3");
+        assert_eq!(error.alert, Some(AlertDescription::ILLEGAL_PARAMETER));
+        assert!(!client.is_established());
+    }
+
+    /// The marker's three cases, decided in one place for both ends.
+    #[test]
+    fn test_the_downgrade_marker_follows_the_ceiling_and_the_choice() {
+        use crate::tls::handshake13::downgrade_marker;
+        assert_eq!(downgrade_marker(Version::TLS13, Version::TLS13), None);
+        assert_eq!(downgrade_marker(Version::TLS13, Version::TLS12),
+                   Some(*b"DOWNGRD\x01"));
+        assert_eq!(downgrade_marker(Version::TLS13, Version::TLS11),
+                   Some(*b"DOWNGRD\x00"));
+        assert_eq!(downgrade_marker(Version::TLS12, Version::TLS12), None);
+        assert_eq!(downgrade_marker(Version::TLS12, Version::TLS10),
+                   Some(*b"DOWNGRD\x00"));
+        assert_eq!(downgrade_marker(Version::TLS11, Version::TLS10), None);
     }
 }

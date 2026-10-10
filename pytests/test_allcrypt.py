@@ -530,7 +530,13 @@ def test_catalogue_entries_all_work():
             except allcrypt.CryptoError:
                 pass
         assert sizes, f"{name} constructs at no key length"
-        assert set(sizes) <= {8, 16}, f"{name} reports {set(sizes)}"
+        # Rijndael's wider blocks are the one family named by block
+        # size; every other cipher is a 64 or 128 bit block.
+        if name.startswith("rijndael-"):
+            allowed = {int(name.split("-")[1]) // 8}
+        else:
+            allowed = {8, 16}
+        assert set(sizes) <= allowed, f"{name} reports {set(sizes)}"
     # The nonce each stream cipher takes, which they do not agree on:
     # RC4 has none, Salsa20 wants exactly 8 bytes, ChaCha 12, XChaCha20 and
     # XSalsa20 24. Spelled out rather than assumed, so a cipher with a different
@@ -683,6 +689,36 @@ def test_releases_the_gil():
         "this thread ran at %.3f of baseline while hashing, against %.3f for "
         "a call known to hold the GIL: the GIL is probably not being released"
         % (freed, held))
+
+
+@pytest.mark.parametrize("name, work", [
+    ("pbkdf2_hmac", lambda: allcrypt.pbkdf2_hmac("sha256", b"pw", b"salt", 300_000)),
+    ("scrypt", lambda: allcrypt.scrypt(b"pw", salt=b"salt", n=2 ** 16, r=8, p=1)),
+    ("argon2", lambda: allcrypt.argon2(b"pw", b"saltsalt", memory_kib=65536, passes=3,
+                                       lanes=1)),
+])
+def test_the_slow_kdfs_release_the_gil(name, work):
+    """PBKDF2, scrypt and Argon2 are the longest calls in the module.
+
+    They held the GIL for their whole run - every other Python thread
+    stalled for as long as a 600,000-iteration PBKDF2 took - while the
+    module docstring promised that bulk work releases it.
+    `test_releases_the_gil` above measured only the hashes. Same method,
+    same control.
+    """
+    import math
+
+    baseline = _loop_rate()
+    assert baseline > 10_000, "the loop is too slow to measure anything with"
+    held = _rate_while(lambda: math.factorial(120_000)) / baseline
+    assert held < 0.05, "the control did not block this thread (%.3f)" % held
+
+    result = []
+    freed = _rate_while(lambda: result.append(work())) / baseline
+    assert len(result) == 1, "%s did not run" % name
+    assert freed > 0.10, (
+        "this thread ran at %.3f of baseline during %s, against %.3f for a "
+        "call known to hold the GIL" % (freed, name, held))
 
 
 def test_independent_objects_do_not_share_state():

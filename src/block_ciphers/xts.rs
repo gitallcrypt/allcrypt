@@ -612,10 +612,12 @@ mod tests {
 
     /// The length limit applies to encryption and not to decryption.
     ///
-    /// Building a 2^20 block data unit here would take a gigabyte, so
-    /// the check is exercised through the arithmetic rather than by
-    /// making one - and the asymmetry is asserted at the boundary the
-    /// cheap way, by reading the constant.
+    /// A 2^20 block data unit is 16 MiB, cheap enough to build, so the
+    /// limit is exercised rather than read back as a constant, which is
+    /// all the earlier form of this test did: at the limit encryption
+    /// is fine, one block past it is refused with the message naming
+    /// the limit, and decryption accepts the same unit, so that a
+    /// volume already written this way can still be read.
     #[test]
     fn test_the_length_limit_is_one_sided() {
         assert_eq!(MAX_BLOCKS, 1 << 20);
@@ -624,9 +626,14 @@ mod tests {
         let mut tweak = AesCrypto::new(key[16..].to_vec()).unwrap();
         let number = sector_tweak(0);
 
-        // At the limit exactly, encryption is fine.
-        let unit = vec![0u8; BLOCK * 8];
+        let mut unit = vec![0u8; BLOCK * MAX_BLOCKS];
         assert!(encrypt(&mut data, &mut tweak, &number, &unit).is_ok());
-        assert!(decrypt(&mut data, &mut tweak, &number, &unit).is_ok());
+
+        // One byte past the limit is one block past it.
+        unit.push(0);
+        let refused = encrypt(&mut data, &mut tweak, &number, &unit).unwrap_err();
+        assert!(refused.contains(&format!("{} blocks", MAX_BLOCKS)), "{refused}");
+        assert!(decrypt(&mut data, &mut tweak, &number, &unit).is_ok(),
+                "decryption must accept a unit encryption refuses");
     }
 }

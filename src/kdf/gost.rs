@@ -74,8 +74,13 @@ pub fn kdf_tree_gostr3411_2012_256(key: &[u8], label: &[u8], seed: &[u8],
             "The tree KDF produces whole bytes; {} bits is not a whole \
              number of them.", bits));
     }
-    let blocks = bits.div_ceil(256);
-    let limit = (1usize << (8 * counter_bytes)) - 1;
+    // The counter arithmetic in `u64`, not `usize`: a four byte counter
+    // reaches 2^32 - 1, and `1usize << 32` is an overflow on a 32-bit
+    // target (a panic in debug, zero in release, so every R = 4 call
+    // would be refused there), while `usize::to_be_bytes` is four bytes
+    // wide and `[8 - counter_bytes..]` would index past it.
+    let blocks = bits.div_ceil(256) as u64;
+    let limit = (1u64 << (8 * counter_bytes)) - 1;
     if blocks > limit {
         return Err(format!(
             "{} bits needs {} blocks, and a {} byte counter reaches {}.",
@@ -84,12 +89,12 @@ pub fn kdf_tree_gostr3411_2012_256(key: &[u8], label: &[u8], seed: &[u8],
 
     // [L]_b: big endian with no leading zeros. `to_be_bytes` then strip.
     let length_bytes: Vec<u8> = {
-        let full = bits.to_be_bytes();
+        let full = (bits as u64).to_be_bytes();
         let first = full.iter().position(|b| *b != 0).unwrap_or(full.len() - 1);
         full[first..].to_vec()
     };
 
-    let mut out = Vec::with_capacity(blocks * 32);
+    let mut out = crate::kdf::output_buffer(bits / 8, "The tree KDF")?;
     for block in 1..=blocks {
         let mut mac = Hmac::new(Streebog::new_256(&[]), key);
         mac.update(&block.to_be_bytes()[8 - counter_bytes..]);
@@ -97,9 +102,10 @@ pub fn kdf_tree_gostr3411_2012_256(key: &[u8], label: &[u8], seed: &[u8],
         mac.update(&[0x00]);
         mac.update(seed);
         mac.update(&length_bytes);
-        out.extend_from_slice(&mac.digest());
+        let digest = mac.digest();
+        let take = core::cmp::min(digest.len(), bits / 8 - out.len());
+        out.extend_from_slice(&digest[..take]);
     }
-    out.truncate(bits / 8);
     Ok(out)
 }
 
@@ -348,6 +354,35 @@ mod tests {
         // counter that wraps to 1 and repeats a block.
         assert!(kdf_tree_gostr3411_2012_256(&key, b"l", b"s", 1, 255 * 256).is_ok());
         assert!(kdf_tree_gostr3411_2012_256(&key, b"l", b"s", 1, 256 * 256).is_err());
+    }
+
+    /// The four byte counter's limit was `(1usize << 32) - 1`, which
+    /// on a 32-bit target is a shift overflow - a panic in debug and
+    /// zero in release, so every R = 4 call was refused there - and
+    /// the counter bytes came from `usize::to_be_bytes`, four bytes
+    /// wide on that target, indexed at `8 - counter_bytes`. No test ran
+    /// on such a target; on a 64-bit one the `usize` and `u64` forms
+    /// agree. The arithmetic is now `u64` on every target, and the
+    /// widest counter is pinned to accept and to frame as four bytes.
+    #[test]
+    fn test_the_four_byte_counter_works_on_every_target() {
+        let key = [0u8; 32];
+        let out = kdf_tree_gostr3411_2012_256(&key, b"l", b"s", 4, 256).unwrap();
+        assert_eq!(out.len(), 32);
+        let by_hand = {
+            let mut mac = Hmac::new(Streebog::new_256(&[]), &key);
+            mac.update(&[0, 0, 0, 1]);
+            mac.update(b"l");
+            mac.update(&[0x00]);
+            mac.update(b"s");
+            mac.update(&[0x01, 0x00]);
+            mac.digest()
+        };
+        assert_eq!(out, by_hand);
+        // An output past the KDF cap is an error before any allocation.
+        assert!(kdf_tree_gostr3411_2012_256(&key, b"l", b"s", 4,
+                                            (crate::kdf::MAX_OUTPUT_BYTES + 256) * 8)
+                    .is_err());
     }
 
     /// RFC 7836 Appendix B, example 1.

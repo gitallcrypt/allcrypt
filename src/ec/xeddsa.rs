@@ -146,14 +146,15 @@ fn nonce(order: &Order, key: &[u8], message: &[u8], random: &[u8; 64])
 /// The scheme stays sound if it repeats - the nonce also hashes the key
 /// and the message - but a fresh one per signature is what libsignal
 /// does and what the specification asks for.
-pub fn sign(form: Form, private: &[u8; 32], message: &[u8], random: &[u8; 64]) -> [u8; 64] {
-    // The only failures are in setting up arithmetic mod L, whose
-    // modulus is a constant; a zero signature verifies against nothing.
-    signature(form, private, message, random).unwrap_or([0u8; SIGNATURE_LEN])
-}
-
-fn signature(form: Form, private: &[u8; 32], message: &[u8], random: &[u8; 64])
-             -> Result<[u8; 64], String> {
+///
+/// # Errors
+/// Only from setting up the arithmetic mod L, whose modulus is a
+/// constant, so a failure is a construction bug rather than anything
+/// an input can cause. It is returned rather than mapped to a zero
+/// signature: a zero signature verifies against nothing and says
+/// nothing, and every other signer in the crate returns its error.
+pub fn sign(form: Form, private: &[u8; 32], message: &[u8], random: &[u8; 64])
+            -> Result<[u8; 64], String> {
     let order = eddsa::order(Variant::Ed25519)?;
     let clamped = x25519::clamp(private);
     let mut public = eddsa::base_multiple(Variant::Ed25519, &clamped);
@@ -304,7 +305,7 @@ mod tests {
         for negative in [false, true] {
             let private = key_with_sign(negative);
             for form in [Form::Signal, Form::Specification] {
-                let signature = sign(form, &private, b"message", &[7u8; 64]);
+                let signature = sign(form, &private, b"message", &[7u8; 64]).unwrap();
                 assert_eq!(verify(form, &public(&private), b"message", &signature), Ok(()),
                            "{:?}, negative = {}", form, negative);
                 assert!(verify(form, &public(&private), b"messagf", &signature).is_err());
@@ -316,10 +317,10 @@ mod tests {
     fn test_the_signal_form_carries_the_sign_bit_in_s() {
         let negative = key_with_sign(true);
         let positive = key_with_sign(false);
-        assert_eq!(sign(Form::Signal, &negative, b"m", &[1; 64])[63] & 0x80, 0x80);
-        assert_eq!(sign(Form::Signal, &positive, b"m", &[1; 64])[63] & 0x80, 0);
+        assert_eq!(sign(Form::Signal, &negative, b"m", &[1; 64]).unwrap()[63] & 0x80, 0x80);
+        assert_eq!(sign(Form::Signal, &positive, b"m", &[1; 64]).unwrap()[63] & 0x80, 0);
         // The specification never sets it.
-        assert_eq!(sign(Form::Specification, &negative, b"m", &[1; 64])[63] & 0x80, 0);
+        assert_eq!(sign(Form::Specification, &negative, b"m", &[1; 64]).unwrap()[63] & 0x80, 0);
     }
 
     /// The asymmetry in the module comment: a specification signature
@@ -330,9 +331,9 @@ mod tests {
     fn test_which_forms_verify_under_which_verifier() {
         for negative in [false, true] {
             let private = key_with_sign(negative);
-            let specification = sign(Form::Specification, &private, b"m", &[2; 64]);
+            let specification = sign(Form::Specification, &private, b"m", &[2; 64]).unwrap();
             assert_eq!(verify(Form::Signal, &public(&private), b"m", &specification), Ok(()));
-            let signal = sign(Form::Signal, &private, b"m", &[2; 64]);
+            let signal = sign(Form::Signal, &private, b"m", &[2; 64]).unwrap();
             assert_eq!(verify(Form::Specification, &public(&private), b"m", &signal).is_ok(),
                        !negative);
             assert_eq!(signal == specification, !negative);
@@ -342,8 +343,8 @@ mod tests {
     #[test]
     fn test_the_random_input_changes_the_signature_and_not_its_validity() {
         let private = key(9);
-        let one = sign(Form::Signal, &private, b"m", &[0; 64]);
-        let two = sign(Form::Signal, &private, b"m", &[1; 64]);
+        let one = sign(Form::Signal, &private, b"m", &[0; 64]).unwrap();
+        let two = sign(Form::Signal, &private, b"m", &[1; 64]).unwrap();
         assert_ne!(one, two);
         assert_eq!(verify(Form::Signal, &public(&private), b"m", &two), Ok(()));
     }
@@ -353,8 +354,8 @@ mod tests {
     #[test]
     fn test_an_unclamped_key_signs_as_its_clamped_self() {
         let unclamped = [0xffu8; 32];
-        let signature = sign(Form::Signal, &unclamped, b"m", &[3; 64]);
-        assert_eq!(signature, sign(Form::Signal, &x25519::clamp(&unclamped), b"m", &[3; 64]));
+        let signature = sign(Form::Signal, &unclamped, b"m", &[3; 64]).unwrap();
+        assert_eq!(signature, sign(Form::Signal, &x25519::clamp(&unclamped), b"m", &[3; 64]).unwrap());
         assert_eq!(verify(Form::Signal, &public(&unclamped), b"m", &signature), Ok(()));
     }
 
@@ -364,7 +365,7 @@ mod tests {
     fn test_s_plus_l_verifies_and_s_above_2_to_253_does_not() {
         let curve = Curve::new(Variant::Ed25519);
         let private = key_with_sign(false);
-        let signature = sign(Form::Signal, &private, b"m", &[4; 64]);
+        let signature = sign(Form::Signal, &private, b"m", &[4; 64]).unwrap();
         let s = le_to_int(&signature[32..]);
         let mut malleated = signature;
         malleated[32..].copy_from_slice(&bignum::encode_scalar(&curve, &s.add(&curve.order)));
@@ -382,7 +383,7 @@ mod tests {
     #[test]
     fn test_the_top_bit_of_u_is_masked_by_one_form_and_refused_by_the_other() {
         let private = key_with_sign(false);
-        let signature = sign(Form::Specification, &private, b"m", &[5; 64]);
+        let signature = sign(Form::Specification, &private, b"m", &[5; 64]).unwrap();
         let mut flagged = public(&private);
         flagged[31] |= 0x80;
         assert_eq!(verify(Form::Signal, &flagged, b"m", &signature), Ok(()));
@@ -398,7 +399,7 @@ mod tests {
     #[test]
     fn test_every_byte_of_the_signature_matters() {
         let private = key(11);
-        let signature = sign(Form::Signal, &private, b"message", &[6; 64]);
+        let signature = sign(Form::Signal, &private, b"message", &[6; 64]).unwrap();
         let public = public(&private);
         for byte in 0..64 {
             let bit = byte * 8 + byte % 8;
@@ -406,6 +407,24 @@ mod tests {
             flipped[bit / 8] ^= 1 << (bit % 8);
             assert!(verify(Form::Signal, &public, b"message", &flipped).is_err(), "bit {}", bit);
         }
+    }
+
+    /// `sign` returns its error rather than a zero signature.
+    ///
+    /// It used to map its one internal failure - setting up the
+    /// arithmetic mod L - to `[0u8; 64]`, a signature that verifies
+    /// against nothing and says nothing, which is the silent failure
+    /// the crate's invariants forbid. The failure cannot be provoked
+    /// (the modulus is a constant), so what this test pins is the
+    /// shape: the return type is a `Result`, which the old signature
+    /// did not compile against, and a successful signature is not the
+    /// zero sentinel.
+    #[test]
+    fn test_sign_reports_rather_than_returning_zeros() {
+        let private = key(12);
+        let signature: Result<[u8; 64], String> =
+            sign(Form::Signal, &private, b"message", &[9; 64]);
+        assert_ne!(signature.unwrap(), [0u8; 64]);
     }
 
     /// `x = 0` with the sign bit set is refused by RFC 8032 decoding and

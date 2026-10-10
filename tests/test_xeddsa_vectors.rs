@@ -101,7 +101,7 @@ fn test_signatures_are_libsignals_byte_for_byte() {
         let random: [u8; 64] = bytes(row, "random");
         let message = hex(field(row, "message"));
         let expected: [u8; 64] = bytes(row, "signature");
-        assert_eq!(xeddsa::sign(form, &private, &message, &random), expected,
+        assert_eq!(xeddsa::sign(form, &private, &message, &random).unwrap(), expected,
                    "{} signature over {} bytes", form.name(), message.len());
     }
     assert_eq!(forms, [20, 20]);

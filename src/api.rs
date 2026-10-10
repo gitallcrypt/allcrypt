@@ -27,8 +27,9 @@ use crate::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 
 pub const BLOCK_CIPHERS: &[&str] =
     &["aes", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des", "gost",
-      "idea", "kuznyechik", "magma", "rc2", "rc5", "rc6", "seed", "serpent",
-      "sm4", "tea", "twofish", "xtea"];
+      "idea", "kuznyechik", "magma", "rc2", "rc5", "rc6",
+      "rijndael-128", "rijndael-160", "rijndael-192", "rijndael-224", "rijndael-256",
+      "seed", "serpent", "sm4", "tea", "twofish", "xtea"];
 pub const STREAM_CIPHERS: &[&str] =
     &["chacha20", "chacha12", "chacha8", "xchacha20", "rc4", "salsa20", "salsa12", "salsa8",
       "xsalsa20", "zipcrypto"];
@@ -214,6 +215,9 @@ pub enum AnyBlockCipher {
     /// CAST-256 (RFC 2612): a 128 bit block and a key of 16, 20, 24, 28
     /// or 32 bytes.
     Cast256(crate::block_ciphers::cast256::Cast256),
+    /// Rijndael at any of its five block sizes, 16 to 32 bytes, with a
+    /// key of 16, 20, 24, 28 or 32 bytes. The 16 byte block is AES.
+    Rijndael(crate::block_ciphers::rijndael::Rijndael),
     /// ARIA, RFC 5794 - the Korean national block cipher, and the one
     /// RFC 6209's TLS suites use. AES's block and key sizes, AES's
     /// S-box as one of its four, and neither AES's diffusion nor AES's
@@ -233,23 +237,10 @@ impl AnyBlockCipher {
             "aes" => Ok(AnyBlockCipher::Aes(AesCrypto::new(key.to_vec())?)),
             "aria" => Ok(AnyBlockCipher::Aria(
                 crate::block_ciphers::aria::Aria::new(key)?)),
-            "blowfish" => {
-                // Blowfish::new does not validate, and an empty key divides by
-                // zero in the key schedule.
-                if key.is_empty() || key.len() > 56 {
-                    return Err(format!("Wrong key length {}. Blowfish takes 1..=56 bytes.", key.len()));
-                }
-                Ok(AnyBlockCipher::Blowfish(Blowfish::new(key.to_vec())))
-            }
+            "blowfish" => Ok(AnyBlockCipher::Blowfish(Blowfish::new(key.to_vec())?)),
             // "blowfish_le" is cryptsetup's spelling.
-            "blowfish-le" | "blowfish_le" => {
-                if key.is_empty() || key.len() > 56 {
-                    return Err(format!("Wrong key length {}. Blowfish takes 1..=56 bytes.",
-                                       key.len()));
-                }
-                Ok(AnyBlockCipher::BlowfishLe(
-                    crate::block_ciphers::blowfish::BlowfishLe::new(key.to_vec())))
-            }
+            "blowfish-le" | "blowfish_le" => Ok(AnyBlockCipher::BlowfishLe(
+                crate::block_ciphers::blowfish::BlowfishLe::new(key.to_vec())?)),
             // **`param` names the S-box, and the S-box is the cipher.**
             // The string here used to be "Default", which matched no
             // parameter set and was silently turned into CryptoPro-A
@@ -265,6 +256,13 @@ impl AnyBlockCipher {
                 crate::block_ciphers::cast256::Cast256::new(key.to_vec())?)),
             "rc6" => Ok(AnyBlockCipher::Rc6(
                 crate::block_ciphers::rc6::Rc6::new(key.to_vec())?)),
+            // Named by block size in bits, as mcrypt named them.
+            "rijndael-128" | "rijndael-160" | "rijndael-192" | "rijndael-224"
+            | "rijndael-256" => {
+                let bits: usize = name["rijndael-".len()..].parse().expect("one of the five");
+                Ok(AnyBlockCipher::Rijndael(
+                    crate::block_ciphers::rijndael::Rijndael::new(bits / 8, key.to_vec())?))
+            }
             "idea" => Ok(AnyBlockCipher::Idea(
                 crate::block_ciphers::idea::Idea::new(key.to_vec())?)),
             "sm4" => Ok(AnyBlockCipher::Sm4(
@@ -361,6 +359,13 @@ impl AnyBlockCipher {
             AnyBlockCipher::Rc5(_) => "rc5",
             AnyBlockCipher::Rc6(_) => "rc6",
             AnyBlockCipher::Cast256(_) => "cast256",
+            AnyBlockCipher::Rijndael(r) => match r.block_bytes() {
+                16 => "rijndael-128",
+                20 => "rijndael-160",
+                24 => "rijndael-192",
+                28 => "rijndael-224",
+                _ => "rijndael-256",
+            },
             AnyBlockCipher::Aria(_) => "aria",
         }
     }
@@ -390,6 +395,7 @@ macro_rules! dispatch {
             AnyBlockCipher::Rc5($inner) => $body,
             AnyBlockCipher::Rc6($inner) => $body,
             AnyBlockCipher::Cast256($inner) => $body,
+            AnyBlockCipher::Rijndael($inner) => $body,
             AnyBlockCipher::Aria($inner) => $body,
         }
     };
@@ -473,6 +479,14 @@ enum Driver {
 pub struct AeadStream {
     inner: AeadInner,
     decrypting: bool,
+    /// The name it was built with, lower case, for display.
+    name: String,
+    /// Set by `finish`, `open`, `tag` and `verify`. GCM and
+    /// ChaCha20-Poly1305 also refuse reuse inside their own states, but
+    /// the buffered arms have no state of their own beyond the buffer:
+    /// without this, `update` after `finish` appended to the old buffer
+    /// and a second `finish` sealed it again under the same nonce.
+    finished: bool,
 }
 
 /// The two constructions have nothing in common underneath - one drives a
@@ -632,13 +646,15 @@ impl AeadStream {
             other => return Err(format!(
                 "Unknown AEAD {:?}. Known: {}.", other, AEADS.join(", "))),
         };
-        Ok(AeadStream { inner, decrypting })
+        Ok(AeadStream { inner, decrypting, name: name.to_ascii_lowercase(),
+                        finished: false })
     }
 
     /// Feed input. For GCM and ChaCha20-Poly1305 this produces output as
     /// it goes; for CCM it produces nothing until `tag` or `verify`,
     /// because the mode cannot start before it knows the length.
     pub fn update(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+        self.refuse_if_finished()?;
         match &mut self.inner {
             AeadInner::Gcm { cipher, state } => state.update(cipher, input, out),
             AeadInner::ChaChaPoly(state) => state.update(input, out),
@@ -649,6 +665,12 @@ impl AeadStream {
                 Ok(())
             }
         }
+    }
+
+    /// The AEAD's name as it was asked for, lower case: `"aes-gcm"`,
+    /// `"chacha20-poly1305"`, `"aes-eax"`, ...
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// The tag this AEAD produces, in bytes.
@@ -683,49 +705,37 @@ impl AeadStream {
     /// Finish a CCM encryption: the ciphertext, which `update` could not
     /// produce, and the tag.
     pub fn finish(&mut self, out: &mut Vec<u8>) -> Result<Vec<u8>, String> {
+        if self.buffers_everything() {
+            self.refuse_if_finished()?;
+            if self.decrypting {
+                return Err("This is a decryption; call open() with the \
+                            tag.".to_string());
+            }
+            self.finished = true;
+        }
         match &mut self.inner {
             AeadInner::Ccm { cipher, nonce, aad, buffered, tag_len } => {
-                if self.decrypting {
-                    return Err("This is a decryption; call open() with the \
-                                tag.".to_string());
-                }
                 let (ciphertext, tag) = crate::block_ciphers::ccm::encrypt(
                     cipher, nonce, aad, buffered, *tag_len)?;
                 out.extend_from_slice(&ciphertext);
                 Ok(tag)
             }
             AeadInner::Eax { eax, nonce, aad, buffered } => {
-                if self.decrypting {
-                    return Err("This is a decryption; call open() with the \
-                                tag.".to_string());
-                }
                 let (ciphertext, tag) = eax.encrypt(nonce, aad, buffered)?;
                 out.extend_from_slice(&ciphertext);
                 Ok(tag)
             }
             AeadInner::Mgm { mgm, nonce, aad, buffered } => {
-                if self.decrypting {
-                    return Err("This is a decryption; call open() with the \
-                                tag.".to_string());
-                }
                 let (ciphertext, tag) = mgm.encrypt(nonce, aad, buffered)?;
                 out.extend_from_slice(&ciphertext);
                 Ok(tag)
             }
             AeadInner::Ocb { ocb, nonce, aad, buffered } => {
-                if self.decrypting {
-                    return Err("This is a decryption; call open() with the \
-                                tag.".to_string());
-                }
                 let (ciphertext, tag) = ocb.encrypt(nonce, aad, buffered)?;
                 out.extend_from_slice(&ciphertext);
                 Ok(tag)
             }
             AeadInner::CbcHmac { aead, nonce, aad, buffered } => {
-                if self.decrypting {
-                    return Err("This is a decryption; call open() with the \
-                                tag.".to_string());
-                }
                 let (ciphertext, tag) = aead.encrypt(nonce, aad, buffered)?;
                 out.extend_from_slice(&ciphertext);
                 Ok(tag)
@@ -737,44 +747,36 @@ impl AeadStream {
     /// Finish a CCM decryption: verify, then hand back the plaintext.
     /// Nothing comes out unless the tag checks, which is the whole point.
     pub fn open(&mut self, tag: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+        if self.buffers_everything() {
+            self.refuse_if_finished()?;
+            if !self.decrypting {
+                return Err("This is an encryption; call finish().".to_string());
+            }
+            self.finished = true;
+        }
         match &mut self.inner {
             AeadInner::Ccm { cipher, nonce, aad, buffered, .. } => {
-                if !self.decrypting {
-                    return Err("This is an encryption; call finish().".to_string());
-                }
                 let plaintext = crate::block_ciphers::ccm::decrypt(
                     cipher, nonce, aad, buffered, tag)?;
                 out.extend_from_slice(&plaintext);
                 Ok(())
             }
             AeadInner::Eax { eax, nonce, aad, buffered } => {
-                if !self.decrypting {
-                    return Err("This is an encryption; call finish().".to_string());
-                }
                 let plaintext = eax.decrypt(nonce, aad, buffered, tag)?;
                 out.extend_from_slice(&plaintext);
                 Ok(())
             }
             AeadInner::Mgm { mgm, nonce, aad, buffered } => {
-                if !self.decrypting {
-                    return Err("This is an encryption; call finish().".to_string());
-                }
                 let plaintext = mgm.decrypt(nonce, aad, buffered, tag)?;
                 out.extend_from_slice(&plaintext);
                 Ok(())
             }
             AeadInner::Ocb { ocb, nonce, aad, buffered } => {
-                if !self.decrypting {
-                    return Err("This is an encryption; call finish().".to_string());
-                }
                 let plaintext = ocb.decrypt(nonce, aad, buffered, tag)?;
                 out.extend_from_slice(&plaintext);
                 Ok(())
             }
             AeadInner::CbcHmac { aead, nonce, aad, buffered } => {
-                if !self.decrypting {
-                    return Err("This is an encryption; call finish().".to_string());
-                }
                 let plaintext = aead.decrypt(nonce, aad, buffered, tag)?;
                 out.extend_from_slice(&plaintext);
                 Ok(())
@@ -787,6 +789,10 @@ impl AeadStream {
     pub fn tag(&mut self) -> Result<Vec<u8>, String> {
         if self.decrypting {
             return Err("This is a decryption; call verify with the tag.".to_string());
+        }
+        if !self.buffers_everything() {
+            self.refuse_if_finished()?;
+            self.finished = true;
         }
         match &mut self.inner {
             AeadInner::Gcm { cipher, state } => Ok(state.tag(cipher)?.to_vec()),
@@ -812,11 +818,24 @@ impl AeadStream {
         }
     }
 
+    fn refuse_if_finished(&self) -> Result<(), String> {
+        if self.finished {
+            return Err("This AEAD stream has already been finished; a new \
+                        message needs a new stream and a new nonce."
+                .to_string());
+        }
+        Ok(())
+    }
+
     /// Finish a decryption. Until this returns `Ok`, nothing `update`
     /// produced is trustworthy.
     pub fn verify(&mut self, tag: &[u8]) -> Result<(), String> {
         if !self.decrypting {
             return Err("This is an encryption; call tag().".to_string());
+        }
+        if !self.buffers_everything() {
+            self.refuse_if_finished()?;
+            self.finished = true;
         }
         match &mut self.inner {
             AeadInner::Gcm { cipher, state } => state.verify(cipher, tag),
@@ -1073,39 +1092,51 @@ impl AnyStreamCipher {
     /// rather than guessing a direction.
     pub fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, String> {
         let mut out = Vec::with_capacity(input.len());
+        if let AnyStreamCipher::ZipCrypto(_) = self {
+            return Err("ZipCrypto's keys absorb the plaintext, so encrypting and \
+                        decrypting differ: use encrypt or decrypt."
+                .to_string());
+        }
+        self.keystream(input, &mut out)?;
+        Ok(out)
+    }
+
+    /// Encrypt `input`. An `Err` when the keystream runs out (a ChaCha
+    /// or Salsa20 counter that would wrap), never a short result.
+    pub fn encrypt(&mut self, input: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = Vec::with_capacity(input.len());
         match self {
-            AnyStreamCipher::Chacha(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::Rc4(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::Salsa20(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::ZipCrypto(_) => {
-                return Err("ZipCrypto's keys absorb the plaintext, so encrypting and \
-                            decrypting differ: use encrypt or decrypt."
-                    .to_string())
-            }
+            AnyStreamCipher::ZipCrypto(c) => c.encrypt(input, &mut out),
+            _ => self.keystream(input, &mut out)?,
         }
         Ok(out)
     }
 
-    pub fn encrypt(&mut self, input: &[u8]) -> Vec<u8> {
+    /// Decrypt `input`; the same refusal as `encrypt`.
+    pub fn decrypt(&mut self, input: &[u8]) -> Result<Vec<u8>, String> {
         let mut out = Vec::with_capacity(input.len());
         match self {
-            AnyStreamCipher::Chacha(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::Rc4(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::Salsa20(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::ZipCrypto(c) => c.encrypt(input, &mut out),
+            AnyStreamCipher::ZipCrypto(c) => c.decrypt(input, &mut out),
+            _ => self.keystream(input, &mut out)?,
         }
-        out
+        Ok(out)
     }
 
-    pub fn decrypt(&mut self, input: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(input.len());
+    /// The keystream ciphers' one operation, through `try_crypt` where
+    /// the counter can run out. `StreamCipher::crypt` has no error
+    /// channel and stops short on exhaustion, so calling it here handed
+    /// a caller fewer bytes than it gave, with `Ok`.
+    fn keystream(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
         match self {
-            AnyStreamCipher::Chacha(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::Rc4(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::Salsa20(c) => c.crypt(input, &mut out),
-            AnyStreamCipher::ZipCrypto(c) => c.decrypt(input, &mut out),
+            AnyStreamCipher::Chacha(c) => c.try_crypt(input, out),
+            AnyStreamCipher::Salsa20(c) => c.try_crypt(input, out),
+            AnyStreamCipher::Rc4(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::ZipCrypto(_) => Err(
+                "ZipCrypto has no keystream independent of the data.".to_string()),
         }
-        out
     }
 
     /// Transform `buf` in place, continuing the keystream.
@@ -1188,7 +1219,7 @@ pub fn michael(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
 pub fn wep_encrypt(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let iv: [u8; 3] = iv.try_into()
         .map_err(|_| format!("A WEP IV is 3 bytes, not {}.", iv.len()))?;
-    Ok(crate::stream_ciphers::wep::encrypt(key, &iv, plaintext))
+    crate::stream_ciphers::wep::encrypt(key, &iv, plaintext)
 }
 
 /// The inverse of `wep_encrypt`, refusing a wrong key or a damaged frame
@@ -1229,8 +1260,8 @@ pub fn wpa_ptk(akm: &str, pmk: &[u8], aa: &[u8], spa: &[u8], anonce: &[u8], snon
     let (aa, spa) = (mac(aa, "BSSID")?, mac(spa, "station address")?);
     let (anonce, snonce) = (nonce(anonce, "nonce")?, nonce(snonce, "nonce")?);
     Ok(match akm {
-        "sha1" => crate::kdf::ieee80211::ptk_sha1(pmk, &aa, &spa, &anonce, &snonce, bits),
-        "sha256" => crate::kdf::ieee80211::ptk_sha256(pmk, &aa, &spa, &anonce, &snonce, bits),
+        "sha1" => crate::kdf::ieee80211::try_ptk_sha1(pmk, &aa, &spa, &anonce, &snonce, bits)?,
+        "sha256" => crate::kdf::ieee80211::try_ptk_sha256(pmk, &aa, &spa, &anonce, &snonce, bits)?,
         other => return Err(format!("A WPA AKM is \"sha1\" or \"sha256\", not {other:?}.")),
     })
 }
@@ -1303,11 +1334,16 @@ impl AnyHash {
         // this library does not carry becomes readable without a
         // rebuild - and a registration can never shadow a name that
         // is compiled in. See `src/registry.rs`.
-        if let Some(algorithm) = crate::registry::hash_for(name) {
-            if !HASHES.contains(&name) {
-                return AnyHash::new(&algorithm);
-            }
-        }
+        //
+        // **Resolved exactly once, never by recursion.** `register`
+        // stores only built-in names, so one step reaches one; and
+        // should the table ever hold an OID as a target, one step
+        // reaches a string the match below refuses, which is an error
+        // rather than a stack overflow.
+        let name = match crate::registry::hash_for(name) {
+            Some(algorithm) if !HASHES.contains(&name) => algorithm,
+            _ => name.to_string(),
+        };
         match name.to_ascii_lowercase().replace('-', "_").as_str() {
             "md2" => Ok(AnyHash::Md2(
                 crate::hash_functions::md2::Md2::new(&[]))),
@@ -1555,9 +1591,35 @@ pub fn x963_kdf(hash_name: &str, z: &[u8], shared_info: &[u8], length: usize)
 }
 
 /// RFC 3961's n-fold.
-pub fn kerberos_nfold(data: &[u8], length: usize) -> Vec<u8> {
-    kdf::kerberos::nfold(data, length)
+///
+/// `Err` when the fold would take more than `KERBEROS_NFOLD_MAX_STEPS`
+/// steps (the least common multiple of the two lengths): the length is
+/// the caller's choice, and `nfold` computes `len * length / gcd` without
+/// a check, so a large one overflowed - a panic in debug builds, and in
+/// release a wrapped count followed by an allocation abort. RFC 3961
+/// folds constants to a cipher's block or key size, far below this.
+pub fn kerberos_nfold(data: &[u8], length: usize) -> Result<Vec<u8>, String> {
+    if !data.is_empty() && length != 0 {
+        let (mut a, mut b) = (data.len(), length);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        let steps = (data.len() / a).checked_mul(length);
+        if steps.is_none_or(|steps| steps > KERBEROS_NFOLD_MAX_STEPS) {
+            return Err(format!(
+                "An n-fold of {} bytes to {} takes more than {} steps; \
+                 nothing in RFC 3961 folds anywhere near that much.",
+                data.len(), length, KERBEROS_NFOLD_MAX_STEPS));
+        }
+    } else if length > kdf::MAX_OUTPUT_BYTES {
+        return Err(format!("An n-fold output is at most {} bytes here; asked for {}.",
+                           kdf::MAX_OUTPUT_BYTES, length));
+    }
+    Ok(kdf::kerberos::nfold(data, length))
 }
+
+/// The most steps (`lcm(len(data), length)`) `kerberos_nfold` will run.
+pub const KERBEROS_NFOLD_MAX_STEPS: usize = 1 << 26;
 
 /// RFC 3961's DR under the named block cipher.
 pub fn kerberos_derive_random(cipher: &str, key: &[u8], constant: &[u8], length: usize)
@@ -1880,7 +1942,7 @@ pub fn shake(name: &str, data: &[u8], length: usize) -> Result<Vec<u8>, String> 
     let mut sponge = crate::hash_functions::keccak::Keccak::shake(security, length)?;
     use crate::hash_functions::HashFunction;
     sponge.update(data);
-    Ok(sponge.squeeze(length))
+    sponge.try_squeeze(length)
 }
 
 /// scrypt (RFC 7914). `n` is a power of two greater than one.
@@ -1916,12 +1978,15 @@ pub fn argon2(variant: &str, password: &[u8], salt: &[u8], memory_kib: u32,
 /// The TLS 1.2 PRF (RFC 5246 section 5).
 pub fn tls12_prf(hash_name: &str, secret: &[u8], label: &[u8], seed: &[u8],
                  length: usize) -> Result<Vec<u8>, String> {
-    Ok(kdf::tls12_prf(AnyHash::new(hash_name)?, secret, label, seed, length))
+    kdf::try_tls12_prf(AnyHash::new(hash_name)?, secret, label, seed, length)
 }
 
 /// The TLS 1.0/1.1 PRF (RFC 2246 section 5). The hash is fixed by the spec.
-pub fn tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8> {
-    kdf::tls10_prf(secret, label, seed, length)
+/// An `Err` for a `length` above `kdf::MAX_OUTPUT_BYTES`, where
+/// `kdf::tls10_prf` would panic.
+pub fn tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], length: usize)
+                 -> Result<Vec<u8>, String> {
+    kdf::try_tls10_prf(secret, label, seed, length)
 }
 
 // --------------------------------------------------------- elliptic curves ---
@@ -2861,13 +2926,7 @@ pub fn lcg_names() -> Vec<&'static str> {
 /// or one with no output.
 pub fn lcg_custom(a: u128, c: u128, m: u128, state: u128, mask: u128)
                   -> Result<lcg::LCG, String> {
-    if m < 2 {
-        return Err(format!("the modulus must be at least 2, not {m}"));
-    }
-    if mask == 0 {
-        return Err("the output mask selects no bits".to_string());
-    }
-    Ok(lcg::LCG::new(state, a, c, m, mask))
+    lcg::LCG::try_new(state, a, c, m, mask)
 }
 
 /// `count` outputs of the named generator seeded with `seed` by its own
@@ -3013,7 +3072,7 @@ pub fn xeddsa_sign(form: &str, private: &[u8], message: &[u8], random: Option<&[
             "XEdDSA's random input is 64 bytes, not {}.", bytes.len())),
         None => random::fill(&mut z)?,
     }
-    Ok(xeddsa::sign(form, &private, message, &z).to_vec())
+    Ok(xeddsa::sign(form, &private, message, &z)?.to_vec())
 }
 
 /// Verify an XEdDSA signature against an X25519 public key.
@@ -4104,7 +4163,12 @@ impl Default for TlsOptions {
     }
 }
 
-fn parse_version(name: &str) -> Result<crate::tls::Version, String> {
+/// A TLS version by name: `"SSLv3"`, `"TLSv1"`/`"TLSv1.0"`, `"TLSv1.1"`,
+/// `"TLSv1.2"`, `"TLSv1.3"`, case, `_`, `.` and spaces ignored.
+///
+/// Public so that the proxy and the OpenSSL shim parse versions with this
+/// one function rather than with copies of it.
+pub fn parse_version(name: &str) -> Result<crate::tls::Version, String> {
     match name.to_ascii_uppercase().replace(['_', ' ', '.'], "").as_str() {
         "SSLV3" | "SSL3" => Ok(crate::tls::Version::SSL30),
         "TLSV1" | "TLSV10" | "TLS1" => Ok(crate::tls::Version::TLS10),
@@ -4145,7 +4209,15 @@ pub fn tls_suites_known() -> Vec<String> {
     crate::tls::suites::ALL.iter().map(|s| s.name.to_string()).collect()
 }
 
-fn tls_selection(name: &str) -> Result<crate::tls::suites::Selection, String> {
+/// A suite selection by name: `"modern"` (or `"default"`), `"legacy"`,
+/// `"all"` (or `"everything"`, the NULL suites included), or a
+/// comma-separated list of suite names. An unknown name is an `Err`,
+/// never a wider selection.
+///
+/// Public so that the proxy and the OpenSSL shim read the same names the
+/// same way. There were three copies of this match, and the shim's had
+/// already drifted: it answered a typo with `Selection::all()`.
+pub fn tls_selection(name: &str) -> Result<crate::tls::suites::Selection, String> {
     Ok(match name.to_ascii_lowercase().as_str() {
         "modern" | "default" => crate::tls::suites::Selection::modern(),
         "legacy" => crate::tls::suites::Selection::legacy(),
@@ -4965,7 +5037,9 @@ fn san_for(host: &str) -> SanEntry {
 /// have to keep across restarts and a repeated serial from one issuer
 /// is what a browser caches and then refuses. The top bit is cleared
 /// because a DER INTEGER with it set is negative, which RFC 5280
-/// forbids and our own parser refuses.
+/// forbids and the certificate builder refuses to encode. (The parser
+/// accepts one, since some equipment issues them; `proxy::mirror`
+/// zero-prefixes such a serial when it copies it.)
 fn serial() -> Result<Vec<u8>, String> {
     let mut bytes = crate::random::bytes(16)?;
     bytes[0] &= 0x7f;
@@ -5347,7 +5421,9 @@ use crate::publickey_ciphers::dsa;
 /// Signatures are DER `Dss-Sig-Value` - what a certificate and a TLS
 /// ServerKeyExchange carry - and are over a message hashed with the named
 /// hash, truncated to `q`'s length as FIPS 186-4 says.
-#[derive(Clone)]
+///
+/// Not `Clone`, like the other private key types here: a key that copies
+/// on `.clone()` is harder to keep in one place.
 pub struct DsaKey {
     inner: dsa::DsaPrivateKey,
 }
@@ -5378,6 +5454,11 @@ impl DsaKey {
 
     pub fn inner(&self) -> &dsa::DsaPrivateKey {
         &self.inner
+    }
+
+    /// The bit length of `p`.
+    pub fn bits(&self) -> usize {
+        self.inner.public.parameters.p.bit_len()
     }
 
     /// `(p, q, g)`, big endian.
@@ -5582,4 +5663,178 @@ impl MlDsaPublicKey {
 /// The three ML-DSA parameter sets.
 pub fn ml_dsa_parameter_sets() -> Vec<&'static str> {
     ml_dsa::PARAMETER_SETS.iter().map(|set| set.name).collect()
+}
+
+// --------------------------------------------------------------------- CMAC ---
+
+/// CMAC (SP 800-38B) over any block cipher here, the whole message at once.
+pub fn cmac(cipher_name: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    crate::mac::cmac::cmac(cipher_name, key, data)
+}
+
+// ---------------------------------------------------- parameter read-outs ---
+
+/// The substitution rows of a GOST 28147-89 parameter set, built in or
+/// registered: eight rows of sixteen.
+pub fn gost_sbox(name: &str) -> Result<Vec<Vec<u8>>, String> {
+    crate::block_ciphers::gost::GostCrypto::sbox_named(name)
+}
+
+/// A curve's domain parameters as `(field, value)` pairs, in the order
+/// `name, p, a, b, gx, gy, n, cofactor`: the shape `register_oid` takes.
+///
+/// Every number is big-endian hex without a prefix, padded to an even
+/// number of digits so each one is a whole number of bytes (`to_hex`
+/// alone gives `"1"` for a cofactor of one, which is not a byte).
+pub fn curve_parameters(name: &str) -> Result<Vec<(&'static str, String)>, String> {
+    let curve = crate::ec::curves::by_name(name)?;
+    let identity = || "The curve's base point is the identity.".to_string();
+    let x = curve.g.x().ok_or_else(identity)?;
+    let y = curve.g.y().ok_or_else(identity)?;
+    let even = |value: &BigUint| {
+        let hex = value.to_hex();
+        if hex.len() % 2 == 1 { format!("0{}", hex) } else { hex }
+    };
+    Ok(vec![
+        ("name", curve.name.to_string()),
+        ("p", even(&curve.p)),
+        ("a", even(&curve.a)),
+        ("b", even(&curve.b)),
+        ("gx", even(x)),
+        ("gy", even(y)),
+        ("n", even(&curve.n)),
+        ("cofactor", even(&curve.h)),
+    ])
+}
+
+/// The scheme names `encrypt_private_key` takes.
+pub fn encryption_schemes() -> Vec<&'static str> {
+    crate::x509::encrypted_key::scheme_names()
+}
+
+// ---------------------------------------------------------------------- SSH ---
+
+/// An SSH private key (Ed25519, ECDSA on P-256/384/521, RSA, DSA).
+pub use crate::ssh::private_key::PrivateKey as SshPrivateKey;
+/// An SSH public key, as a blob or an `authorized_keys` line.
+pub use crate::ssh::keys::PublicKey as SshPublicKey;
+/// The sans-I/O SSH client and what configures it.
+pub use crate::ssh::client::{Auth as SshAuth, Client as SshClient,
+                             ClientConfig as SshClientConfig,
+                             HostKeyCheck as SshHostKeyCheck};
+/// The sans-I/O SSH server and what configures it.
+pub use crate::ssh::server::{Server as SshServer, ServerConfig as SshServerConfig,
+                             SessionRequest as SshSessionRequest};
+
+/// A fresh SSH key. `kind` is `"ed25519"`, `"ecdsa"` or `"rsa"` as
+/// `ssh-keygen -t` has them, or a key type name; `bits` picks the curve
+/// or the RSA modulus.
+pub fn ssh_generate_key(kind: &str, bits: Option<usize>) -> Result<SshPrivateKey, String> {
+    SshPrivateKey::generate(kind, bits)
+}
+
+/// Read an `openssh-key-v1` private key file: the key and its comment.
+pub fn ssh_read_private_key(text: &str, passphrase: Option<&[u8]>)
+                            -> Result<(SshPrivateKey, String), String> {
+    crate::ssh::private_key::read(text, passphrase)
+}
+
+/// Write an `openssh-key-v1` private key file, encrypted under `cipher`
+/// with `rounds` of bcrypt_pbkdf when a passphrase is given.
+pub fn ssh_write_private_key(key: &SshPrivateKey, comment: &str, passphrase: Option<&[u8]>,
+                             cipher: &str, rounds: u32) -> Result<String, String> {
+    let encryption = passphrase.map(|passphrase| {
+        crate::ssh::private_key::Encryption { cipher, passphrase, rounds }
+    });
+    crate::ssh::private_key::write(key, comment, encryption.as_ref())
+}
+
+/// An SSH signature blob over `data`. `algorithm` matters only for RSA.
+pub fn ssh_sign(key: &SshPrivateKey, data: &[u8], algorithm: Option<&str>)
+                -> Result<Vec<u8>, String> {
+    crate::ssh::signature::sign(key, data, algorithm)
+}
+
+/// Verify an SSH signature blob: `false` for one that does not verify,
+/// `Err` for one that cannot be read or names an algorithm the key does
+/// not sign with.
+pub fn ssh_verify(key: &SshPublicKey, data: &[u8], signature: &[u8]) -> Result<bool, String> {
+    Ok(crate::ssh::signature::verify(key, data, signature)?.is_some())
+}
+
+/// `ssh-keygen -Y sign`: an armoured SSHSIG over `message`.
+pub fn ssh_sshsig_sign(key: &SshPrivateKey, namespace: &str, message: &[u8], hash: &str)
+                       -> Result<String, String> {
+    crate::ssh::signature::sshsig_sign(key, namespace, message, hash)
+}
+
+/// `ssh-keygen -Y check-novalidate`: the signer's public key if the SSHSIG
+/// verifies over `message` in `namespace`, `Err` otherwise.
+pub fn ssh_sshsig_verify(armoured: &str, namespace: &str, message: &[u8])
+                         -> Result<SshPublicKey, String> {
+    crate::ssh::signature::sshsig_verify(armoured, namespace, message)
+}
+
+/// One `.pub` or `authorized_keys` line: `(key, comment, options)`.
+pub fn ssh_parse_public_line(line: &str) -> Result<(SshPublicKey, String, String), String> {
+    let read = crate::ssh::keys::parse_line(line)?;
+    Ok((read.key, read.comment.to_string(), read.options.to_string()))
+}
+
+/// An SSH public key from its wire blob.
+pub fn ssh_public_key_from_blob(blob: &[u8]) -> Result<SshPublicKey, String> {
+    SshPublicKey::from_blob(blob)
+}
+
+/// Every SSH algorithm name a client or server list can hold - key
+/// exchange, cipher, MAC, host key - as the `&'static str` the tables
+/// use. Derived from the tables, so a name added there is accepted here.
+pub fn ssh_algorithm_names() -> Vec<&'static str> {
+    use crate::ssh::{cipher, kex, keys, mac, negotiate};
+    let mut names: Vec<&'static str> = kex::METHODS.iter().map(|m| m.name)
+        .chain(cipher::CIPHERS.iter().map(|c| c.name))
+        .chain(mac::MACS.iter().map(|m| m.name))
+        .chain(negotiate::HOST_KEY_ALGORITHMS.iter().copied())
+        .chain(keys::KEY_TYPES.iter().copied())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|name| seen.insert(*name));
+    names
+}
+
+// ------------------------------------------------------------- key hygiene ---
+
+/// Overwrite `bytes` with zeros in a way the compiler may not remove.
+///
+/// A plain assignment before a buffer is freed is a dead store, and the
+/// optimiser is entitled to delete it; `write_volatile` is not. The same
+/// pattern as `bignum::Secret`'s and `tls::tickets::TicketKey`'s drops,
+/// here for the key types whose private half is a plain `Vec<u8>`.
+pub fn wipe(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        // SAFETY: `byte` is a valid, aligned, exclusive reference.
+        unsafe { core::ptr::write_volatile(byte, 0) };
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}
+
+impl Drop for EddsaKey {
+    fn drop(&mut self) { wipe(&mut self.seed); }
+}
+
+impl Drop for SlhDsaKey {
+    fn drop(&mut self) { wipe(&mut self.private); }
+}
+
+impl Drop for MlKemKey {
+    fn drop(&mut self) { wipe(&mut self.private); }
+}
+
+impl Drop for MlDsaKey {
+    fn drop(&mut self) {
+        if let Some(seed) = &mut self.seed {
+            wipe(seed);
+        }
+        wipe(&mut self.private);
+    }
 }

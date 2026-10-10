@@ -42,15 +42,24 @@ use crate::bignum::{montgomery, BigUint, Montgomery, Secret};
 use crate::random;
 
 /// A prime `p` and a generator `g`, validated as far as they can be
-/// cheaply.
+/// cheaply, and optionally the order `q` of the subgroup `g` generates.
 ///
 /// Holding the pair in one place is what makes it possible to say that a
 /// public value was validated *against the group it belongs to* - the
 /// range check is `2 <= y <= p-2`, which is meaningless without `p`.
+///
+/// `q` is not on the wire in TLS 1.2 or PKCS#3, so most groups have no
+/// way to know it and the range check is all `validate_peer` can do. The
+/// X9.42 and FIPS 186 groups, and the RFC 7919 groups, do state `q`, and
+/// a caller who has it can set it with `with_subgroup_order`; from then
+/// on `validate_peer` also requires `y^q = 1 mod p`, which is the
+/// small-subgroup check - the one that catches a peer value of order
+/// `(p-1)/q` chosen to leak the private exponent modulo a small factor.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DhGroup {
     p: BigUint,
     g: BigUint,
+    q: Option<BigUint>,
 }
 
 impl DhGroup {
@@ -86,12 +95,38 @@ impl DhGroup {
                                 one is {} bits and p is {} bits.",
                                g.bit_len(), p.bit_len()));
         }
-        Ok(DhGroup { p, g })
+        Ok(DhGroup { p, g, q: None })
     }
 
     /// A group from big-endian bytes, as they arrive on the wire.
     pub fn from_bytes(p: &[u8], g: &[u8]) -> Result<DhGroup, String> {
         DhGroup::new(BigUint::from_bytes_be(p), BigUint::from_bytes_be(g))
+    }
+
+    /// The same group with the order of `g`'s subgroup stated, so that
+    /// `validate_peer` can check `y^q = 1 mod p` as well as the range.
+    ///
+    /// `q` is checked for structure - it divides `p - 1` and `g` has
+    /// order `q` - and not for primality, which is the caller's claim
+    /// about the group just as `p`'s is; `check_prime` covers `p` and
+    /// `rsa::is_probably_prime` is there for `q`. A `q` that is a
+    /// multiple of the true order would pass `g^q = 1`, and the check
+    /// it enables would then admit a peer value of the same larger
+    /// order; so `q` has to be known, not guessed.
+    pub fn with_subgroup_order(mut self, q: BigUint) -> Result<DhGroup, String> {
+        let one = BigUint::one();
+        if q < BigUint::from_u64(2) || q >= self.p {
+            return Err("The subgroup order must be in [2, p).".to_string());
+        }
+        if !self.p.sub(&one)?.rem(&q)?.is_zero() {
+            return Err("The subgroup order does not divide p - 1.".to_string());
+        }
+        if !self.g.mod_pow(&q, &self.p)?.is_one() {
+            return Err("The generator does not have the stated subgroup order: \
+                        g^q mod p is not 1.".to_string());
+        }
+        self.q = Some(q);
+        Ok(self)
     }
 
     pub fn p(&self) -> &BigUint {
@@ -100,6 +135,11 @@ impl DhGroup {
 
     pub fn g(&self) -> &BigUint {
         &self.g
+    }
+
+    /// The subgroup order, when the caller stated one.
+    pub fn q(&self) -> Option<&BigUint> {
+        self.q.as_ref()
     }
 
     /// The size of the modulus in bits, which is what a strength policy is
@@ -203,6 +243,13 @@ impl DhGroup {
     ///
     /// This is the check whose absence makes a "working" implementation
     /// silently insecure, because all three cases complete the handshake.
+    ///
+    /// When the group carries a subgroup order (`with_subgroup_order`),
+    /// `y^q = 1 mod p` is required as well: a value outside the subgroup
+    /// of order `q` has an order with a factor of `(p-1)/q`, and the
+    /// shared secret then leaks the private exponent modulo that factor.
+    /// Without `q` there is nothing to check it against, which is the
+    /// position every TLS 1.2 group is in.
     pub fn validate_peer(&self, peer: &BigUint) -> Result<(), String> {
         let two = BigUint::from_u64(2);
         let p_minus_2 = self.p.sub(&two)?;
@@ -215,6 +262,15 @@ impl DhGroup {
                 else if peer.is_one() { "1".to_string() }
                 else if *peer == self.p.sub(&BigUint::one())? { "p-1".to_string() }
                 else { format!("{} bits", peer.bit_len()) }));
+        }
+        if let Some(q) = &self.q {
+            // Public values throughout, so the public exponentiation.
+            if !peer.mod_pow(q, &self.p)?.is_one() {
+                return Err("The peer's Diffie-Hellman public value is not in \
+                            the subgroup of order q, so it was chosen to make \
+                            the shared secret leak the private exponent \
+                            modulo a small factor.".to_string());
+            }
         }
         Ok(())
     }
@@ -536,6 +592,51 @@ mod tests {
         // accepted, so this is a range check and not a blanket refusal.
         assert!(group.validate_peer(&BigUint::from_u64(2)).is_ok());
         assert!(group.validate_peer(&p_minus_1.sub(&BigUint::one()).unwrap()).is_ok());
+    }
+
+    /// A stated subgroup order turns `validate_peer` into the
+    /// small-subgroup check, and only then.
+    ///
+    /// The group was `(p, g)` only, so a caller with an X9.42 or RFC
+    /// 7919 group - which do state `q` - had no way to ask for
+    /// `y^q = 1 mod p`: a peer value outside the subgroup passed the
+    /// range check and completed the exchange. Every MODP prime is a
+    /// safe prime, `p = 2q + 1`, and `g = 2` generates the order-`q`
+    /// subgroup, so `p - 2 = -2` has order `2q`: in range, and not in
+    /// the subgroup. It is the value the range check alone accepts and
+    /// the subgroup check refuses.
+    #[test]
+    fn test_a_stated_subgroup_order_is_checked_and_an_unstated_one_cannot_be() {
+        let plain = modp_group(MODP_1024).unwrap();
+        let one = BigUint::one();
+        let q = plain.p().sub(&one).unwrap().shr(1);
+        let outside = plain.p().sub(&BigUint::from_u64(2)).unwrap();
+        assert!(plain.q().is_none());
+        assert!(plain.validate_peer(&outside).is_ok(),
+                "without q there is nothing to check the subgroup against");
+
+        let group = plain.clone().with_subgroup_order(q.clone()).unwrap();
+        assert_eq!(group.q(), Some(&q));
+        let error = group.validate_peer(&outside).unwrap_err();
+        assert!(error.contains("subgroup of order q"), "{error}");
+        // A real public value is in the subgroup and still passes, and
+        // the exchange still agrees.
+        let (private, public) = group.generate_key_pair().unwrap();
+        assert!(group.validate_peer(&public).is_ok());
+        let (other_private, other_public) = group.generate_key_pair().unwrap();
+        assert_eq!(group.shared_secret(&private, &other_public).unwrap(),
+                   group.shared_secret(&other_private, &public).unwrap());
+        assert!(group.shared_secret(&private, &outside).is_err());
+
+        // A wrong q is refused: one that does not divide p - 1, one that
+        // g does not have, and one out of range.
+        assert!(plain.clone().with_subgroup_order(q.add(&one)).is_err());
+        assert!(plain.clone().with_subgroup_order(one.clone()).is_err());
+        assert!(plain.clone().with_subgroup_order(plain.p().clone()).is_err());
+        // The true order, doubled, is p - 1: g^(p-1) = 1, so it passes the
+        // structural check - the doc comment says why that is the caller's
+        // responsibility.
+        assert!(plain.with_subgroup_order(q.add(&q)).is_ok());
     }
 
     #[test]

@@ -55,6 +55,11 @@ decodes to the right bytes nowhere.
     for the passwords where the bug would collide; `$2b$` and `$2y$` are
     the correct reading. For an all-ASCII password all four agree, which
     is why the difference went unnoticed for years.
+  * **sha1crypt's iteration count is read from the setting as a `u32`**
+    (the type `sha1_crypt` writes), so the ceiling is 2^32 - 1 and a
+    stored string carrying a larger count is refused rather than run,
+    because `verify` is called on strings from a password store and a
+    64-bit count is a way to stall it.
   * **Sun's MD5 crypt feeds a passage of Hamlet into the hash** on rounds
     chosen by a "coin toss" over the previous digest. The text is a
     constant of the algorithm; `unix_crypt_hamlet.txt` holds it.
@@ -482,7 +487,14 @@ pub fn nt_crypt(password: &[u8]) -> String {
 fn sha1_crypt_setting(password: &[u8], setting: &str) -> Result<String, String> {
     let rest = setting.strip_prefix("$sha1$").ok_or("Not a sha1crypt setting.")?;
     let end = rest.find('$').ok_or("sha1crypt needs an iteration count.")?;
-    let iterations: u64 = rest[..end].parse().map_err(|_| "Bad iteration count.")?;
+    // `u32`, which is the ceiling `sha1_crypt` can write and well past
+    // what any stored hash carries. The count comes from the stored
+    // string, so a wider type was a denial of service through `verify`:
+    // a planted `$sha1$18446744073709551615$...$` row ran HMAC-SHA-1
+    // for longer than the verifying thread's lifetime.
+    let iterations: u32 = rest[..end].parse().map_err(|_| {
+        "Bad iteration count: sha1crypt's count is a decimal number below 2^32."
+    })?;
     let after = &rest[end + 1..];
     let salt_end = after.find('$').unwrap_or(after.len());
     let salt = &after[..salt_end];
@@ -727,7 +739,11 @@ fn sunmd5(password: &[u8], setting: &str) -> Result<String, String> {
                        .to_string());
         }
         let extra: u32 = digits.parse().map_err(|_| "rounds out of range.")?;
-        nrounds = nrounds.wrapping_add(extra);
+        // Checked: `rounds=4294963201` plus the basic 4,096 is one more
+        // than a `u32` holds, and a wrapping sum ran a single round
+        // while the hash string still carried the huge count.
+        nrounds = nrounds.checked_add(extra).ok_or(
+            "A Sun MD5 rounds value plus the basic 4096 must fit in 32 bits.")?;
         rest = &after[end + 1..];
     }
     // The salt runs to the next '$'; a '$' followed by '$' or end is part
@@ -1053,6 +1069,37 @@ mod tests {
         }
     }
 
+    /// `$md5,rounds=N$`'s total was `4096u32.wrapping_add(N)`, so
+    /// `rounds=4294963201` wrapped to one round and produced a hash
+    /// string carrying a count no implementation agrees with: the
+    /// silent kind of failure. The settings in the existing tests
+    /// carried small counts. The value here is the smallest that
+    /// wraps; one less is a valid, if enormous, setting.
+    #[test]
+    fn test_sun_md5_refuses_a_rounds_count_that_wraps() {
+        let reason = crypt(b"pw", "$md5,rounds=4294963201$abcdefgh$").unwrap_err();
+        assert!(reason.contains("fit in 32 bits"), "{reason}");
+        assert!(crypt(b"pw", "$md5,rounds=4294967295$abcdefgh$").is_err());
+    }
+
+    /// The iteration count of a `$sha1$` setting was parsed as a `u64`,
+    /// so a stored hash carrying `18446744073709551615` ran that many
+    /// HMAC-SHA-1 calls through `verify`. The existing settings all
+    /// carried small counts, and a test offering a huge one on the old
+    /// code would not have finished. The count a valid setting can
+    /// carry is what `sha1_crypt` writes, a `u32`.
+    #[test]
+    fn test_sha1_crypt_refuses_an_iteration_count_above_u32() {
+        let reason = crypt(b"pw", "$sha1$4294967296$abcdefgh$").unwrap_err();
+        assert!(reason.contains("below 2^32"), "{reason}");
+        assert!(crypt(b"pw", "$sha1$18446744073709551615$abcdefgh$").is_err());
+        // The largest count still parses; only its cost stops the loop
+        // from being run here, so the parse is checked through a count
+        // one above the ceiling versus one well inside it.
+        assert!(crypt(b"pw", "$sha1$2$abcdefgh$").unwrap()
+                    .starts_with("$sha1$2$abcdefgh$"));
+    }
+
     #[test]
     fn test_a_salt_cut_inside_a_character_is_refused() {
         // 7 ASCII bytes and a two-byte character: the 8 byte cut splits it.
@@ -1083,10 +1130,16 @@ mod tests {
     fn test_bcrypt_variants_agree_on_ascii_and_differ_on_high_bytes() {
         let salt = "$2b$05$CCCCCCCCCCCCCCCCCCCCC.";
         let ascii = b"abcABC123";
+        // The hashes after the `$2?$` prefix must be one string across
+        // the four variants. The earlier form of this assertion split
+        // one hash at the prefix and joined it back, which compared a
+        // string with itself and could not fail.
+        let reference = crypt(ascii, salt).unwrap();
         for v in ["$2a", "$2b", "$2x", "$2y"] {
             let s = format!("{v}{}", &salt[3..]);
-            assert_eq!(crypt(ascii, &s).unwrap()[..3].to_string() + &crypt(ascii, &s).unwrap()[3..],
-                       crypt(ascii, &s).unwrap());
+            let hash = crypt(ascii, &s).unwrap();
+            assert!(hash.starts_with(v), "{hash}");
+            assert_eq!(hash[3..], reference[3..], "{v} differs on ASCII");
         }
         // A password with the top bit set separates $2x$ from $2b$.
         let high = b"\xa3bcABC";

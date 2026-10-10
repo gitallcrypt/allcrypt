@@ -218,11 +218,25 @@ impl DsaPrivateKey {
     /// fresh instance of the hash that made `digest`.
     pub fn sign<H: HashFunction + Clone>(&self, digest: &[u8], hash: H)
                                          -> Result<(BigUint, BigUint), String> {
+        let mut nonces = NonceGenerator::new(hash, &self.x, digest,
+                                             &self.public.parameters.q)?;
+        self.sign_with_candidates(digest, || nonces.next())
+    }
+
+    /// The signing loop, over a stream of nonce candidates.
+    ///
+    /// Bounded, as `ecdsa::sign`'s is: a candidate is rejected when it
+    /// is out of `[1, q)` or gives `r = 0` or `s = 0`, which for a real
+    /// group is around a one-in-2^32 event per attempt. Primality of `q`
+    /// is opt-in through `check_primes`, though, and a composite or
+    /// mis-sized `q` can make the rejection rate anything at all, so an
+    /// unbounded loop would hang rather than report.
+    fn sign_with_candidates(&self, digest: &[u8], mut candidate: impl FnMut() -> BigUint)
+                            -> Result<(BigUint, BigUint), String> {
         let DsaParameters { p, q, g } = &self.public.parameters;
         let z = digest_to_int(digest, q).rem(q)?;
-        let mut nonces = NonceGenerator::new(hash, &self.x, digest, q)?;
-        loop {
-            let k = nonces.next();
+        for _ in 0..1000 {
+            let k = candidate();
             if k.is_zero() || &k >= q {
                 continue;
             }
@@ -237,6 +251,9 @@ impl DsaPrivateKey {
             }
             return Ok((r, s));
         }
+        Err("DSA: no usable nonce in a thousand candidates, which a group \
+             with a prime q of the stated size cannot do; check the \
+             parameters with check_primes.".to_string())
     }
 }
 
@@ -383,6 +400,31 @@ mod tests {
         assert!(DsaParameters::new(get("p"), get("q"),
                                    get("p").sub(&BigUint::one()).unwrap()).is_err());
         assert!(DsaPublicKey::new(parameters, get("p").sub(&BigUint::one()).unwrap()).is_err());
+    }
+
+    /// The signing loop gives up, with a reason, rather than spinning.
+    ///
+    /// `sign` looped with no bound where `ecdsa::sign` tries a thousand
+    /// candidates and `sm2::sign` 256. The HMAC chain is deterministic
+    /// and a real group rejects around one candidate in 2^32, so no
+    /// test with a real group can reach the hang - which is why none
+    /// did - but `q`'s primality is opt-in, and a composite `q` makes
+    /// the rejection rate anything. A stream of candidates every one
+    /// of which is rejected (zero is out of `[1, q)`) is the value only
+    /// the bounded loop refuses: the old loop never returned on it.
+    #[test]
+    fn test_signing_gives_up_after_a_thousand_rejected_candidates() {
+        let (fields, _) = rfc6979::section("A.2.1.  DSA, 1024 Bits");
+        let get = |name: &str| rfc6979::field(&fields, name);
+        let parameters = DsaParameters::new(get("p"), get("q"), get("g")).unwrap();
+        let key = DsaPrivateKey::from_x(parameters, get("x")).unwrap();
+        let mut offered = 0usize;
+        let error = key.sign_with_candidates(&digest("sha1", "sample"), || {
+            offered += 1;
+            BigUint::zero()
+        }).unwrap_err();
+        assert_eq!(offered, 1000);
+        assert!(error.contains("thousand candidates"), "{error}");
     }
 
     #[test]

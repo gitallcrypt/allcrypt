@@ -5,10 +5,14 @@ CTR for confidentiality and OMAC for authenticity, over any block
 cipher. It was designed as an answer to CCM's awkwardness and does three
 things CCM cannot:
 
-  * **it streams.** CCM's MAC begins with the message's length, so
-    nothing can be encrypted until the length is known and `AeadStream`
-    has to buffer the whole message. EAX authenticates the *ciphertext*,
-    so both passes run forwards and `buffers_everything()` is false.
+  * **it can stream.** CCM's MAC begins with the message's length, so
+    nothing can be encrypted until the length is known. EAX authenticates
+    the *ciphertext*, so both passes run forwards and nothing in the
+    construction needs the length first. `Eax` here is nonetheless
+    one-shot - `encrypt` and `decrypt` take the whole message - so
+    `api::AeadStream` buffers it and says so through
+    `buffers_everything()`; a streaming `update`/`finish` pair would be
+    an addition to this object, not a change to the mode.
   * **the nonce is any length.** CCM's is 7..13 bytes and trades off
     against the maximum message size. EAX hashes the nonce through OMAC,
     so any length works and none of them collide by construction.
@@ -54,12 +58,23 @@ use crate::block_ciphers::modes::CtrState;
 use crate::mac::cmac::Cmac;
 use crate::Mac;
 
-/// One EAX operation over a named cipher.
+/// One EAX key over a named cipher, serving any number of messages.
+///
+/// The key schedule is built once, at construction, inside the CMAC,
+/// whose subkeys come from it; CTR runs on the same keyed cipher, since
+/// EAX uses one key for both halves. Each message resets the CMAC
+/// rather than rebuilding it, which is what `encrypt` and `decrypt`
+/// take `&mut self` for.
 pub struct Eax {
-    cipher_name: String,
-    key: Vec<u8>,
+    mac: Cmac,
     block_size: usize,
     tag_len: usize,
+}
+
+impl core::fmt::Debug for Eax {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Eax {{ {:?} }}", self.mac)
+    }
 }
 
 impl Eax {
@@ -67,10 +82,10 @@ impl Eax {
         // CMAC's tag is one block, so its length is the block size -
         // and asking CMAC rather than the cipher means one place decides
         // what block size this key implies.
-        let block_size = Cmac::with_key(cipher_name, key)?.tag_len();
+        let mac = Cmac::with_key(cipher_name, key)?;
+        let block_size = mac.tag_len();
         Ok(Eax {
-            cipher_name: cipher_name.to_string(),
-            key: key.to_vec(),
+            mac,
             block_size,
             tag_len: block_size,
         })
@@ -96,33 +111,33 @@ impl Eax {
     }
 
     /// `OMAC(index, message)`: CMAC over the index as a whole block,
-    /// then the message.
-    fn omac(&self, index: u8, message: &[u8]) -> Result<Vec<u8>, String> {
-        let mut mac = Cmac::with_key(&self.cipher_name, &self.key)?;
+    /// then the message, on the one CMAC this key holds, reset first.
+    fn omac(&mut self, index: u8, message: &[u8]) -> Vec<u8> {
+        self.mac.reset();
         // **A whole block, not a byte.** Fifteen zeros then the index,
         // for a 16 byte block.
-        let mut prefix = vec![0u8; self.block_size];
+        let mut prefix = [0u8; 32];
         prefix[self.block_size - 1] = index;
-        mac.update(&prefix);
-        mac.update(message);
-        Ok(mac.digest())
+        self.mac.update(&prefix[..self.block_size]);
+        self.mac.update(message);
+        self.mac.digest()
     }
 
     /// Encrypt, returning `(ciphertext, tag)`.
-    pub fn encrypt(&self, nonce: &[u8], header: &[u8], plaintext: &[u8])
+    pub fn encrypt(&mut self, nonce: &[u8], header: &[u8], plaintext: &[u8])
                    -> Result<(Vec<u8>, Vec<u8>), String> {
-        let n = self.omac(0, nonce)?;
-        let h = self.omac(1, header)?;
+        let n = self.omac(0, nonce);
+        let h = self.omac(1, header);
 
-        let mut cipher = crate::api::AnyBlockCipher::new(&self.cipher_name, &self.key, None)?;
         // The CTR nonce is `N`, the OMAC of the nonce - not the nonce.
         let mut ciphertext = plaintext.to_vec();
-        let mut ctr = CtrState::new(&mut cipher, &n)?;
-        ctr.apply(&mut cipher, &mut ciphertext)?;
+        let cipher = self.mac.cipher_mut();
+        let mut ctr = CtrState::new(cipher, &n)?;
+        ctr.apply(cipher, &mut ciphertext)?;
 
         // Over the **ciphertext**. Authenticating the plaintext here
         // round-trips perfectly and is encrypt-and-MAC.
-        let t = self.omac(2, &ciphertext)?;
+        let t = self.omac(2, &ciphertext);
 
         let mut tag = vec![0u8; self.block_size];
         for i in 0..self.block_size {
@@ -133,15 +148,15 @@ impl Eax {
     }
 
     /// Decrypt, checking the tag **before** returning any plaintext.
-    pub fn decrypt(&self, nonce: &[u8], header: &[u8], ciphertext: &[u8],
+    pub fn decrypt(&mut self, nonce: &[u8], header: &[u8], ciphertext: &[u8],
                    tag: &[u8]) -> Result<Vec<u8>, String> {
         if tag.len() != self.tag_len {
             return Err(format!("An EAX tag is {} bytes here; got {}.",
                                self.tag_len, tag.len()));
         }
-        let n = self.omac(0, nonce)?;
-        let h = self.omac(1, header)?;
-        let t = self.omac(2, ciphertext)?;
+        let n = self.omac(0, nonce);
+        let h = self.omac(1, header);
+        let t = self.omac(2, ciphertext);
 
         let mut expected = vec![0u8; self.block_size];
         for i in 0..self.block_size {
@@ -159,10 +174,10 @@ impl Eax {
         // **Only now.** Returning plaintext before the tag is checked is
         // the release-unverified-plaintext mistake, and it is the one
         // thing an AEAD exists to prevent.
-        let mut cipher = crate::api::AnyBlockCipher::new(&self.cipher_name, &self.key, None)?;
         let mut plaintext = ciphertext.to_vec();
-        let mut ctr = CtrState::new(&mut cipher, &n)?;
-        ctr.apply(&mut cipher, &mut plaintext)?;
+        let cipher = self.mac.cipher_mut();
+        let mut ctr = CtrState::new(cipher, &n)?;
+        ctr.apply(cipher, &mut plaintext)?;
         Ok(plaintext)
     }
 }
@@ -270,7 +285,7 @@ mod tests {
     #[test]
     fn test_every_vector() {
         for (index, vector) in vectors().iter().enumerate() {
-            let eax = match vector.tag_len {
+            let mut eax = match vector.tag_len {
                 Some(n) => Eax::with_tag_len(&vector.cipher, &vector.key, n).unwrap(),
                 None => Eax::new(&vector.cipher, &vector.key).unwrap(),
             };
@@ -296,11 +311,11 @@ mod tests {
     /// bytes between them. No round trip can see it.
     #[test]
     fn test_the_three_tweaks_give_different_macs() {
-        let eax = Eax::new("aes", &[0x11; 16]).unwrap();
+        let mut eax = Eax::new("aes", &[0x11; 16]).unwrap();
         let message = b"the same message";
-        let zero = eax.omac(0, message).unwrap();
-        let one = eax.omac(1, message).unwrap();
-        let two = eax.omac(2, message).unwrap();
+        let zero = eax.omac(0, message);
+        let one = eax.omac(1, message);
+        let two = eax.omac(2, message);
         assert_ne!(zero, one);
         assert_ne!(one, two);
         assert_ne!(zero, two);
@@ -311,8 +326,8 @@ mod tests {
     /// thing that would notice.
     #[test]
     fn test_the_tweak_is_a_whole_block() {
-        let eax = Eax::new("aes", &[0x22; 16]).unwrap();
-        let by_omac = eax.omac(2, b"abc").unwrap();
+        let mut eax = Eax::new("aes", &[0x22; 16]).unwrap();
+        let by_omac = eax.omac(2, b"abc");
 
         let mut mac = Cmac::with_key("aes", &[0x22; 16]).unwrap();
         let mut expected = vec![0u8; 16];
@@ -330,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_altering_anything_is_refused() {
-        let eax = Eax::new("aes", &[0x33; 16]).unwrap();
+        let mut eax = Eax::new("aes", &[0x33; 16]).unwrap();
         let nonce = b"a nonce";
         let header = b"associated data";
         let message = b"the plaintext message";
@@ -355,7 +370,7 @@ mod tests {
     /// has over CCM. Each one must give a different ciphertext.
     #[test]
     fn test_a_nonce_of_any_length_works_and_matters() {
-        let eax = Eax::new("aes", &[0x44; 16]).unwrap();
+        let mut eax = Eax::new("aes", &[0x44; 16]).unwrap();
         let mut seen = std::collections::HashSet::new();
         for length in [0usize, 1, 7, 13, 16, 17, 100] {
             let nonce = vec![0x5au8; length];
@@ -367,8 +382,8 @@ mod tests {
 
     #[test]
     fn test_a_truncated_tag_is_a_prefix_of_the_full_one() {
-        let full = Eax::new("aes", &[0x55; 16]).unwrap();
-        let short = Eax::with_tag_len("aes", &[0x55; 16], 8).unwrap();
+        let mut full = Eax::new("aes", &[0x55; 16]).unwrap();
+        let mut short = Eax::with_tag_len("aes", &[0x55; 16], 8).unwrap();
         let (c1, t1) = full.encrypt(b"n", b"h", b"m").unwrap();
         let (c2, t2) = short.encrypt(b"n", b"h", b"m").unwrap();
         assert_eq!(c1, c2, "truncating the tag must not change the ciphertext");
@@ -397,18 +412,41 @@ mod tests {
     /// asserts the property directly.
     #[test]
     fn test_the_mac_covers_the_ciphertext() {
-        let eax = Eax::new("aes", &[0x66; 16]).unwrap();
+        let mut eax = Eax::new("aes", &[0x66; 16]).unwrap();
         let (ciphertext, tag) = eax.encrypt(b"nonce", b"", b"plaintext").unwrap();
 
-        let n = eax.omac(0, b"nonce").unwrap();
-        let h = eax.omac(1, b"").unwrap();
-        let over_ciphertext = eax.omac(2, &ciphertext).unwrap();
-        let over_plaintext = eax.omac(2, b"plaintext").unwrap();
+        let n = eax.omac(0, b"nonce");
+        let h = eax.omac(1, b"");
+        let over_ciphertext = eax.omac(2, &ciphertext);
+        let over_plaintext = eax.omac(2, b"plaintext");
 
         let combine = |t: &[u8]| -> Vec<u8> {
             (0..16).map(|i| n[i] ^ h[i] ^ t[i]).collect()
         };
         assert_eq!(tag, combine(&over_ciphertext));
         assert_ne!(tag, combine(&over_plaintext));
+    }
+
+    /// One `Eax` holds its key schedules and resets its CMAC per
+    /// message, where each call used to build four schedules of its
+    /// own. What the saving changes is that state can now leak from one
+    /// message into the next, so this runs messages of several lengths,
+    /// decryptions, and a decryption that fails, through one object and
+    /// checks each against a fresh one.
+    #[test]
+    fn test_one_object_serves_many_messages() {
+        let mut shared = Eax::new("aes", &[0x77; 16]).unwrap();
+        let (nonce, header) = (b"nonce", b"header");
+        for length in [0usize, 1, 15, 16, 17, 32, 33, 100] {
+            let message = vec![length as u8; length];
+            let (ciphertext, tag) = shared.encrypt(nonce, header, &message).unwrap();
+            let mut fresh = Eax::new("aes", &[0x77; 16]).unwrap();
+            assert_eq!(fresh.encrypt(nonce, header, &message).unwrap(), (ciphertext.clone(), tag.clone()),
+                       "length {length}");
+            let mut wrong = tag.clone();
+            wrong[0] ^= 1;
+            assert!(shared.decrypt(nonce, header, &ciphertext, &wrong).is_err());
+            assert_eq!(shared.decrypt(nonce, header, &ciphertext, &tag).unwrap(), message);
+        }
     }
 }

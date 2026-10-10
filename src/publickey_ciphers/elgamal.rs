@@ -62,6 +62,7 @@ comparison and its absence is invisible against honest signatures.
 
 use crate::bignum::BigUint;
 use crate::publickey_ciphers::dh::DhGroup;
+use crate::publickey_ciphers::rsa;
 use crate::random;
 
 /// The public half: a group and `y = g^x mod p`.
@@ -371,25 +372,12 @@ pub fn decrypt_pkcs1v15(key: &ElGamalPrivateKey, ciphertext: &[u8])
         .to_bytes_be_padded(size)
         .map_err(|_| FAILURE.to_string())?;
 
-    // Every condition is gathered before anything branches, so the shape
-    // of the code does not itself say which check failed.
-    let mut good = (block[0] == 0x00) as u8 & (block[1] == 0x02) as u8;
-    let mut separator = 0usize;
-    let mut found = 0u8;
-    for (index, &byte) in block.iter().enumerate().skip(2) {
-        let is_zero = (byte == 0) as u8;
-        let first = is_zero & (1 - found);
-        separator |= index * first as usize;
-        found |= is_zero;
-    }
-    good &= found;
-    // PS is at least 8 bytes, so the separator cannot be before index 10.
-    good &= (separator >= 10) as u8;
-
-    if good != 1 {
-        return Err(FAILURE.to_string());
-    }
-    Ok(block[separator + 1..].to_vec())
+    // The padding check is the RSA one: same block shape, same gathered
+    // conditions, and a block too short to hold the header and the eight
+    // bytes of PS is refused before it is indexed.
+    rsa::pkcs1v15_unpad(&block)
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| FAILURE.to_string())
 }
 
 #[cfg(test)]
@@ -670,6 +658,29 @@ mod tests {
         block.extend(std::iter::repeat_n(0xaau8, size - 2));
         assert_eq!(block.len(), size);
         assert!(decrypt_pkcs1v15(&key, &seal_raw_block(&key, &block)).is_err());
+    }
+
+    #[test]
+    fn test_a_modulus_too_small_for_a_padding_block_is_refused_not_a_panic() {
+        // `DhGroup::new` accepts any odd `p >= 5`, so an ElGamal key over
+        // `p = 7` is a legal key whose decrypted block is one byte wide.
+        // The padding check read `block[1]` before anything had checked
+        // the width, so this ciphertext was an index-out-of-bounds panic
+        // rather than the uniform failure - a `PanicException` through
+        // the Python bindings and undefined behaviour through the C
+        // ones. Every existing test used a standard MODP group, whose
+        // block is 128 bytes or wider, so the width was never in doubt.
+        //
+        // `c1 = 2` and `c2 = 3` pass `validate_peer` and the range check
+        // in `decrypt`, so the only thing that can refuse them is the
+        // padding check itself.
+        let group = DhGroup::new(BigUint::from_u64(7), BigUint::from_u64(2))
+            .unwrap();
+        let key = ElGamalPrivateKey::from_private(group, BigUint::one())
+            .unwrap();
+        assert_eq!(key.public().size(), 1);
+        let error = decrypt_pkcs1v15(&key, &[0x02, 0x03]).unwrap_err();
+        assert_eq!(error, "ElGamal decryption failed.");
     }
 
     #[test]

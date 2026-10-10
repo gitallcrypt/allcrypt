@@ -65,7 +65,12 @@ def _write_keylog(path, line):
         return
     try:
         with _keylog_lock:
-            with open(path, "a", encoding="ascii") as handle:
+            # Created 0600: every line is a session secret. ``open(path,
+            # "a")`` created it 0644 under the usual umask, readable by
+            # every local account. An existing file keeps its mode.
+            descriptor = _os.open(
+                path, _os.O_WRONLY | _os.O_APPEND | _os.O_CREAT, 0o600)
+            with _os.fdopen(descriptor, "a", encoding="ascii") as handle:
                 handle.write(line + "\n")
     except OSError:
         pass
@@ -218,6 +223,14 @@ HAS_SNI = True
 #: implements it and nothing should.
 HAS_NPN = False
 
+#: **False, and the standard library's answer for its own build is not
+#: ours to copy.** Python 3.13 added `HAS_PSK` with the external-PSK
+#: callbacks (`SSLContext.set_psk_client_callback` and the server form).
+#: This stack resumes sessions with PSKs it issued itself, but it has no
+#: PSK-only suites and no way to supply an external key, so a caller
+#: that tests this flag before installing a callback must be told no.
+HAS_PSK = False
+
 #: `hostname_checks_common_name = False` is implemented - see that
 #: property - so this is True. urllib3 reads it together with
 #: `OPENSSL_VERSION` below and decides for itself whether to trust it.
@@ -255,7 +268,7 @@ __all__ = [
     "TLSVersion", "Purpose", "DefaultVerifyPaths",
     "AlertDescription", "Options", "SSLErrorNumber", "VerifyFlags", "VerifyMode",
     "SSLSession", "SSLSocket", "SSLObject", "SSLServerSocket",
-    "HAS_ALPN", "HAS_ECDH", "HAS_NEVER_CHECK_COMMON_NAME", "HAS_NPN",
+    "HAS_ALPN", "HAS_ECDH", "HAS_NEVER_CHECK_COMMON_NAME", "HAS_NPN", "HAS_PSK",
     "HAS_SNI", "HAS_SSLv2", "HAS_SSLv3", "HAS_TLSv1", "HAS_TLSv1_1",
     "HAS_TLSv1_2", "HAS_TLSv1_3",
     "OPENSSL_VERSION", "OPENSSL_VERSION_INFO", "OPENSSL_VERSION_NUMBER",

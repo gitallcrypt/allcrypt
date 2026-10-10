@@ -508,8 +508,21 @@ mod tests {
     /// opposite of what this is for.
     #[test]
     fn test_a_negative_serial_is_mirrored_rather_than_refused() {
+        // This test used `[0x00, 0xff, 0x01]`, which is positive and
+        // already zero-prefixed, so the sign-bit branch in `mirror` never
+        // ran. The builder refuses a negative serial, so the original is
+        // built with `7f 01` and that byte edited to `ff`: the same
+        // length, so the encoding stays well formed (its signature no
+        // longer verifies, which `mirror` does not check - it is given
+        // the trust verdict).
         let (ca, untrusted) = issuers();
-        let der = original(|b| { b.serial = vec![0x00, 0xff, 0x01]; });
+        let mut der = original(|b| { b.serial = vec![0x7f, 0x01]; });
+        let at = der.windows(4).position(|w| w == [0x02, 0x02, 0x7f, 0x01])
+            .expect("the serial's encoding");
+        assert_eq!(der.windows(4).filter(|w| *w == [0x02, 0x02, 0x7f, 0x01]).count(), 1);
+        der[at + 2] = 0xff;
+        assert_eq!(Certificate::parse(&der).unwrap().serial, &[0xff, 0x01],
+                   "the edited original should parse with a negative serial");
         let result = mirror(&der, Trust::Verified, &ca, &untrusted).unwrap();
         let copy = Certificate::parse(&result.chain[0]).unwrap();
         assert_eq!(copy.serial, &[0x00, 0xff, 0x01]);

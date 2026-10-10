@@ -29,6 +29,7 @@ pub mod ocb;
 pub mod rc2;
 pub mod rc5;
 pub mod rc6;
+pub mod rijndael;
 pub mod seed;
 pub mod serpent;
 pub mod sm4;
@@ -36,7 +37,6 @@ pub mod tea;
 pub mod twofish;
 pub mod xts;
 
-use crate::xor;
 pub use gcm::{Gcm, GcmState};
 pub use modes::{Cbc, CbcState, Cfb, CfbState, Ctr, CtrState, CtsState, CtsVariant, Ofb,
                 OfbState, Pcbc, PcbcState};
@@ -213,8 +213,16 @@ fn blocks_via<C: BlockCipher + ?Sized>(cipher: &mut C, blocks: &mut [u8], encryp
 
 pub trait BlockCipher {
     fn blocksize(&self) -> usize;
-    
+
+    /// One block of `input`, its `blocksize()` leading bytes, appended
+    /// to `result` as exactly one block. `input` holds a whole block:
+    /// handing a shorter slice is a caller's mistake, and what a cipher
+    /// does with one is its own - AES panics on the missing bytes, DES
+    /// reads what is there as the low end of its block - so nothing in
+    /// the modes does it, and the modes check that exactly one block
+    /// came back.
     fn block_encrypt(&mut self, _input: &[u8], _result: &mut Vec<u8>);
+    /// The inverse of `block_encrypt`, under the same contract.
     fn block_decrypt(&mut self, _input: &[u8], _result: &mut Vec<u8>);
 
     /// Encrypt whole blocks in place, each independently: ECB over
@@ -324,9 +332,6 @@ pub trait BlockCipher {
         m.finish()
     }
 
-    /// Propagating CBC, as used by Kerberos 4. See `modes::PcbcState`
-    /// for what it propagates and why it does not achieve what it was
-    /// meant to.
     /// CBC with ciphertext stealing: any length of at least one block,
     /// and no padding. `modes::CtsVariant` says which of the three
     /// orderings of the last two blocks.
@@ -351,6 +356,9 @@ pub trait BlockCipher {
         r
     }
 
+    /// Propagating CBC, as used by Kerberos 4. See `modes::PcbcState`
+    /// for what it propagates and why it does not achieve what it was
+    /// meant to.
     fn pcbc_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
         if !input.len().is_multiple_of(self.blocksize()) {
             return Err("Input length not a multiple of block size, (padding is needed).".to_string());
@@ -385,8 +393,18 @@ pub trait BlockCipher {
     /// Build the first counter block from the nonce/IV. The default is the
     /// usual "nonce, zero padded to a block" layout; a cipher whose counter
     /// works differently overrides this and `ctr_next`, and nothing else.
+    ///
+    /// An empty IV is refused: it would be the all-zero counter under
+    /// every key, one fixed keystream shared by everyone, the same reason
+    /// GCM refuses an empty nonce. A short one is padded, as the layout
+    /// says.
     fn ctr_init(&mut self, iv: &[u8], counter: &mut Vec<u8>) -> Result<(), String> {
         let bs = self.blocksize();
+        if iv.is_empty() {
+            return Err("A CTR IV must not be empty: an empty one is the all-zero \
+                        counter under every key, and the same keystream for \
+                        everyone.".to_string());
+        }
         if iv.len() > bs {
             return Err("IV longer than the block size.".to_string());
         }
@@ -543,116 +561,9 @@ pub trait BlockCipher {
         outcome
     }
 
-    /// Not finished: the tag is computed but the payload is never encrypted,
-    /// so this returns an error instead of handing back an empty `result`.
-    /// `cbcmac_calc` below is usable on its own in the meantime.
-    fn ccm_decrypt(&mut self, _input: &[u8], _result: &mut Vec<u8>,
-                   _tag: Vec<u8>, _nonce: &[u8], _additional_data: &[u8]) -> Result<(), String> {
-        Err("CCM mode is not implemented yet (payload encryption is missing).".to_string())
-    }
-    fn ccm_encrypt(&mut self, _input: &[u8], _result: &mut Vec<u8>,
-                   _tag: &mut Vec<u8>, _nonce: &[u8], _additional_data: &[u8]) -> Result<(), String> {
-        Err("CCM mode is not implemented yet (payload encryption is missing).".to_string())
-    }
-    fn cbcmac_calc(&mut self, nonce: &[u8], additional_data: &[u8], mic_len: u8, input: &[u8]) -> Result<Vec<u8>, String> {
-        // The CCM header layout below is defined for 128 bit blocks only.
-        if self.blocksize() != 16 {
-            return Err("CCM/CBC-MAC requires a 16 byte block size.".to_string());
-        }
-        if nonce.len() < 7 || nonce.len() > 13 {
-            return Err(format!("Nonce must be 7..=13 bytes, got {}.", nonce.len()));
-        }
-        if !(4..=16).contains(&mic_len) || !mic_len.is_multiple_of(2) {
-            return Err(format!("MIC length must be an even value in 4..=16, got {}.", mic_len));
-        }
-        let length_field_size = 15 - nonce.len() as u8;
-        let mut ccm_header: Vec<u8> = vec![0; 16];
-        if ! additional_data.is_empty() {
-            ccm_header[0] = 64;
-        }
-        ccm_header[0] += 8 * (mic_len - 2).div_ceil(2) + length_field_size-1;
-
-        ccm_header[1..(nonce.len() + 1)].copy_from_slice(nonce);
-        // L can be anything in 2..=8, so encode the payload length big endian
-        // into exactly `length_field_size` bytes rather than only the even sizes.
-        let l = length_field_size as usize;
-        if !(2..=8).contains(&l) {
-            return Err(format!("Invalid length field size {}", length_field_size));
-        }
-        if l < 8 && input.len() >= (1usize << (8*l)) {
-            return Err(format!("Payload of {} bytes does not fit in a {} byte length field.",
-                               input.len(), l));
-        }
-        let length_bytes: Vec<u8> = (input.len() as u64).to_be_bytes()[8-l..].to_vec();
-        ccm_header[(nonce.len() + 1)..16].copy_from_slice(&length_bytes);
-        
-
-        if ! additional_data.is_empty() {
-            if additional_data.len() < (2_usize.pow(16) - 2_usize.pow(8)) {
-                ccm_header.extend_from_slice(&(additional_data.len() as u16).to_be_bytes());
-                ccm_header.extend_from_slice(&[0; 14]);
-            } else if additional_data.len() < (2_usize.pow(32)) {
-                ccm_header.extend_from_slice(&[0xfe; 2]);
-                ccm_header.extend_from_slice(&(additional_data.len() as u32).to_be_bytes());
-                ccm_header.extend_from_slice(&[0xfe; 2]);
-                ccm_header.extend_from_slice(&(additional_data.len() as u32).to_be_bytes());
-                ccm_header.extend_from_slice(&[0; 4]);
-            } else {
-                ccm_header.extend_from_slice(&[0xff; 2]);
-                ccm_header.extend_from_slice(&(additional_data.len() as u64).to_be_bytes());
-                ccm_header.extend_from_slice(&[0xff; 2]);
-                ccm_header.extend_from_slice(&(additional_data.len() as u64).to_be_bytes());
-                ccm_header.extend_from_slice(&[0; 12]);
-            }
-        }
-        // `i` already advances in steps of 16, so it indexes bytes directly.
-        let mut x1 = vec![0; 16];
-        for i in (0..ccm_header.len()).step_by(16) {
-            let xor_res = xor(&x1, &ccm_header[i..i+16]);
-            x1.clear();
-            self.block_encrypt(&xor_res, &mut x1);
-            if x1.len() != 16 {
-                return Err("block_encrypt did not produce exactly one block.".to_string());
-            }
-        }
-        for i in (0..additional_data.len()).step_by(16) {
-            let xor_res = if i+16 > additional_data.len() {
-                let mut ad = [0; 16];
-                ad[0..(additional_data.len()-i)].copy_from_slice(&additional_data[i..additional_data.len()]);
-                xor(&x1, &ad)
-            } else {
-                xor(&x1, &additional_data[i..i+16])
-            };
-            x1.clear();
-            self.block_encrypt(&xor_res, &mut x1);
-            if x1.len() != 16 {
-                return Err("block_encrypt did not produce exactly one block.".to_string());
-            }
-        }
-
-        for i in (0..input.len()).step_by(16) {
-            let xor_res: Vec<u8> = if i+16 > input.len() {
-                let mut inp = [0; 16];
-                inp[0..(input.len()-i)].copy_from_slice(&input[i..input.len()]);
-                xor(&x1, &inp)
-            } else {
-                xor(&x1, &input[i..i+16])
-            };
-            x1.clear();
-            self.block_encrypt(&xor_res, &mut x1);
-            if x1.len() != 16 {
-                return Err("block_encrypt did not produce exactly one block.".to_string());
-            }
-        }
-        let mut result = vec![];
-        self.ctr_encrypt(&[0;16], &mut result, nonce)?;
-        if result.len() != 16 {
-            return Err("CTR keystream block was not one full block.".to_string());
-        }
-        x1 = xor(&x1, &result);
-        x1.truncate(mic_len as usize);
-        Ok(x1)
-    }
+    // CCM is `block_ciphers::ccm`: one shot, because its MAC starts with
+    // the message's length, so it has no place among the streaming
+    // wrappers here.
 
     /// PKCS#7 (RFC 5652): always append 1..=blocksize bytes, each holding the
     /// pad length. Input that is already block aligned gets a whole extra
@@ -785,57 +696,40 @@ impl BlockCipher for ToyBlock16 {
     fn block_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>) {
         self.block_encrypt(input, result)
     }
-    fn ctr_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, _iv: &[u8]) -> Result<(), String> {
-        for (i, b) in input.iter().enumerate() {
-            result.push(b ^ self.k ^ (i as u8));
-        }
-        Ok(())
-    }
 }
 
-/// Multi block input used to walk off the end of the buffer, because the loops
-/// indexed `i*16` while `i` was already stepping by 16.
+/// A cipher whose `block_encrypt` produces nothing must be caught by
+/// every mode rather than encrypting or authenticating emptiness, and
+/// the failure must leave no partial output behind.
 #[test]
-fn test_cbcmac_calc_multiblock_does_not_panic() {
-    let mut crypto = ToyBlock16{k: 0x5a};
-    let nonce = [0u8; 13];
-    let input = vec![0xabu8; 64];
-    let tag = crypto.cbcmac_calc(&nonce, &[], 8, &input).unwrap();
-    assert_eq!(tag.len(), 8);
-
-    // With associated data, which walks the second loop as well.
-    let ad = vec![0xcdu8; 40];
-    let tag = crypto.cbcmac_calc(&nonce, &ad, 16, &input).unwrap();
-    assert_eq!(tag.len(), 16);
-}
-
-#[test]
-fn test_cbcmac_calc_rejects_bad_parameters() {
-    let mut crypto = ToyBlock16{k: 0};
-    // Nonce too short / too long.
-    assert!(crypto.cbcmac_calc(&[0; 6], &[], 8, &[0; 16]).is_err());
-    assert!(crypto.cbcmac_calc(&[0; 14], &[], 8, &[0; 16]).is_err());
-    // Odd MIC length.
-    assert!(crypto.cbcmac_calc(&[0; 13], &[], 7, &[0; 16]).is_err());
-    // Wrong block size for the CCM header layout.
-    let mut small = Test{size: 8};
-    assert!(small.cbcmac_calc(&[0; 13], &[], 8, &[0; 16]).is_err());
-}
-
-/// The unimplemented modes must say so rather than quietly returning nothing.
-#[test]
-fn test_unimplemented_modes_return_errors() {
+fn test_a_cipher_that_produces_no_block_is_an_error() {
     let mut crypto = Test{size: 16};
     let mut result = vec![];
     assert!(crypto.ctr_encrypt(&[0; 16], &mut result, &[0; 16]).is_err());
     assert!(crypto.ctr_decrypt(&[0; 16], &mut result, &[0; 16]).is_err());
-    // GCM is implemented now, but this cipher's block_encrypt produces
-    // nothing, so it must be caught rather than authenticating emptiness.
     assert!(crypto.gcm_encrypt(&[0; 16], &mut result, &[0; 12], &mut vec![], &[]).is_err());
     assert!(crypto.gcm_decrypt(&[0; 16], &mut result, &[0; 12], &[0; 16], &[]).is_err());
-    assert!(crypto.ccm_encrypt(&[0; 16], &mut result, &mut vec![], &[0; 13], &[]).is_err());
-    assert!(crypto.ccm_decrypt(&[0; 16], &mut result, vec![], &[0; 13], &[]).is_err());
+    assert!(ccm::encrypt(&mut crypto, &[0; 13], &[], &[0; 16], 8).is_err());
+    assert!(ccm::decrypt(&mut crypto, &[0; 13], &[], &[0; 16], &[0; 8]).is_err());
     assert!(result.is_empty(), "a failing mode must not leave partial output behind");
+}
+
+/// The default counter refused only an IV longer than the block, so
+/// `ctr_encrypt(.., &[])` ran with an all-zero counter and produced
+/// output - one keystream shared by every user of the key, which GCM
+/// refuses for its nonce and plain CTR did not. The facade's own IV
+/// presence check hid it from the api tests. Now the empty IV is
+/// refused here; a short one is still padded, and a long one still
+/// refused.
+#[test]
+fn test_ctr_refuses_an_empty_iv() {
+    let mut crypto = ToyBlock16{k: 0x5a};
+    let mut out = vec![];
+    assert!(crypto.ctr_encrypt(&[0; 16], &mut out, &[]).is_err());
+    assert!(out.is_empty());
+    assert!(crypto.ctr_encrypt(&[0; 16], &mut out, &[1]).is_ok());
+    assert!(crypto.ctr_encrypt(&[0; 16], &mut out, &[1; 16]).is_ok());
+    assert!(crypto.ctr_encrypt(&[0; 16], &mut out, &[1; 17]).is_err());
 }
 
 /// A cipher whose block_encrypt misbehaves must be caught, not silently

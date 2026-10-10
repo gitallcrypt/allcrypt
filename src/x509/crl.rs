@@ -45,7 +45,11 @@ certificates, only CA certificates, or only certain revocation reasons.
 "Not on this list" then means nothing about the rest, and
 `onlySomeReasons` in particular is easy to read past: the CRL is
 complete, valid, correctly signed, and silent about key compromise. Here
-that yields `Unknown`, with the reasons it does cover named.
+that yields `Unknown`, with the reasons it does cover named. The same
+goes for a CRL partitioned by distribution point: one whose
+issuingDistributionPoint names a point is the list for that point, and
+a certificate whose cRLDistributionPoints does not name it is simply not
+on its list (RFC 5280 6.3.3 (b)(2)(i)).
 
 **An indirect CRL attributes entries to other issuers.** The
 certificateIssuer entry extension (5.3.3) names whose certificate an
@@ -646,7 +650,144 @@ fn scope_excludes(crl: &CertificateList<'_>, certificate: &Certificate<'_>)
         return Some("the CRL covers CA certificates only, and this is an \
                      end-entity certificate".to_string());
     }
+    // RFC 5280 6.3.3 (b)(2)(i): a CRL whose issuingDistributionPoint
+    // names a distribution point is the list for *that* point, and
+    // covers a certificate only if the certificate's own
+    // cRLDistributionPoints names the same point. A CA that partitions
+    // its revocations across two points issues two complete, fresh,
+    // correctly signed CRLs, and the one for partition A is silent about
+    // every certificate in partition B - silent, not clearing.
+    if let Some(name) = point.distribution_point {
+        match covers_distribution_point(crl, point, name, certificate) {
+            Ok(true) => {}
+            Ok(false) => return Some(
+                "the CRL's issuingDistributionPoint names a distribution point \
+                 and the certificate's cRLDistributionPoints does not name it, \
+                 so this is the list for a different partition".to_string()),
+            Err(why) => return Some(format!(
+                "its issuingDistributionPoint names a distribution point that \
+                 could not be compared with the certificate's: {}", why)),
+        }
+    }
     None
+}
+
+/// The names a `DistributionPointName` resolves to, each as a
+/// `(GeneralName tag number, content)` pair: the entries of a `fullName`,
+/// or for `nameRelativeToCRLIssuer` the single directoryName made by
+/// appending the RDN to `issuer` - which is what RFC 5280 4.2.1.13 says
+/// the relative form abbreviates, and how OpenSSL compares the two forms
+/// against each other.
+fn distribution_point_names(content: &[u8], issuer: &Name<'_>)
+                            -> Result<Vec<(u32, Vec<u8>)>, String> {
+    let mut reader = Reader::new(content);
+    let (tag, inner) = reader.read_any()?;
+    reader.finish()?;
+    if tag.class != asn1::CLASS_CONTEXT {
+        return Err("A DistributionPointName must use a context tag.".to_string());
+    }
+    match tag.number {
+        0 => {
+            let mut names = Reader::new(inner);
+            let mut out = Vec::new();
+            while !names.is_empty() {
+                let (tag, content) = names.clone().read_any()?;
+                // Through the real reader too, so the shapes it refuses
+                // (a masked iPAddress, a NUL in a host) are refused here.
+                read_general_name(&mut names, &ADDRESS_ONLY)?;
+                out.push((tag.number, content.to_vec()));
+            }
+            Ok(out)
+        }
+        1 => {
+            // The RDN's content, the SET tag having been replaced by the
+            // implicit [1]. The full name is the issuer's RDN sequence
+            // with this one appended.
+            let mut issuer_reader = Reader::new(issuer.raw);
+            let rdns = issuer_reader.read_sequence()?.remaining();
+            issuer_reader.finish()?;
+            let mut writer = asn1::Writer::new();
+            writer.write_sequence(|w| {
+                w.write_raw(rdns);
+                w.write_tlv(Tag::set(), inner);
+            });
+            Ok(vec![(4, writer.finish())])
+        }
+        other => Err(format!("Unknown DistributionPointName form [{}].", other)),
+    }
+}
+
+/// Does the certificate's cRLDistributionPoints name the distribution
+/// point `name` that this CRL says it is the list for?
+///
+/// RFC 5280 6.3.3 (b)(2)(i), as OpenSSL applies it: for each of the
+/// certificate's distribution points, the point counts only if it has
+/// no cRLIssuer or the CRL is indirect and names that issuer, and then
+/// one of the CRL's names has to equal one of the point's names - the
+/// point's `distributionPoint` names, or its `cRLIssuer` names when it
+/// has no `distributionPoint`. A certificate with no
+/// cRLDistributionPoints at all names no point, so a CRL that names one
+/// does not cover it.
+fn covers_distribution_point(crl: &CertificateList<'_>,
+                             point: &IssuingDistributionPoint<'_>,
+                             name: &[u8], certificate: &Certificate<'_>)
+                             -> Result<bool, String> {
+    let crl_names = distribution_point_names(name, &crl.issuer)?;
+
+    let extension = certificate.extensions.values.iter()
+        .find(|(oid, _, _)| oid.as_bytes() == oids::CRL_DISTRIBUTION);
+    let value = match extension {
+        Some((_, _, value)) => *value,
+        None => return Ok(false),
+    };
+    let mut outer = Reader::new(value);
+    let mut points = outer.read_sequence()?;
+    outer.finish()?;
+
+    while !points.is_empty() {
+        let mut fields = points.read_sequence()?;
+        let mut names: Option<Vec<(u32, Vec<u8>)>> = None;
+        let mut crl_issuer: Vec<(u32, Vec<u8>)> = Vec::new();
+        while !fields.is_empty() {
+            let (tag, content) = fields.read_any()?;
+            if tag.class != asn1::CLASS_CONTEXT {
+                return Err("A DistributionPoint field must use a context tag."
+                           .to_string());
+            }
+            match tag.number {
+                0 => names = Some(distribution_point_names(
+                    content, &certificate.issuer)?),
+                1 => {}
+                2 => {
+                    let mut reader = Reader::new(content);
+                    while !reader.is_empty() {
+                        let (tag, content) = reader.clone().read_any()?;
+                        read_general_name(&mut reader, &ADDRESS_ONLY)?;
+                        crl_issuer.push((tag.number, content.to_vec()));
+                    }
+                }
+                other => return Err(format!(
+                    "Unknown DistributionPoint field [{}].", other)),
+            }
+        }
+        // A point served by another issuer is only this CRL's point if
+        // the CRL is an indirect one from that issuer.
+        if !crl_issuer.is_empty() {
+            let names_this_issuer = crl_issuer.iter()
+                .any(|(tag, content)| *tag == 4 && content == crl.issuer.raw);
+            if !point.indirect || !names_this_issuer {
+                continue;
+            }
+        }
+        let candidates = match &names {
+            Some(names) => names,
+            None => &crl_issuer,
+        };
+        if candidates.iter().any(|name| crl_names.contains(name)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Check one certificate against the CRLs supplied for it.
@@ -1420,6 +1561,150 @@ mod tests {
     /// A CRL partitioned by reason is complete, valid, correctly signed
     /// and silent about the reasons it does not carry. Absence from it
     /// is not news.
+    /// A cRLDistributionPoints extension naming `uris` under `fullName`,
+    /// for a leaf's `extra_extensions`.
+    fn distribution_points_extension(uris: &[&str]) -> (Vec<u8>, bool, Vec<u8>) {
+        let mut writer = Writer::new();
+        writer.write_sequence(|w| {
+            w.write_sequence(|w| {
+                w.write_constructed(Tag::context(0, true), |w| {
+                    w.write_constructed(Tag::context(0, true), |w| {
+                        for uri in uris {
+                            w.write_tlv(Tag::context(6, false), uri.as_bytes());
+                        }
+                    });
+                });
+            });
+        });
+        (oids::CRL_DISTRIBUTION.to_vec(), false, writer.finish())
+    }
+
+    /// A CRL that names its distribution point is the list for that
+    /// point only, and clears nothing that lives at another.
+    ///
+    /// What was wrong: `IssuingDistributionPoint.distribution_point` was
+    /// parsed and never consulted, so a complete, fresh, correctly
+    /// signed CRL for partition A (no `onlySomeReasons`) set the covered
+    /// reasons to all of them and answered `NotRevoked` for a
+    /// certificate whose revocation lives in partition B. RFC 5280
+    /// 6.3.3 (b)(2)(i) requires the IDP's name to match one of the
+    /// certificate's cRLDistributionPoints first. The existing tests
+    /// partitioned CRLs by reason and by certificate kind, never by
+    /// point. A CRL for another point is now set aside with a reason,
+    /// and the status stays `Unknown`.
+    #[test]
+    fn test_a_crl_for_another_distribution_point_cannot_clear() {
+        let fixture = Fixture::with(|b| {
+            b.extra_extensions = vec![distribution_points_extension(
+                &["http://crl.test/a.crl"])];
+        });
+        let for_point = |uri: &str| {
+            let uri = uri.to_string();
+            fixture.crl(move |b| {
+                b.issuing_distribution_point = Some(IssuingDistributionPointFields {
+                    distribution_point_uris: vec![uri],
+                    ..Default::default()
+                });
+            })
+        };
+
+        // The list for the other partition: silent, not clearing.
+        let other = for_point("http://crl.test/b.crl");
+        match fixture.check(std::slice::from_ref(&other)) {
+            Status::Unknown(why) => assert!(why.contains("different partition"),
+                                            "{}", why),
+            other => panic!("expected Unknown, got {:?}", other),
+        }
+
+        // The list for this certificate's own point clears it, so the
+        // comparison is on the name and not on the field being there.
+        let own = for_point("http://crl.test/a.crl");
+        assert_eq!(fixture.check(std::slice::from_ref(&own)), Status::NotRevoked);
+
+        // One of several names in the IDP matching is enough.
+        let several = fixture.crl(|b| {
+            b.issuing_distribution_point = Some(IssuingDistributionPointFields {
+                distribution_point_uris: vec!["http://crl.test/b.crl".to_string(),
+                                              "http://crl.test/a.crl".to_string()],
+                ..Default::default()
+            });
+        });
+        assert_eq!(fixture.check(&[several]), Status::NotRevoked);
+
+        // A certificate that names no distribution point at all is
+        // covered by no point-specific CRL.
+        let unnamed = Fixture::new();
+        let scoped = unnamed.crl(|b| {
+            b.issuing_distribution_point = Some(IssuingDistributionPointFields {
+                distribution_point_uris: vec!["http://crl.test/a.crl".to_string()],
+                ..Default::default()
+            });
+        });
+        assert!(matches!(unnamed.check(&[scoped]), Status::Unknown(_)));
+
+        // And a CRL with an IDP that names no point still covers
+        // everything, which is what the existing partitioned-by-reason
+        // tests rely on.
+        let unscoped = fixture.crl(|b| {
+            b.issuing_distribution_point = Some(IssuingDistributionPointFields::default());
+        });
+        assert_eq!(fixture.check(&[unscoped]), Status::NotRevoked);
+    }
+
+    /// The `nameRelativeToCRLIssuer` form names the same point as the
+    /// `fullName` directoryName it abbreviates.
+    #[test]
+    fn test_a_relative_distribution_point_name_is_resolved_against_the_issuer() {
+        // The leaf's point: fullName [4] directoryName = CN=Test CA, CN=crl1.
+        let mut full = Writer::new();
+        full.write_sequence(|w| {
+            for value in ["Test CA", "crl1"] {
+                w.write_set(|w| {
+                    w.write_sequence(|w| {
+                        w.write_oid(oids::COMMON_NAME);
+                        w.write_tlv(Tag::universal(asn1::tag::UTF8_STRING), value.as_bytes());
+                    });
+                });
+            }
+        });
+        let full = full.finish();
+        let mut extension = Writer::new();
+        extension.write_sequence(|w| {
+            w.write_sequence(|w| {
+                w.write_constructed(Tag::context(0, true), |w| {
+                    w.write_constructed(Tag::context(0, true), |w| {
+                        w.write_constructed(Tag::context(4, true), |w| w.write_raw(&full));
+                    });
+                });
+            });
+        });
+        let fixture = Fixture::with(|b| {
+            b.extra_extensions = vec![(oids::CRL_DISTRIBUTION.to_vec(), false,
+                                       extension.finish())];
+        });
+
+        // The CRL's point: nameRelativeToCRLIssuer [1] { CN=crl1 }.
+        let idp = |rdn_value: &str| {
+            let mut rdn = Writer::new();
+            rdn.write_sequence(|w| {
+                w.write_oid(oids::COMMON_NAME);
+                w.write_tlv(Tag::universal(asn1::tag::UTF8_STRING), rdn_value.as_bytes());
+            });
+            let rdn = rdn.finish();
+            let mut value = Writer::new();
+            value.write_sequence(|w| {
+                w.write_constructed(Tag::context(0, true), |w| {
+                    w.write_constructed(Tag::context(1, true), |w| w.write_raw(&rdn));
+                });
+            });
+            (oids::ISSUING_DISTRIBUTION_POINT.to_vec(), true, value.finish())
+        };
+        let matching = fixture.crl(|b| b.extra_extensions = vec![idp("crl1")]);
+        assert_eq!(fixture.check(&[matching]), Status::NotRevoked);
+        let other = fixture.crl(|b| b.extra_extensions = vec![idp("crl2")]);
+        assert!(matches!(fixture.check(&[other]), Status::Unknown(_)));
+    }
+
     #[test]
     fn test_a_crl_that_covers_only_some_reasons_cannot_clear_anything() {
         let fixture = Fixture::new();

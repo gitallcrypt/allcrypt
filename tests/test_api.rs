@@ -173,9 +173,11 @@ fn test_facade_rejects_bad_input() {
     assert!(AnyHash::new("md6").is_err());
     assert!(Mode::from_name("gcm").is_err());
 
-    // Blowfish used to divide by zero on an empty key.
+    // Blowfish's constructor refuses an empty key, which its schedule
+    // would read as zeros, and one past the 72 bytes the P-array takes.
     assert!(AnyBlockCipher::new("blowfish", &[], None).is_err());
-    assert!(AnyBlockCipher::new("blowfish", &[0u8; 57], None).is_err());
+    assert!(AnyBlockCipher::new("blowfish", &[0u8; 73], None).is_err());
+    assert!(AnyBlockCipher::new("blowfish", &[0u8; 72], None).is_ok());
 
     // IV presence is checked against the mode.
     let c = || AnyBlockCipher::new("aes", &key(16), None).unwrap();
@@ -280,16 +282,16 @@ fn test_stream_cipher_facade() {
         let (mut i, mut step) = (0usize, 1usize);
         while i < pt.len() {
             let e = std::cmp::min(pt.len(), i + step);
-            streamed.extend_from_slice(&c.encrypt(&pt[i..e]));
+            streamed.extend_from_slice(&c.encrypt(&pt[i..e]).unwrap());
             i = e;
             step = step * 2 + 1;
         }
         let mut c2 = AnyStreamCipher::new(name, &key(32), &nonce).unwrap();
-        assert_eq!(streamed, c2.encrypt(&pt), "{} streaming", name);
+        assert_eq!(streamed, c2.encrypt(&pt).unwrap(), "{} streaming", name);
 
         // Round trip.
         let mut c3 = AnyStreamCipher::new(name, &key(32), &nonce).unwrap();
-        assert_eq!(c3.decrypt(&streamed), pt, "{} roundtrip", name);
+        assert_eq!(c3.decrypt(&streamed).unwrap(), pt, "{} roundtrip", name);
 
         // `update` is the keystream, for the ciphers that have one, and
         // refused for the one that does not.
@@ -315,7 +317,7 @@ fn test_stream_cipher_facade() {
     let mut direct = allcrypt::stream_ciphers::zipcrypto::ZipCrypto::new(b"pw");
     let mut want = vec![];
     direct.encrypt(&data(300), &mut want);
-    assert_eq!(viaapi.encrypt(&data(300)), want);
+    assert_eq!(viaapi.encrypt(&data(300)).unwrap(), want);
     // Any password, the empty one included, and no nonce.
     assert!(AnyStreamCipher::new("zipcrypto", b"", &[]).is_ok());
     assert!(AnyStreamCipher::new("zipcrypto", b"pw", &iv(12)).is_err());
@@ -1139,4 +1141,254 @@ fn test_lcg_outputs_and_custom_parameters() {
     assert_eq!(custom.next_output(), run[0]);
     assert!(api::lcg_custom(1, 0, 1, 0, 1).is_err());
     assert!(api::lcg_custom(1, 0, 7, 0, 0).is_err());
+}
+
+/// Every `AeadStream` refuses `update`, `finish` and `open` once it has
+/// finished. The buffered arms (CCM, EAX, MGM, OCB, CBC-HMAC) had no
+/// finished state: `update` after `finish` appended to the old buffer
+/// and a second `finish` sealed `a || b` under the same key and nonce,
+/// which is the repeated nonce the type's documentation forbids. GCM and
+/// ChaCha20-Poly1305 already refused inside their own states, and the
+/// existing tests only ever finished a stream once, so nothing noticed.
+#[test]
+fn test_aead_stream_refuses_use_after_finish() {
+    use allcrypt::api::AeadStream;
+    for (aead, key_len, nonce) in [
+        ("aes-gcm", 16usize, vec![3u8; 12]),
+        ("chacha20-poly1305", 32, vec![3u8; 12]),
+        ("aes-ccm", 16, vec![3u8; 12]),
+        ("aes-eax", 16, vec![3u8; 12]),
+        ("kuznyechik-mgm", 32, vec![0x3bu8; 16]),
+        ("aes-ocb", 16, vec![3u8; 12]),
+        ("aes-128-cbc-hmac-sha256", 32, vec![3u8; 16]),
+    ] {
+        let key = key(key_len);
+        let mut sealing = AeadStream::new(aead, &key, &nonce, b"ad", false).unwrap();
+        let mut ciphertext = Vec::new();
+        sealing.update(b"first message", &mut ciphertext).unwrap();
+        let tag = sealing.finish(&mut ciphertext).unwrap();
+        let mut more = Vec::new();
+        assert!(sealing.update(b"second", &mut more).is_err(),
+                "{aead}: update after finish was accepted");
+        assert!(sealing.finish(&mut more).is_err(),
+                "{aead}: a second finish sealed again under the same nonce");
+        assert!(more.is_empty(), "{aead}: output after finish");
+
+        let mut opening = AeadStream::new(aead, &key, &nonce, b"ad", true).unwrap();
+        let mut plaintext = Vec::new();
+        opening.update(&ciphertext, &mut plaintext).unwrap();
+        opening.open(&tag, &mut plaintext).unwrap();
+        assert_eq!(plaintext, b"first message", "{aead}");
+        assert!(opening.update(&ciphertext, &mut more).is_err(),
+                "{aead}: update after open was accepted");
+        assert!(opening.open(&tag, &mut more).is_err(),
+                "{aead}: a second open was accepted");
+        assert!(more.is_empty(), "{aead}: output after open");
+    }
+}
+
+/// A ChaCha or Salsa20 stream whose counter runs out is an `Err` from
+/// `update`, `encrypt` and `decrypt`. They called `StreamCipher::crypt`,
+/// whose signature has no error, so an exhausted stream returned fewer
+/// bytes than it was given, with `Ok` - a short ciphertext the caller
+/// had no way to tell from a whole one. The counter is 256 GiB away for
+/// a 12-byte ChaCha nonce, so no test had reached it; `set_counter` and
+/// `seek_block` put it one block from the end here.
+#[test]
+fn test_an_exhausted_stream_cipher_is_an_error() {
+    use allcrypt::stream_ciphers::salsa20::Salsa20;
+    let near_the_end = || {
+        let mut chacha = Chacha::new(key(32), iv(12), 20).unwrap();
+        chacha.set_counter(u32::MAX).unwrap();
+        AnyStreamCipher::Chacha(chacha)
+    };
+    let salsa_near_the_end = || {
+        let mut salsa = Salsa20::new(key(32), iv(8)).unwrap();
+        salsa.seek_block(u64::MAX);
+        AnyStreamCipher::Salsa20(salsa)
+    };
+    for make in [&near_the_end as &dyn Fn() -> AnyStreamCipher, &salsa_near_the_end] {
+        // One block is still there.
+        assert_eq!(make().update(&[0u8; 64]).unwrap().len(), 64);
+        assert!(make().update(&[0u8; 128]).is_err(), "update returned a short result");
+        assert!(make().encrypt(&[0u8; 128]).is_err(), "encrypt returned a short result");
+        assert!(make().decrypt(&[0u8; 128]).is_err(), "decrypt returned a short result");
+        let mut buf = [0u8; 128];
+        assert!(make().apply(&mut buf).is_err());
+    }
+}
+
+/// `api::tls10_prf` returned `Vec` and called `kdf::tls10_prf`, which
+/// panics above `kdf::MAX_OUTPUT_BYTES` - a `PanicException` from Python
+/// where `tls12_prf` beside it raised `ValueError`. `api::shake` went
+/// through `Keccak::squeeze`, which panics the same way (the cap is also
+/// checked earlier, so that one was not reachable). The existing tests
+/// only asked for lengths below the cap.
+#[test]
+fn test_prf_output_caps_are_errors() {
+    use allcrypt::api;
+    let over = allcrypt::kdf::MAX_OUTPUT_BYTES + 1;
+    assert!(api::tls10_prf(b"secret", b"label", b"seed", over).is_err());
+    assert!(api::shake("shake_128", b"data", over).is_err());
+    let short = api::tls10_prf(b"secret", b"label", b"seed", 100).unwrap();
+    assert_eq!(api::tls10_prf(b"secret", b"label", b"seed", 40).unwrap(), short[..40]);
+}
+
+/// The calls the Python bindings make for CMAC, the GOST S-box and curve
+/// read-outs, the encryption scheme list and SSH went straight into the
+/// crate (`mac::cmac`, `ec::curves`, `ssh::*`), so this file - which is
+/// what stands behind "verified here is verified for Python" - covered
+/// none of them. They now go through `api`, and these are the calls.
+#[test]
+fn test_binding_surfaces_go_through_the_api() {
+    use allcrypt::api;
+
+    // CMAC: one block of tag, keyed and message-dependent, and an
+    // unknown cipher refused.
+    let tag = api::cmac("aes", &key(16), &data(40)).unwrap();
+    assert_eq!(tag.len(), 16);
+    assert_ne!(tag, api::cmac("aes", &key(16), &data(41)).unwrap());
+    assert!(api::cmac("no-such-cipher", &key(16), &data(40)).is_err());
+
+    // The GOST S-box: eight rows, each a permutation of 0..16.
+    let sbox = api::gost_sbox("id-Gost28147-89-TestParamSet").unwrap();
+    assert_eq!(sbox.len(), 8);
+    for row in &sbox {
+        let mut sorted = row.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..16).collect::<Vec<u8>>());
+    }
+    assert!(api::gost_sbox("no-such-set").is_err());
+
+    // Curve parameters: the fields in `register_oid`'s order, every
+    // number a whole number of bytes, and the base point on the curve.
+    let fields = api::curve_parameters("P-256").unwrap();
+    let names: Vec<&str> = fields.iter().map(|(field, _)| *field).collect();
+    assert_eq!(names, ["name", "p", "a", "b", "gx", "gy", "n", "cofactor"]);
+    for (field, value) in &fields[1..] {
+        assert_eq!(value.len() % 2, 0, "{field} is not whole bytes: {value}");
+    }
+    assert_eq!(fields[7].1, "01");
+    assert!(api::curve_parameters("no-such-curve").is_err());
+
+    // Every scheme listed is one `encrypt_private_key` takes.
+    let schemes = api::encryption_schemes();
+    assert!(!schemes.is_empty());
+}
+
+#[test]
+fn test_ssh_through_the_api() {
+    use allcrypt::api;
+
+    let key = api::ssh_generate_key("ed25519", None).unwrap();
+    let public = key.public();
+
+    // Raw signatures, both ways, and a changed message refused.
+    let signature = api::ssh_sign(&key, b"message", None).unwrap();
+    assert!(api::ssh_verify(&public, b"message", &signature).unwrap());
+    assert!(!api::ssh_verify(&public, b"messagf", &signature).unwrap());
+
+    // The key file, plain and encrypted, comes back as the same key.
+    for passphrase in [None, Some(&b"correct horse"[..])] {
+        let text = api::ssh_write_private_key(&key, "a comment", passphrase,
+                                              "aes256-ctr", 2).unwrap();
+        let (read, comment) = api::ssh_read_private_key(&text, passphrase).unwrap();
+        assert_eq!(comment, "a comment");
+        assert!(read.public() == public);
+    }
+
+    // A public key line and its blob.
+    let line = format!("from=\"10.0.0.1\" {}", public.to_openssh("someone"));
+    let (parsed, comment, options) = api::ssh_parse_public_line(&line).unwrap();
+    assert!(parsed == public);
+    assert_eq!(comment, "someone");
+    assert_eq!(options, "from=\"10.0.0.1\"");
+    assert!(api::ssh_public_key_from_blob(&public.to_blob()).unwrap() == public);
+
+    // SSHSIG names its signer, and a different namespace is refused.
+    let armoured = api::ssh_sshsig_sign(&key, "file", b"payload", "sha512").unwrap();
+    assert!(api::ssh_sshsig_verify(&armoured, "file", b"payload").unwrap() == public);
+    assert!(api::ssh_sshsig_verify(&armoured, "email", b"payload").is_err());
+
+    // The algorithm names the Python lists are resolved against: every
+    // default of both ends and every key type, each once. This replaced
+    // a hand-typed list in python.rs that could drift from the tables.
+    let names = api::ssh_algorithm_names();
+    let client = api::SshClientConfig::new("user", api::SshHostKeyCheck::AcceptAny);
+    for name in client.kex.iter().chain(&client.ciphers).chain(&client.macs)
+                      .chain(&client.host_key_algorithms)
+                      .chain(allcrypt::ssh::keys::KEY_TYPES) {
+        assert!(names.contains(name), "{name} is missing");
+    }
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len());
+}
+
+/// `AeadStream` had no name accessor, so the Python `AeadEncryptor`
+/// printed a hard-coded `aes-gcm` for every stream, ChaCha20-Poly1305
+/// included; nothing compared the repr with the AEAD asked for.
+#[test]
+fn test_aead_stream_knows_its_name() {
+    use allcrypt::api::AeadStream;
+    let stream = AeadStream::new("ChaCha20-Poly1305", &key(32), &iv(12), &[], false).unwrap();
+    assert_eq!(stream.name(), "chacha20-poly1305");
+    let stream = AeadStream::new("aes-eax", &key(16), &iv(12), &[], true).unwrap();
+    assert_eq!(stream.name(), "aes-eax");
+}
+
+/// No private key type here is `Clone`. `DsaKey` derived it while
+/// `EcKey`, `RsaKey`, `EddsaKey`, `SlhDsaKey`, `MlKemKey` and `MlDsaKey`
+/// deliberately do not; nothing checked the set as a whole. The check
+/// is the inherent-constant trick: `IsClone::<T>::VALUE` resolves to the
+/// inherent constant only when `T: Clone`, and to the trait's otherwise.
+#[test]
+fn test_private_keys_are_not_clone() {
+    use allcrypt::api::{DsaKey, EcKey, EddsaKey, MlDsaKey, MlKemKey, RsaKey, SlhDsaKey};
+    use std::marker::PhantomData;
+    trait NotClone { const VALUE: bool = false; }
+    struct IsClone<T>(PhantomData<T>);
+    impl<T> NotClone for IsClone<T> {}
+    #[allow(dead_code)]
+    impl<T: Clone> IsClone<T> { const VALUE: bool = true; }
+    const { assert!(IsClone::<Vec<u8>>::VALUE, "the check itself does not work") };
+    const { assert!(!IsClone::<DsaKey>::VALUE, "DsaKey is Clone") };
+    const { assert!(!IsClone::<EcKey>::VALUE) };
+    const { assert!(!IsClone::<RsaKey>::VALUE) };
+    const { assert!(!IsClone::<EddsaKey>::VALUE) };
+    const { assert!(!IsClone::<SlhDsaKey>::VALUE) };
+    const { assert!(!IsClone::<MlKemKey>::VALUE) };
+    const { assert!(!IsClone::<MlDsaKey>::VALUE) };
+}
+
+/// `kerberos_nfold`'s length is the caller's, and `nfold` computed
+/// `len * length / gcd` unchecked: a length near `usize::MAX / len`
+/// overflowed, a `PanicException` from Python in a debug build and an
+/// allocation abort in release. Every test folded to a key size.
+#[test]
+fn test_kerberos_nfold_lengths_are_bounded() {
+    use allcrypt::api;
+    assert!(api::kerberos_nfold(b"012345", usize::MAX / 3).is_err());
+    assert!(api::kerberos_nfold(b"0123456", 1 << 30).is_err());
+    assert!(api::kerberos_nfold(b"", usize::MAX).is_err());
+    // The ordinary sizes still fold (their values are pinned by the
+    // RFC 3961 vectors in pytests/test_kdf_nist.py).
+    assert_eq!(api::kerberos_nfold(b"012345", 8).unwrap().len(), 8);
+    assert_eq!(api::kerberos_nfold(b"", 16).unwrap(), vec![0u8; 16]);
+}
+
+/// `api::wipe` is what the private key types' drops call. A plain
+/// `fill(0)` before a free is a dead store the optimiser may delete, and
+/// the key types (`EddsaKey`, `SlhDsaKey`, `MlKemKey`, `MlDsaKey`, the
+/// Python `Cipher` and `Aead`) had no drop at all, while the C buffer
+/// that copies the same bytes out was wiped. Reading freed memory to
+/// check the drops themselves is undefined behaviour, so this pins the
+/// helper; the drops are one line each.
+#[test]
+fn test_wipe_zeroes_the_buffer() {
+    let mut secret = key(64);
+    assert!(secret.iter().any(|b| *b != 0));
+    allcrypt::api::wipe(&mut secret);
+    assert_eq!(secret, vec![0u8; 64]);
 }

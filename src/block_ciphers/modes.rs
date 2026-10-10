@@ -505,8 +505,8 @@ impl CtsState {
         self.held.extend_from_slice(input);
         if self.held.len() > 2 * bs {
             let take = (self.held.len() - bs - 1) / bs * bs;
-            let ready: Vec<u8> = self.held.drain(..take).collect();
-            self.cbc.update(cipher, &ready, out)?;
+            self.cbc.update(cipher, &self.held[..take], out)?;
+            self.held.drain(..take);
         }
         Ok(())
     }
@@ -637,11 +637,12 @@ impl PcbcState {
             }
             out.extend_from_slice(&self.scratch);
         } else {
-            // `chain` is P_{i-1} ^ C_{i-1}; XOR the plaintext in and
-            // encrypt.
-            let mut input = self.chain.clone();
-            xor_into(&mut input, block);
-            cipher.block_encrypt(&input, &mut self.scratch);
+            // `chain` is P_{i-1} ^ C_{i-1}; XOR the plaintext in, in
+            // place, and encrypt. The next chain is rebuilt from the
+            // plaintext and the ciphertext, so nothing of the old one is
+            // needed afterwards.
+            xor_into(&mut self.chain, block);
+            cipher.block_encrypt(&self.chain, &mut self.scratch);
             if self.scratch.len() != bs {
                 return Err("block_encrypt did not produce exactly one block.".to_string());
             }

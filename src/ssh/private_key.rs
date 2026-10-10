@@ -170,6 +170,13 @@ pub struct Encryption<'a> {
     pub rounds: u32,
 }
 
+/// The most bcrypt_pbkdf rounds a key file may ask for. `ssh-keygen -a`
+/// defaults to 16 and a round is a whole bcrypt key schedule, so 2^16
+/// is already minutes of work; a crafted file asking for four billion
+/// would stall the reader for days. Files are user-chosen, so this is a
+/// bound rather than a defence.
+pub const MAX_ROUNDS: u32 = 1 << 16;
+
 /// Read an `openssh-key-v1` file. `passphrase` is needed only for an
 /// encrypted one; giving one for an unencrypted file is not an error.
 ///
@@ -209,6 +216,10 @@ pub fn read(text: &str, passphrase: Option<&[u8]>) -> Result<(PrivateKey, String
             let salt = options.string()?;
             let rounds = options.uint32()?;
             options.finish("bcrypt's KDF options")?;
+            if rounds > MAX_ROUNDS {
+                return Err(format!("SSH: the key file asks for {rounds} bcrypt \
+                                    rounds; nothing above {MAX_ROUNDS} is run."));
+            }
             let passphrase = passphrase.ok_or_else(|| {
                 "SSH: this key is encrypted and needs a passphrase.".to_string()
             })?;
@@ -235,7 +246,18 @@ pub fn read(text: &str, passphrase: Option<&[u8]>) -> Result<(PrivateKey, String
     }
     let private = read_private_fields(&mut reader)?;
     let comment = reader.text()?.to_string();
-    for (expected, padding) in (1u8..).zip(reader.rest()) {
+    // The padding brings the section up to a whole number of cipher
+    // blocks, so a valid file has fewer than one block of it. Checked
+    // before the byte values: a bound on the length is what keeps the
+    // expected sequence inside a `u8`, and anything longer is trailing
+    // data, not padding.
+    let padding = reader.rest();
+    if padding.len() >= spec.block_size {
+        return Err(format!("SSH: {} bytes follow the comment, and the padding \
+                            for {} is under {}.",
+                           padding.len(), cipher_name, spec.block_size));
+    }
+    for (expected, padding) in (1..=255u8).zip(padding) {
         if *padding != expected {
             return Err("SSH: the private section's padding is not 1, 2, 3, \
                         ...".to_string());
@@ -448,6 +470,92 @@ mod tests {
                     .contains("wrong passphrase"), "{name}");
             assert!(read(&text, None).unwrap_err().contains("needs a passphrase"));
         }
+    }
+
+    /// An unencrypted file with `section` as its private section, the
+    /// rest as `write` would make it.
+    fn file_with_section(key: &PrivateKey, section: &[u8]) -> String {
+        let mut out = Writer::new();
+        out.raw(MAGIC).string(b"none").string(b"none").string(b"").uint32(1)
+            .string(&key.public().to_blob()).string(section);
+        pem::wrap(LABEL, &out.finish())
+    }
+
+    /// Padding longer than a cipher block is refused, whatever its
+    /// bytes.
+    ///
+    /// What was wrong: the padding check zipped the trailing bytes with
+    /// `(1u8..)`, an unbounded range that panics on overflow in a debug
+    /// build and wraps in a release one. A private section ending in
+    /// `1..=255, 0, 1, ...` therefore took down a debug build and was
+    /// *accepted* by a release build. The round-trip tests only ever
+    /// read files `write` had made, whose padding is under one block.
+    /// The length is now bounded by the block size before any byte is
+    /// compared, and the sequence itself is `1..=255`.
+    #[test]
+    fn test_padding_of_a_block_or_more_is_refused() {
+        let key = a_key();
+        let block_size = cipher::lookup("none").unwrap().block_size;
+        let mut section = Writer::new();
+        section.uint32(7).uint32(7);
+        write_private_fields(&key, &mut section);
+        section.string(b"");
+        // The wrapping sequence a release build used to accept: 1..=255,
+        // then 0, 1, ... until the section is a whole number of blocks.
+        let mut padding: u8 = 1;
+        let mut count = 0;
+        while count < 256 || !section.len().is_multiple_of(block_size) {
+            section.byte(padding);
+            padding = padding.wrapping_add(1);
+            count += 1;
+        }
+        let error = read(&file_with_section(&key, &section.finish()), None).unwrap_err();
+        assert!(error.contains("follow the comment"), "{error}");
+
+        // Exactly one block of correctly numbered padding is also too
+        // much: a section that was already aligned gets none. The
+        // comment is sized to align the section without padding.
+        let mut section = Writer::new();
+        section.uint32(7).uint32(7);
+        write_private_fields(&key, &mut section);
+        let comment_len = (block_size - (section.len() + 4) % block_size) % block_size;
+        section.string(&vec![b'c'; comment_len]);
+        assert!(section.len().is_multiple_of(block_size));
+        for padding in 1..=block_size as u8 {
+            section.byte(padding);
+        }
+        let error = read(&file_with_section(&key, &section.finish()), None).unwrap_err();
+        assert!(error.contains("follow the comment"), "{error}");
+    }
+
+    /// A round count that would stall the reader is refused before the
+    /// derivation starts.
+    ///
+    /// What was wrong: `rounds` was read from the file and handed to
+    /// `bcrypt_pbkdf` unbounded. The round-trip tests use `rounds: 1`.
+    /// The count is rewritten in a real encrypted file: the KDF options
+    /// string is `string salt, uint32 rounds`, so the rounds are the
+    /// last four bytes of that string.
+    #[test]
+    fn test_a_round_count_past_the_bound_is_refused() {
+        let key = a_key();
+        let encryption = Encryption { cipher: "aes256-ctr", passphrase: b"pw", rounds: 1 };
+        let text = write(&key, "", Some(&encryption)).unwrap();
+        let block = pem::parse(&text).unwrap()[0].contents.clone();
+
+        // Walk to the KDF options and overwrite its trailing uint32.
+        let body = block.strip_prefix(MAGIC).unwrap();
+        let mut reader = Reader::new(body);
+        reader.string().unwrap();                     // cipher name
+        reader.string().unwrap();                     // kdf name
+        reader.string().unwrap();                     // kdf options
+        let options_end = body.len() - reader.rest().len();
+        let rounds_at = MAGIC.len() + options_end - 4;
+        assert_eq!(&block[rounds_at..rounds_at + 4], 1u32.to_be_bytes());
+        let mut edited = block.clone();
+        edited[rounds_at..rounds_at + 4].copy_from_slice(&(MAX_ROUNDS + 1).to_be_bytes());
+        let error = read(&pem::wrap(LABEL, &edited), Some(b"pw")).unwrap_err();
+        assert!(error.contains("bcrypt"), "{error}");
     }
 
     /// A file whose private section is a different key from its header.

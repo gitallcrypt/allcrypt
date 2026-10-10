@@ -11,7 +11,7 @@ fn test_blowfish_block() {
 
     let mut result = vec![];
 
-    let mut crypto = Blowfish::new(key);
+    let mut crypto = Blowfish::new(key).unwrap();
     crypto.block_encrypt(&plain, &mut result);
     assert_eq!(result,cipher);
 
@@ -32,7 +32,7 @@ fn test_blowfish_cbc() {
                                     0x59, 0xF1, 0x65, 0x2B, 0xD5, 0xFF, 0x92, 0xCC];
     let mut result = vec![];
 
-    let mut crypto = Blowfish::new(key);
+    let mut crypto = Blowfish::new(key).unwrap();
     crypto.cbc_encrypt(data, &mut result, iv.to_vec()).unwrap();
     assert_eq!(result, cbc_cipher);
 
@@ -54,7 +54,7 @@ fn test_blowfish_cfb() {
                                     0x51, 0x9D, 0x57, 0xA6, 0xC3];
     let mut result = vec![];
 
-    let mut crypto = Blowfish::new(key);
+    let mut crypto = Blowfish::new(key).unwrap();
     crypto.cfb_encrypt(data, &mut result, iv.to_vec()).unwrap();
     assert_eq!(result, cfb_cipher);
 
@@ -76,7 +76,7 @@ fn test_blowfish_ofb() {
                                    0x63, 0xC2, 0xCF, 0x80, 0xDA];
     let mut result = vec![];
 
-    let mut crypto = Blowfish::new(key);
+    let mut crypto = Blowfish::new(key).unwrap();
     crypto.ofb_encrypt(data, &mut result, iv.to_vec()).unwrap();
     assert_eq!(result, cfb_cipher);
 

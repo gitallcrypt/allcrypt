@@ -6,26 +6,38 @@ use super::HashFunction;
 pub struct SHA224 {
     state: [u32; 8],
     buffer: BlockBuffer<64>,
-    len: usize,
+    /// The message length **in bits**, as the padding carries it. A
+    /// `u64` on every target: a `usize` wraps at 2^32 bits (512 MiB) on
+    /// a 32-bit one, which is a wrong digest with no error.
+    len: u64,
 }
 #[derive(Clone)]
 pub struct SHA256 {
     state: [u32; 8],
     buffer: BlockBuffer<64>,
-    len: usize,
+    /// The message length **in bits**, as the padding carries it. A
+    /// `u64` on every target: a `usize` wraps at 2^32 bits (512 MiB) on
+    /// a 32-bit one, which is a wrong digest with no error.
+    len: u64,
 }
 #[derive(Clone)]
 pub struct SHA384 {
     state: [u64; 8],
     buffer: BlockBuffer<128>,
-    len: usize,
+    /// The message length **in bits**, in the 128 bit width the
+    /// padding carries. A `usize` wraps at 2^32 bits (512 MiB) on a
+    /// 32-bit target, which is a wrong digest with no error.
+    len: u128,
 }
 #[derive(Clone)]
 pub struct SHA512 {
     state: [u64; 8],
     output_bits: usize,
     buffer: BlockBuffer<128>,
-    len: usize,
+    /// The message length **in bits**, in the 128 bit width the
+    /// padding carries. A `usize` wraps at 2^32 bits (512 MiB) on a
+    /// 32-bit target, which is a wrong digest with no error.
+    len: u128,
 }
 
 pub(crate) const K_32: [u32; 64] = [
@@ -95,7 +107,34 @@ impl SHA384 {
 }
 
 impl SHA512 {
+    /// SHA-512 (`output_bits = 512`) or SHA-512/t (FIPS 180-4 section
+    /// 5.3.6) for any other `output_bits`.
+    ///
+    /// # Panics
+    /// An `output_bits` `try_new` refuses. Every in-tree caller passes
+    /// 224, 256 or 512; a length from outside goes through `try_new`.
     pub fn new(data: &[u8], output_bits: usize) -> SHA512 {
+        match SHA512::try_new(data, output_bits) {
+            Ok(sha) => sha,
+            Err(reason) => panic!("{reason}"),
+        }
+    }
+
+    /// `new`, with the output length checked: a whole number of bytes,
+    /// at most 512 bits, and not 384 - FIPS 180-4 excludes t = 384 so
+    /// that no "SHA-512/384" can be mistaken for SHA-384, which has
+    /// its own initial values. Past 512 the digest used to slice past
+    /// the eight state words and panic.
+    pub fn try_new(data: &[u8], output_bits: usize) -> Result<SHA512, String> {
+        if output_bits == 0 || output_bits > 512 || !output_bits.is_multiple_of(8) {
+            return Err(format!(
+                "SHA-512/t produces a whole number of bytes up to 512 bits; {} bits is \
+                 not one.", output_bits));
+        }
+        if output_bits == 384 {
+            return Err("SHA-512/384 is not defined (FIPS 180-4 section 5.3.6); SHA-384 \
+                        is a separate function with its own initial values.".to_string());
+        }
         let mut sha = SHA512 {
             state: [0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1, 
             0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179],
@@ -120,7 +159,7 @@ impl SHA512 {
             }
         }
         sha.update(data);
-        sha
+        Ok(sha)
     }
 }
 
@@ -266,7 +305,7 @@ impl HashFunction for SHA224 {
         let mut unprocessed_data = self.buffer.buffered().to_vec();
         unprocessed_data.push(0x80);
         unprocessed_data.extend_from_slice(&vec![0; (blocksize + (blocksize-8) - unprocessed_data.len()) % blocksize]);
-        unprocessed_data.extend_from_slice(&(self.len as u64).to_be_bytes());
+        unprocessed_data.extend_from_slice(&self.len.to_be_bytes());
         (state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7]) = 
             process_block_32(&self.state, &unprocessed_data);
         if unprocessed_data.len() > blocksize {
@@ -284,7 +323,7 @@ impl HashFunction for SHA224 {
         result
     }
     fn update(&mut self, input: &[u8]) {
-        self.len += input.len() * 8;
+        self.len = self.len.wrapping_add(input.len() as u64 * 8);
         // The buffer is moved out for the call so the closure can borrow
         // the rest of `self`.
         let mut buffer = core::mem::take(&mut self.buffer);
@@ -307,7 +346,7 @@ impl HashFunction for SHA256 {
         let mut unprocessed_data = self.buffer.buffered().to_vec();
         unprocessed_data.push(0x80);
         unprocessed_data.extend_from_slice(&vec![0; (blocksize + (blocksize-8) - unprocessed_data.len()) % blocksize]);
-        unprocessed_data.extend_from_slice(&(self.len as u64).to_be_bytes());
+        unprocessed_data.extend_from_slice(&self.len.to_be_bytes());
         (state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7]) = 
             process_block_32(&self.state, &unprocessed_data);
         if unprocessed_data.len() > blocksize {
@@ -326,7 +365,7 @@ impl HashFunction for SHA256 {
         result
     }
     fn update(&mut self, input: &[u8]) {
-        self.len += input.len() * 8;
+        self.len = self.len.wrapping_add(input.len() as u64 * 8);
         // The buffer is moved out for the call so the closure can borrow
         // the rest of `self`.
         let mut buffer = core::mem::take(&mut self.buffer);
@@ -346,7 +385,7 @@ impl HashFunction for SHA384 {
         let mut unprocessed_data = self.buffer.buffered().to_vec();
         unprocessed_data.push(0x80);
         unprocessed_data.extend_from_slice(&vec![0; (blocksize + (blocksize-16) - unprocessed_data.len()) % blocksize]);
-        unprocessed_data.extend_from_slice(&(self.len as u128).to_be_bytes());
+        unprocessed_data.extend_from_slice(&self.len.to_be_bytes());
         (state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7]) = 
             process_block_64(&self.state, &unprocessed_data);
         if unprocessed_data.len() > blocksize {
@@ -366,7 +405,7 @@ impl HashFunction for SHA384 {
         48
     }
     fn update(&mut self, input: &[u8]) {
-        self.len += input.len() * 8;
+        self.len = self.len.wrapping_add(input.len() as u128 * 8);
         // The buffer is moved out for the call so the closure can borrow
         // the rest of `self`.
         let mut buffer = core::mem::take(&mut self.buffer);
@@ -401,7 +440,7 @@ impl HashFunction for SHA512 {
         let mut unprocessed_data = self.buffer.buffered().to_vec();
         unprocessed_data.push(0x80);
         unprocessed_data.extend_from_slice(&vec![0; (blocksize + (blocksize-16) - unprocessed_data.len()) % blocksize]);
-        unprocessed_data.extend_from_slice(&(self.len as u128).to_be_bytes());
+        unprocessed_data.extend_from_slice(&self.len.to_be_bytes());
         (state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7]) = 
             process_block_64(&self.state, &unprocessed_data);
         if unprocessed_data.len() > blocksize {
@@ -423,7 +462,7 @@ impl HashFunction for SHA512 {
         self.output_bits.div_ceil(8)
     }
     fn update(&mut self, input: &[u8]) {
-        self.len += input.len() * 8;
+        self.len = self.len.wrapping_add(input.len() as u128 * 8);
         // The buffer is moved out for the call so the closure can borrow
         // the rest of `self`.
         let mut buffer = core::mem::take(&mut self.buffer);
@@ -442,5 +481,65 @@ impl HashFunction for SHA512 {
             self.state[7] = h;
         });
         self.buffer = buffer;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bit counters were `usize`, so on a 32-bit target they
+    /// wrapped at 2^32 bits (512 MiB) and the `+=` overflowed in a
+    /// debug build: a wrong digest with no error past that length. No
+    /// test ran on such a target, and on a 64-bit one `usize` and `u64`
+    /// agree for any message that fits in memory. The check is on the
+    /// types themselves: 64 bits for the 32-bit-word hashes, and the
+    /// full 128 bit width of the padding field for SHA-384/512.
+    #[test]
+    fn test_the_bit_counters_are_as_wide_as_the_length_field() {
+        let mut sha224 = SHA224::new(&[0u8; 100]);
+        let mut sha256 = SHA256::new(&[0u8; 100]);
+        let mut sha384 = SHA384::new(&[0u8; 100]);
+        let mut sha512 = SHA512::new(&[0u8; 100], 512);
+        let narrow: [u64; 2] = [sha224.len, sha256.len];
+        let wide: [u128; 2] = [sha384.len, sha512.len];
+        assert_eq!(narrow, [800, 800]);
+        assert_eq!(wide, [800, 800]);
+        // And the counter is what the padding carries: the same bytes
+        // in two pieces give the same digest as one call.
+        for (whole, pieces) in [
+            (sha224.digest(), { let mut h = SHA224::new(&[0u8; 37]); h.update(&[0u8; 63]); h.digest() }),
+            (sha256.digest(), { let mut h = SHA256::new(&[0u8; 37]); h.update(&[0u8; 63]); h.digest() }),
+            (sha384.digest(), { let mut h = SHA384::new(&[0u8; 37]); h.update(&[0u8; 63]); h.digest() }),
+            (sha512.digest(), { let mut h = SHA512::new(&[0u8; 37], 512); h.update(&[0u8; 63]); h.digest() }),
+        ] {
+            assert_eq!(whole, pieces);
+        }
+        // `digest` is non-destructive, so the counters are unchanged.
+        let still: [u64; 2] = [sha224.len, sha256.len];
+        assert_eq!(still, [800, 800]);
+        let _ = (&mut sha384, &mut sha512);
+    }
+
+    /// `SHA512::new(data, t)` accepted any `t`: past 512 the digest
+    /// sliced `result[..t / 8]` beyond the 64 bytes of state and
+    /// panicked with an index error, and `t = 384` gave a "SHA-512/384"
+    /// FIPS 180-4 does not define, which is not SHA-384. Every caller
+    /// in the tree passes 224, 256 or 512, so no test reached either.
+    #[test]
+    fn test_an_output_length_sha512_t_does_not_define_is_refused() {
+        let reason = |bits| SHA512::try_new(&[], bits).err().expect("refused");
+        assert!(reason(1024).contains("512 bits"));
+        assert!(reason(520).contains("512 bits"));
+        assert!(reason(0).contains("512 bits"));
+        assert!(reason(12).contains("whole number of bytes"));
+        assert!(reason(384).contains("SHA-384"));
+        // The defined ones, including SHA-512 itself and a t FIPS
+        // allows but nobody standardised a name for.
+        for t in [8usize, 224, 256, 504, 512] {
+            assert_eq!(SHA512::try_new(b"abc", t).unwrap().digest().len(), t / 8);
+        }
+        assert_eq!(SHA512::try_new(b"abc", 256).unwrap().digest(),
+                   SHA512::new(b"abc", 256).digest());
     }
 }

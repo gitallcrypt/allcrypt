@@ -83,6 +83,14 @@ def test_the_constants_we_answer_differently_are_deliberate():
 
     # NPN was replaced by ALPN and removed; nothing here implements it.
     assert allcrypt_ssl.HAS_NPN is False
+
+    # Python 3.13's external-PSK callbacks have nothing behind them here,
+    # so the flag that guards them says so whatever this Python's own
+    # OpenSSL can do. Missing, it failed
+    # `test_every_name_the_standard_library_exports_is_here` on 3.13 and
+    # was invisible on 3.12, which has no such name.
+    assert allcrypt_ssl.HAS_PSK is False
+
     assert allcrypt_ssl.HAS_ALPN is True
 
     # **Not shaped like an OpenSSL version, on purpose.** urllib3 tests

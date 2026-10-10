@@ -58,6 +58,22 @@ pub fn gf_multiply(a: &[u8; BLOCK], b: &[u8; BLOCK]) -> [u8; BLOCK] {
     result.to_be_bytes()
 }
 
+/// `value * x` in the field: a left shift, reduced.
+fn double(value: u128) -> u128 {
+    (value << 1) ^ if value >> 127 == 1 { 0x87 } else { 0 }
+}
+
+/// A block XORed with a tweak held as an integer.
+#[inline(always)]
+fn mask(block: &mut [u8], tweak: u128) {
+    let block: &mut [u8; BLOCK] = block.try_into().expect("a whole block");
+    *block = (u128::from_be_bytes(*block) ^ tweak).to_be_bytes();
+}
+
+/// Blocks handed to the cipher at a time, so that AES's batched path is
+/// the one taken.
+const BATCH: usize = 16;
+
 fn crypt(cipher: &mut dyn BlockCipher, tweak_key: &[u8; BLOCK], index: &[u8; BLOCK],
          input: &[u8], encrypt: bool) -> Result<Vec<u8>, String> {
     if cipher.blocksize() != BLOCK {
@@ -68,20 +84,43 @@ fn crypt(cipher: &mut dyn BlockCipher, tweak_key: &[u8; BLOCK], index: &[u8; BLO
         return Err(format!("LRW encrypts whole 16 byte blocks; {} bytes is not.",
                            input.len()));
     }
+    // One multiplication for the first tweak; from there the tweak is
+    // stepped. Adding one to the counter flips its trailing ones and the
+    // zero above them, so `K2 * (I + j + 1)` is `K2 * (I + j)` XOR
+    // `K2 * (x^(k+1) - 1)` where `k` is how many trailing zeros the
+    // new counter has - and that is `inc[k]`, a table of 128 values
+    // built by doubling once. A wrap to zero has 128 trailing zeros and
+    // flips every bit, which is the last entry.
+    let k2 = u128::from_be_bytes(*tweak_key);
+    let mut inc = [0u128; 128];
+    let (mut power, mut sum) = (k2, 0u128);
+    for entry in inc.iter_mut() {
+        sum ^= power;
+        *entry = sum;
+        power = double(power);
+    }
     let mut counter = u128::from_be_bytes(*index);
-    let mut out = Vec::with_capacity(input.len());
-    let mut result = Vec::with_capacity(BLOCK);
-    for block in input.chunks(BLOCK) {
-        let tweak = gf_multiply(tweak_key, &counter.to_be_bytes());
-        let masked: Vec<u8> = block.iter().zip(&tweak).map(|(a, b)| a ^ b).collect();
-        result.clear();
-        if encrypt {
-            cipher.block_encrypt(&masked, &mut result);
-        } else {
-            cipher.block_decrypt(&masked, &mut result);
+    let mut tweak = u128::from_be_bytes(gf_multiply(tweak_key, index));
+
+    // Masked in place, a batch through the cipher, unmasked: the batch
+    // is what keeps AES on its constant-time path.
+    let mut out = input.to_vec();
+    let mut tweaks = [0u128; BATCH];
+    for blocks in out.chunks_mut(BATCH * BLOCK) {
+        for (block, saved) in blocks.chunks_exact_mut(BLOCK).zip(tweaks.iter_mut()) {
+            *saved = tweak;
+            mask(block, tweak);
+            counter = counter.wrapping_add(1);
+            tweak ^= inc[(counter.trailing_zeros() as usize).min(127)];
         }
-        out.extend(result.iter().zip(&tweak).map(|(a, b)| a ^ b));
-        counter = counter.wrapping_add(1);
+        if encrypt {
+            cipher.encrypt_blocks(blocks)?;
+        } else {
+            cipher.decrypt_blocks(blocks)?;
+        }
+        for (block, saved) in blocks.chunks_exact_mut(BLOCK).zip(tweaks.iter()) {
+            mask(block, *saved);
+        }
     }
     Ok(out)
 }
@@ -129,6 +168,82 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 9);
+    }
+
+    /// The stepped tweak against a multiplication per block, over a
+    /// counter that carries through several trailing ones and one that
+    /// wraps from all ones to zero: the two places a stepping rule that
+    /// is right for a plain increment goes wrong. The IEEE vectors above
+    /// cover a wrap too, but with their own data; this one holds the
+    /// cipher fixed and varies only the index.
+    #[test]
+    fn test_the_stepped_tweak_is_the_multiplied_one() {
+        let mut cipher = AnyBlockCipher::new("aes", &[0x11; 16], None).unwrap();
+        let tweak_key = [0x5cu8; 16];
+        let input: Vec<u8> = (0..40 * BLOCK).map(|i| (i * 7) as u8).collect();
+        for start in [0u128, 1, 0xfff, u128::MAX - 2, u128::MAX - 37, u128::MAX] {
+            let got = encrypt(&mut cipher, &tweak_key, &start.to_be_bytes(), &input).unwrap();
+            let mut want = Vec::new();
+            for (j, block) in input.chunks(BLOCK).enumerate() {
+                let tweak = gf_multiply(&tweak_key, &start.wrapping_add(j as u128).to_be_bytes());
+                let mut masked = Vec::new();
+                for (a, b) in block.iter().zip(&tweak) {
+                    masked.push(a ^ b);
+                }
+                let mut enc = Vec::new();
+                cipher.block_encrypt(&masked, &mut enc);
+                want.extend(enc.iter().zip(&tweak).map(|(a, b)| a ^ b));
+            }
+            assert_eq!(got, want, "index {start:#x}");
+            assert_eq!(decrypt(&mut cipher, &tweak_key, &start.to_be_bytes(), &got).unwrap(),
+                       input);
+        }
+    }
+
+    /// A cipher that records how its blocks arrive: through
+    /// `encrypt_blocks` and `decrypt_blocks`, whose batch sizes it keeps,
+    /// or one at a time through `block_encrypt`, which it counts.
+    struct Counting {
+        batches: Vec<usize>,
+        single: usize,
+    }
+
+    impl BlockCipher for Counting {
+        fn blocksize(&self) -> usize { BLOCK }
+        fn block_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>) {
+            self.single += 1;
+            result.extend(input.iter().map(|b| b ^ 0x5a));
+        }
+        fn block_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>) {
+            self.block_encrypt(input, result)
+        }
+        fn encrypt_blocks(&mut self, blocks: &mut [u8]) -> Result<(), String> {
+            self.batches.push(blocks.len() / BLOCK);
+            for b in blocks.iter_mut() { *b ^= 0x5a; }
+            Ok(())
+        }
+        fn decrypt_blocks(&mut self, blocks: &mut [u8]) -> Result<(), String> {
+            self.encrypt_blocks(blocks)
+        }
+    }
+
+    /// The mode used to call `block_encrypt` once per block, which for
+    /// AES without its instructions is the table route rather than the
+    /// bitsliced one - a bypass of the constant-time path that the
+    /// vector tests cannot see, since both routes give the same bytes.
+    /// The whole blocks now go through `encrypt_blocks` in batches of
+    /// `BATCH`, and a cipher that counts its calls shows it.
+    #[test]
+    fn test_the_blocks_go_through_the_batched_path() {
+        let mut cipher = Counting { batches: Vec::new(), single: 0 };
+        let input = vec![0x3cu8; 37 * BLOCK];
+        let out = encrypt(&mut cipher, &[1; BLOCK], &[0; BLOCK], &input).unwrap();
+        assert_eq!(cipher.batches, [BATCH, BATCH, 5]);
+        assert_eq!(cipher.single, 0, "a block went through block_encrypt on its own");
+        cipher.batches.clear();
+        assert_eq!(decrypt(&mut cipher, &[1; BLOCK], &[0; BLOCK], &out).unwrap(), input);
+        assert_eq!(cipher.batches, [BATCH, BATCH, 5]);
+        assert_eq!(cipher.single, 0);
     }
 
     /// x * x^127 = x^128 = x^7 + x^2 + x + 1.

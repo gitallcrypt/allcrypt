@@ -291,6 +291,33 @@ mod tests {
         }
     }
 
+    /// `hashSize` from the XML said how many bytes of the verifier hash
+    /// to compare, unchecked against the hash: a `hashSize="0"` compared
+    /// nothing, so every password passed the verifier and a wrong one
+    /// went on to fail the HMAC as "a changed package" rather than as a
+    /// wrong password. Every document the fixtures hold carries the
+    /// hash's own size.
+    #[test]
+    fn test_an_agile_hash_size_that_is_not_the_hashs_is_refused() {
+        let root = fixture("office-example_password.docx");
+        assert!(ooxml::decrypt(&root, b"not the password").is_err());
+        for size in ["0", "1", "20", "63", "65"] {
+            let mut changed = root.clone();
+            let info = changed.stream_mut("EncryptionInfo").unwrap();
+            let text = String::from_utf8_lossy(&info[8..]).replace("hashSize=\"64\"",
+                                                                   &format!("hashSize=\"{size}\""));
+            assert_ne!(text.matches("hashSize").count(), 0);
+            info.truncate(8);
+            info.extend_from_slice(text.as_bytes());
+            for password in [b"not the password".as_slice(), b"Password1234_"] {
+                let error = ooxml::decrypt(&changed, password).err().unwrap_or_else(|| {
+                    panic!("hashSize {size} with {password:?}")
+                });
+                assert!(error.contains("hashSize"), "{size}: {error}");
+            }
+        }
+    }
+
     /// Every scheme round-trips packages either side of a segment and an
     /// AES block, through the compound file.
     #[test]

@@ -22,7 +22,7 @@ fn main() {
         println!("tkip/{tsc:012x} {}", to_hex(&rc4_key(&tk, &ta, tsc)).to_lowercase());
     }
     for n in [1usize, 16, 100, 500] {
-        let sealed = wep::encrypt(&key(13), &[0x01, 0x02, 0x03], &data(n));
+        let sealed = wep::encrypt(&key(13), &[0x01, 0x02, 0x03], &data(n)).unwrap();
         println!("wep/{n} {}", to_hex(&sealed).to_lowercase());
     }
 }

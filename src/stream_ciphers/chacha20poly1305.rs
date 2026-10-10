@@ -44,6 +44,14 @@ use crate::Mac;
 /// The tag length, and the only one this AEAD has.
 pub const TAG_LEN: usize = 16;
 
+/// The largest plaintext one key and nonce may protect: blocks 1 to
+/// 2^32 - 1 of the keystream, block zero being the Poly1305 key (RFC 8439
+/// section 2.8). Past it the 32 bit counter wraps and the payload is
+/// XORed with keystream already used - with the Poly1305 key's own block
+/// first, so the tag then protects nothing. Checked up front, like GCM's
+/// limit, because the trait the cipher streams through has no error.
+pub const MAX_TEXT_LEN: u64 = ((1u64 << 32) - 1) * 64;
+
 /// Which direction a stream is going.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Direction {
@@ -141,16 +149,25 @@ impl ChaCha20Poly1305 {
         if self.done {
             return Err("This stream is finished; start another.".to_string());
         }
-        self.text_len = self.text_len.checked_add(buf.len() as u64)
+        let text_len = self.text_len.checked_add(buf.len() as u64)
             .ok_or("Message length overflowed.")?;
+        if text_len > MAX_TEXT_LEN {
+            return Err(format!(
+                "ChaCha20-Poly1305 refuses more than {} bytes under one key and \
+                 nonce; past that the 32 bit counter wraps and the keystream \
+                 repeats.", MAX_TEXT_LEN));
+        }
+        self.text_len = text_len;
 
         if self.direction == Direction::Decrypt {
             self.mac.update(buf);
         }
 
         // In place, continuing the cipher's own streaming position, which
-        // is what makes updating in pieces equal one call.
-        self.cipher.apply(buf);
+        // is what makes updating in pieces equal one call. The length
+        // check above keeps the counter short of its wrap, so the
+        // cipher's own refusal cannot fire here.
+        self.cipher.apply(buf).map_err(|(_, e)| e)?;
 
         if self.direction == Direction::Encrypt {
             self.mac.update(buf);
@@ -214,11 +231,8 @@ impl ChaCha20Poly1305 {
         self.done = true;
         let tag = self.compute_tag();
 
-        let mut difference = 0u8;
-        for (a, b) in tag.iter().zip(expected.iter()) {
-            difference |= a ^ b;
-        }
-        if difference != 0 {
+        // Through the one constant-time comparison the library has.
+        if crate::bignum::ct::bytes_differ(&tag, expected) {
             return Err("ChaCha20-Poly1305 authentication failed: the tag does \
                         not match. The data has been altered, or the key, nonce \
                         or additional data is not the one that protected it."
@@ -486,6 +500,32 @@ offer you only one tip for the future, sunscreen would be it.";
         }
         let mut state = ChaCha20Poly1305::decryptor(&[0; 32], &[0; 12], b"").unwrap();
         assert!(state.verify(&[0; 15]).is_err());
+    }
+
+    /// The payload runs on keystream blocks 1 to 2^32 - 1, and nothing
+    /// refused a message that needed more: the counter wrapped to block
+    /// zero, the Poly1305 key's own block, and the bytes past 256 GiB
+    /// went out under keystream already used, with a tag that still
+    /// verified. The length tests only checked the key and nonce, and
+    /// no test could afford a 256 GiB message, which is why the limit is
+    /// pinned here by moving the count rather than the data: at the
+    /// limit one more byte is refused, one byte short of it is taken,
+    /// and the refusal leaves the output as it was. GCM has the same
+    /// check at the same place.
+    #[test]
+    fn test_the_block_counter_limit_is_enforced() {
+        assert_eq!(MAX_TEXT_LEN, (1 << 38) - 64);
+        for direction in [Direction::Encrypt, Direction::Decrypt] {
+            let mut state = ChaCha20Poly1305::new(&[0; 32], &[0; 12], b"", direction).unwrap();
+            state.text_len = MAX_TEXT_LEN - 1;
+            let mut out = Vec::new();
+            assert!(state.update(&[0u8; 2], &mut out).is_err(), "{direction:?}");
+            assert!(out.is_empty(), "a refused update left output behind");
+            assert!(state.update(&[0u8; 1], &mut out).is_ok());
+            assert_eq!(state.text_len, MAX_TEXT_LEN);
+            assert!(state.update(&[0u8; 1], &mut out).is_err());
+            assert_eq!(out.len(), 1);
+        }
     }
 
     #[test]

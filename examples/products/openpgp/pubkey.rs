@@ -184,10 +184,18 @@ impl<'a> Pkesk<'a> {
         let (key_id, fingerprint) = match version {
             3 => (r.bytes(8)?.try_into().unwrap(), Vec::new()),
             6 => {
+                // RFC 9580 section 5.1.2: zero for an anonymous recipient,
+                // else the key's version and its fingerprint - 20 bytes
+                // for a v4 key, 32 for v5 and v6. Anything else cannot
+                // yield a key ID and is refused before one is cut out.
                 let n = r.u8()? as usize;
                 let id = r.bytes(n)?;
-                (if n > 1 { pkesk_key_id(id) } else { [0; 8] },
-                 id.get(1..).unwrap_or_default().to_vec())
+                match (n, id.first()) {
+                    (0, _) => ([0; 8], Vec::new()),
+                    (21, Some(4)) | (33, Some(5 | 6)) => (pkesk_key_id(id), id[1..].to_vec()),
+                    _ => return Err(format!("a PKESK v6 key identifier of {n} bytes, version {:?}",
+                                            id.first())),
+                }
             }
             v => return Err(format!("PKESK version {v} is not one this program reads")),
         };
@@ -283,8 +291,9 @@ impl<'a> Pkesk<'a> {
     }
 }
 
+/// The key ID from a v6 PKESK's identifier, which `Pkesk::parse` has
+/// checked is a key version and a fingerprint of that version's length.
 fn pkesk_key_id(id: &[u8]) -> [u8; 8] {
-    // id is the key version then the fingerprint.
     let fingerprint = &id[1..];
     if id[0] == 4 {
         fingerprint[fingerprint.len() - 8..].try_into().unwrap()

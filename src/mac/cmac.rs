@@ -129,6 +129,22 @@ impl Cmac {
         self.block_size
     }
 
+    /// The keyed cipher the MAC runs on, for a construction that uses
+    /// the same key for a second purpose - EAX's CTR half - so that it
+    /// holds one key schedule rather than two.
+    pub fn cipher_mut(&mut self) -> &mut AnyBlockCipher {
+        &mut self.cipher
+    }
+
+    /// Back to the start of a message, under the same key: the chain
+    /// and the held-back bytes cleared, the subkeys kept. What a caller
+    /// that MACs many messages under one key uses instead of a second
+    /// key schedule per message.
+    pub fn reset(&mut self) {
+        self.chain.fill(0);
+        self.pending.clear();
+    }
+
     /// One CBC step over a whole block.
     fn absorb(&mut self, block: &[u8]) {
         for (chained, byte) in self.chain.iter_mut().zip(block.iter()) {
@@ -367,6 +383,26 @@ mod tests {
             };
             let tag = cmac(name, &key, b"sixty four bit block").unwrap();
             assert_eq!(tag.len(), 8, "{}", name);
+        }
+    }
+
+    /// `reset` takes a CMAC back to the start of a message under the
+    /// same key: after a message of any length, whole blocks or a
+    /// ragged end, a reset CMAC tags the next message as a fresh one
+    /// would. EAX relies on it for its three OMACs per message.
+    #[test]
+    fn test_reset_is_a_fresh_start() {
+        let mut shared = Cmac::with_key("aes", &[0x42; 16]).unwrap();
+        for length in [0usize, 5, 16, 17, 32, 40] {
+            let first = vec![1u8; length];
+            shared.update(&first);
+            let _ = shared.digest();
+            shared.reset();
+            shared.update(b"the next message");
+            let mut fresh = Cmac::with_key("aes", &[0x42; 16]).unwrap();
+            fresh.update(b"the next message");
+            assert_eq!(shared.digest(), fresh.digest(), "after {length} bytes");
+            shared.reset();
         }
     }
 }

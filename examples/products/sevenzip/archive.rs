@@ -101,8 +101,15 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    fn remaining(&self) -> usize {
+        self.data.len() - self.at
+    }
+
     /// A bit vector, most significant bit first, or "all defined".
     fn bits(&mut self, n: usize) -> Result<Vec<bool>, String> {
+        if n.div_ceil(8) > self.remaining() {
+            return Err("7z: the header ends early.".to_string());
+        }
         let mut out = Vec::with_capacity(n);
         let mut byte = 0u8;
         for i in 0..n {
@@ -260,6 +267,15 @@ fn streams(r: &mut Reader) -> Result<Streams, String> {
         }
         tag = r.byte()?;
     }
+    // Every folder's packed streams are consecutive entries of PackInfo,
+    // which is optional: a header with fewer packed sizes than the
+    // folders consume - or none at all - must be refused here, before
+    // `unpack_folder` indexes `pack_sizes` by the folders' counts.
+    let consumed: usize = s.folders.iter().map(|f| f.packed.len()).sum();
+    if consumed > s.pack_sizes.len() {
+        return Err(format!("7z: the folders use {consumed} packed streams and PackInfo \
+                            declares {}.", s.pack_sizes.len()));
+    }
     let folders = s.folders.len();
     let mut counts = vec![1usize; folders];
     if tag == id::SUBSTREAMS {
@@ -360,15 +376,24 @@ pub fn unpack_folder(data: &[u8], streams: &Streams, index: usize, password: Opt
                      -> Result<Vec<u8>, String> {
     let folder = &streams.folders[index];
     let first_pack: usize = streams.folders[..index].iter().map(|f| f.packed.len()).sum();
-    let mut offset = PACK_START + streams.pack_pos
-        + streams.pack_sizes[..first_pack].iter().sum::<u64>();
+    // `streams()` has checked that the folders' packed streams all have
+    // a size in PackInfo; the offsets are header-controlled u64s and
+    // are added with overflow checks.
+    let sizes = streams.pack_sizes.get(first_pack..first_pack + folder.packed.len())
+        .ok_or("7z: a folder with more packed streams than PackInfo declares.")?;
+    let overflow = || "7z: a packed stream's offset overflows.";
+    let mut offset = PACK_START.checked_add(streams.pack_pos).ok_or_else(overflow)?;
+    for size in &streams.pack_sizes[..first_pack] {
+        offset = offset.checked_add(*size).ok_or_else(overflow)?;
+    }
     let mut packed = Vec::new();
-    for size in &streams.pack_sizes[first_pack..first_pack + folder.packed.len()] {
+    for size in sizes {
         let start = usize::try_from(offset).map_err(|_| "7z: an offset past memory.")?;
-        let end = start.checked_add(*size as usize).ok_or("7z: a size overflows.")?;
+        let size = usize::try_from(*size).map_err(|_| "7z: a size past memory.")?;
+        let end = start.checked_add(size).ok_or("7z: a size overflows.")?;
         packed.push(data.get(start..end).ok_or("7z: a packed stream past the end of the \
                                                   file.")?);
-        offset += size;
+        offset = offset.checked_add(size as u64).ok_or_else(overflow)?;
     }
     // Under 7zAES a wrong password is noticed only downstream - by the
     // decompressor, a parser, or a CRC - so any failure there may be one.
@@ -404,6 +429,14 @@ fn utf16_names(bytes: &[u8], n: usize) -> Result<Vec<String>, String> {
 
 fn files(r: &mut Reader, streams: &Streams) -> Result<Vec<Entry>, String> {
     let n = r.count("files")?;
+    // A file either has a stream, counted already, or an empty-stream
+    // bit in the header: a count above both is wrong before any entry
+    // is made for it.
+    let streams_total: usize = streams.substream_sizes.iter().map(Vec::len).sum();
+    if n > streams_total.saturating_add(r.remaining().saturating_mul(8)) {
+        return Err(format!("7z: {n} files declared in a header of {} bytes with {streams_total} \
+                            streams.", r.remaining()));
+    }
     let mut entries = vec![Entry::default(); n];
     let mut empty_stream = vec![false; n];
     let mut empty_file = Vec::new();
@@ -889,5 +922,84 @@ mod tests {
         assert_eq!(r.number().unwrap(), 0x7f);
         assert_eq!(r.number().unwrap(), 0x80);
         assert_eq!(r.number().unwrap(), 0x0201);
+    }
+
+    /// An archive written by `write`, split into its packed data and its
+    /// plain header, so a test can change the header and seal it again
+    /// under fresh CRCs.
+    fn one_file_archive() -> (Vec<u8>, Vec<u8>) {
+        let files = [NewFile { name: "a".to_string(), data: Some(b"x".to_vec()), mtime: None }];
+        let whole = write(&files, &WriteOptions { password: None, encrypt_header: false,
+                                                  cycles_power: 6 }).unwrap();
+        let offset = 32 + u64::from_le_bytes(whole[12..20].try_into().unwrap()) as usize;
+        (whole[32..offset].to_vec(), whole[offset..].to_vec())
+    }
+
+    fn seal(packed: &[u8], header: &[u8]) -> Vec<u8> {
+        let mut start = Vec::new();
+        start.extend_from_slice(&(packed.len() as u64).to_le_bytes());
+        start.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        start.extend_from_slice(&crc32(header).to_le_bytes());
+        let mut out = SIGNATURE.to_vec();
+        out.extend_from_slice(&[0, 4]);
+        out.extend_from_slice(&crc32(&start).to_le_bytes());
+        out.extend_from_slice(&start);
+        out.extend_from_slice(packed);
+        out.extend_from_slice(header);
+        out
+    }
+
+    /// `files()` made an entry for every file the count declared before
+    /// reading anything about them - sixteen million at the count's
+    /// limit, over a gigabyte, from four bytes of header. The fixtures'
+    /// counts are honest, so no test had a count the header could not
+    /// hold.
+    #[test]
+    fn test_a_file_count_the_header_cannot_hold_is_refused() {
+        let (packed, header) = one_file_archive();
+        // FILES, a count of one, NAME.
+        let at = header.windows(3).position(|w| w == [id::FILES, 1, id::NAME]).unwrap();
+        assert!(header[at + 3..].windows(3).all(|w| w != [id::FILES, 1, id::NAME]));
+        let mut many = header[..at + 1].to_vec();
+        // 1 << 24 in 7z's number encoding: three bytes follow.
+        many.extend_from_slice(&[0xe1, 0, 0, 0]);
+        many.extend_from_slice(&header[at + 2..]);
+        let error = open(seal(&packed, &many), None).err().unwrap();
+        assert!(error.contains("files declared"), "{error}");
+    }
+
+    /// PackInfo is optional, and nothing cross-checked the folders'
+    /// packed-stream count against it: a header whose UnpackInfo
+    /// declares a folder of one packed stream and whose PackInfo is
+    /// missing - or declares fewer sizes - made `unpack_folder` slice
+    /// `pack_sizes[0..1]` of an empty vector and panic. The archives in
+    /// the fixtures all come from 7-Zip, which always writes PackInfo, so
+    /// no test had a header without it. The offsets' additions were
+    /// unchecked too, so a `pack_pos` near `u64::MAX` overflowed.
+    #[test]
+    fn test_a_folder_without_its_packed_sizes_is_refused() {
+        let (packed, header) = one_file_archive();
+        // HEADER, MAIN_STREAMS, then PackInfo: tag, pack_pos 0, one
+        // stream, SIZE, its size (one byte of data), END.
+        assert_eq!(&header[..8], &[id::HEADER, id::MAIN_STREAMS, id::PACK_INFO, 0, 1, id::SIZE,
+                                   packed.len() as u8, id::END]);
+        let mut without = header[..2].to_vec();
+        without.extend_from_slice(&header[8..]);
+        let error = open(seal(&packed, &without), None).err().unwrap();
+        assert!(error.contains("packed streams"), "{error}");
+
+        let mut fewer = header.clone();
+        fewer[4] = 0;
+        fewer.drain(5..7);
+        let error = open(seal(&packed, &fewer), None).err().unwrap();
+        assert!(error.contains("packed streams"), "{error}");
+
+        let mut far = header[..3].to_vec();
+        far.push(0xff);
+        far.extend_from_slice(&u64::MAX.to_le_bytes());
+        far.extend_from_slice(&header[4..]);
+        let archive = open(seal(&packed, &far), None).unwrap();
+        let error = archive.extract(None).err().unwrap();
+        assert!(error.contains("overflows"), "{error}");
     }
 }

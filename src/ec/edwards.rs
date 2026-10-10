@@ -256,8 +256,13 @@ pub(crate) struct Curve<F> {
     sqrt_minus_one: F,
 }
 
+/// Little-endian bytes of a value known to fit `length`: the curve
+/// constants below, and test inputs below the field. A value that does
+/// not fit is a wrong constant, and the panic names it where it is
+/// rather than letting an empty vector become a zero field element.
 fn le_bytes(value: &BigUint, length: usize) -> Vec<u8> {
-    let mut bytes = value.to_bytes_be_padded(length).unwrap_or_default();
+    let mut bytes = value.to_bytes_be_padded(length)
+        .expect("a curve constant that fits its field's width");
     bytes.reverse();
     bytes
 }
@@ -273,10 +278,10 @@ pub(crate) fn ed25519() -> &'static Curve<field25519::Fe> {
     static CURVE: OnceLock<Curve<field25519::Fe>> = OnceLock::new();
     CURVE.get_or_init(|| {
         let one = BigUint::one();
-        let p = one.shl(255).sub(&BigUint::from_u64(19)).unwrap_or_default();
+        let p = one.shl(255).sub(&BigUint::from_u64(19)).expect("2^255 - 19");
         let exponent = |shifted: BigUint| le_bytes(&shifted, 32);
         let sqrt_exponent = exponent(p.add(&BigUint::from_u64(3)).shr(3));
-        let quarter = exponent(p.sub(&one).unwrap_or_default().shr(2));
+        let quarter = exponent(p.sub(&one).expect("p - 1 for p = 2^255 - 19").shr(2));
         let sqrt_minus_one = small::<field25519::Fe>(2).pow_public(&quarter);
         // d = -121665 / 121666
         let d = small::<field25519::Fe>(121665).neg()
@@ -285,11 +290,16 @@ pub(crate) fn ed25519() -> &'static Curve<field25519::Fe> {
             twisted: true, d, key_len: 32, base: Point::identity(), table: Vec::new(),
             sqrt_exponent, sqrt_minus_one,
         };
-        // The base point is y = 4/5 with the even x, RFC 8032 5.1.
+        // The base point is y = 4/5 with the even x, RFC 8032 5.1. A
+        // failure to decode it would be a wrong `d` or a wrong square
+        // root chain, and the panic says so here; substituting the
+        // identity would make a curve whose every signature is over the
+        // identity, noticed only as vector mismatches elsewhere.
         let y = small::<field25519::Fe>(4).mul(small::<field25519::Fe>(5).invert());
         let mut encoded = y.to_le();
         encoded[31] &= 0x7f;
-        curve.base = curve.decode(&encoded).unwrap_or_else(Point::identity);
+        curve.base = curve.decode(&encoded)
+            .expect("RFC 8032 section 5.1 base point, y = 4/5 with the even x");
         curve.table = curve.base_table();
         curve
     })
@@ -301,15 +311,18 @@ pub(crate) fn ed448() -> &'static Curve<field448::Fe> {
     CURVE.get_or_init(|| {
         let one = BigUint::one();
         let p = one.shl(448).sub(&one.shl(224)).and_then(|v| v.sub(&one))
-            .unwrap_or_default();
+            .expect("2^448 - 2^224 - 1");
         let sqrt_exponent = le_bytes(&p.add(&one).shr(2), 56);
         let d = small::<field448::Fe>(39081).neg();
         // RFC 8032 section 5.2 gives the base point in decimal; these are
         // the same numbers, and the tests check the point against the
-        // `BigUint` copy in `eddsa.rs` and its order.
+        // `BigUint` copy in `eddsa.rs` and its order. A coordinate that
+        // does not parse is a typo in the hex, and the panic names it
+        // here rather than making the base point (0, 0).
         let coordinate = |hex: &str| {
-            BigUint::from_hex(hex).map(|v| field448::Fe::from_le(&le_bytes(&v, 56)))
-                .unwrap_or(field448::Fe::ZERO)
+            field448::Fe::from_le(&le_bytes(
+                &BigUint::from_hex(hex).expect("RFC 8032 section 5.2 base point coordinate"),
+                56))
         };
         let x = coordinate("4f1970c66bed0ded221d15a622bf36da9e146570470f1767ea6de324\
                             a3d3a46412ae1af72ab66511433b80e18b00938e2626a82bc70cc05e");
@@ -620,6 +633,31 @@ mod tests {
             addend = bignum::add(curve, &addend, &addend);
         }
         result
+    }
+
+    /// The base points are real points, checked at the constant.
+    ///
+    /// `ed25519()` substituted the identity when the base point's
+    /// encoding failed to decode, and `ed448()` the zero field element
+    /// when a coordinate's hex failed to parse, so a wrong constant made
+    /// a curve whose every signature was over the identity - reported
+    /// only as a mismatch in the tests above, far from the constant that
+    /// caused it. Both now panic at construction naming the constant.
+    /// This checks the two directly: each base point is on its curve,
+    /// is not the identity, and matches the `BigUint` reference's.
+    #[test]
+    fn test_the_base_points_are_real_points() {
+        fn check<F: Field>(curve: &Curve<F>, variant: eddsa::Variant) {
+            let base = curve.base();
+            assert!(!curve.is_identity(&base), "{variant:?}: the base point is the identity");
+            assert!(!base.x.equals(F::ZERO), "{variant:?}: the base point has x = 0");
+            let reference = bignum::Curve::new(variant);
+            assert_eq!(curve.encode(&base),
+                       bignum::encode(&reference, &bignum::base(&reference)),
+                       "{variant:?}: the base point is not RFC 8032's");
+        }
+        check(ed25519(), eddsa::Variant::Ed25519);
+        check(ed448(), eddsa::Variant::Ed448);
     }
 
     #[test]

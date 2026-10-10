@@ -321,7 +321,23 @@ pub struct AcceptedPsk {
     /// binders, and only a byte-for-byte replay of a hello repeats one.
     pub binder: Vec<u8>,
     pub session: crate::tls::tickets::Session,
+    /// The `obfuscated_ticket_age` the client sent with this identity,
+    /// for the early-data age check: the age it reports, with
+    /// `age_add` still in it.
+    pub obfuscated_ticket_age: u32,
 }
+
+/// How far the client's reported ticket age may differ from the ticket's
+/// actual age before early data is refused, in milliseconds.
+///
+/// RFC 8446 4.2.10 and 8.3: the reported age is checked against the
+/// server's own record so that a captured 0-RTT flight can only be
+/// replayed within this window rather than within the ticket's whole
+/// lifetime (up to seven days). The window has to absorb the round trip
+/// the ticket took to reach the client, the client's clock drifting from
+/// the server's, and the time the flight spent in transit; ten seconds
+/// is the usual allowance and far below what makes a replay useful.
+pub const EARLY_DATA_AGE_TOLERANCE_MS: u64 = 10_000;
 
 fn accept_psk(hello: &ClientHello, suite: &'static CipherSuite,
               resumption: &Resumption<'_>) -> Result<Option<AcceptedPsk>, Error> {
@@ -357,6 +373,8 @@ fn accept_psk(hello: &ClientHello, suite: &'static CipherSuite,
                                    &truncated, resumption.now)
         .map(|accepted| AcceptedPsk {
             binder: offer.binders[accepted.index as usize].clone(),
+            obfuscated_ticket_age:
+                offer.identities[accepted.index as usize].obfuscated_ticket_age,
             index: accepted.index,
             psk: accepted.session.psk.clone(),
             session: accepted.session,
@@ -415,7 +433,18 @@ fn decide_early_data(config: &ServerConfig, hello: &ClientHello,
     if !resumption.prefix.is_empty() {
         return None;
     }
-    // 7. This exact flight has not been accepted before. A repeat gets a
+    // 7. **The ticket is as old as the client says it is.** The client
+    //    reports the ticket's age in milliseconds plus `age_add`; the
+    //    sealed copy says when it was issued. A flight whose reported age
+    //    is far from the real one is a replay from another time, or a
+    //    clock nobody should trust early data to - and without this the
+    //    replay window is the ticket's whole lifetime. The PSK is still
+    //    accepted for the ordinary handshake: the age says nothing about
+    //    who holds it, only about when this flight was made.
+    if !reported_age_is_fresh(accepted, resumption.now) {
+        return None;
+    }
+    // 8. This exact flight has not been accepted before. A repeat gets a
     //    normal 1-RTT handshake, which is always a correct answer to a
     //    0-RTT attempt - not an alert, because refusing loudly tells an
     //    attacker their replay arrived at a machine that remembers.
@@ -430,6 +459,21 @@ fn decide_early_data(config: &ServerConfig, hello: &ClientHello,
         }
     }
     Some(config.max_early_data.min(accepted.session.max_early_data))
+}
+
+/// Whether the client's `obfuscated_ticket_age` agrees with the sealed
+/// ticket's actual age to within `EARLY_DATA_AGE_TOLERANCE_MS`.
+///
+/// The reported age is `(actual milliseconds + age_add) mod 2^32`, so
+/// `age_add` is subtracted with wrapping, as the client added it. The
+/// actual age is by the server's clock; a ticket from the future is as
+/// wrong as a stale one.
+fn reported_age_is_fresh(accepted: &AcceptedPsk, now: i64) -> bool {
+    let reported = u64::from(
+        accepted.obfuscated_ticket_age.wrapping_sub(accepted.session.age_add));
+    let actual = (now - accepted.session.issued_at).max(0) as u64;
+    let actual = actual.saturating_mul(1000);
+    reported.abs_diff(actual) <= EARLY_DATA_AGE_TOLERANCE_MS
 }
 
 /// The group to ask for in a HelloRetryRequest: the first of ours that the
@@ -589,7 +633,11 @@ pub fn send_flight(config: &ServerConfig,
                    // response. A server that stapled unasked would send
                    // an extension the client has to refuse (RFC 8446
                    // 4.2: a server may not answer what was not offered).
-                   stapling: bool)
+                   stapling: bool,
+                   // Whether a HelloRetryRequest went out before this
+                   // hello. The compatibility ChangeCipherSpec was sent
+                   // after it in that case and is not sent again.
+                   retried: bool)
                    -> Result<Tls13, Error> {
     let suite = negotiated.suite;
     let hash = hash_of(suite)?;
@@ -643,8 +691,17 @@ pub fn send_flight(config: &ServerConfig,
     // Written before the writer changes keys, so it goes out in the clear.
     // It means nothing in 1.3 and exists only so that a middlebox watching
     // for a 1.2-shaped handshake sees one.
-    let ccs = writer.write(ContentType::ChangeCipherSpec, &[1])?;
-    outgoing.extend_from_slice(&ccs);
+    //
+    // **Once per connection.** RFC 8446 appendix D.4 has the server send
+    // it "immediately after its first handshake message", which after a
+    // retry was the HelloRetryRequest - `send_retry_request` wrote it
+    // there. A second one here was harmless to a peer that drops every
+    // such record, and is refused by one that holds the sender to the
+    // appendix, which this library's client now does.
+    if !retried {
+        let ccs = writer.write(ContentType::ChangeCipherSpec, &[1])?;
+        outgoing.extend_from_slice(&ccs);
+    }
 
     // ---- handshake keys ----------------------------------------------
     //
@@ -870,6 +927,81 @@ pub fn send_retry_request(suite: &'static CipherSuite,
     // no keys exist yet on this path.
     let ccs = writer.write(ContentType::ChangeCipherSpec, &[1])?;
     outgoing.extend_from_slice(&ccs);
+    Ok(())
+}
+
+/// The second ClientHello after a HelloRetryRequest, checked against the
+/// first (RFC 8446 4.1.2).
+///
+/// A client answering a retry "MUST send the same ClientHello without
+/// modification", except that it replaces `key_share` with one entry for
+/// the group the retry named, removes `early_data`, echoes a `cookie`,
+/// recomputes `pre_shared_key`, and may resize `padding`. The server
+/// "MUST abort the handshake with an illegal_parameter alert" otherwise.
+/// Everything else - the random, the session id, the suites, every other
+/// extension in its original order - has to match, or the server would
+/// be negotiating from a hello it never retried: a client switching
+/// suites, SNI, ALPN or signature schemes between the two hellos is
+/// either broken or steering the server somewhere the first hello did
+/// not go. The transcript covers both, so an honest mismatch fails at
+/// the Finished; this refuses it before anything is decided on it.
+///
+/// The key share is checked here too: the retry asked for exactly one
+/// group, and a second hello without a share for it cannot make
+/// progress and would be answered with a second retry, which a server
+/// is not allowed to send.
+pub fn check_second_hello(first: &ClientHello, second: &ClientHello,
+                          requested_group: u16) -> Result<(), Error> {
+    let changed = |what: &str| Error::new(
+        AlertDescription::ILLEGAL_PARAMETER,
+        format!("The second ClientHello after a HelloRetryRequest changed \
+                 its {}, which RFC 8446 4.1.2 does not allow.", what));
+    if first.legacy_version != second.legacy_version {
+        return Err(changed("legacy_version"));
+    }
+    if first.random != second.random {
+        return Err(changed("random"));
+    }
+    if first.session_id != second.session_id {
+        return Err(changed("session_id"));
+    }
+    if first.cipher_suites != second.cipher_suites {
+        return Err(changed("cipher suites"));
+    }
+    if first.compression_methods != second.compression_methods {
+        return Err(changed("compression methods"));
+    }
+    // The extensions the retry entitles the client to change, taken out
+    // of both lists; what is left has to match in order and in content.
+    let may_change = |kind: u16| matches!(
+        kind, extension::KEY_SHARE | extension::EARLY_DATA | extension::COOKIE
+            | extension::PRE_SHARED_KEY | extension::PADDING);
+    let kept = |hello: &ClientHello| -> Vec<Extension> {
+        hello.extensions.iter().filter(|e| !may_change(e.kind)).cloned().collect()
+    };
+    let (before, after) = (kept(first), kept(second));
+    if before.len() != after.len() {
+        return Err(changed("set of extensions"));
+    }
+    for (a, b) in before.iter().zip(&after) {
+        if a.kind != b.kind {
+            return Err(changed("order of extensions"));
+        }
+        if a.body != b.body {
+            return Err(changed(&format!("{} extension", extension::name(a.kind))));
+        }
+    }
+    let shares = match find_extension(&second.extensions, extension::KEY_SHARE) {
+        Some(extension) => hs13::parse_client_key_share(&extension.body)?,
+        None => return Err(Error::new(AlertDescription::MISSING_EXTENSION,
+                                      "A TLS 1.3 ClientHello must carry key_share.")),
+    };
+    if !shares.iter().any(|entry| entry.group == requested_group) {
+        return Err(Error::new(AlertDescription::ILLEGAL_PARAMETER, format!(
+            "The HelloRetryRequest asked for a {} key share and the second \
+             ClientHello carries none.",
+            crate::tls::handshake::groups::name(requested_group))));
+    }
     Ok(())
 }
 
@@ -1230,6 +1362,93 @@ pub(crate) fn encode_alpn(protocol: &str) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The second ClientHello after a retry may change only what the
+    /// retry entitles it to change.
+    ///
+    /// What was wrong: the server kept the first hello and never
+    /// compared it with the second, so a client could switch suites,
+    /// SNI, ALPN, signature schemes or its PSK offers between the two
+    /// hellos, and could answer a retry asking for one group with a
+    /// share for another, which no retry can fix. RFC 8446 4.1.2
+    /// requires `illegal_parameter` for a changed hello. No handshake
+    /// test could reach it because every client that retries here -
+    /// OpenSSL's and this library's - resends the same hello, so the
+    /// hellos are built by hand.
+    #[test]
+    fn test_the_second_hello_may_change_only_what_the_retry_allows() {
+        use crate::tls::handshake::groups;
+        let share = |group: u16| {
+            let key = EphemeralKey::generate(group).unwrap();
+            Extension { kind: extension::KEY_SHARE,
+                        body: hs13::encode_client_key_share(&[key.entry()]).unwrap() }
+        };
+        let plain = |kind: u16, body: &[u8]| Extension { kind, body: body.to_vec() };
+        let first = ClientHello {
+            legacy_version: Version::TLS12,
+            random: [0x5A; 32],
+            session_id: vec![1, 2, 3],
+            cipher_suites: vec![0x1301, 0x1302],
+            compression_methods: vec![0],
+            extensions: vec![
+                plain(extension::SERVER_NAME, b"\x00\x0b\x00\x00\x08one.test"),
+                plain(extension::SUPPORTED_GROUPS, b"\x00\x04\x00\x1d\x00\x18"),
+                plain(extension::EARLY_DATA, b""),
+                share(groups::X25519),
+                plain(extension::ALPN, b"\x00\x03\x02h2"),
+                plain(extension::PADDING, b"\x00\x00\x00"),
+            ],
+        };
+        let wanted = groups::SECP384R1;
+
+        // The honest answer: a share for the requested group, early_data
+        // gone, a cookie echoed, padding resized, everything else as it was.
+        let mut second = first.clone();
+        second.extensions = vec![
+            plain(extension::SERVER_NAME, b"\x00\x0b\x00\x00\x08one.test"),
+            plain(extension::SUPPORTED_GROUPS, b"\x00\x04\x00\x1d\x00\x18"),
+            share(wanted),
+            plain(extension::COOKIE, b"\x00\x02ok"),
+            plain(extension::ALPN, b"\x00\x03\x02h2"),
+            plain(extension::PADDING, b"\x00"),
+        ];
+        check_second_hello(&first, &second, wanted).expect("the honest answer");
+
+        let refused = |second: &ClientHello, what: &str| {
+            let error = check_second_hello(&first, second, wanted)
+                .err().unwrap_or_else(|| panic!("{} was accepted", what));
+            assert_eq!(error.alert, Some(AlertDescription::ILLEGAL_PARAMETER),
+                       "{}: {}", what, error.detail);
+            error.detail
+        };
+        let mut changed = second.clone();
+        changed.random[0] ^= 1;
+        assert!(refused(&changed, "a new random").contains("random"));
+
+        let mut changed = second.clone();
+        changed.cipher_suites = vec![0x1302];
+        assert!(refused(&changed, "a shorter suite list").contains("cipher suites"));
+
+        let mut changed = second.clone();
+        changed.extensions[0] = plain(extension::SERVER_NAME,
+                                      b"\x00\x0b\x00\x00\x08two.test");
+        assert!(refused(&changed, "a new server name").contains("server_name"));
+
+        let mut changed = second.clone();
+        changed.extensions.remove(4);
+        assert!(refused(&changed, "a dropped ALPN").contains("set of extensions"));
+
+        let mut changed = second.clone();
+        changed.extensions.swap(0, 1);
+        assert!(refused(&changed, "reordered extensions").contains("order"));
+
+        // A share for the wrong group: the one change the retry exists
+        // to make, made wrongly.
+        let mut changed = second.clone();
+        changed.extensions[2] = share(groups::X25519);
+        assert!(refused(&changed, "a share for the wrong group")
+                    .contains("asked for"));
+    }
 
     /// The staple goes on the **leaf's** entry and no other.
     ///

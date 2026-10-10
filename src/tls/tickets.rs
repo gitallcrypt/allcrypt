@@ -232,6 +232,11 @@ impl Session {
         let max_early_data = reader.u32().map_err(to_string)?;
         let server_name = reader.vector8().map_err(to_string)?.to_vec();
         let psk = reader.vector8().map_err(to_string)?.to_vec();
+        // Trailing bytes mean the reader and the writer disagree about the
+        // shape, as every other decoder in this module treats them. The
+        // blob is sealed, so nobody else writes one - which is why the
+        // check is for the next format change rather than for a peer.
+        reader.expect_empty("sealed session").map_err(to_string)?;
         Ok(Session { psk, suite, issued_at, lifetime, age_add,
                      max_early_data, server_name })
     }
@@ -453,6 +458,23 @@ mod tests {
         let sealed = first.seal(&session(1_700_000_000)).unwrap();
         assert!(second.open(&sealed, 1_700_000_000).is_some());
         assert!(TicketKey::from_bytes(&bytes[..10]).is_err());
+    }
+
+    /// A sealed session with bytes after its last field is refused, as
+    /// every other decoder in this module refuses trailing bytes.
+    ///
+    /// What was wrong: `Session::decode` alone did not call
+    /// `expect_empty`, so a longer blob - the shape a future format
+    /// change leaves behind when the decoder is not updated with the
+    /// encoder - was read as a valid session. Harmless today because the
+    /// blob is AEAD-sealed, and nothing tested it for the same reason.
+    #[test]
+    fn test_a_session_with_trailing_bytes_is_refused() {
+        let encoded = session(1_700_000_000).encode().unwrap();
+        assert!(Session::decode(&encoded).is_ok());
+        let mut longer = encoded.clone();
+        longer.push(0);
+        assert!(Session::decode(&longer).is_err());
     }
 
     #[test]

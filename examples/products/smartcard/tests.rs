@@ -84,6 +84,23 @@ fn test_continued_answers_are_fetched_and_joined() {
     assert_eq!(replay.remaining(), 0);
 }
 
+/// The `61 xx` loop ran as long as the card kept answering `61 xx`,
+/// growing the answer without bound; a simulator over TCP is as able
+/// to do that as a card. The recordings all end their continuations.
+#[test]
+fn test_an_answer_continued_without_end_is_refused() {
+    let piece = format!("{}61FF", "AA".repeat(255));
+    let mut exchanges = vec![("00CB3FFF".to_string(), piece.clone())];
+    for _ in 0..1000 {
+        exchanges.push(("00C00000FF".to_string(), piece.clone()));
+    }
+    let (mut card, replay) = card_with(exchanges.iter().map(|(a, b)| (a.as_str(), b.as_str()))
+                                           .collect());
+    let error = card.call(0x00, 0xCB, 0x3F, 0xFF, &[], "continuation").unwrap_err();
+    assert!(error.contains("keeps answering 61"), "{error}");
+    assert!(replay.remaining() > 0);
+}
+
 #[test]
 fn test_a_wrong_expected_length_is_asked_again() {
     let (mut card, replay) = card_with(vec![("00CA006E", "6C10"), ("00CA006E10",

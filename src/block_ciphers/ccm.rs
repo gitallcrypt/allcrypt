@@ -237,14 +237,15 @@ pub fn decrypt<C: BlockCipher + ?Sized>(cipher: &mut C, nonce: &[u8], aad: &[u8]
     let mac = cbc_mac(cipher, nonce, aad, &plaintext, tag.len(), l)?;
     let s0 = tag_mask(cipher, nonce, l)?;
 
-    // Constant time: the comparison must not stop at the first wrong byte,
-    // or the number of correct leading bytes is measurable and a tag can
-    // be found one byte at a time.
-    let mut difference = 0u8;
-    for (index, expected) in tag.iter().enumerate() {
-        difference |= mac[index] ^ s0[index] ^ expected;
+    // Constant time, through the one comparison the library has: one
+    // that stops at the first wrong byte makes the number of correct
+    // leading bytes measurable, and a tag can then be found one byte at
+    // a time.
+    let mut expected = [0u8; BLOCK];
+    for (e, (m, s)) in expected.iter_mut().zip(mac.iter().zip(&s0)) {
+        *e = m ^ s;
     }
-    if difference != 0 {
+    if crate::bignum::ct::bytes_differ(&expected[..tag.len()], tag) {
         // Nothing is returned. The plaintext here is real, and returning
         // it "just this once, for debugging" is how unverified plaintext
         // gets used.

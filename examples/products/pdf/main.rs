@@ -51,8 +51,11 @@ pub fn open(data: Vec<u8>, password: Option<&[u8]>) -> Result<(Document, Option<
         Some(direct) => direct.clone(),
     };
     let dict = encrypt.as_dict().ok_or("/Encrypt is not a dictionary.")?.clone();
+    // Without a password the empty one is tried, and only its being
+    // wrong means a password is needed: any other refusal - an
+    // unsupported handler or revision - is reported as itself.
     let (security, which) = Security::open(&dict, &doc.id(), password.unwrap_or(b""))
-        .map_err(|e| if password.is_none() {
+        .map_err(|e| if password.is_none() && e == "Wrong password." {
             "The document has a user password: give it with --password.".to_string()
         } else { e })?;
     doc.security = Some(security);
@@ -364,6 +367,28 @@ mod tests {
             assert!(open(data.clone(), Some(&password)).is_err(), "{name}");
             assert!(open(data, Some(b"not the password")).is_err(), "{name}");
         }
+    }
+
+    /// With no password given, every refusal from the security handler
+    /// was reported as "the document has a user password", so a file
+    /// under an unsupported handler asked for a password it would then
+    /// refuse for the real reason. The fixtures are all under the
+    /// standard handler, and the ones with a user password are opened
+    /// with it, so the substitution was never seen on another error.
+    #[test]
+    fn test_only_a_wrong_empty_password_asks_for_one() {
+        let data = std::fs::read(fixtures::dir().join("pdf").join("qpdf-R2-plain.pdf")).unwrap();
+        // The same length, so that nothing after the dictionary moves.
+        let at = object::find(&data, b"/Filter /Standard").unwrap();
+        let mut other = data[..at].to_vec();
+        other.extend_from_slice(b"/Filter /NoSuchSH");
+        other.extend_from_slice(&data[at + 17..]);
+        let error = open(other, None).err().unwrap();
+        assert!(error.contains("NoSuchSH") && !error.contains("user password"), "{error}");
+        let refused = records("pdf.vec", "refused");
+        let name = field(&refused[0], "name");
+        let locked = std::fs::read(fixtures::dir().join("pdf").join(name)).unwrap();
+        assert!(open(locked, None).err().unwrap().contains("user password"));
     }
 
     /// Re-encrypting a recorded document under every scheme and

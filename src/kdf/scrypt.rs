@@ -54,16 +54,29 @@ use crate::hash_functions::sha2;
 use crate::kdf::password::pbkdf2;
 use crate::stream_ciphers::salsa20;
 
+/// The most memory one scrypt call will hold, in bytes: 4 GiB.
+///
+/// `128 * N * r` for ROMix's `V` plus `128 * r * p` for the working
+/// buffer, checked against this before anything is allocated. Without
+/// a ceiling the only bound was `usize`, so `N = 2^40` passed every
+/// check and reached the allocator, where failure is an abort rather
+/// than an error - and the parameters are exported to Python and C.
+/// libsodium's limit is the same figure.
+pub const MAX_MEMORY_BYTES: u64 = 4 << 30;
+
 /// scrypt, RFC 7914 section 6.
 ///
 /// `n` is the CPU/memory cost and **must be a power of two greater than
-/// one**; `r` is the block size factor and `p` the parallelisation
-/// factor. Memory used is `128 * n * r` bytes, plus `128 * r * p` for
-/// the working buffer.
+/// one** and, as the RFC has it, below `2^(128 * r / 8)`; `r` is the
+/// block size factor and `p` the parallelisation factor. Memory used is
+/// `128 * n * r` bytes, plus `128 * r * p` for the working buffer, and
+/// the two together are capped at `MAX_MEMORY_BYTES`.
 ///
 /// # Errors
-/// A non-power-of-two `n`, a zero parameter, a `p` past the RFC's
-/// ceiling, or a request whose memory would not fit in `usize`.
+/// A non-power-of-two `n` or one past the RFC's bound, a zero parameter,
+/// a `p` past the RFC's ceiling, a request past `MAX_MEMORY_BYTES` or
+/// one the allocator refuses, or an output past
+/// `kdf::MAX_OUTPUT_BYTES`.
 pub fn scrypt(password: &[u8], salt: &[u8], n: u64, r: u32, p: u32, length: usize)
               -> Result<Vec<u8>, String> {
     if n <= 1 || !n.is_power_of_two() {
@@ -72,6 +85,12 @@ pub fn scrypt(password: &[u8], salt: &[u8], n: u64, r: u32, p: u32, length: usiz
     }
     if r == 0 || p == 0 {
         return Err("scrypt's r and p must both be at least 1.".to_string());
+    }
+    // RFC 7914 section 2: N < 2^(128 * r / 8), which is 2^(16 r). For
+    // r >= 4 that is wider than a u64, so only smaller r can fail it.
+    if 16 * (r as u64) < 64 && n >= 1u64 << (16 * r as u64) {
+        return Err(format!("scrypt with r={} allows N below 2^{}; {} is too large.",
+                           r, 16 * r, n));
     }
     // RFC 7914 section 6: p <= ((2^32 - 1) * 32) / (128 * r). Checked
     // because past it the final PBKDF2 call would be asked for more
@@ -83,26 +102,43 @@ pub fn scrypt(password: &[u8], salt: &[u8], n: u64, r: u32, p: u32, length: usiz
                            r, ceiling, p));
     }
 
-    let block_bytes = 128usize
-        .checked_mul(r as usize)
-        .ok_or_else(|| format!("scrypt with r={} needs more memory than this \
-                                machine can address.", r))?;
-    let buffer_bytes = block_bytes
-        .checked_mul(p as usize)
-        .ok_or_else(|| format!("scrypt with r={} and p={} needs more memory than \
-                                this machine can address.", r, p))?;
+    // The memory, in u64 so that no product can wrap: 128 * r * (N + p).
+    // Against the cap first, then against the machine - the cap is far
+    // below `usize::MAX` on a 64-bit target and may be above it on a
+    // 32-bit one, and both refusals are errors.
+    let block_bytes = 128 * r as u64;
+    let total = block_bytes.saturating_mul(n.saturating_add(p as u64));
+    if total > MAX_MEMORY_BYTES {
+        return Err(format!("scrypt with N={}, r={} and p={} needs {} bytes, and \
+                            the most allowed in one call is {}.",
+                           n, r, p, total, MAX_MEMORY_BYTES));
+    }
+    let block_bytes = usize::try_from(block_bytes)
+        .map_err(|_| format!("scrypt with r={} needs more memory than this \
+                              machine can address.", r))?;
+    let buffer_bytes = usize::try_from(block_bytes as u64 * p as u64)
+        .map_err(|_| format!("scrypt with r={} and p={} needs more memory than \
+                              this machine can address.", r, p))?;
     let n_usize = usize::try_from(n)
         .map_err(|_| format!("scrypt with N={} needs more memory than this \
                               machine can address.", n))?;
-    block_bytes.checked_mul(n_usize)
-        .ok_or_else(|| format!("scrypt with N={} and r={} needs more memory than \
-                                this machine can address.", n, r))?;
+    let v_bytes = usize::try_from(block_bytes as u64 * n)
+        .map_err(|_| format!("scrypt with N={} and r={} needs more memory than \
+                              this machine can address.", n, r))?;
+    // `V` is reserved here, once, before any work and before the first
+    // PBKDF2 call, so a refusal costs nothing and is an error rather
+    // than the abort `vec![0; n]` turns an allocation failure into.
+    let mut v = Vec::new();
+    v.try_reserve_exact(v_bytes).map_err(|_| format!(
+        "Could not allocate the {} bytes scrypt with N={} and r={} needs.",
+        v_bytes, n, r))?;
+    v.resize(v_bytes, 0);
 
     // One iteration, deliberately - see the note above.
     let mut b = pbkdf2(sha2::SHA256::new(&[]), password, salt, 1, buffer_bytes)?;
 
     for chunk in b.chunks_mut(block_bytes) {
-        romix(chunk, n_usize, r as usize);
+        romix(chunk, &mut v, n_usize, r as usize);
     }
 
     pbkdf2(sha2::SHA256::new(&[]), password, &b, 1, length)
@@ -114,14 +150,17 @@ pub fn scrypt(password: &[u8], salt: &[u8], n: u64, r: u32, p: u32, length: usiz
 /// then take `N` more steps, each XORing in a element of `V` chosen by
 /// the current state. An attacker who keeps less than the whole of `V`
 /// has to recompute, and the recomputation is serial.
-fn romix(block: &mut [u8], n: usize, r: usize) {
+///
+/// `v` is the caller's `128 * r * n` bytes, allocated once for all `p`
+/// blocks: every byte of it is written by the fill before it is read,
+/// so it needs no clearing between blocks.
+fn romix(block: &mut [u8], v: &mut [u8], n: usize, r: usize) {
     let block_bytes = 128 * r;
     let mut x = block.to_vec();
     let mut scratch = vec![0u8; block_bytes];
 
     // Fill. `V` is the whole memory cost, and it is why scrypt is
     // scrypt.
-    let mut v = vec![0u8; block_bytes * n];
     for index in 0..n {
         v[index * block_bytes..(index + 1) * block_bytes].copy_from_slice(&x);
         block_mix(&x, &mut scratch, r);
@@ -217,7 +256,7 @@ mod tests {
     fn test_rfc7914_romix() {
         let mut block = unhex(ROMIX_INPUT);
         let expected = unhex(ROMIX_OUTPUT);
-        romix(&mut block, 16, 1);
+        romix(&mut block, &mut vec![0u8; 128 * 16], 16, 1);
         assert_eq!(hex(&block), hex(&expected));
     }
 
@@ -336,6 +375,32 @@ mod tests {
         assert!(scrypt(b"", b"", 16, 0, 1, 32).is_err(), "r=0");
         assert!(scrypt(b"", b"", 16, 1, 0, 32).is_err(), "p=0");
         assert!(scrypt(b"", b"", 16, 1, u32::MAX, 32).is_err(), "p past the ceiling");
+    }
+
+    /// The only memory check was that `128 * r * N` fits in `usize`, so
+    /// `N = 2^40` with `r = 1` (128 TiB) passed and reached the
+    /// allocator, where failure is an abort - not a panic, not an
+    /// error - and from Python it took the interpreter with it. The
+    /// existing parameter tests covered the shape of N, r and p, not
+    /// their size. Each request here is refused before any allocation,
+    /// so the test can offer values the old code would have died on.
+    #[test]
+    fn test_an_oversized_memory_request_is_an_error_not_an_abort() {
+        // r = 8, so RFC 7914's N bound (2^128) is not what refuses.
+        let reason = scrypt(b"pw", b"salt", 1 << 40, 8, 1, 32).unwrap_err();
+        assert!(reason.contains("most allowed"), "{reason}");
+        // One block past the cap, and the cap itself from the p side.
+        assert!(scrypt(b"pw", b"salt", 1 << 22, 8, 1, 32).unwrap_err()
+                    .contains("most allowed"));
+        assert!(scrypt(b"pw", b"salt", 16, 1024, 1 << 15, 32).is_err());
+        // RFC 7914's own bound, N < 2^(16 r): with r = 1, N = 65536 is
+        // one too many and well within the memory cap.
+        let reason = scrypt(b"pw", b"salt", 1 << 16, 1, 1, 32).unwrap_err();
+        assert!(reason.contains("below 2^16"), "{reason}");
+        assert!(scrypt(b"pw", b"salt", 1 << 15, 1, 1, 32).is_ok());
+        // An output past the KDF cap is refused as well.
+        assert!(scrypt(b"pw", b"salt", 16, 1, 1, usize::MAX).unwrap_err()
+                    .contains("at most"));
     }
 
     // The vectors, read out of RFC 7914 rather than typed.

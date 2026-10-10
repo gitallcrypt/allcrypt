@@ -22,6 +22,9 @@ pub const KEX_31: u8 = 31;
 pub const KEX_DH_GEX_INIT: u8 = 32;
 pub const KEX_DH_GEX_REPLY: u8 = 33;
 pub const KEX_DH_GEX_REQUEST: u8 = 34;
+/// RFC 4419's pre-standard request, carrying `n` alone. The same number
+/// as `KEX_30`, which the method in use disambiguates.
+pub const KEX_DH_GEX_REQUEST_OLD: u8 = 30;
 pub const USERAUTH_REQUEST: u8 = 50;
 pub const USERAUTH_FAILURE: u8 = 51;
 pub const USERAUTH_SUCCESS: u8 = 52;

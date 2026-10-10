@@ -93,7 +93,7 @@ fn main() {
                     // The full tag, and the two shortest the standard
                     // allows: 32 bits, and half the block.
                     for tag_len in [block, block / 2, 4] {
-                        let mgm = Mgm::with_tag_len(cipher, &key, tag_len).unwrap();
+                        let mut mgm = Mgm::with_tag_len(cipher, &key, tag_len).unwrap();
                         let (ciphertext, tag) =
                             mgm.encrypt(icn, &aad, &plaintext).unwrap();
                         assert_eq!(ciphertext.len(), plaintext.len());

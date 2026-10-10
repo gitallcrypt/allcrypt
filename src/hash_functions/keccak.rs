@@ -163,6 +163,15 @@ pub struct Keccak {
 }
 
 impl Keccak {
+    /// The most bytes one `squeeze` will produce: 1 GiB.
+    ///
+    /// A sponge has no maximum of its own, so this is the documented
+    /// cap. The output is allocated before the first permutation, and
+    /// a length that came from a caller - `api::shake` from Python
+    /// takes one - would otherwise reach the allocator unchecked, where
+    /// failure is an abort rather than an error.
+    pub const MAX_SQUEEZE: usize = 1 << 30;
+
     /// SHA3-224/256/384/512, by output length in bytes.
     pub fn sha3(digest_len: usize) -> Result<Keccak, String> {
         let name = match digest_len {
@@ -191,6 +200,11 @@ impl Keccak {
             other => return Err(format!(
                 "SHAKE comes at 128 and 256 bit security; {} is not one.", other)),
         };
+        if digest_len > Keccak::MAX_SQUEEZE {
+            return Err(format!(
+                "A SHAKE output is at most {} bytes here; asked for {}.",
+                Keccak::MAX_SQUEEZE, digest_len));
+        }
         Ok(Keccak::with(rate, 0x1f, digest_len, name))
     }
 
@@ -238,7 +252,29 @@ impl Keccak {
     ///
     /// Repeatable and non-destructive, like `digest`: it works on a
     /// copy, so a caller may keep updating afterwards.
+    ///
+    /// # Panics
+    /// `length` above `MAX_SQUEEZE`, or an output buffer the allocator
+    /// refuses. Every caller in this library passes a length fixed by
+    /// its algorithm or already checked by `shake`; a length from
+    /// outside goes through `try_squeeze`.
     pub fn squeeze(&self, length: usize) -> Vec<u8> {
+        match self.try_squeeze(length) {
+            Ok(out) => out,
+            Err(reason) => panic!("{reason}"),
+        }
+    }
+
+    /// `squeeze`, with the cap and the allocation reported as an error.
+    pub fn try_squeeze(&self, length: usize) -> Result<Vec<u8>, String> {
+        if length > Keccak::MAX_SQUEEZE {
+            return Err(format!(
+                "A sponge output is at most {} bytes here; asked for {}.",
+                Keccak::MAX_SQUEEZE, length));
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(length).map_err(|_| format!(
+            "Could not allocate {} bytes for the sponge output.", length))?;
         let mut sponge = self.clone();
 
         // Pad: the domain byte at the start of the padding and `0x80`
@@ -253,7 +289,6 @@ impl Keccak {
             sponge.absorb(byte);
         }
 
-        let mut out = Vec::with_capacity(length);
         while out.len() < length {
             let take = core::cmp::min(sponge.rate, length - out.len());
             for index in 0..take {
@@ -263,7 +298,7 @@ impl Keccak {
                 permute(&mut sponge.state);
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -616,5 +651,25 @@ mod tests {
         assert!(Keccak::shake(192, 32).is_err());
         assert!(Keccak::keccak(0).is_err());
         assert!(Keccak::keccak(65).is_err());
+    }
+
+    /// `squeeze` reserved its whole output before the first permutation
+    /// with `Vec::with_capacity`, which on failure aborts the process
+    /// rather than returning, and nothing bounded the length - a sponge
+    /// has no maximum of its own. `api::shake` takes the length from a
+    /// caller. The existing tests squeezed at most a thousand bytes.
+    /// The length below is refused by the cap before any allocation;
+    /// `usize::MAX` would have aborted the old code, so it is the only
+    /// kind of value that can be offered here.
+    #[test]
+    fn test_an_oversized_squeeze_is_an_error_not_an_abort() {
+        let shake = Keccak::shake(128, 32).unwrap();
+        let reason = shake.try_squeeze(Keccak::MAX_SQUEEZE + 1).unwrap_err();
+        assert!(reason.contains("at most"), "{reason}");
+        assert!(shake.try_squeeze(usize::MAX).is_err());
+        assert!(Keccak::shake(128, usize::MAX).is_err());
+        assert!(Keccak::shake(256, Keccak::MAX_SQUEEZE + 1).is_err());
+        // The two squeezes agree inside the cap.
+        assert_eq!(shake.try_squeeze(200).unwrap(), shake.squeeze(200));
     }
 }

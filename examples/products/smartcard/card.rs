@@ -98,6 +98,11 @@ pub struct Card {
 /// The largest data field of a short APDU.
 const SHORT: usize = 255;
 
+/// The most an answer may grow to through `61 xx` continuations. A
+/// certificate or a key is kilobytes; a card - or a simulator over TCP
+/// - that answers `61 xx` without end is not sending one.
+const LONGEST_ANSWER: usize = 64 * 1024;
+
 impl Card {
     pub fn new(transport: Box<dyn Transport>) -> Card {
         Card { transport, get_response: 0xC0, random: Box::new(allcrypt::api::random_bytes) }
@@ -167,6 +172,9 @@ impl Card {
         }
         // 61 xx: more data waiting.
         while answer.sw >> 8 == 0x61 {
+            if answer.data.len() > LONGEST_ANSWER {
+                return Err(format!("The card keeps answering 61 xx past {LONGEST_ANSWER} bytes."));
+            }
             let more = self.raw(&[0x00, self.get_response, 0x00, 0x00, answer.sw as u8])?;
             answer.data.extend_from_slice(&more.data);
             answer.sw = more.sw;

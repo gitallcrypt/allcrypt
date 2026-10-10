@@ -162,6 +162,16 @@ impl PublicKey {
         }
     }
 
+    /// The largest RSA modulus or DSA `p` a blob may carry: 16384 bits,
+    /// OpenSSH's own `SSH_RSA_MAXIMUM_MODULUS_SIZE`.
+    ///
+    /// A host key arrives before anything is authenticated, and a user
+    /// key arrives from anyone who can open a connection; the signature
+    /// check that follows is a modular exponentiation with the peer's
+    /// own `e` and `n`, so a multi-million-bit modulus is a CPU denial
+    /// of service unless its size is refused first.
+    pub const MAX_KEY_BITS: usize = 16384;
+
     /// Read a blob. The whole of it: trailing bytes are an error.
     pub fn from_blob(blob: &[u8]) -> Result<PublicKey, String> {
         let mut reader = Reader::new(blob);
@@ -171,6 +181,11 @@ impl PublicKey {
                 // e first, then n - RFC 4253 6.6.
                 let e = BigUint::from_bytes_be(reader.mpint()?);
                 let n = BigUint::from_bytes_be(reader.mpint()?);
+                if n.bit_len() > PublicKey::MAX_KEY_BITS {
+                    return Err(format!("SSH: an ssh-rsa key of {} bits is larger \
+                                        than the {} bit limit.",
+                                       n.bit_len(), PublicKey::MAX_KEY_BITS));
+                }
                 PublicKey::Rsa(RsaPublicKey::new(n, e)
                     .map_err(|reason| format!("SSH: ssh-rsa key: {reason}"))?)
             }
@@ -179,6 +194,12 @@ impl PublicKey {
                 let q = BigUint::from_bytes_be(reader.mpint()?);
                 let g = BigUint::from_bytes_be(reader.mpint()?);
                 let y = BigUint::from_bytes_be(reader.mpint()?);
+                // Before `DsaParameters::new`, which exponentiates over p.
+                if p.bit_len() > PublicKey::MAX_KEY_BITS {
+                    return Err(format!("SSH: an ssh-dss key's p of {} bits is \
+                                        larger than the {} bit limit.",
+                                       p.bit_len(), PublicKey::MAX_KEY_BITS));
+                }
                 if q.bit_len() > 160 {
                     return Err(format!("SSH: an ssh-dss key's q is {} bits; the \
                                         format has room for 160.", q.bit_len()));
@@ -357,6 +378,44 @@ mod tests {
         longer.push(0);
         assert!(PublicKey::from_blob(&longer).is_err());
         assert!(PublicKey::from_blob(&blob[..blob.len() - 1]).is_err());
+    }
+
+    /// A blob carrying a modulus above `PublicKey::MAX_KEY_BITS` is
+    /// refused before the key is built.
+    ///
+    /// What was wrong: `from_blob` handed `n` and `e` straight to
+    /// `RsaPublicKey::new`, which checks parity and `e < n` and nothing
+    /// about size, and the host-key or user-key signature check that
+    /// followed was a modular exponentiation with the peer's own
+    /// numbers - a CPU denial of service from anyone who can open a
+    /// connection, before authentication. The recorded sessions carry
+    /// real OpenSSH keys, so none of them could reach the case.
+    #[test]
+    fn test_an_oversized_modulus_is_refused() {
+        let modulus = |bits: usize| {
+            let mut bytes = vec![0u8; bits.div_ceil(8)];
+            bytes[0] = 1 << ((bits - 1) % 8);
+            *bytes.last_mut().unwrap() |= 1;
+            bytes
+        };
+        let blob = |bits: usize| {
+            let mut writer = Writer::new();
+            writer.string(b"ssh-rsa").mpint(&[1, 0, 1]).mpint(&modulus(bits));
+            writer.finish()
+        };
+        let error = PublicKey::from_blob(&blob(PublicKey::MAX_KEY_BITS + 1)).unwrap_err();
+        assert!(error.contains("limit"), "{}", error);
+        // Exactly the limit is a key.
+        assert_eq!(PublicKey::from_blob(&blob(PublicKey::MAX_KEY_BITS)).unwrap().bits(),
+                   PublicKey::MAX_KEY_BITS);
+
+        // ssh-dss: p is capped before `DsaParameters::new` exponentiates
+        // over it, so the refusal names the limit and not the group.
+        let mut writer = Writer::new();
+        writer.string(b"ssh-dss").mpint(&modulus(PublicKey::MAX_KEY_BITS + 1))
+            .mpint(&[3]).mpint(&[2]).mpint(&[2]);
+        let error = PublicKey::from_blob(&writer.finish()).unwrap_err();
+        assert!(error.contains("limit"), "{}", error);
     }
 
     /// `e` before `n`: a blob written the other way round must not

@@ -38,6 +38,45 @@ pub enum Transport {
     /// `SSL_set0_rbio` / `SSL_set0_wbio`, owned by us once set - the
     /// `0` in those names means the caller handed over its reference.
     Bios { read: *mut c_void, write: *mut c_void },
+    /// A transport the tests drive by hand. See `Scripted`.
+    #[cfg(test)]
+    Scripted(Scripted),
+}
+
+/// A transport whose every byte is chosen by the test.
+///
+/// A socket pair would exercise the descriptor path, but the kernel
+/// decides how many bytes one `read` returns and when a `write` blocks,
+/// and neither can be made to happen on demand. Here each `receive`
+/// returns exactly one queued chunk, and `flush` accepts exactly as many
+/// bytes as `capacity` allows - so a flight delivered in one-byte
+/// pieces, a write that blocks halfway through a record, and a peer
+/// that goes away without a close_notify are each one line to set up.
+#[cfg(test)]
+pub struct Scripted {
+    /// What `receive` hands over, one chunk per call. Empty means the
+    /// peer has nothing to say yet: `WouldBlock::Read`.
+    pub incoming: std::collections::VecDeque<Vec<u8>>,
+    /// Set once `incoming` has been drained and the peer has hung up:
+    /// `receive` then reports end of stream.
+    pub closed: bool,
+    /// Everything `flush` sent, in order.
+    pub written: Vec<u8>,
+    /// How many more bytes `flush` may accept. `None` is unlimited;
+    /// `Some(0)` is a socket whose buffer is full.
+    pub capacity: Option<usize>,
+}
+
+#[cfg(test)]
+impl Scripted {
+    pub fn new() -> Scripted {
+        Scripted {
+            incoming: std::collections::VecDeque::new(),
+            closed: false,
+            written: Vec::new(),
+            capacity: None,
+        }
+    }
 }
 
 // SAFETY: the BIO pointers are only ever touched under the connection's
@@ -63,7 +102,14 @@ pub struct Context {
     pub min_version: Option<Version>,
     pub max_version: Option<Version>,
     /// ALPN protocols, in wire format, from `SSL_CTX_set_alpn_protos`.
+    /// Offered on every connection made from this context, unless the
+    /// connection was given its own list.
     pub alpn: Vec<u8>,
+    /// The `SSL_OP_*` mask from `SSL_CTX_set_options`. Copied onto each
+    /// connection at `SSL_new`, as OpenSSL does; most bits ask for less
+    /// strictness than this shim already has, and the one that changes
+    /// what a program is told is read where it matters, in `SSL_read`.
+    pub options: u64,
     /// A real `X509_STORE *`, handed out by `SSL_CTX_get_cert_store`.
     /// See the note there about what is and is not read back from it.
     pub store: *mut c_void,
@@ -71,6 +117,10 @@ pub struct Context {
     /// so the first handshake can say so rather than quietly not
     /// doing it.
     pub unsupported: Vec<String>,
+    /// The OpenSSL cipher strings the program passed, none of which is
+    /// honoured. Kept rather than dropped, and reported at the call
+    /// rather than refused: see `SSL_CTX_set_cipher_list`.
+    pub cipher_strings: Vec<String>,
 }
 
 // SAFETY: as `Transport` - the store pointer is only used from the
@@ -90,8 +140,10 @@ impl Context {
             min_version: None,
             max_version: None,
             alpn: Vec::new(),
+            options: 0,
             store: std::ptr::null_mut(),
             unsupported: Vec::new(),
+            cipher_strings: Vec::new(),
         }
     }
 
@@ -132,6 +184,15 @@ pub struct Connection {
     /// Without one there is no SNI and no name to check.
     pub hostname: Option<String>,
     pub transport: Transport,
+    /// The `SSL_OP_*` mask: the context's at `SSL_new`, plus whatever
+    /// `SSL_set_options` added since.
+    pub options: u64,
+    /// ALPN protocols from `SSL_set_alpn_protos`, in wire format,
+    /// overriding the context's when set.
+    pub alpn: Option<Vec<u8>>,
+    /// The protocol the server chose, for `SSL_get0_alpn_selected` to
+    /// hand out a pointer into.
+    pub alpn_selected: Option<Vec<u8>>,
     /// Built on the first `SSL_connect`, because the hostname is not
     /// known before then.
     pub inner: Option<ClientConnection>,
@@ -165,9 +226,20 @@ pub struct Connection {
     /// they are lost - and a TLS stream missing a few bytes in the
     /// middle fails at the next MAC with no hint as to why.
     pub outbox: Vec<u8>,
-    /// The cipher name as a NUL-terminated string, kept alive because
-    /// `SSL_CIPHER_get_name` hands out a pointer and OpenSSL's contract
-    /// is that it stays valid for as long as the connection does.
+    /// The length of the plaintext `SSL_write` has already encrypted
+    /// into `outbox` but not yet reported as written.
+    ///
+    /// `SSL_write` answering `SSL_ERROR_WANT_WRITE` means the program
+    /// will call again with the same bytes, and OpenSSL's contract is
+    /// that the retry *completes the earlier write* rather than starting
+    /// a new one - the plaintext was consumed the first time and only
+    /// the transport is still owed. Without this the retry encrypted
+    /// the same bytes a second time, and the peer received them twice.
+    pub pending_write: Option<usize>,
+    /// The cipher name as a NUL-terminated string, built once when the
+    /// handshake settles and never reassigned: `SSL_CIPHER_get_name`
+    /// hands out a pointer into it, and OpenSSL's contract is that the
+    /// pointer stays valid for as long as the connection does.
     pub cipher_name: String,
     /// Whatever the program stored with `SSL_set_ex_data`. `libcurl`
     /// keeps its own connection state there and dereferences what it
@@ -183,11 +255,15 @@ unsafe impl Send for Connection {}
 
 impl Connection {
     pub fn new(context: Arc<Mutex<Context>>, settings: Arc<Settings>) -> Connection {
+        let options = context.lock().map(|c| c.options).unwrap_or(0);
         Connection {
             context,
             settings,
             hostname: None,
             transport: Transport::None,
+            options,
+            alpn: None,
+            alpn_selected: None,
             inner: None,
             established: false,
             shutdown_sent: false,
@@ -200,6 +276,7 @@ impl Connection {
             last_error: 0,
             failure: None,
             outbox: Vec::new(),
+            pending_write: None,
             cipher_name: String::new(),
             ex_data: std::collections::HashMap::new(),
         }

@@ -89,8 +89,22 @@ pub struct Parser<'a> {
 pub type Resolver<'r> = &'r dyn Fn(u32, u16) -> Option<i64>;
 
 impl<'a> Parser<'a> {
+    /// A parser at `at`, clamped to the end of the data: every method
+    /// slices from `at`, so an offset past the end - a cross-reference
+    /// entry, `startxref` or `/Prev` from the file - must not reach one.
+    /// `at_offset` is the checked form for offsets the file supplies.
     pub fn new(data: &'a [u8], at: usize) -> Parser<'a> {
-        Parser { data, at }
+        Parser { data, at: at.min(data.len()) }
+    }
+
+    /// A parser at an offset the file itself gave, refused when it is
+    /// past the end rather than quietly parsing nothing there.
+    pub fn at_offset(data: &'a [u8], at: usize) -> Result<Parser<'a>, String> {
+        if at >= data.len() {
+            return Err(format!("PDF: an offset {at} past the end of the file ({} bytes).",
+                               data.len()));
+        }
+        Ok(Parser { data, at })
     }
 
     fn error<T>(&self, what: &str) -> Result<T, String> {

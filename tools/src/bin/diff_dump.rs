@@ -217,7 +217,7 @@ fn main() {
         run("aes", 16, kl, move || Box::new(AesCrypto::new(key(kl)).unwrap()));
     }
     for kl in [4usize, 8, 16, 32, 56] {
-        run("blowfish", 8, kl, move || Box::new(Blowfish::new(key(kl))));
+        run("blowfish", 8, kl, move || Box::new(Blowfish::new(key(kl)).unwrap()));
     }
     // DES and Triple DES. OpenSSL still has 3DES - deprecated, in the
     // "decrepit" module, but present - so unlike RC4 these can be checked

@@ -300,12 +300,9 @@ impl Curve {
         }
         // The peer's point is checked before any arithmetic touches it.
         // An invalid-curve point moves the whole exchange into a group
-        // the peer chose, which is the attack this check exists for.
+        // the peer chose, which is the attack this check exists for. The
+        // identity is refused inside `validate`, by name.
         self.validate(peer)?;
-        if peer.is_identity() {
-            return Err("The peer's public key is the identity, which makes \
-                        every shared secret the same.".to_string());
-        }
         if !matches!(digest_bits, 256 | 512) {
             return Err(format!(
                 "VKO hashes with Streebog-256 or Streebog-512; {} is neither.",
@@ -477,7 +474,12 @@ mod tests {
         let curve = curves::by_name("gost256-a").unwrap();
         let (da, _) = key(&curve, 0x55);
 
-        assert!(curve.vko(&da, &Point::identity(), b"ukm", 256).is_err());
+        // Refused by `validate`, with its own message. A second identity
+        // check used to follow `validate` with a message of its own that
+        // could never be reached; `is_err()` alone could not tell the
+        // two apart, which is why the message is pinned here.
+        let identity = curve.vko(&da, &Point::identity(), b"ukm", 256).unwrap_err();
+        assert_eq!(identity, curve.validate(&Point::identity()).unwrap_err());
 
         // A point with the right shape and the wrong curve.
         let off = Point::new(BigUint::from_u64(2), BigUint::from_u64(3));

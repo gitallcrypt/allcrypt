@@ -15,6 +15,11 @@ public class BlockWitness {
         switch (name) {
             case "rc6": return new org.bouncycastle.crypto.engines.RC6Engine();
             case "cast256": return new org.bouncycastle.crypto.engines.CAST6Engine();
+            // "rijndael160" and so on: the block size in bits follows the name.
+            case "rijndael128": case "rijndael160": case "rijndael192":
+            case "rijndael224": case "rijndael256":
+                return new org.bouncycastle.crypto.engines.RijndaelEngine(
+                    Integer.parseInt(name.substring("rijndael".length())));
             default: throw new IllegalArgumentException("unknown engine " + name);
         }
     }

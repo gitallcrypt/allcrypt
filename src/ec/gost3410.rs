@@ -40,7 +40,7 @@ by anybody - deterministic nonce or not - verifies here.
 */
 
 use super::{Curve, Point};
-use crate::bignum::BigUint;
+use crate::bignum::{montgomery, BigUint, Montgomery, Secret};
 use crate::ec::ecdsa::{NonceGenerator, Signature};
 use crate::hash_functions::HashFunction;
 
@@ -71,37 +71,77 @@ impl Curve {
     /// `hash` must be a fresh, empty hash of the algorithm that produced
     /// `digest` - it drives the RFC 6979 nonce chain. See the note at the
     /// top about why the nonce is derived rather than drawn.
+    ///
+    /// The shape is `ecdsa::sign`'s, for the same reason: `s = r d + k e`
+    /// gives `d` from `k` by one subtraction and one division, so the
+    /// nonce and the key are as secret here as there. The nonce leaves
+    /// the HMAC chain as bytes and goes into a fixed-width `Secret`, the
+    /// key crosses into one once, `k G` runs on `ec::fixed`, and the
+    /// signing equation runs in the Montgomery domain over `n`. The
+    /// `ct_check.py` row `gost_sign` names what is left.
     pub fn gost_sign<H: HashFunction + Clone>(&self, private: &BigUint,
                                               digest: &[u8], hash: H)
                                               -> Result<Signature, String> {
-        if private.is_zero() || *private >= self.n {
+        let e = self.gost_digest(digest)?;
+
+        // Built once; `n` is a curve parameter, so the division inside
+        // `Montgomery::new` measures nothing.
+        let order = Montgomery::new(&self.n)?;
+        let width = order.limbs();
+        let n_s = Secret::from_biguint(&self.n, width)?;
+        // The private scalar crosses into fixed width once, here. The
+        // one length it reads is the same on every call with this key.
+        // A scalar too wide for the width is above `n`, so it gets the
+        // range check's message rather than the width's.
+        let d_s = Secret::from_biguint(private, width)
+            .map_err(|_| "Private scalar is not in [1, n).".to_string())?;
+        let e_s = Secret::from_biguint(&e, width)?;
+
+        // The key's range check as one mask: `private.is_zero() ||
+        // *private >= self.n` runs `BigUint::cmp`, which returns at the
+        // first differing limb of the private key, on every signature.
+        let unusable = d_s.ct_is_zero() | !d_s.ct_lt(&n_s);
+        if montgomery::unmask(unusable) {
             return Err("Private scalar is not in [1, n).".to_string());
         }
-        let e = self.gost_digest(digest)?;
+
         let mut nonces = NonceGenerator::new(hash, private, digest, &self.n)?;
 
         for _ in 0..1000 {
-            let k = nonces.next();
-            if k.is_zero() || k >= self.n {
+            // Bytes, never a `BigUint`: see `NonceGenerator::next_bytes`.
+            let k_s = Secret::from_bytes_be(&nonces.next_bytes(), width)?;
+
+            // Rejection sampling branches on the candidate by construction;
+            // the two conditions fold into one mask first, so what is
+            // visible is "out of range" and not which bound. See the
+            // same note in `ecdsa::sign`.
+            let unusable = k_s.ct_is_zero() | !k_s.ct_lt(&n_s);
+            if montgomery::unmask(unusable) {
                 continue;
             }
 
-            // The nonce is secret, so this is the constant-time path.
-            let point = self.scalar_mul_ct(&self.g, &k);
-            if point.is_identity() {
-                continue;
-            }
-            let r = point.x()
-                .ok_or("the identity has no x coordinate")?
-                .rem(&self.n)?;
+            // The nonce is secret, so this is the constant-time path,
+            // and it takes the `Secret` rather than a number.
+            let point = self.scalar_mul_secret_bytes(&self.g, &k_s)?;
+            let x = match point.x() {
+                Some(x) => x,
+                None => continue, // k*G was the identity; impossible for k in range
+            };
+            // `r` is half the signature, so it is public from here.
+            let r = x.rem(&self.n)?;
             if r.is_zero() {
                 continue;
             }
 
             // s = r*d + k*e mod n. No inversion: that is the whole
-            // difference from ECDSA's signing equation.
-            let s = r.mod_mul(private, &self.n)?
-                .mod_add(&k.mod_mul(&e, &self.n)?, &self.n)?;
+            // difference from ECDSA's signing equation. Both products
+            // touch a secret, so neither goes through `mod_mul` on
+            // `BigUint`, whose division's loop count follows its operands.
+            let r_s = Secret::from_biguint(&r, width)?;
+            let rd = order.mul_mod(&r_s, &d_s);
+            let ke = order.mul_mod(&k_s, &e_s);
+            // `s` is the other half, so declassifying it is the point.
+            let s = order.add_mod(&rd, &ke).declassify();
             if s.is_zero() {
                 continue;
             }
@@ -281,6 +321,56 @@ mod tests {
         let other = curve.gost_sign(&private, &digest_of(b"once", 256),
                                     fresh(256)).unwrap();
         assert_ne!(first.r, other.r, "the nonce did not depend on the message");
+    }
+
+    /// The fixed-width signing path produces exactly the signature the
+    /// standard's equation gives over `BigUint`, with the same nonce.
+    ///
+    /// Signing used to run `r.mod_mul(private, n)` and `k.mod_mul(e, n)`,
+    /// Knuth division with the private key and then the nonce as the
+    /// dividend, under a comment calling it the constant-time path.
+    /// Every test here either round-trips through `gost_verify`, which
+    /// accepts any correct signature however it was computed, or
+    /// compares the signer with itself, so moving the arithmetic to
+    /// `Secret` and `Montgomery` could have changed the output and
+    /// nothing would have said so. This recomputes the nonce from the
+    /// same RFC 6979 chain and `s` from the equation as written, on
+    /// every GOST curve at both digest sizes.
+    #[test]
+    fn test_the_signature_is_the_reference_equation_s() {
+        for name in curves::gost_names() {
+            let curve = curves::by_name(name).unwrap();
+            for bits in [256usize, 512] {
+                let (private, _) = key(&curve, 0x5b);
+                let digest = digest_of(b"the same nonce", bits);
+                let signature = curve.gost_sign(&private, &digest, fresh(bits))
+                    .unwrap();
+
+                // The same chain, with the same rejections: a candidate
+                // outside [1, n) is skipped and the chain continued. On
+                // the two cofactor-4 curves `n` is a quarter of 2^256,
+                // so most candidates are rejected and the walk matters.
+                let e = curve.gost_digest(&digest).unwrap();
+                let mut nonces = NonceGenerator::new(fresh(bits), &private,
+                                                     &digest, &curve.n).unwrap();
+                let expected = (0..1000).find_map(|_| {
+                    let k = nonces.next();
+                    if k.is_zero() || k >= curve.n {
+                        return None;
+                    }
+                    let r = curve.scalar_mul(&curve.g, &k).x()?
+                        .rem(&curve.n).unwrap();
+                    let s = r.mod_mul(&private, &curve.n).unwrap()
+                        .mod_add(&k.mod_mul(&e, &curve.n).unwrap(), &curve.n)
+                        .unwrap();
+                    if r.is_zero() || s.is_zero() {
+                        return None;
+                    }
+                    Some(Signature { r, s })
+                }).expect("a usable nonce within the signer's own bound");
+                assert_eq!(signature, expected, "{name} with a {bits} bit digest");
+            }
+        }
     }
 
     /// Every part of the input must matter.

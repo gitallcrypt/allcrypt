@@ -278,6 +278,17 @@ impl Ghash {
         })
     }
 
+    /// Back to the empty input under the same H: the running value and
+    /// any partial block cleared, the key's powers kept. GCM derives J0
+    /// from a nonce that is not 96 bits by hashing it with the same H it
+    /// then hashes the message with, and this is what lets it use one
+    /// table for both.
+    pub fn reset(&mut self) {
+        self.y = Block::ZERO;
+        self.partial = [0u8; 16];
+        self.used = 0;
+    }
+
     /// Absorb one block. A shorter `block` is zero padded.
     #[inline]
     pub fn update_block(&mut self, block: &[u8]) {
@@ -590,5 +601,22 @@ mod tests {
         assert!(Ghash::new(&[0u8; 17]).is_err());
         assert!(Ghash::new(&[]).is_err());
         assert!(Ghash::new(&[0u8; 16]).is_ok());
+    }
+
+    /// `reset` is a fresh GHASH under the same key, whatever was hashed
+    /// before it - whole blocks or a partial one left in the buffer.
+    #[test]
+    fn test_reset_is_a_fresh_start() {
+        let h = unhex("66e94bd4ef8a2c3b884cfa59ca342b2e");
+        let mut shared = Ghash::new(&h).unwrap();
+        let mut fresh = Ghash::new(&h).unwrap();
+        fresh.update(b"the message that matters");
+        for length in [0usize, 7, 16, 17, 40] {
+            shared.update(&vec![0xa5u8; length]);
+            shared.reset();
+            shared.update(b"the message that matters");
+            assert_eq!(shared.digest(), fresh.digest(), "after {length} bytes");
+            shared.reset();
+        }
     }
 }

@@ -501,6 +501,13 @@ impl Curve {
 
     /// Decode a SEC1 point and **validate it**. Anything that arrives from a
     /// peer comes through here.
+    ///
+    /// The identity's encoding, a single zero byte, is decoded and then
+    /// refused by `validate` like any other point that is not a valid
+    /// peer key. `encode_point` writes it, so the two are not inverses on
+    /// that one value; a decoder that returned it would let a caller
+    /// build a public key the arithmetic has to refuse later, and every
+    /// consumer relies on this function meaning "validated".
     pub fn decode_point(&self, bytes: &[u8]) -> Result<Point, String> {
         let width = self.field_bytes();
         if bytes.is_empty() {
@@ -511,7 +518,7 @@ impl Curve {
                 if bytes.len() != 1 {
                     return Err("Identity encoding must be a single byte.".to_string());
                 }
-                return Ok(Point::identity());
+                Point::identity()
             }
             0x04 => {
                 if bytes.len() != 1 + 2 * width {
@@ -951,10 +958,30 @@ mod tests {
                                "{} roundtrip k={} compressed={}", curve.name, k, compressed);
                 }
             }
-            // identity
+            // The identity encodes, and does not decode: see the test
+            // below.
             let encoded = curve.encode_point(&Point::identity(), false).unwrap();
             assert_eq!(encoded, vec![0x00]);
-            assert!(curve.decode_point(&encoded).unwrap().is_identity());
+            assert!(curve.decode_point(&encoded).is_err());
+        }
+    }
+
+    #[test]
+    fn test_decode_refuses_the_identity_encoding() {
+        // `decode_point` returned early for the single zero byte, before
+        // the `validate` call every other encoding goes through, so the
+        // one point `validate` refuses by name was the one point the
+        // "decode and validate" function let through. `EcPublicKey::
+        // from_bytes("P-256", &[0x00])` therefore succeeded and handed
+        // back a key whose every operation then failed with an error.
+        // The round-trip test above asserted the early return as the
+        // expected behaviour, and every consumer re-validates before
+        // arithmetic, so nothing else noticed.
+        for curve in curves::all() {
+            let error = curve.decode_point(&[0x00]).unwrap_err();
+            assert_eq!(error, curve.validate(&Point::identity()).unwrap_err(),
+                       "{}: the identity encoding is refused for another reason",
+                       curve.name);
         }
     }
 

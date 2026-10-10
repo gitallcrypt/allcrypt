@@ -687,3 +687,13 @@ def test_every_aead_in_the_catalogue_round_trips():
         assert worked, f"{name} is in the catalogue and no key or nonce works"
         checked += 1
     assert checked == len(allcrypt.aeads_available) and checked > 25
+
+
+def test_streams_name_their_aead():
+    # The repr was the constant "<allcrypt.AeadEncryptor aes-gcm>" for
+    # every stream, and the refusal for a buffering AEAD said "CCM" for
+    # EAX, MGM, OCB and CBC-HMAC too; no test looked at either string.
+    stream = allcrypt.Aead(bytes(32), "chacha20-poly1305").encryptor(bytes(12))
+    assert "chacha20-poly1305" in repr(stream)
+    with pytest.raises(allcrypt.CryptoError, match="aes-eax"):
+        allcrypt.Aead(bytes(16), "aes-eax").encryptor(bytes(12))

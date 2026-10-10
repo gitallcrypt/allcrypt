@@ -143,14 +143,17 @@ impl GcmState {
         } else {
             // GHASH(nonce || 0^s || 0^64 || [len(nonce)]_64). The length
             // block is what stops two nonces of different lengths that
-            // share a prefix from colliding.
-            let mut derive = Ghash::new(h)?;
-            derive.update(nonce);
-            derive.pad();
+            // share a prefix from colliding. The same table serves,
+            // reset afterwards: H's powers are the expensive part of a
+            // `Ghash`, and this is the one other thing hashed under them.
+            ghash.update(nonce);
+            ghash.pad();
             let mut length_block = [0u8; BLOCK];
             length_block[8..].copy_from_slice(&((nonce.len() as u64) * 8).to_be_bytes());
-            derive.update_block(&length_block);
-            derive.digest()
+            ghash.update_block(&length_block);
+            let j0 = ghash.digest();
+            ghash.reset();
+            j0
         };
 
         ghash.update(aad);
@@ -321,14 +324,12 @@ impl GcmState {
         self.done = true;
         let tag = self.compute_tag()?;
 
-        // Constant time over the whole tag. An early return on the first
-        // differing byte turns forgery into a byte-at-a-time search, which
-        // is 16 * 256 tries instead of 2^128.
-        let mut difference = 0u8;
-        for i in 0..expected.len() {
-            difference |= tag[i] ^ expected[i];
-        }
-        if difference != 0 {
+        // Constant time over the whole tag, through the one comparison
+        // the library has: an early return on the first differing byte
+        // turns forgery into a byte-at-a-time search, which is 16 * 256
+        // tries instead of 2^128. A shorter `expected` is a truncated
+        // tag, checked against its own prefix.
+        if crate::bignum::ct::bytes_differ(&tag[..expected.len()], expected) {
             // One message, with nothing in it about where or how it
             // differed, and no plaintext.
             return Err("GCM authentication failed: the tag does not match. \
@@ -657,7 +658,7 @@ mod tests {
     #[test]
     fn test_a_64_bit_block_cipher_is_refused() {
         use crate::block_ciphers::blowfish::Blowfish;
-        let mut cipher = Blowfish::new(vec![0x2b; 16]);
+        let mut cipher = Blowfish::new(vec![0x2b; 16]).unwrap();
         match GcmState::encryptor(&mut cipher, &[0u8; 12], b"") {
             Ok(_) => panic!("GCM accepted a 64 bit block cipher"),
             Err(error) => assert!(error.contains("128 bit"), "{}", error),
@@ -675,6 +676,32 @@ mod tests {
             let mut cipher = AesCrypto::new(vec![0u8; 16]).unwrap();
             let mut gcm = Gcm::decryptor(&mut cipher, &[0u8; 12], b"").unwrap();
             assert!(gcm.verify(&vec![0u8; length]).is_err(), "tag length {}", length);
+        }
+    }
+
+    /// A 12 to 15 byte tag is the full tag's prefix, and the comparison
+    /// goes through `bignum::ct::bytes_differ`, whose length check
+    /// would refuse a prefix compared against the whole tag. So the tag
+    /// is cut to the expected length first - at every allowed length,
+    /// the correct prefix passes and the same prefix with its last byte
+    /// changed fails. A compare that ran over the full 16 bytes would
+    /// refuse every truncated tag; one that ignored the last byte would
+    /// accept the altered one.
+    #[test]
+    fn test_a_truncated_tag_is_compared_over_its_own_length() {
+        let mut cipher = AesCrypto::new(vec![3u8; 16]).unwrap();
+        let mut out = Vec::new();
+        let mut tag = Vec::new();
+        cipher.gcm_encrypt(b"message", &mut out, &[5u8; 12], &mut tag, b"aad").unwrap();
+        for length in 12..=16 {
+            let mut back = Vec::new();
+            cipher.gcm_decrypt(&out, &mut back, &[5u8; 12], &tag[..length], b"aad")
+                .unwrap_or_else(|e| panic!("length {length}: {e}"));
+            assert_eq!(back, b"message");
+            let mut altered = tag[..length].to_vec();
+            altered[length - 1] ^= 1;
+            assert!(cipher.gcm_decrypt(&out, &mut back, &[5u8; 12], &altered, b"aad").is_err(),
+                    "length {length}");
         }
     }
 

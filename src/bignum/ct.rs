@@ -262,7 +262,7 @@ impl Secret {
 
     /// All ones when the two are equal. Widths must match.
     pub fn ct_eq(&self, other: &Secret) -> Mask {
-        debug_assert_eq!(self.limbs.len(), other.limbs.len());
+        same_width(&self.limbs, &other.limbs);
         let mut diff = 0u64;
         for i in 0..self.limbs.len() {
             diff |= self.limbs[i] ^ other.limbs[i];
@@ -283,6 +283,7 @@ impl Secret {
     /// compile to no branch. Neither the code nor the absence of an `if` in
     /// it is the thing to check. The binary is.
     pub fn ct_lt(&self, other: &Secret) -> Mask {
+        same_width(&self.limbs, &other.limbs);
         let mut scratch = Secret::zero(self.limbs.len());
         let borrow = sub_borrow(&self.limbs, &other.limbs, &mut scratch.limbs);
         mask_is_nonzero(borrow)
@@ -292,7 +293,7 @@ impl Secret {
 
     /// `self + other`, returning the carry out rather than growing.
     pub fn add(&self, other: &Secret) -> (Secret, u64) {
-        debug_assert_eq!(self.limbs.len(), other.limbs.len());
+        same_width(&self.limbs, &other.limbs);
         let mut out = Secret::zero(self.limbs.len());
         let carry = add_carry(&self.limbs, &other.limbs, &mut out.limbs);
         (out, carry)
@@ -302,7 +303,7 @@ impl Secret {
     /// borrow of 1 means the true result was negative and what came back is
     /// that result modulo `2^(64k)`.
     pub fn sub(&self, other: &Secret) -> (Secret, u64) {
-        debug_assert_eq!(self.limbs.len(), other.limbs.len());
+        same_width(&self.limbs, &other.limbs);
         let mut out = Secret::zero(self.limbs.len());
         let borrow = sub_borrow(&self.limbs, &other.limbs, &mut out.limbs);
         (out, borrow)
@@ -310,7 +311,7 @@ impl Secret {
 
     /// `if choice { a } else { b }`. Both are read either way.
     pub fn select(a: &Secret, b: &Secret, choice: Mask) -> Secret {
-        debug_assert_eq!(a.limbs.len(), b.limbs.len());
+        same_width(&a.limbs, &b.limbs);
         let mut out = Secret::zero(a.limbs.len());
         for i in 0..a.limbs.len() {
             out.limbs[i] = select(a.limbs[i], b.limbs[i], choice);
@@ -321,31 +322,37 @@ impl Secret {
     /// Overwrite `self` with `other` when `choice`. Touches every limb
     /// either way.
     pub fn cond_assign(&mut self, other: &Secret, choice: Mask) {
-        debug_assert_eq!(self.limbs.len(), other.limbs.len());
+        same_width(&self.limbs, &other.limbs);
         for i in 0..self.limbs.len() {
             self.limbs[i] = select(other.limbs[i], self.limbs[i], choice);
         }
     }
 
-    /// The full `2k` limb product, with no reduction and nothing normalised.
+    /// The full `k + l` limb product, with no reduction and nothing
+    /// normalised.
     ///
     /// Schoolbook, and the loop bounds are the widths rather than the values,
     /// which is the only difference from `BigUint::mul` that matters here -
     /// that one skips a zero operand entirely and trims the result.
-    pub fn mul_wide(&self, other: &Secret) -> Vec<u64> {
+    ///
+    /// A `Secret`, so the product is wiped on drop like its operands.
+    /// It came back as a plain `Vec<u64>` once, and RSA's CRT held
+    /// `h * q` - from which, with `m2`, the plaintext follows - in it
+    /// until the end of the private operation, unwiped.
+    pub fn mul_wide(&self, other: &Secret) -> Secret {
         let (k, l) = (self.limbs.len(), other.limbs.len());
-        let mut out = vec![0u64; k + l];
+        let mut out = Secret::zero(k + l);
         for i in 0..k {
             let a = self.limbs[i] as u128;
             let mut carry: u128 = 0;
             for j in 0..l {
-                let t = a * other.limbs[j] as u128 + out[i + j] as u128 + carry;
-                out[i + j] = t as u64;
+                let t = a * other.limbs[j] as u128 + out.limbs[i + j] as u128 + carry;
+                out.limbs[i + j] = t as u64;
                 carry = t >> 64;
             }
             // The carry has exactly one limb to land in: `out[i + l]` starts
             // at zero for this `i` and the sum cannot overflow it.
-            out[i + l] = carry as u64;
+            out.limbs[i + l] = carry as u64;
         }
         out
     }
@@ -367,7 +374,7 @@ impl Secret {
 
     /// Exchange `a` and `b` when `choice`. Writes both either way.
     pub fn cond_swap(a: &mut Secret, b: &mut Secret, choice: Mask) {
-        debug_assert_eq!(a.limbs.len(), b.limbs.len());
+        same_width(&a.limbs, &b.limbs);
         for i in 0..a.limbs.len() {
             let delta = (a.limbs[i] ^ b.limbs[i]) & choice;
             a.limbs[i] ^= delta;
@@ -377,6 +384,20 @@ impl Secret {
 }
 
 // ------------------------------------------------------- limb helpers ---
+
+/// Two operands of one fixed-width operation have the same width, or
+/// the operation is a bug and says so in every build.
+///
+/// A plain `assert`, not a `debug_assert`: the widths are public, so
+/// the check costs nothing it is meant to protect, and in a release
+/// build a mismatch was either a panic at `other.limbs[i]` (a shorter
+/// operand) or a silently wrong answer on the prefix (a longer one) -
+/// `ct_eq` would have reported two unequal values equal. The type's
+/// whole purpose is to make misuse loud.
+fn same_width(a: &[u64], b: &[u64]) {
+    assert_eq!(a.len(), b.len(),
+               "Secret operands have different widths: {} and {} limbs", a.len(), b.len());
+}
 
 /// `out = a + b`, returning the carry out. `overflowing_add` compiles to
 /// `adc` with no branch.
@@ -554,6 +575,41 @@ mod tests {
         assert_eq!(value.bit(62), FALSE);
         assert_eq!(value.bit(64), FALSE, "past the width, not a panic");
         assert_eq!(value.bit(100000), FALSE);
+    }
+
+    /// Every two-operand operation refuses operands of different widths,
+    /// in every build.
+    ///
+    /// The checks were `debug_assert_eq!`, so a release build compared,
+    /// added or selected on the shorter operand's prefix when `other`
+    /// was the longer one - `ct_eq` reported two unequal values equal -
+    /// and panicked at `other.limbs[i]` when it was the shorter. Every
+    /// caller matches widths, so nothing exercised a mismatch; and
+    /// `ct_lt` had no check at all. This test is the one place a
+    /// mismatch is offered, and it passed on the old code only in a
+    /// debug build.
+    #[test]
+    fn test_operands_of_different_widths_are_refused() {
+        let narrow = Secret::one(2);
+        let wide = Secret::one(3);
+        let panics = |name: &str, f: &dyn Fn()| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            assert!(result.is_err(), "{name} accepted a width mismatch");
+        };
+        for (name, a, b) in [("narrow, wide", &narrow, &wide), ("wide, narrow", &wide, &narrow)] {
+            panics(&format!("ct_eq({name})"), &|| { a.ct_eq(b); });
+            panics(&format!("ct_lt({name})"), &|| { a.ct_lt(b); });
+            panics(&format!("add({name})"), &|| { a.add(b); });
+            panics(&format!("sub({name})"), &|| { a.sub(b); });
+            panics(&format!("select({name})"), &|| { Secret::select(a, b, TRUE); });
+            panics(&format!("cond_assign({name})"), &|| { a.clone().cond_assign(b, TRUE); });
+            panics(&format!("cond_swap({name})"), &|| {
+                Secret::cond_swap(&mut a.clone(), &mut b.clone(), TRUE);
+            });
+        }
+        // And the same width is accepted, so the check is not refusing
+        // everything.
+        assert_eq!(narrow.ct_eq(&Secret::one(2)), TRUE);
     }
 
     #[test]

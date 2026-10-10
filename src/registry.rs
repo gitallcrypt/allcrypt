@@ -64,6 +64,11 @@ use crate::asn1::encode_oid;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Meaning {
     /// A hash function, by the name `api::AnyHash::new` knows it.
+    ///
+    /// `register` accepts a registered OID here too, but stores the
+    /// built-in name that OID stands for at the time: what the table
+    /// holds is always a built-in name, so a lookup is one step and
+    /// two registrations cannot point at each other.
     Hash(String),
     /// A GOST parameter set: the eight substitution rows a GOST
     /// 28147-89 cipher or a GOST R 34.11-94 hash runs on.
@@ -150,11 +155,28 @@ pub fn register(oid: &str, meaning: Meaning) -> Result<(), String> {
     // anything else that would not round trip.
     encode_oid(oid)?;
 
-    match &meaning {
+    let meaning = match meaning {
         Meaning::Hash(name) => {
-            crate::api::AnyHash::new(name).map_err(|reason| format!(
-                "{} cannot be registered as {:?}: {}", oid, name, reason))?;
+            // **The table holds built-in names only, never another
+            // OID.** A target that is itself a registered OID is
+            // resolved here, once, to the built-in name it stands for,
+            // and that name is what is stored. Storing the OID would
+            // make the table a graph: `A -> B` then `B -> A` passed
+            // validation (the old `A` still resolved) and the lookup
+            // then followed the cycle until the stack overflowed, which
+            // is an abort rather than an error. With only built-in names
+            // stored, a lookup is one step and `forget` on the target
+            // OID cannot orphan a registration made through it.
+            let built_in = hash_for(&name).unwrap_or(name);
+            crate::api::AnyHash::new(&built_in).map_err(|reason| format!(
+                "{} cannot be registered as {:?}: {}", oid, built_in, reason))?;
+            Meaning::Hash(built_in)
         }
+        other => other,
+    };
+
+    match &meaning {
+        Meaning::Hash(_) => {}
         Meaning::Curve(name) => {
             crate::ec::curves::by_name(name).map_err(|reason| format!(
                 "{} cannot be registered as curve {:?}: {}", oid, name, reason))?;
@@ -401,6 +423,66 @@ mod tests {
         let mut named = crate::api::AnyHash::new("sha256").unwrap();
         use crate::hash_functions::HashFunction;
         assert_eq!(named.digest().len(), 32, "sha256 stopped being sha256");
+    }
+
+    /// A registration whose target is another registered OID is stored
+    /// as the built-in name that OID stands for, so the table never
+    /// holds a chain and a cycle cannot be built.
+    ///
+    /// `register(A, hash(sha256))`, `register(B, hash(A))`,
+    /// `register(A, hash(B))` used to pass validation - the third step
+    /// resolved B through the *old* A - and then store `A -> B`, after
+    /// which `AnyHash::new(A)` followed A -> B -> A until the stack
+    /// overflowed. The existing tests registered one OID at a time,
+    /// each naming a built-in, so no chain existed to loop on.
+    #[test]
+    fn test_a_hash_registration_cannot_form_a_cycle() {
+        use crate::hash_functions::HashFunction;
+        const A: &str = "1.3.6.1.4.1.99999.7.1";
+        const B: &str = "1.3.6.1.4.1.99999.7.2";
+        let _scoped_a = Scoped(A);
+        let _scoped_b = Scoped(B);
+
+        register(A, Meaning::hash("sha256")).unwrap();
+        register(B, Meaning::hash(A)).unwrap();
+        // B stored the built-in name, not A.
+        assert_eq!(lookup(B), Some(Meaning::hash("sha256")));
+        // So the closing step of the cycle resolves B to sha256 and
+        // stores that; and whatever is stored, every lookup is one step.
+        register(A, Meaning::hash(B)).unwrap();
+        assert_eq!(lookup(A), Some(Meaning::hash("sha256")));
+        assert_eq!(crate::api::AnyHash::new(A).unwrap().digest().len(), 32);
+        assert_eq!(crate::api::AnyHash::new(B).unwrap().digest().len(), 32);
+        // Forgetting the OID B was registered through does not orphan B.
+        forget(A);
+        assert_eq!(crate::api::AnyHash::new(B).unwrap().digest().len(), 32);
+
+        // An OID naming itself, before anything is registered under it,
+        // is a target that resolves to nothing.
+        assert!(register(A, Meaning::hash(A)).is_err());
+        assert!(lookup(A).is_none());
+    }
+
+    /// Even a table that does hold a cycle - planted directly, since
+    /// `register` no longer writes one - is one lookup step away from
+    /// an error, never a recursion.
+    #[test]
+    fn test_a_planted_cycle_is_an_error_not_a_stack_overflow() {
+        const A: &str = "1.3.6.1.4.1.99999.8.1";
+        const B: &str = "1.3.6.1.4.1.99999.8.2";
+        let _scoped_a = Scoped(A);
+        let _scoped_b = Scoped(B);
+        {
+            let mut table = table().write().unwrap();
+            table.insert(A.to_string(), Meaning::hash(B));
+            table.insert(B.to_string(), Meaning::hash(A));
+        }
+        let reason = match crate::api::AnyHash::new(A) {
+            Ok(_) => panic!("a planted cycle resolved to a hash"),
+            Err(reason) => reason,
+        };
+        assert!(reason.contains("Unknown hash"), "{}", reason);
+        assert!(crate::api::AnyHash::new(B).is_err());
     }
 
     #[test]

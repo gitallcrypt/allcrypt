@@ -855,17 +855,48 @@ mod tests {
     ///
     /// `t = n*j + i` takes 6n distinct values; a counter reset each pass
     /// takes n. Both wrap and unwrap consistently, so only the RFC's
-    /// vectors distinguish them - this asserts the arithmetic directly
-    /// so the intent is written down somewhere the vectors are not.
+    /// vectors distinguish them. The earlier form of this test recomputed
+    /// the sequence locally and never called `wrap_core`, so a change to
+    /// `t` there could not fail it. Under a cipher that is the identity,
+    /// the core reduces to `A ^= t` at every step, so the `A` it leaves
+    /// behind is the XOR of every `t` it used - and that is compared
+    /// with the sequence the document specifies, and shown to differ
+    /// from a counter that restarts each pass.
     #[test]
     fn test_the_counter_does_not_repeat_across_the_passes() {
+        struct Identity;
+        impl BlockCipher for Identity {
+            fn blocksize(&self) -> usize { 16 }
+            fn block_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>) {
+                result.extend_from_slice(&input[..16]);
+            }
+            fn block_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>) {
+                result.extend_from_slice(&input[..16]);
+            }
+        }
         let n = 4u64;
+        let mut a = [0xa6u8; 8];
+        let mut registers = [[0u8; 8]; 4];
+        wrap_core(&mut Identity, &mut a, &mut registers).unwrap();
+
         let mut seen = Vec::new();
         for pass in 0..6u64 {
             for index in 0..n {
                 seen.push(n * pass + index + 1);
             }
         }
+        let fold = |values: &[u64]| {
+            let mut value = u64::from_be_bytes([0xa6; 8]);
+            for t in values {
+                value ^= t;
+            }
+            value.to_be_bytes()
+        };
+        assert_eq!(a, fold(&seen), "wrap_core did not use t = n*j + i");
+        let restarting: Vec<u64> = (0..6).flat_map(|_| 1..=n).collect();
+        assert_ne!(fold(&restarting), fold(&seen),
+                   "the two counters are not told apart by this input");
+
         let mut sorted = seen.clone();
         sorted.sort_unstable();
         sorted.dedup();

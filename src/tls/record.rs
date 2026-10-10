@@ -35,8 +35,10 @@ An implementation that stops early when the padding is wrong takes
 measurably less time than one that goes on to check the MAC, and that
 difference recovers the plaintext. So that decrypt path:
 
-  - computes the MAC over a fixed number of bytes regardless of what the
-    padding said,
+  - runs the same number of hash compression calls whatever the padding
+    said: the MAC over the content the padding left behind, then dummy
+    compressions up to the count the longest possible content would have
+    taken (the countermeasure in the Lucky 13 paper, section 6),
   - never returns early between the padding check and the MAC check,
   - reports one error for every failure, and
 
@@ -1270,6 +1272,29 @@ fn decrypt_cbc(state: &mut CbcHmac, sequence: SequenceNumber,
     let expected_mac = state.mac(sequence, content_type, version, plaintext)
         .map_err(|_| failure())?;
 
+    // **The HMAC above ran a number of compressions that depends on
+    // `content_len`, and so on the padding byte** - which is the whole
+    // of what Lucky 13 measures. Top it up to the count the longest
+    // content this record could hold would have taken, so the total
+    // does not depend on the padding. SSLv3's MAC is a different
+    // construction and is left alone: SSLv3 has POODLE, which no
+    // timing countermeasure addresses.
+    if !state.ssl3 {
+        let longest = block.len() - state.mac_len - 1;
+        let mut dummy = AnyHash::new(&state.hash_name).map_err(|_| failure())?;
+        let block_size = dummy.block_size();
+        let extra = lucky13_extra_compressions(block_size, longest, content_len);
+        let zeros = [0u8; 128];
+        for _ in 0..extra {
+            dummy.update(&zeros[..block_size]);
+        }
+        // Nothing reads `dummy`, so without this the optimiser may
+        // remove the loop as dead code and the countermeasure with it -
+        // the same way it turned `Montgomery::conditional_subtract`'s
+        // select back into a branch.
+        core::hint::black_box(&mut dummy);
+    }
+
     let mut difference = 0u8;
     for (a, b) in received_mac.iter().zip(expected_mac.iter()) {
         difference |= a ^ b;
@@ -1280,6 +1305,27 @@ fn decrypt_cbc(state: &mut CbcHmac, sequence: SequenceNumber,
         return Err(failure());
     }
     Ok(plaintext.to_vec())
+}
+
+/// How many compression calls HMAC's inner hash runs over a record MAC
+/// input whose content is `content_len` bytes: the key block, the
+/// thirteen bytes of sequence number, type, version and length, the
+/// content, and the hash's own padding (one `0x80` byte and a length
+/// field of an eighth of the block).
+fn hmac_inner_compressions(block_size: usize, content_len: usize) -> usize {
+    let length_field = block_size / 8;
+    (block_size + 13 + content_len + 1 + length_field).div_ceil(block_size)
+}
+
+/// The dummy compressions that bring a MAC over `content_len` bytes up
+/// to the count a MAC over `longest` bytes takes, so that MAC-then-
+/// encrypt does the same hashing work whatever the padding claimed.
+/// `content_len` is never more than `longest`, since the padding is at
+/// least one byte.
+fn lucky13_extra_compressions(block_size: usize, longest: usize,
+                              content_len: usize) -> usize {
+    hmac_inner_compressions(block_size, longest)
+        - hmac_inner_compressions(block_size, content_len)
 }
 
 /// The record protection one direction of one connection uses.
@@ -1401,6 +1447,38 @@ pub fn protection_for(suite: &CipherSuite, version: Version,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dummy hashing that evens out MAC-then-encrypt's work is
+    /// defined for every record a CBC suite can deliver: it never
+    /// underflows (the content is never longer than the longest the
+    /// padding allows) and it never needs more than a few blocks.
+    ///
+    /// Whether the total work is then *independent of the padding* is a
+    /// timing property, and a functional test cannot see it - the MAC
+    /// computed is the same either way, which is how the path spent its
+    /// life computing a padding-dependent amount of it while the module
+    /// comment said otherwise. `scripts/ct_check.py` and
+    /// `tools/src/bin/dudect` are what measure that; this pins the
+    /// arithmetic they rely on.
+    #[test]
+    fn test_the_lucky13_dummy_work_is_defined_for_every_record() {
+        for name in ["md5", "sha1", "sha256", "sha384"] {
+            let block_size = AnyHash::new(name).unwrap().block_size();
+            for mac_len in [16usize, 20, 32, 48] {
+                for record in mac_len + 1..=mac_len + 1 + 600 {
+                    let longest = record - mac_len - 1;
+                    for padding in 1..=256usize.min(record - mac_len) {
+                        let content = record - mac_len - padding;
+                        let extra = lucky13_extra_compressions(block_size, longest,
+                                                               content);
+                        assert!(extra * block_size <= 256 + 2 * block_size,
+                                "{name}, record {record}, padding {padding}");
+                    }
+                }
+            }
+        }
+    }
+
 
     fn keys(version: Version) -> (CbcHmac, CbcHmac) {
         let key: Vec<u8> = (0..16u8).collect();

@@ -138,30 +138,18 @@ impl Settings {
         settings
     }
 
-    /// The suite selection, or the default if the name is not one.
+    /// The suite selection, read by `api::tls_selection` like the
+    /// proxy's `--ciphers`.
     ///
-    /// A bad name complains and carries on rather than failing the
-    /// connection: the alternative is a program that dies with
-    /// "handshake failure" because of a typo in an environment
-    /// variable, which is the least debuggable outcome available.
-    pub fn selection(&self) -> Selection {
-        match self.ciphers.to_ascii_lowercase().as_str() {
-            "modern" | "default" => Selection::modern(),
-            "legacy" => Selection::legacy(),
-            "all" | "everything" => Selection::all(),
-            list => {
-                let names: Vec<&str> = list.split(',').map(|n| n.trim()).collect();
-                match Selection::named(&names) {
-                    Ok(selection) => selection,
-                    Err(reason) => {
-                        complain(&format!(
-                            "ALLCRYPT_CIPHERS={:?}: {} Offering everything \
-                             instead.", self.ciphers, reason));
-                        Selection::all()
-                    }
-                }
-            }
-        }
+    /// **An unknown name fails the connection**, with the reason naming
+    /// the variable. It used to complain and offer `Selection::all()`
+    /// instead, so a typo in `ALLCRYPT_CIPHERS=modern` offered the NULL
+    /// suites - the widest selection there is, in answer to a request
+    /// for a narrower one - and the complaint was invisible under
+    /// `ALLCRYPT_QUIET`.
+    pub fn selection(&self) -> Result<Selection, String> {
+        allcrypt::api::tls_selection(&self.ciphers).map_err(|reason| format!(
+            "ALLCRYPT_CIPHERS={:?}: {}", self.ciphers, reason))
     }
 }
 
@@ -177,14 +165,7 @@ fn flag(name: &str) -> bool {
 }
 
 fn parse_version(name: &str) -> Option<Version> {
-    match name.to_ascii_uppercase().replace(['_', ' ', '.'], "").as_str() {
-        "SSLV3" | "SSL3" => Some(Version::SSL30),
-        "TLSV1" | "TLSV10" | "TLS1" => Some(Version::TLS10),
-        "TLSV11" => Some(Version::TLS11),
-        "TLSV12" => Some(Version::TLS12),
-        "TLSV13" => Some(Version::TLS13),
-        _ => None,
-    }
+    allcrypt::api::parse_version(name).ok()
 }
 
 /// Say something on stderr, unless told not to.
@@ -197,4 +178,32 @@ pub fn complain(message: &str) {
         return;
     }
     eprintln!("allcrypt: {}", message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A misspelt `ALLCRYPT_CIPHERS` offered `Selection::all()`, NULL
+    /// suites included, while the proxy and `api` refused the same name.
+    /// The shim's copy of the match had no test of its fallback.
+    #[test]
+    fn test_an_unknown_cipher_selection_is_an_error() {
+        let settings = Settings { ciphers: "modrn".to_string(), ..Settings::default() };
+        let reason = match settings.selection() {
+            Err(reason) => reason,
+            Ok(_) => panic!("an unknown selection name was accepted"),
+        };
+        assert!(reason.contains("ALLCRYPT_CIPHERS"), "{reason}");
+        let settings = Settings { ciphers: "modern".to_string(), ..Settings::default() };
+        assert_eq!(settings.selection().unwrap().codes(),
+                   Selection::modern().codes());
+    }
+
+    #[test]
+    fn test_versions_are_read_by_the_library() {
+        assert_eq!(parse_version("TLSv1.2"), Some(Version::TLS12));
+        assert_eq!(parse_version("tlsv1.0"), Some(Version::TLS10));
+        assert_eq!(parse_version("TLSv1.4"), None);
+    }
 }

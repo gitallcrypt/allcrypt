@@ -12,8 +12,9 @@ name, and a typo in one is close to the worst bug available here: an OID
 that never matches means an extension is silently unrecognised - and an
 unrecognised *critical* extension must cause rejection, while an
 unrecognised basicConstraints means not noticing that a leaf certificate
-claims to be a CA. Now there is nothing to mistype: fifty-five hand-typed
-byte arrays became one encoder.
+claims to be a CA. Now there is nothing to mistype: every hand-typed
+byte array became one encoder, and the table has grown to well over a
+hundred entries since without another byte being typed.
 
 That moves the risk rather than removing it, so the encoder is checked
 three ways, none of them by itself enough:
@@ -30,9 +31,10 @@ three ways, none of them by itself enough:
      the bytes were both typed from one glance at one document, so they
      could agree with each other and disagree with the world.
 
-Fifty of the fifty-five have a counterpart over there. The five that do
-not are named in that script with what covers them instead, or that
-nothing does.
+Most have a counterpart over there. The ones that do not are named in
+that script (`_OID_EQUIVALENTS`, mapped to `None`) with what covers them
+instead, or that nothing does - and a constant missing from that map
+entirely fails the script, so the list cannot drift silently.
 */
 
 /// The longest OID here, with room to spare. A dotted form that needs

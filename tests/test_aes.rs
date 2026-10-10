@@ -81,29 +81,21 @@ fn test_aes_ctr() {
 }
 */
 
-/*
+/// AES-CCM is `block_ciphers::ccm`, checked there against RFC 3610 and
+/// SP 800-38C. The `BlockCipher` trait once carried a `ccm_encrypt`
+/// stub that answered "not implemented" and a `cbcmac_calc` whose
+/// header and tag mask were not RFC 3610's, with the only test of them
+/// commented out here; this round trip is what that test was for.
 #[test]
 fn test_aes_ccm() {
-    let key = vec![0; 16];
-    let nonce = vec![0;11];
-    let mut crypto = aes::AesCrypto::new(key).unwrap();
-    let mut result: Vec<u8> = vec![];
-    let mut tag: Vec<u8> = vec![];
-    let additional_data: Vec<u8> = vec![];
-
-    crypto.ccm_encrypt(&[], &mut result, &mut tag, &nonce, &additional_data).unwrap();
-
-    assert_eq!(tag, vec![0xcb, 0x97, 0xfe, 0xcc, 0x25, 0xbc, 0x19, 0xd0,
-                         0x9a, 0x87, 0x1d, 0x33, 0xdc, 0x20, 0x05, 0xa1]);
-
-    result.clear();
-    let mut crypto = aes::AesCrypto::new(vec![0;16]).unwrap();
-    crypto.ccm_encrypt(&[0;16], &mut result, &mut tag, &nonce, &additional_data).unwrap();
-    println!("{:x?}", result);
-    assert_eq!(tag, vec![0xb3, 0xb4, 0xd9, 0x80, 0xa5, 0x80, 0x70, 0x0f,
-                         0x68, 0xb4, 0xdb, 0x64, 0x8d, 0x17, 0xc6, 0x25]);
-    assert_eq!(result, vec![0x2e, 0x9a, 0xca, 0x6b, 0xda, 0x54, 0xfc, 0x6f,
-                            0x12, 0x50, 0xe8, 0xde, 0x81, 0x3c, 0x63, 0x08]);
-
+    use allcrypt::block_ciphers::ccm;
+    let mut crypto = aes::AesCrypto::new(vec![0; 16]).unwrap();
+    let nonce = [0u8; 11];
+    let aad = b"header";
+    let plaintext = [0u8; 16];
+    let (ciphertext, tag) = ccm::encrypt(&mut crypto, &nonce, aad, &plaintext, 16).unwrap();
+    assert_eq!(ciphertext.len(), 16);
+    assert_eq!(tag.len(), 16);
+    assert_eq!(ccm::decrypt(&mut crypto, &nonce, aad, &ciphertext, &tag).unwrap(), plaintext);
+    assert!(ccm::decrypt(&mut crypto, &nonce, b"", &ciphertext, &tag).is_err());
 }
-*/

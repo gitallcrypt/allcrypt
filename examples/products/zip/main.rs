@@ -135,7 +135,8 @@ pub fn entries(archive: &[u8]) -> Result<Vec<Entry>, String> {
         size = cursor.u64()?;
         offset = cursor.u64()?;
     }
-    let directory = archive.get(offset as usize..(offset + size) as usize)
+    let directory = offset.checked_add(size)
+        .and_then(|end| archive.get(usize::try_from(offset).ok()?..usize::try_from(end).ok()?))
         .ok_or("The central directory lies outside the archive.")?;
     let mut cursor = Cursor::new(directory, 0);
     let mut out = Vec::new();
@@ -222,10 +223,13 @@ pub fn read(archive: &[u8], entry: &Entry, password: Option<&[u8]>) -> Result<Ve
              *method, *version != 2)
         }
     };
+    // The directory's size bounds the decompression: more than that is
+    // wrong whatever follows, so it need not be produced first.
+    let limit = usize::try_from(entry.size).unwrap_or(LIMIT).min(LIMIT);
     let plain = match method {
         0 => data,
-        8 => inflate::inflate(&data, LIMIT)?.0,
-        12 => bunzip2::decompress(&data, LIMIT)?,
+        8 => inflate::inflate(&data, limit)?.0,
+        12 => bunzip2::decompress(&data, limit)?,
         other => return Err(format!("{}: compression method {other} is not supported.",
                                     entry.name)),
     };
@@ -558,6 +562,38 @@ mod tests {
     /// under a wrong password. The check byte lets one wrong password
     /// in 256 through, and an empty entry has nothing for the CRC to
     /// catch. AES's 16-bit verifier and its HMAC leave no such gap.
+    /// Decompression was bounded by a fixed 2 GiB and the directory's
+    /// size compared only afterwards, so a small entry could cost its
+    /// full expansion before being refused. The fixtures' sizes are all
+    /// right, so no test saw an entry inflate past its size.
+    #[test]
+    fn test_an_entry_is_not_inflated_past_the_size_the_directory_gives() {
+        let archive = std::fs::read(fixtures::dir().join("zip").join("7zz-ZipCrypto-Deflate.zip"))
+            .unwrap();
+        let password = Some(b"correct horse battery staple".as_slice());
+        let entry = entries(&archive).unwrap().into_iter()
+            .find(|e| e.method == 8 && e.size > 1).unwrap();
+        assert_eq!(read(&archive, &entry, password).unwrap().len() as u64, entry.size);
+        let mut short = entry;
+        short.size -= 1;
+        let error = read(&archive, &short, password).err().unwrap();
+        assert!(error.contains("exceeds"), "{error}");
+    }
+
+    /// A ZIP64 end record's directory offset and size were added as
+    /// plain u64s, which overflows for an offset near the maximum; the
+    /// one ZIP64 fixture has an honest offset.
+    #[test]
+    fn test_a_zip64_directory_offset_near_the_maximum_is_refused() {
+        let mut archive = std::fs::read(fixtures::dir().join("zip").join("infozip-zip64.zip"))
+            .unwrap();
+        assert!(entries(&archive).is_ok());
+        let record = archive.windows(4).position(|w| w == END64.to_le_bytes()).unwrap();
+        archive[record + 48..record + 56].copy_from_slice(&(u64::MAX - 8).to_le_bytes());
+        let error = entries(&archive).err().unwrap();
+        assert!(error.contains("outside the archive"), "{error}");
+    }
+
     #[test]
     fn test_an_empty_zipcrypto_entry_cannot_refuse_every_wrong_password() {
         let archive = write(&[("empty".to_string(), Vec::new())], &Sealing::ZipCrypto, b"pw")

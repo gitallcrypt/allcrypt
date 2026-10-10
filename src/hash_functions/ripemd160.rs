@@ -103,7 +103,7 @@ pub(super) fn boolean(round: usize, x: u32, y: u32, z: u32) -> u32 {
 #[derive(Clone)]
 pub struct Ripemd160 {
     h: [u32; 5],
-    buffer: Vec<u8>,
+    buffer: super::buffer::BlockBuffer<64>,
     length: u64,
 }
 
@@ -117,7 +117,7 @@ impl Ripemd160 {
     pub fn new(input: &[u8]) -> Ripemd160 {
         let mut hash = Ripemd160 {
             h: [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0],
-            buffer: Vec::with_capacity(64),
+            buffer: super::buffer::BlockBuffer::default(),
             length: 0,
         };
         hash.update(input);
@@ -179,18 +179,11 @@ impl HashFunction for Ripemd160 {
 
     fn update(&mut self, input: &[u8]) {
         self.length = self.length.wrapping_add(input.len() as u64);
-        let mut input = input;
-        while !input.is_empty() {
-            let take = core::cmp::min(64 - self.buffer.len(), input.len());
-            self.buffer.extend_from_slice(&input[..take]);
-            input = &input[take..];
-            if self.buffer.len() == 64 {
-                let block = core::mem::take(&mut self.buffer);
-                self.compress(&block);
-                self.buffer = block;
-                self.buffer.clear();
-            }
-        }
+        // The block logic lives in `BlockBuffer`, once, rather than as
+        // a fourth copy of the loop that has been wrong three times.
+        let mut buffer = core::mem::take(&mut self.buffer);
+        buffer.feed(input, |block| self.compress(block));
+        self.buffer = buffer;
     }
 
     fn digest(&mut self) -> Vec<u8> {

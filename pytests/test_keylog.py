@@ -306,3 +306,15 @@ def server_material_pem():
             import pathlib
             _CACHED_PEM.append(server_material(pathlib.Path(tmp))[0])
     return _CACHED_PEM[0]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are a POSIX notion")
+def test_the_key_log_is_created_private(tmp_path):
+    # Every line is a session secret. The file was opened with
+    # open(path, "a"), so it was created 0644 under the usual umask and
+    # readable by every local account; the tests above checked the
+    # contents and never the mode.
+    path = tmp_path / "keys.log"
+    allcrypt_ssl._write_keylog(str(path), "CLIENT_RANDOM 00 00")
+    assert path.read_text() == "CLIENT_RANDOM 00 00\n"
+    assert (path.stat().st_mode & 0o777) == 0o600

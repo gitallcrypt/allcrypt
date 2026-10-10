@@ -40,12 +40,13 @@ fn digest(hash: &str, parts: &[&[u8]]) -> Vec<u8> {
     h.digest()
 }
 
-fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
+/// RC4 of `data` under `key`. A key the cipher refuses - empty, or past
+/// 256 bytes - is an error, not an empty result that the verifier would
+/// then read as a wrong password.
+fn rc4(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(data.len());
-    if let Ok(mut cipher) = RC4::new(key.to_vec()) {
-        cipher.crypt(data, &mut out);
-    }
-    out
+    RC4::new(key.to_vec())?.crypt(data, &mut out);
+    Ok(out)
 }
 
 fn u16_at(data: &[u8], at: usize) -> Result<u16, String> {
@@ -174,29 +175,29 @@ impl Keys {
 
     /// The keystream for stream positions `0..length`, in blocks of
     /// `block_size`.
-    pub fn keystream(&self, length: usize, block_size: usize) -> Vec<u8> {
+    pub fn keystream(&self, length: usize, block_size: usize) -> Result<Vec<u8>, String> {
         let mut out = Vec::with_capacity(length);
         let zeros = vec![0u8; block_size];
         let mut block = 0u32;
         while out.len() < length {
             let n = block_size.min(length - out.len());
-            out.extend(rc4(&self.block(block), &zeros[..n]));
+            out.extend(rc4(&self.block(block), &zeros[..n])?);
             block += 1;
         }
-        out
+        Ok(out)
     }
 
     /// Whether the password is right: the verifier and its hash are one
     /// RC4 stream under block 0's key.
-    pub fn verify(&self, scheme: &Scheme) -> bool {
+    pub fn verify(&self, scheme: &Scheme) -> Result<bool, String> {
         let (verifier, hash, name) = match scheme {
             Scheme::Rc4 { verifier, verifier_hash, .. } => (verifier, verifier_hash, "md5"),
             Scheme::CryptoApi { verifier, verifier_hash, .. } => (verifier, verifier_hash, "sha1"),
-            Scheme::Xor { .. } => return false,
+            Scheme::Xor { .. } => return Ok(false),
         };
-        let plain = rc4(&self.block(0), &[verifier.as_slice(), hash.as_slice()].concat());
+        let plain = rc4(&self.block(0), &[verifier.as_slice(), hash.as_slice()].concat())?;
         let (v, h) = plain.split_at(16);
-        digest(name, &[v]) == h
+        Ok(digest(name, &[v]) == h)
     }
 }
 
@@ -244,13 +245,13 @@ pub fn word_info(root: &Storage) -> Result<Word, String> {
 pub fn decrypt_word(root: &Storage, password: &[u8]) -> Result<Storage, String> {
     let info = word_info(root)?;
     let keys = Keys::new(&info.scheme, password)?;
-    if !keys.verify(&info.scheme) {
+    if !keys.verify(&info.scheme)? {
         return Err("Wrong password.".to_string());
     }
     let mut out = root.clone();
     for name in ["WordDocument", info.table.as_str(), "Data"] {
         let Some(stream) = out.stream_mut(name) else { continue };
-        let keystream = keys.keystream(stream.len(), WORD_BLOCK);
+        let keystream = keys.keystream(stream.len(), WORD_BLOCK)?;
         let length = stream.len();
         let start = match name {
             "WordDocument" => FIB_CLEAR.min(length),
@@ -344,10 +345,10 @@ pub fn decrypt_excel(root: &Storage, password: &[u8]) -> Result<Storage, String>
         }
         _ => {
             let keys = Keys::new(&scheme, password)?;
-            if !keys.verify(&scheme) {
+            if !keys.verify(&scheme)? {
                 return Err("Wrong password.".to_string());
             }
-            let keystream = keys.keystream(book.len(), EXCEL_BLOCK);
+            let keystream = keys.keystream(book.len(), EXCEL_BLOCK)?;
             for &(start, end, _) in &ranges {
                 xor_into(book, &keystream, start..end);
             }
@@ -378,6 +379,16 @@ fn xor_password(password: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rc4` swallowed the cipher's refusal of its key and returned
+    /// nothing, so an empty key would have decrypted to nothing and
+    /// the verifier would have said "wrong password". Every key here is
+    /// five bytes or more, so no test reached the empty result.
+    #[test]
+    fn test_rc4_refuses_a_key_the_cipher_refuses() {
+        assert!(rc4(&[], b"data").is_err());
+        assert_eq!(rc4(b"key", b"data").unwrap().len(), 4);
+    }
 
     /// A 40-bit CryptoAPI key is five bytes of the hash and eleven
     /// zeros, and a key size of 0 in the header means 40 bits

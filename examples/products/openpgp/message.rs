@@ -392,13 +392,20 @@ fn encrypt_seipd1(cipher: Cipher, key: &[u8], plaintext: &[u8], random: Random<'
 /// The chunked AEAD shared by the OCB packet and SEIPD v2. `nonce(i)`
 /// gives chunk `i`'s nonce and `aad(i, total)` its associated data, with
 /// `total` set only for the final tag.
-fn aead_chunks_open(cipher: Cipher, aead: Aead, key: &[u8], chunk_byte: u8, data: &[u8],
-                    nonce: &dyn Fn(u64) -> Vec<u8>, aad: &dyn Fn(u64, Option<u64>) -> Vec<u8>)
-                    -> Result<Vec<u8>, String> {
+/// The chunk size an AEAD packet's octet means, `1 << (c + 6)`,
+/// checked before the shift: RFC 9580 section 5.13.2 allows at most
+/// 16, and the shift of a larger one overflows.
+fn chunk_size(chunk_byte: u8) -> Result<usize, String> {
     if chunk_byte > 16 {
         return Err(format!("a chunk size octet of {chunk_byte}; at most 16 is allowed"));
     }
-    let chunk = 1usize << (chunk_byte + 6);
+    Ok(1usize << (chunk_byte + 6))
+}
+
+fn aead_chunks_open(cipher: Cipher, aead: Aead, key: &[u8], chunk_byte: u8, data: &[u8],
+                    nonce: &dyn Fn(u64) -> Vec<u8>, aad: &dyn Fn(u64, Option<u64>) -> Vec<u8>)
+                    -> Result<Vec<u8>, String> {
+    let chunk = chunk_size(chunk_byte)?;
     if data.len() < TAG_LEN {
         return Err("AEAD data shorter than its final tag".to_string());
     }
@@ -449,7 +456,7 @@ fn decrypt_ocb_packet(session: &SessionKey, body: &[u8], log: &mut Vec<String>)
         return Err("the session key's length is not the cipher's".to_string());
     }
     log.push(format!("OCB Encrypted Data: {} {}, {} byte chunks", cipher.display,
-                     aead.display, 1u64 << (chunk_byte + 6)));
+                     aead.display, chunk_size(chunk_byte)?));
     let header = [0xC0 | packet::OCB, 1, cipher.id, aead.id, chunk_byte];
     aead_chunks_open(cipher, aead, &session.key, chunk_byte, r.rest(),
                      &|i| librepgp_nonce(&iv, i), &|i, total| index_aad(&header, i, total))
@@ -513,7 +520,7 @@ fn decrypt_seipd2(session: &SessionKey, body: &[u8], log: &mut Vec<String>)
         return Err("the session key's length is not the cipher's".to_string());
     }
     log.push(format!("SEIPD v2: {} {}, {} byte chunks", cipher.display, aead.display,
-                     1u64 << (chunk_byte + 6)));
+                     chunk_size(chunk_byte)?));
     let header = [0xC0 | packet::SEIPD, 2, cipher.id, aead.id, chunk_byte];
     let (key, iv) = seipd2_keys(&session.key, salt, &header, cipher, aead);
     aead_chunks_open(cipher, aead, &key, chunk_byte, r.rest(),
@@ -907,4 +914,32 @@ pub fn encrypt(inner: &[u8], recipients: &[Recipient], options: &Options,
     };
     out.extend(container);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The chunk size octet was shifted for the log line before
+    /// `aead_chunks_open` range-checked it: `chunk_byte + 6` is a u8
+    /// addition and the shift is by up to 261 bits, both of which
+    /// panic under debug assertions. Every message the fixtures hold
+    /// uses an octet of 16 or less, so the check was never reached
+    /// from the wrong side.
+    #[test]
+    fn test_a_chunk_size_octet_past_16_is_refused_before_the_shift() {
+        let session = SessionKey { cipher: None, key: vec![0; 32] };
+        for chunk_byte in [17u8, 100, 249, 250, 255] {
+            let mut log = Vec::new();
+            let mut seipd2 = vec![2, 9, 2, chunk_byte];
+            seipd2.extend_from_slice(&[0; 32 + 16]);
+            let error = decrypt_seipd2(&session, &seipd2, &mut log).unwrap_err();
+            assert!(error.contains("chunk size octet"), "{chunk_byte}: {error}");
+            let mut ocb = vec![1, 9, 2, chunk_byte];
+            ocb.extend_from_slice(&[0; 15 + 16]);
+            let error = decrypt_ocb_packet(&session, &ocb, &mut log).unwrap_err();
+            assert!(error.contains("chunk size octet"), "{chunk_byte}: {error}");
+            assert!(log.is_empty());
+        }
+    }
 }

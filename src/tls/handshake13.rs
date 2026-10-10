@@ -72,6 +72,35 @@ pub const HELLO_RETRY_REQUEST_RANDOM: Random = [
     0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
 ];
 
+/// The last eight bytes of a ServerHello random from a server that
+/// supports TLS 1.3 and negotiated TLS 1.2 (RFC 8446 section 4.1.3):
+/// `DOWNGRD` and a one.
+///
+/// A client that offered 1.3 and sees this has been steered down by
+/// something that removed `supported_versions` from its hello, and the
+/// 1.2 handshake that follows authenticates the steered hello rather
+/// than detecting it: the ServerKeyExchange signature covers the
+/// randoms, and these eight bytes are inside them.
+pub const DOWNGRADE_TO_TLS12: [u8; 8] = *b"DOWNGRD\x01";
+
+/// The same marker from a server that supports TLS 1.2 or later and
+/// negotiated TLS 1.1 or below: `DOWNGRD` and a zero.
+pub const DOWNGRADE_TO_TLS11: [u8; 8] = *b"DOWNGRD\x00";
+
+/// Which marker, if any, a server whose ceiling is `ceiling` writes
+/// into its random when it negotiates `chosen`. One function decides
+/// for both ends, so the writer and the reader cannot disagree about
+/// which byte means what.
+pub fn downgrade_marker(ceiling: Version, chosen: Version) -> Option<[u8; 8]> {
+    if ceiling >= Version::TLS13 && chosen == Version::TLS12 {
+        Some(DOWNGRADE_TO_TLS12)
+    } else if ceiling >= Version::TLS12 && chosen < Version::TLS12 {
+        Some(DOWNGRADE_TO_TLS11)
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------- supported_versions ---
 
 /// The ClientHello form: `ProtocolVersion versions<2..254>`, a **one byte**
@@ -1077,16 +1106,15 @@ impl NewSessionTicket13 {
 
         let mut max_early_data = None;
         let mut extensions = reader.sub16()?;
-        let mut seen: Vec<u16> = Vec::new();
+        let mut seen = crate::tls::handshake::ExtensionSet::new();
         while !extensions.is_empty() {
             let kind = extensions.u16()?;
             let value = extensions.vector16()?;
-            if seen.contains(&kind) {
+            if !seen.insert(kind) {
                 return Err(CodecError::illegal(format!(
                     "A NewSessionTicket repeats the {} extension.",
                     extension::name(kind))));
             }
-            seen.push(kind);
             if kind == extension::EARLY_DATA {
                 // In *this* message the early_data extension carries a
                 // `uint32 max_early_data_size`; in a ClientHello and an

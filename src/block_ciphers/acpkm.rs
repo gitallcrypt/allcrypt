@@ -37,6 +37,9 @@ draft it came from.
 use crate::api::AnyBlockCipher;
 use crate::block_ciphers::BlockCipher;
 
+/// Counter blocks handed to the cipher at a time.
+const BATCH: usize = 16;
+
 /// `D` from RFC 8645 section 4.1: 0x80 through 0x9f.
 ///
 /// Thirty-two bytes, which is two Kuznyechik blocks or four Magma blocks -
@@ -57,20 +60,24 @@ const D: [u8; 32] = [
 pub fn acpkm_next(cipher_name: &str, key: &[u8]) -> Result<Vec<u8>, String> {
     let mut cipher = AnyBlockCipher::new(cipher_name, key, None)?;
     let block_size = cipher.blocksize();
-    if block_size == 0 || !key.len().is_multiple_of(block_size) {
-        return Err(format!(
-            "ACPKM derives a key a block at a time; a {} byte key does not \
-             divide into {} byte blocks.", key.len(), block_size));
-    }
-    if key.len() > D.len() {
+    if block_size == 0 || key.len() > D.len() {
         return Err(format!(
             "ACPKM's constant D is {} bytes, so it cannot fill a {} byte key.",
             D.len(), key.len()));
     }
 
-    let mut next = Vec::with_capacity(key.len());
-    for chunk in D[..key.len()].chunks(block_size) {
+    // RFC 8645 section 4.1: J = ceil(k / n) blocks of D, and the key is
+    // the first k bytes of their encryptions - so a key that is not a
+    // whole number of blocks (AES-192's 24 bytes) takes one block more
+    // than it fills and keeps what it needs.
+    let blocks = key.len().div_ceil(block_size);
+    let mut next = Vec::with_capacity(blocks * block_size);
+    for chunk in D[..blocks * block_size].chunks(block_size) {
         cipher.block_encrypt(chunk, &mut next);
+    }
+    if next.len() != blocks * block_size {
+        return Err(format!("{} produced {} bytes for {} blocks.",
+                           cipher_name, next.len(), blocks));
     }
     next.truncate(key.len());
     Ok(next)
@@ -135,7 +142,7 @@ impl CtrAcpkm {
             counter,
             in_section: 0,
             cipher,
-            keystream: Vec::with_capacity(block_size),
+            keystream: Vec::with_capacity(BATCH * block_size),
             used: 0,
         })
     }
@@ -157,32 +164,49 @@ impl CtrAcpkm {
 
     /// Transform `input` in place. CTR is its own inverse, so this is
     /// both directions.
-    pub fn apply(&mut self, data: &mut [u8]) -> Result<(), String> {
-        for byte in data.iter_mut() {
-            if self.used == self.keystream.len() {
-                // A section boundary always falls on a block boundary,
-                // which the constructor guarantees - so the key can only
-                // ever change here.
-                if self.in_section == self.section {
-                    self.key = acpkm_next(&self.cipher_name, &self.key)?;
-                    self.cipher = AnyBlockCipher::new(&self.cipher_name,
-                                                      &self.key, None)?;
-                    self.in_section = 0;
-                }
-                self.keystream.clear();
-                let counter = self.counter.clone();
-                self.cipher.block_encrypt(&counter, &mut self.keystream);
-                if self.keystream.len() != self.block_size {
-                    return Err(format!("{} produced {} bytes for a {} byte block.",
-                                       self.cipher_name, self.keystream.len(),
-                                       self.block_size));
-                }
-                self.bump();
-                self.used = 0;
+    pub fn apply(&mut self, mut data: &mut [u8]) -> Result<(), String> {
+        let bs = self.block_size;
+        // Keystream a previous call generated and did not use up. It
+        // belongs to the current section: a batch never crosses a
+        // section boundary, so neither can its remainder.
+        if self.used < self.keystream.len() {
+            let take = (self.keystream.len() - self.used).min(data.len());
+            for (byte, mask) in data[..take].iter_mut().zip(&self.keystream[self.used..]) {
+                *byte ^= mask;
             }
-            *byte ^= self.keystream[self.used];
-            self.used += 1;
-            self.in_section += 1;
+            self.used += take;
+            self.in_section += take;
+            data = &mut data[take..];
+        }
+        while !data.is_empty() {
+            // A section boundary always falls on a block boundary, which
+            // the constructor guarantees - so the key can only ever
+            // change here, between batches.
+            if self.in_section == self.section {
+                self.key = acpkm_next(&self.cipher_name, &self.key)?;
+                self.cipher = AnyBlockCipher::new(&self.cipher_name, &self.key, None)?;
+                self.in_section = 0;
+            }
+            // As many counter blocks as the data needs, the section has
+            // room for and a batch holds, enciphered together: the
+            // blocks are independent, so this is what keeps AES on its
+            // constant-time path.
+            let blocks = data.len().div_ceil(bs)
+                .min((self.section - self.in_section) / bs)
+                .min(BATCH);
+            self.keystream.clear();
+            for _ in 0..blocks {
+                self.keystream.extend_from_slice(&self.counter);
+                self.bump();
+            }
+            self.cipher.encrypt_blocks(&mut self.keystream)?;
+            let take = (blocks * bs).min(data.len());
+            for (byte, mask) in data[..take].iter_mut().zip(&self.keystream) {
+                *byte ^= mask;
+            }
+            self.used = take;
+            self.in_section += take;
+            data = &mut data[take..];
         }
         Ok(())
     }
@@ -337,14 +361,24 @@ mod tests {
         assert!(CtrAcpkm::new("kuznyechik", &key, &[0u8; 8], 24).is_err());
     }
 
-    /// `D` is only 32 bytes, so it cannot fill a longer key - and a key
-    /// that is not a whole number of blocks cannot be derived at all.
+    /// `D` is only 32 bytes, so it cannot fill a longer key. A key that
+    /// is not a whole number of blocks was refused, although RFC 8645
+    /// section 4.1 derives `MSB_k` of `ceil(k/n)` blocks and AES-192 is
+    /// such a key; the earlier form of this test pinned the refusal.
+    /// Now the 24 byte key takes two blocks of D and keeps 24 bytes,
+    /// which is the first 24 of what a 32 byte key gets.
     #[test]
     fn test_the_key_size_limits_are_checked() {
         assert!(acpkm_next("kuznyechik", &[0u8; 32]).is_ok());
         assert!(acpkm_next("aes", &[0u8; 16]).is_ok());
-        assert!(acpkm_next("aes", &[0u8; 24]).is_err(),
-                "24 bytes is not a whole number of 16 byte blocks");
+        assert!(acpkm_next("aes", &[0u8; 33]).is_err());
+        let from_24 = acpkm_next("aes", &[0u8; 24]).unwrap();
+        assert_eq!(from_24.len(), 24);
+        let mut cipher = AnyBlockCipher::new("aes", &[0u8; 24], None).unwrap();
+        let mut expected = Vec::new();
+        cipher.block_encrypt(&D[..16], &mut expected);
+        cipher.block_encrypt(&D[16..], &mut expected);
+        assert_eq!(from_24, expected[..24]);
         assert_eq!(hex(&D[..4]), "80818283");
     }
 }

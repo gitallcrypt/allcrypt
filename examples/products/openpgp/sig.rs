@@ -31,6 +31,21 @@ pub const KEY_FLAGS: u8 = 27;
 pub const EMBEDDED_SIGNATURE: u8 = 32;
 pub const ISSUER_FINGERPRINT: u8 = 33;
 
+/// The subpacket types this program acts on, or whose whole meaning
+/// is a preference or a note that ignoring satisfies. A signer marks a
+/// subpacket critical to say "do not accept this signature unless you
+/// understand this" (RFC 9580 section 5.2.3.7), so a critical one of
+/// any other type - a signature target, a revocation key, a notation,
+/// a type not yet defined - makes the signature bad here.
+const UNDERSTOOD: [u8; 18] = [
+    CREATION_TIME, SIGNATURE_EXPIRATION, KEY_EXPIRATION, ISSUER, PRIMARY_USER_ID, KEY_FLAGS,
+    EMBEDDED_SIGNATURE, ISSUER_FINGERPRINT,
+    // Preferred symmetric, hash, compression and AEAD algorithms, key
+    // server preferences and URL, policy URI, signer's user ID, reason
+    // for revocation, features.
+    11, 21, 22, 39, 23, 24, 26, 28, 29, 30,
+];
+
 pub const FLAG_SIGN: u8 = 0x02;
 pub const FLAG_ENCRYPT: u8 = 0x0C;
 
@@ -264,6 +279,11 @@ impl Signature {
 
     /// Check the signature over `digest` with `key`.
     pub fn verify_digest(&self, key: &PublicKey, digest: &[u8]) -> Result<(), String> {
+        // Only the hashed area is the signer's statement.
+        if let Some(s) = self.hashed.iter().find(|s| s.critical && !UNDERSTOOD.contains(&s.kind)) {
+            return Err(format!("the signature carries a critical subpacket of type {} that this \
+                                program does not understand", s.kind));
+        }
         if digest[..2] != self.left16 {
             return Err("the digest's first two bytes are not the signature's".to_string());
         }
@@ -318,6 +338,11 @@ impl Signature {
                                     keys::algorithm_name(key.algorithm),
                                     keys::algorithm_name(self.algorithm))),
         };
+        // The fields are the signature's values and nothing else: bytes
+        // after them are not part of any value that was checked.
+        if r.at != self.fields.len() {
+            return Err(format!("{} bytes follow the signature's values", self.fields.len() - r.at));
+        }
         if ok { Ok(()) } else { Err(bad()) }
     }
 }

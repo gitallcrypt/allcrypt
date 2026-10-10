@@ -122,7 +122,8 @@ impl KeyPair {
     pub fn sign(&self, random: &mut Random, message: &[u8]) -> Result<[u8; 64], Error> {
         let mut z = [0u8; 64];
         random.fill(&mut z).map_err(|_| Error::UNKNOWN)?;
-        Ok(xeddsa::sign(xeddsa::Form::Signal, &self.private, message, &z))
+        xeddsa::sign(xeddsa::Form::Signal, &self.private, message, &z)
+            .map_err(|_| Error::UNKNOWN)
     }
 }
 

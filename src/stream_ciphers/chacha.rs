@@ -2,7 +2,6 @@ use crate::stream_ciphers::StreamCipher;
 
 use core::cmp;
 pub struct Chacha {
-    _key: Vec<u8>,
     rounds: usize,
     state: [u32; 16],
     key_pos: usize,
@@ -13,6 +12,10 @@ pub struct Chacha {
     wide_counter: bool,
     /// Whether any keystream has been produced, for `set_counter`.
     started: bool,
+    /// Set once the counter has wrapped back to zero - after 2^32 blocks
+    /// with a 12 byte nonce, 2^64 with an 8 byte one - so that the next
+    /// block is refused rather than being block zero's keystream again.
+    exhausted: bool,
 }
 
 #[inline(always)]
@@ -69,13 +72,13 @@ impl Chacha {
         } 
         
         Ok(Chacha{
-            _key: key,
             rounds,
             state,
             key_pos: 0,
             byte_state: [0; 64],
             wide_counter,
             started: false,
+            exhausted: false,
         })
     }
     /// Set the block counter before any keystream is produced.
@@ -103,10 +106,38 @@ impl Chacha {
     /// only for the 64 bit counter of the 8 byte nonce construction. With a
     /// 12 byte nonce word 13 holds nonce material, and carrying into it
     /// would silently change the nonce mid-stream.
+    ///
+    /// A counter that wraps to zero puts the state back where it started,
+    /// so the next block would be block zero's keystream under the same
+    /// key and nonce. That is recorded in `exhausted` and `apply` refuses
+    /// to go on; with a 12 byte nonce it is 256 GiB away, which a stream
+    /// over a large file reaches.
     fn advance_counter(&mut self) {
         self.state[12] = self.state[12].wrapping_add(1);
-        if self.state[12] == 0 && self.wide_counter {
-            self.state[13] = self.state[13].wrapping_add(1);
+        if self.state[12] == 0 {
+            if self.wide_counter {
+                self.state[13] = self.state[13].wrapping_add(1);
+                if self.state[13] == 0 {
+                    self.exhausted = true;
+                }
+            } else {
+                self.exhausted = true;
+            }
+        }
+    }
+
+    /// How many whole blocks the counter can still produce before it
+    /// wraps: 2^32 minus the counter for a 12 byte nonce, and for the
+    /// 64 bit counter the same thing saturated at `u64::MAX`.
+    fn blocks_left(&self) -> u64 {
+        if self.exhausted {
+            return 0;
+        }
+        if self.wide_counter {
+            let counter = (self.state[13] as u64) << 32 | self.state[12] as u64;
+            (u64::MAX - counter).saturating_add(1)
+        } else {
+            (1u64 << 32) - self.state[12] as u64
         }
     }
 
@@ -214,21 +245,49 @@ impl Chacha {
     }
 
     /// XOR the keystream into `buf` in place, continuing from wherever the
-    /// previous call stopped.
-    pub fn apply(&mut self, mut buf: &mut [u8]) {
+    /// previous call stopped. Once the counter has wrapped, the error
+    /// carries how many bytes were transformed before it; the rest of
+    /// `buf` is left as it was.
+    pub fn apply(&mut self, buf: &mut [u8]) -> Result<(), (usize, String)> {
         if buf.is_empty() {
-            return;
+            return Ok(());
         }
         self.started = true;
-        // The rest of a block a previous call started.
+        let mut done = 0;
+        // The rest of a block a previous call started. It was produced
+        // before the counter moved on, so it is usable even when that
+        // move was the wrap.
         if self.key_pos != 0 {
             let take = cmp::min(64 - self.key_pos, buf.len());
             for (b, k) in buf[..take].iter_mut().zip(&self.byte_state[self.key_pos..]) {
                 *b ^= k;
             }
             self.key_pos = (self.key_pos + take) % 64;
-            buf = &mut buf[take..];
+            done = take;
         }
+        // Whole blocks only up to the wrap. The batch paths take the
+        // counter N blocks forward at once, so the cut is made here
+        // rather than inside them: a batch that straddled the wrap would
+        // emit block zero's keystream as its last lanes.
+        let rest = &mut buf[done..];
+        let limit = self.blocks_left().saturating_mul(64);
+        let allowed = cmp::min(rest.len() as u64, limit) as usize;
+        self.fill(&mut rest[..allowed]);
+        done += allowed;
+        if done < buf.len() {
+            return Err((done, format!(
+                "This ChaCha stream has produced {} blocks; continuing would \
+                 repeat keystream from block zero.",
+                if self.wide_counter { "2^64" } else { "2^32" })));
+        }
+        Ok(())
+    }
+
+    /// XOR the next `buf.len()` bytes of keystream into `buf`, starting
+    /// on a block boundary and leaving any partial last block in
+    /// `byte_state` for the next call. `buf` holds fewer bytes than the
+    /// counter has blocks left.
+    fn fill(&mut self, buf: &mut [u8]) {
         #[cfg(all(feature = "simd", target_arch = "x86_64"))]
         let buf = self.simd_blocks(buf);
         let mut fours = buf.chunks_exact_mut(256);
@@ -246,13 +305,33 @@ impl Chacha {
             rest = &mut rest[take..];
         }
     }
+
+    /// Encrypt or decrypt, returning an error only when the counter has
+    /// wrapped. What was produced before that stays in `result`; nothing
+    /// after it is emitted.
+    pub fn try_crypt(&mut self, input: &[u8], result: &mut Vec<u8>)
+                     -> Result<(), String> {
+        let start = result.len();
+        result.extend_from_slice(input);
+        match self.apply(&mut result[start..]) {
+            Ok(()) => Ok(()),
+            Err((done, e)) => {
+                result.truncate(start + done);
+                Err(e)
+            }
+        }
+    }
 }
 
 impl StreamCipher for Chacha {
+    /// The trait's signature has no error, so once the counter has
+    /// wrapped this stops producing output rather than repeating
+    /// keystream: the result is shorter than the input, and
+    /// `api::AnyStreamCipher::apply` reports that. `try_crypt` says why,
+    /// and is what a caller with a 12 byte nonce and more than 256 GiB
+    /// should use.
     fn crypt(&mut self, input: &[u8], result: &mut Vec<u8>) {
-        let start = result.len();
-        result.extend_from_slice(input);
-        self.apply(&mut result[start..]);
+        let _ = self.try_crypt(input, result);
     }
 }
 
@@ -401,10 +480,76 @@ mod tests {
         assert_ne!(two[64..], first[..]);
     }
 
+    /// With a 12 byte nonce the counter is word 12 alone, and after 2^32
+    /// blocks it wrapped to zero, putting the state back where it
+    /// started: everything past 256 GiB was XORed with the keystream
+    /// already used for the first 256 GiB. Nothing noticed, because the
+    /// tests around the wrap compared the batch paths with the one-block
+    /// path, and both wrapped the same way; none compared the output
+    /// past the wrap with block zero. Now the stream refuses: the bytes
+    /// up to the wrap are produced, the error says how many, and the
+    /// rest of the buffer is untouched - at every distance before the
+    /// wrap, so the cut falls inside the eight-lane, four-lane and
+    /// single-block paths in turn.
+    #[test]
+    fn test_the_32_bit_counter_refuses_to_wrap() {
+        let (key, nonce) = (vec![5u8; 32], vec![6u8; 12]);
+        let mut block_zero = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut first = Vec::new();
+        block_zero.try_crypt(&[0u8; 64], &mut first).unwrap();
+
+        for before_wrap in [0u32, 1, 3, 5, 9] {
+            let blocks = before_wrap as usize + 1;
+            let make = || {
+                let mut c = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+                c.set_counter(u32::MAX - before_wrap).unwrap();
+                c
+            };
+            // What the last blocks before the wrap are, one at a time.
+            let mut reference = make();
+            let mut want = Vec::new();
+            for _ in 0..blocks {
+                reference.chacha_block();
+                want.extend_from_slice(&reference.byte_state);
+            }
+
+            let mut late = make();
+            let mut buf = vec![0u8; blocks * 64 + 100];
+            let (done, _) = late.apply(&mut buf).unwrap_err();
+            assert_eq!(done, blocks * 64, "{before_wrap} before the wrap");
+            assert_eq!(buf[..done], want[..]);
+            assert_ne!(buf[done..done + 64], first[..], "block zero's keystream was reused");
+            assert_eq!(buf[done..], [0u8; 100], "bytes past the wrap were written");
+            // And the refusal is sticky.
+            assert!(late.apply(&mut [0u8; 1]).is_err());
+
+            // The same through `try_crypt`, which keeps the output up to
+            // the wrap, and `crypt`, which can only stop short.
+            let mut out = Vec::new();
+            assert!(make().try_crypt(&vec![0u8; blocks * 64 + 1], &mut out).is_err());
+            assert_eq!(out, want);
+            let mut out = Vec::new();
+            make().crypt(&vec![0u8; blocks * 64 + 1], &mut out);
+            assert_eq!(out, want);
+        }
+
+        // Exactly to the wrap is fine, and a partial last block whose
+        // production was the wrap can still be finished.
+        let mut exact = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        exact.set_counter(u32::MAX - 1).unwrap();
+        exact.apply(&mut [0u8; 128]).unwrap();
+        assert!(exact.apply(&mut [0u8; 1]).is_err());
+        let mut partial = Chacha::new(key, nonce, 20).unwrap();
+        partial.set_counter(u32::MAX).unwrap();
+        partial.apply(&mut [0u8; 10]).unwrap();
+        partial.apply(&mut [0u8; 54]).unwrap();
+        assert!(partial.apply(&mut [0u8; 1]).is_err());
+    }
+
     /// The four-block path against `chacha_block` one block at a time,
     /// with the counter starting two blocks before its 32 bit wrap so the
     /// wrap falls inside a group of four: carried into word 13 for the
-    /// 8 byte nonce, not for the 12 byte one.
+    /// 8 byte nonce, and the end of the stream for the 12 byte one.
     #[test]
     fn test_four_blocks_at_a_time_is_one_at_a_time() {
         for nonce_len in [8usize, 12] {
@@ -414,15 +559,22 @@ mod tests {
                     c.set_counter(u32::MAX - 1).unwrap();
                     c
                 };
+                let blocks = if nonce_len == 8 { 12 } else { 2 };
                 let mut reference = make();
                 let mut want = Vec::new();
-                for _ in 0..12 {
+                for _ in 0..blocks {
                     reference.chacha_block();
                     want.extend_from_slice(&reference.byte_state);
                 }
                 let mut fast = make();
                 let mut got = vec![0u8; 12 * 64];
-                fast.apply(&mut got);
+                let result = fast.apply(&mut got);
+                if nonce_len == 8 {
+                    result.unwrap();
+                } else {
+                    assert_eq!(result.unwrap_err().0, blocks * 64);
+                    got.truncate(blocks * 64);
+                }
                 assert_eq!(got, want, "nonce {nonce_len}, {rounds} rounds");
                 // And the counter both left behind is the same.
                 assert_eq!(fast.state, reference.state);
@@ -434,9 +586,9 @@ mod tests {
     /// lanes and eight called directly, and `apply` over lengths that
     /// take eight, four and single blocks in turn. The counter starts at
     /// several distances before its 32 bit wrap, so the wrap falls at
-    /// different lanes: carried into word 13 for the 8 byte nonce, not for
-    /// the 12 byte one. Without AVX2 the eight-lane path refuses, and that
-    /// is checked instead.
+    /// different lanes: carried into word 13 for the 8 byte nonce, and
+    /// the end of the stream for the 12 byte one. Without AVX2 the
+    /// eight-lane path refuses, and that is checked instead.
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     #[test]
     fn test_the_vector_paths_are_one_at_a_time() {
@@ -468,11 +620,20 @@ mod tests {
                         assert_eq!(got, [0u8; 512], "nothing written without AVX2");
                     }
 
+                    // With the 12 byte nonce the stream ends at the
+                    // wrap, so `apply` gives the blocks before it and
+                    // then refuses.
+                    let available = if nonce_len == 8 { usize::MAX }
+                                    else { (before_wrap as usize + 1) * 64 };
                     for blocks in [1usize, 4, 5, 8, 12, 13, 16, 31] {
                         let mut fast = make();
                         let mut got = vec![0u8; blocks * 64 + 7];
-                        fast.apply(&mut got);
-                        assert_eq!(got[..], want[..blocks * 64 + 7], "apply, {blocks} blocks, {what}");
+                        let produced = match fast.apply(&mut got) {
+                            Ok(()) => got.len(),
+                            Err((done, _)) => done,
+                        };
+                        assert_eq!(produced, got.len().min(available), "apply, {blocks} blocks, {what}");
+                        assert_eq!(got[..produced], want[..produced], "apply, {blocks} blocks, {what}");
                     }
                 }
             }

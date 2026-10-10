@@ -63,25 +63,39 @@ use crate::block_ciphers::BlockCipher;
 
 const BLOCK: usize = 16;
 
+/// Blocks handed to the cipher at a time. OCB's blocks are independent
+/// of each other - the offsets depend only on the block number - so a
+/// batch goes through `encrypt_blocks`, which is what keeps AES on its
+/// constant-time path.
+const BATCH: usize = 16;
+
 fn double(value: u128) -> u128 {
     (value << 1) ^ if value >> 127 == 1 { 0x87 } else { 0 }
 }
 
-/// One OCB key, over a named 128 bit block cipher.
+/// One OCB key, over a named 128 bit block cipher, serving any number
+/// of messages: the cipher and the `L` values are built once, which is
+/// what `encrypt` and `decrypt` take `&mut self` for.
 pub struct Ocb {
-    cipher_name: String,
-    key: Vec<u8>,
+    keyed: Keyed,
     tag_len: usize,
 }
 
-/// The per-call state: the cipher, `L_*`, `L_$` and the `L_i` computed
-/// so far.
+impl core::fmt::Debug for Ocb {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Ocb {{ {}, keys redacted }}", self.keyed.cipher.name())
+    }
+}
+
+/// The keyed state: the cipher, `L_*`, `L_$` and the `L_i` computed
+/// so far, and the scratch a batch of blocks goes through the cipher in.
 struct Keyed {
     cipher: AnyBlockCipher,
     l_star: u128,
     l_dollar: u128,
     l: Vec<u128>,
     out: Vec<u8>,
+    batch: Vec<u8>,
 }
 
 impl Keyed {
@@ -93,7 +107,8 @@ impl Keyed {
                 cipher.blocksize() * 8));
         }
         let mut keyed = Keyed { cipher, l_star: 0, l_dollar: 0, l: Vec::new(),
-                                out: Vec::with_capacity(BLOCK) };
+                                out: Vec::with_capacity(BLOCK),
+                                batch: Vec::with_capacity(BATCH * BLOCK) };
         keyed.l_star = keyed.encipher(0);
         keyed.l_dollar = double(keyed.l_star);
         keyed.l.push(double(keyed.l_dollar));
@@ -106,10 +121,42 @@ impl Keyed {
         u128::from_be_bytes(self.out[..BLOCK].try_into().unwrap())
     }
 
-    fn decipher(&mut self, block: u128) -> u128 {
-        self.out.clear();
-        self.cipher.block_decrypt(&block.to_be_bytes(), &mut self.out);
-        u128::from_be_bytes(self.out[..BLOCK].try_into().unwrap())
+    /// The whole blocks of `input`, numbered from `first`, each
+    /// `Offset_i ^ E(X_i ^ Offset_i)` (or `D` for decryption) appended to
+    /// `out`, a batch at a time; `offset` is left at the last block's.
+    /// `sum` collects the XOR of the blocks on the plaintext side - the
+    /// input when encrypting, the output when decrypting - which is
+    /// OCB's checksum.
+    fn crypt_blocks(&mut self, input: &[u8], first: u64, offset: &mut u128, encrypt: bool,
+                    sum: &mut u128, out: &mut Vec<u8>) -> Result<(), String> {
+        let mut number = first;
+        let mut offsets = [0u128; BATCH];
+        for chunk in input.chunks(BATCH * BLOCK) {
+            self.batch.clear();
+            for (block, saved) in chunk.chunks_exact(BLOCK).zip(offsets.iter_mut()) {
+                *offset ^= self.l_for(number);
+                number += 1;
+                *saved = *offset;
+                let x = u128::from_be_bytes(block.try_into().unwrap());
+                if encrypt {
+                    *sum ^= x;
+                }
+                self.batch.extend_from_slice(&(x ^ *offset).to_be_bytes());
+            }
+            if encrypt {
+                self.cipher.encrypt_blocks(&mut self.batch)?;
+            } else {
+                self.cipher.decrypt_blocks(&mut self.batch)?;
+            }
+            for (block, saved) in self.batch.chunks_exact(BLOCK).zip(offsets.iter()) {
+                let y = u128::from_be_bytes(block.try_into().unwrap()) ^ *saved;
+                if !encrypt {
+                    *sum ^= y;
+                }
+                out.extend_from_slice(&y.to_be_bytes());
+            }
+        }
+        Ok(())
     }
 
     /// `L_{ntz(i)}` for block number `i`, counted from one.
@@ -122,20 +169,31 @@ impl Keyed {
         self.l[index]
     }
 
-    /// RFC 7253 section 4.1, HASH(K, A).
-    fn hash(&mut self, aad: &[u8]) -> u128 {
+    /// RFC 7253 section 4.1, HASH(K, A): the XOR of `E(A_i ^ Offset_i)`
+    /// over the blocks, a batch at a time.
+    fn hash(&mut self, aad: &[u8]) -> Result<u128, String> {
         let (mut sum, mut offset) = (0u128, 0u128);
-        let mut blocks = aad.chunks_exact(BLOCK);
-        for (i, block) in (1u64..).zip(&mut blocks) {
-            offset ^= self.l_for(i);
-            sum ^= self.encipher(u128::from_be_bytes(block.try_into().unwrap()) ^ offset);
+        let whole = aad.len() / BLOCK * BLOCK;
+        let mut number = 1u64;
+        for chunk in aad[..whole].chunks(BATCH * BLOCK) {
+            self.batch.clear();
+            for block in chunk.chunks_exact(BLOCK) {
+                offset ^= self.l_for(number);
+                number += 1;
+                let a = u128::from_be_bytes(block.try_into().unwrap());
+                self.batch.extend_from_slice(&(a ^ offset).to_be_bytes());
+            }
+            self.cipher.encrypt_blocks(&mut self.batch)?;
+            for block in self.batch.chunks_exact(BLOCK) {
+                sum ^= u128::from_be_bytes(block.try_into().unwrap());
+            }
         }
-        let rest = blocks.remainder();
+        let rest = &aad[whole..];
         if !rest.is_empty() {
             offset ^= self.l_star;
             sum ^= self.encipher(padded(rest) ^ offset);
         }
-        sum
+        Ok(sum)
     }
 
     /// `Offset_0` from the nonce, section 4.2.
@@ -180,72 +238,65 @@ impl Ocb {
         if tag_len == 0 || tag_len > BLOCK {
             return Err(format!("An OCB tag is 1..=16 bytes; {tag_len} was asked for."));
         }
-        // Built once here so a wrong key or a 64 bit cipher fails at
-        // construction rather than at the first message.
-        Keyed::new(cipher_name, key)?;
-        Ok(Ocb { cipher_name: cipher_name.to_string(), key: key.to_vec(), tag_len })
+        Ok(Ocb { keyed: Keyed::new(cipher_name, key)?, tag_len })
     }
 
     pub fn tag_len(&self) -> usize {
         self.tag_len
     }
 
+    /// RFC 7253 section 2: a nonce of 1 to 15 bytes. The construction
+    /// would keep an empty one distinct - the `1` marker above the
+    /// nonce moves - but it is outside the parameter set the document
+    /// defines and its vectors cover.
     fn check_nonce(nonce: &[u8]) -> Result<(), String> {
-        if nonce.len() > 15 {
-            return Err(format!("An OCB nonce is at most 15 bytes; got {}.", nonce.len()));
+        if nonce.is_empty() || nonce.len() > 15 {
+            return Err(format!("An OCB nonce is 1 to 15 bytes (RFC 7253 section 2); \
+                                got {}.", nonce.len()));
         }
         Ok(())
     }
 
     /// Encrypt, returning `(ciphertext, tag)`.
-    pub fn encrypt(&self, nonce: &[u8], aad: &[u8], plaintext: &[u8])
+    pub fn encrypt(&mut self, nonce: &[u8], aad: &[u8], plaintext: &[u8])
                    -> Result<(Vec<u8>, Vec<u8>), String> {
         Ocb::check_nonce(nonce)?;
-        let mut keyed = Keyed::new(&self.cipher_name, &self.key)?;
+        let keyed = &mut self.keyed;
         let mut offset = keyed.initial_offset(nonce, self.tag_len);
         let mut checksum = 0u128;
         let mut ciphertext = Vec::with_capacity(plaintext.len());
 
-        let mut blocks = plaintext.chunks_exact(BLOCK);
-        for (i, block) in (1u64..).zip(&mut blocks) {
-            offset ^= keyed.l_for(i);
-            let p = u128::from_be_bytes(block.try_into().unwrap());
-            ciphertext.extend_from_slice(&(offset ^ keyed.encipher(p ^ offset)).to_be_bytes());
-            checksum ^= p;
-        }
-        let rest = blocks.remainder();
+        let whole = plaintext.len() / BLOCK * BLOCK;
+        keyed.crypt_blocks(&plaintext[..whole], 1, &mut offset, true, &mut checksum,
+                           &mut ciphertext)?;
+        let rest = &plaintext[whole..];
         if !rest.is_empty() {
             offset ^= keyed.l_star;
             let pad = keyed.encipher(offset).to_be_bytes();
             ciphertext.extend(rest.iter().zip(pad).map(|(p, k)| p ^ k));
             checksum ^= padded(rest);
         }
-        let hash = keyed.hash(aad);
+        let hash = keyed.hash(aad)?;
         let tag = keyed.encipher(checksum ^ offset ^ keyed.l_dollar) ^ hash;
         Ok((ciphertext, tag.to_be_bytes()[..self.tag_len].to_vec()))
     }
 
     /// Decrypt, checking the tag before returning any plaintext.
-    pub fn decrypt(&self, nonce: &[u8], aad: &[u8], ciphertext: &[u8], tag: &[u8])
+    pub fn decrypt(&mut self, nonce: &[u8], aad: &[u8], ciphertext: &[u8], tag: &[u8])
                    -> Result<Vec<u8>, String> {
         Ocb::check_nonce(nonce)?;
         if tag.len() != self.tag_len {
             return Err(format!("An OCB tag is {} bytes here; got {}.", self.tag_len, tag.len()));
         }
-        let mut keyed = Keyed::new(&self.cipher_name, &self.key)?;
+        let keyed = &mut self.keyed;
         let mut offset = keyed.initial_offset(nonce, self.tag_len);
         let mut checksum = 0u128;
         let mut plaintext = Vec::with_capacity(ciphertext.len());
 
-        let mut blocks = ciphertext.chunks_exact(BLOCK);
-        for (i, block) in (1u64..).zip(&mut blocks) {
-            offset ^= keyed.l_for(i);
-            let c = u128::from_be_bytes(block.try_into().unwrap());
-            let p = offset ^ keyed.decipher(c ^ offset);
-            plaintext.extend_from_slice(&p.to_be_bytes());
-            checksum ^= p;
-        }
-        let rest = blocks.remainder();
+        let whole = ciphertext.len() / BLOCK * BLOCK;
+        keyed.crypt_blocks(&ciphertext[..whole], 1, &mut offset, false, &mut checksum,
+                           &mut plaintext)?;
+        let rest = &ciphertext[whole..];
         if !rest.is_empty() {
             offset ^= keyed.l_star;
             let pad = keyed.encipher(offset).to_be_bytes();
@@ -253,7 +304,7 @@ impl Ocb {
             plaintext.extend(rest.iter().zip(pad).map(|(c, k)| c ^ k));
             checksum ^= padded(&plaintext[start..]);
         }
-        let hash = keyed.hash(aad);
+        let hash = keyed.hash(aad)?;
         let expected = keyed.encipher(checksum ^ offset ^ keyed.l_dollar) ^ hash;
         if crate::bignum::ct::bytes_differ(&expected.to_be_bytes()[..self.tag_len], tag) {
             return Err("The OCB tag does not match; the message was altered or was not \
@@ -346,7 +397,7 @@ mod tests {
         assert!(samples.iter().any(|s| s.plaintext.is_empty() && s.aad.is_empty()));
         for (index, s) in samples.iter().enumerate() {
             let tag_len = s.output.len() - s.plaintext.len();
-            let ocb = Ocb::with_tag_len("aes", &s.key, tag_len).unwrap();
+            let mut ocb = Ocb::with_tag_len("aes", &s.key, tag_len).unwrap();
             let (ciphertext, tag) = ocb.encrypt(&s.nonce, &s.aad, &s.plaintext).unwrap();
             let mut combined = ciphertext.clone();
             combined.extend_from_slice(&tag);
@@ -412,10 +463,10 @@ mod tests {
 
             let mut key = vec![0u8; key_bits / 8];
             *key.last_mut().unwrap() = tag_bits as u8;
-            let ocb = Ocb::with_tag_len("aes", &key, tag_bits / 8).unwrap();
+            let mut ocb = Ocb::with_tag_len("aes", &key, tag_bits / 8).unwrap();
             let nonce = |n: u64| { let mut v = vec![0u8; 4]; v.extend(n.to_be_bytes()); v };
             let mut c = Vec::new();
-            let seal = |n: u64, a: &[u8], p: &[u8], c: &mut Vec<u8>| {
+            let mut seal = |n: u64, a: &[u8], p: &[u8], c: &mut Vec<u8>| {
                 let (ciphertext, tag) = ocb.encrypt(&nonce(n), a, p).unwrap();
                 c.extend(ciphertext);
                 c.extend(tag);
@@ -436,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_altering_anything_is_refused() {
-        let ocb = Ocb::new("aes", &[0x33; 16]).unwrap();
+        let mut ocb = Ocb::new("aes", &[0x33; 16]).unwrap();
         let (nonce, aad) = (b"twelve bytes", b"associated data");
         for length in [0usize, 1, 15, 16, 17, 33] {
             let message = vec![0x5a; length];
@@ -461,8 +512,8 @@ mod tests {
     /// the full tag cut short - the opposite of EAX.
     #[test]
     fn test_a_shorter_tag_is_a_different_mode() {
-        let full = Ocb::new("aes", &[7; 16]).unwrap();
-        let short = Ocb::with_tag_len("aes", &[7; 16], 8).unwrap();
+        let mut full = Ocb::new("aes", &[7; 16]).unwrap();
+        let mut short = Ocb::with_tag_len("aes", &[7; 16], 8).unwrap();
         let (c1, t1) = full.encrypt(b"nonce", b"", b"message").unwrap();
         let (c2, t2) = short.encrypt(b"nonce", b"", b"message").unwrap();
         assert_ne!(c1, c2);
@@ -471,23 +522,27 @@ mod tests {
     }
 
     /// A short nonce is not a long one with leading zeros: the `1`
-    /// above it moves.
+    /// above it moves. And the lengths are RFC 7253's, 1 to 15: the
+    /// empty nonce was accepted, outside the document's parameter set,
+    /// and this test used it.
     #[test]
     fn test_the_nonce_length_matters() {
-        let ocb = Ocb::new("aes", &[9; 16]).unwrap();
+        let mut ocb = Ocb::new("aes", &[9; 16]).unwrap();
         let mut seen = std::collections::HashSet::new();
-        for length in 0..=15 {
+        for length in 1..=15 {
             let (c, t) = ocb.encrypt(&vec![0u8; length], b"", b"m").unwrap();
             assert!(seen.insert((c, t)), "nonce length {length} collided");
         }
+        assert!(ocb.encrypt(&[], b"", b"m").is_err());
         assert!(ocb.encrypt(&[0u8; 16], b"", b"m").is_err());
+        assert!(ocb.decrypt(&[], b"", b"", &[0u8; 16]).is_err());
     }
 
     #[test]
     fn test_other_128_bit_ciphers_and_refusals() {
         for name in ["camellia", "twofish", "serpent", "aria", "sm4", "seed", "kuznyechik"] {
             let key = vec![0x42u8; if name == "kuznyechik" { 32 } else { 16 }];
-            let ocb = Ocb::new(name, &key).unwrap();
+            let mut ocb = Ocb::new(name, &key).unwrap();
             let (c, t) = ocb.encrypt(b"n", b"a", &[1u8; 40]).unwrap();
             assert_eq!(ocb.decrypt(b"n", b"a", &c, &t).unwrap(), vec![1u8; 40], "{name}");
         }
@@ -495,5 +550,28 @@ mod tests {
         assert!(Ocb::new("blowfish", &[0u8; 16]).is_err());
         assert!(Ocb::with_tag_len("aes", &[0u8; 16], 0).is_err());
         assert!(Ocb::with_tag_len("aes", &[0u8; 16], 17).is_err());
+    }
+
+    /// One `Ocb` holds its cipher and `L` values, where each call used
+    /// to build them again. What the saving changes is that state can
+    /// now leak from one message into the next - the `L_i` table grows
+    /// with the longest message seen - so this runs messages of several
+    /// lengths, decryptions, and a decryption that fails, through one
+    /// object and checks each against a fresh one.
+    #[test]
+    fn test_one_object_serves_many_messages() {
+        let mut shared = Ocb::new("aes", &[0x77; 16]).unwrap();
+        let (nonce, aad) = (b"nonce", b"aad");
+        for length in [100usize, 0, 1, 15, 16, 17, 32, 33, 1000] {
+            let message = vec![length as u8; length];
+            let (ciphertext, tag) = shared.encrypt(nonce, aad, &message).unwrap();
+            let mut fresh = Ocb::new("aes", &[0x77; 16]).unwrap();
+            assert_eq!(fresh.encrypt(nonce, aad, &message).unwrap(), (ciphertext.clone(), tag.clone()),
+                       "length {length}");
+            let mut wrong = tag.clone();
+            wrong[0] ^= 1;
+            assert!(shared.decrypt(nonce, aad, &ciphertext, &wrong).is_err());
+            assert_eq!(shared.decrypt(nonce, aad, &ciphertext, &tag).unwrap(), message);
+        }
     }
 }

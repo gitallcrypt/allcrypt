@@ -54,9 +54,14 @@ section 6 says destroys the mode entirely.
 
 Here the two nonces cannot collide anyway: the bit being cleared is the
 top bit of the *IV*, which is constant for the epoch, and the sequence
-number reaches it only after 2^127 records. Said out loud because the
-argument is about this layer, not about MGM, and MGM must not rely on
-it.
+number does not reach it. The sequence number is eight bytes XORed into
+the low end of the IV: for Kuznyechik's 16 byte IV it never touches
+byte 0 at all, and for Magma's 8 byte IV it is the sequence number's own
+bit 63, reached at 2^63 records - which the `_S` suites' SNMAX rules out
+and the `_L` suites' 2^64-1 nominally allows, so for Magma the clearing
+is a real masking at a count no connection reaches rather than a
+no-op. Said out loud because the argument is about this layer, not about
+MGM, and MGM must not rely on it.
 
 ## SNMAX
 

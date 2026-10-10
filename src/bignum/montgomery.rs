@@ -748,9 +748,10 @@ mod tests {
             let k = 2;
             let (sa, sb) = (Secret::from_biguint(&a, k).unwrap(),
                             Secret::from_biguint(&b, k).unwrap());
-            let wide = sa.mul_wide(&sb);
-            assert_eq!(wide.len(), 2 * k, "the width is fixed, not the value's");
-            assert_eq!(BigUint::from_limbs(wide), a.mul(&b), "{} * {}", x, y);
+            // A `Secret`, wiped on drop: the product of two secrets is one.
+            let wide: Secret = sa.mul_wide(&sb);
+            assert_eq!(wide.width(), 2 * k, "the width is fixed, not the value's");
+            assert_eq!(BigUint::from_limbs(wide.limbs().to_vec()), a.mul(&b), "{} * {}", x, y);
         }
     }
 

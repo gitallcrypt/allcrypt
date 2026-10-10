@@ -138,11 +138,27 @@ pub fn decode(text: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// One PEM block: its label and its decoded contents.
+/// One PEM block: its label, its RFC 1421 encapsulated headers, and
+/// its decoded contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub label: String,
+    /// The `Key: value` lines between the BEGIN line and the first blank
+    /// line, in order, when the block has any. OpenSSL's traditional
+    /// encrypted keys carry `Proc-Type: 4,ENCRYPTED` and `DEK-Info:
+    /// <cipher>,<hex IV>` here; a certificate carries none.
+    pub headers: Vec<(String, String)>,
     pub contents: Vec<u8>,
+}
+
+impl Block {
+    /// The value of the first header named `name`, compared without
+    /// regard to case as RFC 1421 section 4.6 has it.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
 }
 
 /// Every PEM block in a document, in order.
@@ -151,14 +167,59 @@ pub struct Block {
 /// implementation does and what makes a CA bundle with comments in it work.
 /// What is *not* ignored is a block whose END label does not match its
 /// BEGIN, or one with no END at all - a truncated file should be an error
-/// rather than a silently shorter list of roots.
+/// rather than a silently shorter list of roots - or one whose body is
+/// not base64. `parse_lenient` is the form that keeps going.
+///
+/// Encapsulated headers (RFC 1421 section 4.4, RFC 7468 section 5.2):
+/// when the first line after BEGIN holds a `:`, which no base64 line
+/// can, every line up to the first blank line is a `Key: value` header
+/// and is kept on the block rather than decoded. That is the shape of
+/// OpenSSL's traditional encrypted keys, and refusing it refused every
+/// file that carried one.
 pub fn parse(text: &str) -> Result<Vec<Block>, String> {
+    let (blocks, failures) = scan(text);
+    match failures.into_iter().next() {
+        Some(skipped) => Err(skipped.reason),
+        None => Ok(blocks),
+    }
+}
+
+/// A block `parse_lenient` could not read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Skipped {
+    /// The label on its BEGIN line.
+    pub label: String,
+    /// Why, as `parse` would have reported it.
+    pub reason: String,
+    /// The block had no matching END line (the file ends, or another
+    /// BEGIN, inside it). A flag rather than a reading of `reason`,
+    /// because a caller deciding whether a bundle is truncated should
+    /// not parse an error message to find out.
+    pub truncated: bool,
+}
+
+/// Every PEM block that could be read, and the ones that could not, in
+/// document order.
+///
+/// For a CA bundle, or a combined certificate-and-key file, one block
+/// that does not decode should not drop every other block in the file;
+/// but it should not vanish either, so the skipped blocks come back
+/// beside the read ones for the caller to record. `certificates` uses
+/// this.
+pub fn parse_lenient(text: &str) -> (Vec<Block>, Vec<Skipped>) {
+    scan(text)
+}
+
+/// The scanner behind `parse` and `parse_lenient`: blocks in order, and
+/// the skipped blocks in order.
+fn scan(text: &str) -> (Vec<Block>, Vec<Skipped>) {
     const BEGIN: &str = "-----BEGIN ";
     const END: &str = "-----END ";
     const DASHES: &str = "-----";
 
     let mut blocks = Vec::new();
-    let mut lines = text.lines();
+    let mut failures = Vec::new();
+    let mut lines = text.lines().peekable();
 
     while let Some(line) = lines.next() {
         let line = line.trim();
@@ -167,46 +228,107 @@ pub fn parse(text: &str) -> Result<Vec<Block>, String> {
             None => continue,
         };
 
+        // Headers: only if the first line of the block has one. A line
+        // starting with whitespace continues the previous header, joined
+        // by a single space as RFC 822 folding has it (RFC 1421 section
+        // 4.6; `trim` has not yet run on the line here).
+        let mut headers: Vec<(String, String)> = Vec::new();
+        if lines.peek().is_some_and(|first| first.contains(':') && !first.starts_with(DASHES)) {
+            while let Some(raw) = lines.peek() {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    lines.next();
+                    break;
+                }
+                if trimmed.starts_with(DASHES) {
+                    // No blank line before END: the body is empty and
+                    // the END line is left for the loop below.
+                    break;
+                }
+                if raw.starts_with([' ', '\t']) {
+                    if let Some((_, value)) = headers.last_mut() {
+                        value.push(' ');
+                        value.push_str(trimmed);
+                        lines.next();
+                        continue;
+                    }
+                }
+                match trimmed.split_once(':') {
+                    Some((key, value)) => {
+                        headers.push((key.trim().to_string(), value.trim().to_string()));
+                        lines.next();
+                    }
+                    // A line with no colon ends the header section
+                    // without a blank line; the body starts here.
+                    None => break,
+                }
+            }
+        }
+
         let mut body = String::new();
+        let mut outcome = Ok(());
         let mut closed = false;
-        for line in lines.by_ref() {
+        let mut truncated = false;
+        while let Some(line) = lines.peek() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix(END) {
-                let closing = rest.strip_suffix(DASHES)
-                    .ok_or_else(|| "Malformed PEM END line.".to_string())?;
-                if closing != label {
-                    return Err(format!(
-                        "PEM block opens as {:?} and closes as {:?}.",
-                        label, closing));
+                match rest.strip_suffix(DASHES) {
+                    Some(closing) if closing == label => {}
+                    Some(closing) => outcome = Err(format!(
+                        "PEM block opens as {:?} and closes as {:?}.", label, closing)),
+                    None => outcome = Err("Malformed PEM END line.".to_string()),
                 }
+                lines.next();
                 closed = true;
                 break;
             }
             if line.starts_with(BEGIN) {
-                return Err(format!("PEM block {:?} was never closed.", label));
+                // Left for the outer loop, so the block that starts here
+                // is still read.
+                outcome = Err(format!("PEM block {:?} was never closed.", label));
+                closed = true;
+                truncated = true;
+                break;
             }
             body.push_str(line);
+            lines.next();
         }
         if !closed {
-            return Err(format!("PEM block {:?} has no END line.", label));
+            outcome = Err(format!("PEM block {:?} has no END line.", label));
+            truncated = true;
         }
 
-        blocks.push(Block {
-            contents: decode(&body)
-                .map_err(|e| format!("In PEM block {:?}: {}", label, e))?,
-            label,
-        });
+        let decoded = outcome.and_then(|()| decode(&body)
+            .map_err(|e| format!("In PEM block {:?}: {}", label, e)));
+        match decoded {
+            Ok(contents) => blocks.push(Block { label, headers, contents }),
+            Err(reason) => failures.push(Skipped { label, reason, truncated }),
+        }
     }
-    Ok(blocks)
+    (blocks, failures)
 }
 
+const CERTIFICATE_LABELS: [&str; 3] =
+    ["CERTIFICATE", "X509 CERTIFICATE", "TRUSTED CERTIFICATE"];
+
 /// Just the certificates, which is what a CA bundle is.
+///
+/// A block that is not a certificate and does not decode is left out
+/// rather than failing the call: a combined certificate-and-key file
+/// with a key in a form this parser cannot read is still a certificate
+/// source. A *certificate* block that does not decode is an error, as
+/// is a block that never closes, because a truncated bundle is a
+/// shorter list of roots with nothing to say so. `parse_lenient` has
+/// the reasons when a caller wants to record the skipped blocks.
 pub fn certificates(text: &str) -> Result<Vec<Vec<u8>>, String> {
-    Ok(parse(text)?
+    let (blocks, skipped) = parse_lenient(text);
+    if let Some(fatal) = skipped.iter().find(|skipped|
+            skipped.truncated || CERTIFICATE_LABELS.contains(&skipped.label.as_str())) {
+        return Err(fatal.reason.clone());
+    }
+    Ok(blocks
         .into_iter()
-        .filter(|block| block.label == "CERTIFICATE"
-                || block.label == "X509 CERTIFICATE"
-                || block.label == "TRUSTED CERTIFICATE")
+        .filter(|block| CERTIFICATE_LABELS.contains(&block.label.as_str()))
         .map(|block| block.contents)
         .collect())
 }
@@ -346,6 +468,85 @@ mod tests {
         // Bad base64 inside a block must name the block.
         let bad = "-----BEGIN CERTIFICATE-----\nZm9!\n-----END CERTIFICATE-----\n";
         assert!(parse(bad).unwrap_err().contains("CERTIFICATE"));
+    }
+
+    /// Every line between BEGIN and END went into the base64 body, so a
+    /// block with RFC 1421 headers - OpenSSL's traditional encrypted
+    /// keys, `Proc-Type` and `DEK-Info` - failed with "Character ':' is
+    /// not base64". Every fixture in the tree is PKCS#8 or a
+    /// certificate, neither of which carries headers. The block here is
+    /// built from a real body with the two header lines OpenSSL writes
+    /// in front of it; `tests/test_pem_headers.rs` has the whole file.
+    #[test]
+    fn test_encapsulated_headers_are_kept_not_decoded() {
+        let der: Vec<u8> = (0..100u8).collect();
+        let body: String = wrap("RSA PRIVATE KEY", &der).lines()
+            .filter(|line| !line.starts_with("-----"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let text = format!(
+            "-----BEGIN RSA PRIVATE KEY-----\n\
+             Proc-Type: 4,ENCRYPTED\n\
+             DEK-Info: AES-128-CBC,473C23087C2FC0306FAE4F884802BE0F\n\
+             \n{body}-----END RSA PRIVATE KEY-----\n");
+        let blocks = parse(&text).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].contents, der);
+        assert_eq!(blocks[0].headers, vec![
+            ("Proc-Type".to_string(), "4,ENCRYPTED".to_string()),
+            ("DEK-Info".to_string(), "AES-128-CBC,473C23087C2FC0306FAE4F884802BE0F".to_string()),
+        ]);
+        assert_eq!(blocks[0].header("dek-info"),
+                   Some("AES-128-CBC,473C23087C2FC0306FAE4F884802BE0F"));
+        assert_eq!(blocks[0].header("Content-Domain"), None);
+
+        // A continuation line (leading whitespace) extends the previous
+        // header, joined by one space as RFC 822 folding has it, and a
+        // block without headers has none.
+        let folded = text.replace("DEK-Info: AES-128-CBC,", "DEK-Info: AES-128-CBC,\n  ");
+        let folded = parse(&folded).unwrap();
+        assert_eq!(folded[0].headers.len(), 2);
+        assert_eq!(folded[0].header("DEK-Info"),
+                   Some("AES-128-CBC, 473C23087C2FC0306FAE4F884802BE0F"));
+        assert_eq!(folded[0].contents, der);
+        assert!(parse(&wrap("CERTIFICATE", &der)).unwrap()[0].headers.is_empty());
+    }
+
+    /// `parse` was all-or-nothing, so `certificates` - and through it
+    /// `TrustStore::add_pem` - returned `Err` for a bundle in which one
+    /// non-certificate block did not decode, dropping every root in the
+    /// file. The existing bundle tests held only well-formed blocks.
+    #[test]
+    fn test_one_bad_block_does_not_drop_the_others() {
+        let text = format!("{}-----BEGIN RSA PRIVATE KEY-----\nZm9!\n\
+                            -----END RSA PRIVATE KEY-----\n{}",
+                           wrap("CERTIFICATE", b"first"), wrap("CERTIFICATE", b"second"));
+        // Strict: still an error, naming the block.
+        assert!(parse(&text).unwrap_err().contains("RSA PRIVATE KEY"));
+        // Lenient: both certificates, and the key reported beside them.
+        let (blocks, skipped) = parse_lenient(&text);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].label, "RSA PRIVATE KEY");
+        assert!(!skipped[0].truncated);
+        assert!(skipped[0].reason.contains("not base64"));
+        assert_eq!(certificates(&text).unwrap(),
+                   vec![b"first".to_vec(), b"second".to_vec()]);
+
+        // A certificate block that does not decode is still an error
+        // for `certificates`: a bundle must not silently shrink.
+        let bad_cert = text.replace("RSA PRIVATE KEY", "CERTIFICATE");
+        assert!(certificates(&bad_cert).is_err());
+        assert_eq!(parse_lenient(&bad_cert).0.len(), 2);
+
+        // And so is a truncated one, whatever its label: the block that
+        // follows the cut is still read, and the cut is reported.
+        let cut = format!("{}-----BEGIN RSA PRIVATE KEY-----\nZm9v\n{}",
+                          wrap("CERTIFICATE", b"first"), wrap("CERTIFICATE", b"second"));
+        let (blocks, skipped) = parse_lenient(&cut);
+        assert_eq!(blocks.len(), 2);
+        assert!(skipped[0].truncated);
+        assert!(certificates(&cut).is_err());
     }
 
     #[test]

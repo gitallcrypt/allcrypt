@@ -103,6 +103,7 @@ to be someone's CVE.**
 - [7zzk. RC6](#7zzk-rc6)
 - [7zzl. CAST-256](#7zzl-cast-256)
 - [7zzm. Database and forum password hashes](#7zzm-database-and-forum-password-hashes)
+- [7zzn. Rijndael's wider blocks](#7zzn-rijndaels-wider-blocks)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -2305,10 +2306,17 @@ build a well-formed three-certificate chain.
 common name consulted when a subjectAltName exists - every one of these has
 shipped.
 
-**Status: mitigated.** RFC 6125 rules, in `matches_hostname`: SAN wins over
-CN absolutely, the wildcard must be in the leftmost label, there must be at
+**Status: mitigated.** RFC 6125 rules, in `matches_hostname`: the common
+name is consulted only when the SAN carries no dNSName and no URI (RFC
+6125 6.4.4), and `verify::common_name_is_honoured` is the one place that
+rule lives - the name-constraint check folds the CN in under the same
+condition, so a constrained CA cannot issue `SAN=[rfc822Name],
+CN=evil.test` and have the CN escape a dNSName constraint, which it could
+while the two used different conditions. The wildcard must be in the leftmost label, there must be at
 least two labels after it, it covers exactly one label, and comparison is
-ASCII case-insensitive and nothing more. IP addresses match only
+ASCII case-insensitive and nothing more, on bytes rather than `str`
+slices, so a non-ASCII host name is a mismatch rather than a panic at a
+char boundary. IP addresses match only
 `iPAddress` entries, and an address with a leading zero in a component is
 refused because `010` is octal to some resolvers and decimal to others.
 
@@ -2706,15 +2714,16 @@ the `ssl` drop-in, the OpenSSL shim and the proxy.
 - **Downgrade.** A peer or an attacker steering to the weakest mutually
   supported suite. Since this library deliberately keeps broken suites,
   the default set must exclude them and enabling one must be explicit and
-  per-connection. **Status: mitigated for suites, open for the
-  version.** `Selection::modern`, the default, excludes everything
-  labelled `Broken` or `Insecure`, and reaching those takes
-  `Selection::legacy` or a name. **Open:** RFC 8446 4.1.3's downgrade
-  sentinel - the last eight bytes of the ServerHello random when a 1.3
-  server negotiates something lower - is neither written by our server
-  nor checked by our client. The 1.2 Finished still covers the hello, so
-  what is missing is the protection against a downgrade to a 1.2
-  handshake whose own authentication an attacker can break.
+  per-connection. **Status: mitigated.** `Selection::modern`, the
+  default, excludes everything labelled `Broken` or `Insecure`, and
+  reaching those takes `Selection::legacy` or a name. For the version,
+  RFC 8446 4.1.3's downgrade marker - `DOWNGRD` and a one or a zero in
+  the last eight bytes of the ServerHello random - is written by the
+  server whenever it negotiates below its own ceiling and refused by a
+  client that offered more; `handshake13::downgrade_marker` decides it
+  for both ends.
+  `tls::server::tests::test_a_stripped_supported_versions_is_detected_by_the_downgrade_marker`
+  strips `supported_versions` from a real hello between the two.
 - **Certificate validation that is on by default.** Easy to write an
   `SSLContext` shim where `verify_mode` silently does nothing. There must be
   a test that an untrusted certificate is *rejected*, not just that a good
@@ -2733,8 +2742,12 @@ the `ssl` drop-in, the OpenSSL shim and the proxy.
   captured session would not decrypt until it was written.
 
   Without it the construction is MAC-then-encrypt and the oracle is only
-  reduced. That path computes the MAC over a fixed length regardless of
-  what the padding claimed, never returns early between the padding check
+  reduced. That path runs the same number of hash compressions whatever
+  the padding claimed - the MAC over the content the padding left, then
+  dummy compressions up to the count of the longest content the record
+  could hold (the Lucky 13 paper's countermeasure; before this the MAC
+  ran over the padding-dependent length while this entry said it did
+  not) - never returns early between the padding check
   and the MAC check, and returns one error for every failure — a test
   asserts that six different corruptions produce the identical message. It
   is **not** constant time: the HMAC underneath is not, and a one-block
@@ -9525,6 +9538,48 @@ prefix, gives a self-consistent hash that verifies against nothing. The
 cost character outside phpass's 7..=30 is refused rather than run (2^31
 MD5s is not a hash, it is a hang), and a malformed setting is an error,
 not a panic.
+
+---
+
+## 7zzn. Rijndael's wider blocks
+
+`src/block_ciphers/rijndael.rs`: Rijndael at 160, 192, 224 and 256 bit
+blocks as well as AES's 128. Checked against Bouncy Castle 1.77 and
+phpseclib 1.0.23, which agree on every row of `vectors/rijndael.vec`.
+
+### Not constant time
+
+**Status: accepted.** This is the byte-oriented textbook cipher with a
+table S-box, so its memory accesses depend on the key and the data.
+AES has a bitsliced path and AES-NI for exactly that reason; the wider
+blocks have neither and are not on `scripts/ct_check.py`'s list. For
+the 128 bit block, use `aes`, which is the same cipher on a constant
+time path.
+
+### mcrypt's "RIJNDAEL_256" is not AES-256
+
+**Status: accepted** (it is the naming). mcrypt named its Rijndael
+variants by **block** size, so `MCRYPT_RIJNDAEL_256` is a 32 byte block,
+and code that chose it for "AES-256" made data only `rijndael-256` can
+read. AES-256 is `rijndael-128` (or `aes`) with a 32 byte key. The
+catalogue keeps mcrypt's names for that reason. `mcrypt_encrypt` also
+padded the data with zero bytes, not PKCS#7: decrypt such data in ECB
+or CBC and strip the zeros, knowing a plaintext that ended in zeros has
+lost them.
+
+### The IV is one block, so it is wider too
+
+**Status: mitigated.** CBC, CFB, OFB and CTR over a 32 byte block take a
+32 byte IV. A 16 byte one, carried over from AES code, is refused rather
+than padded; a Python test checks it.
+
+### No CMAC and no AEAD over the wider blocks
+
+**Status: mitigated, by refusing.** CMAC doubles in GF(2^b) with a
+constant SP 800-38B gives for 64 and 128 bit blocks only, and EAX, OCB,
+GCM and MGM inherit the same restriction. `Cmac::new` refuses a wider
+cipher rather than guessing a polynomial no other implementation uses,
+and the AEAD catalogue has no `rijndael-` names.
 
 ---
 

@@ -200,6 +200,29 @@ fn key_exchange(method: &str, group_exchange_sizes: &[usize]) {
     assert_session(&mut client, &server, "kex", method);
 }
 
+/// A client sending RFC 4419's pre-standard group exchange request
+/// (message 30, `n` alone) completes a session.
+///
+/// What was wrong: the server answered message 30 under a group
+/// exchange method with "out of order", so a client old enough to send
+/// only that form could not connect - and reaching old things is the
+/// point. The recorded sessions are against OpenSSH 10.0, which sends
+/// the standard request, so they could not reach the case. The
+/// exchange hash carries `n` alone for the old form, which the session
+/// completing proves on both sides at once.
+#[test]
+fn test_the_old_group_exchange_request_is_accepted() {
+    let host = key("ed25519");
+    let mut client = client_config("alice", &host);
+    client.kex = vec!["diffie-hellman-group-exchange-sha256"];
+    client.legacy_group_exchange_request = true;
+    let mut server = server_config(host);
+    server.group_exchange_sizes = vec![2048];
+    let (mut client, server) = exec(client, server, "old")
+        .unwrap_or_else(|e| panic!("old group exchange request: {e}"));
+    assert_session(&mut client, &server, "old", "old group exchange request");
+}
+
 fn leak(text: &str) -> &'static str {
     Box::leak(text.to_string().into_boxed_str())
 }

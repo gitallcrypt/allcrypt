@@ -228,14 +228,24 @@ mod tests {
         assert_ne!(up, down);
     }
 
-    /// `C` is the RFC's constant, written here once. A test rather than
-    /// a comment because the whole construction is deterministic under
-    /// any 32 bytes, so a mistyped one produces a working cipher that
-    /// nobody else can read.
+    /// `C` is the RFC's constant, read out of the vendored RFC 4357 at
+    /// test time: the `Where C = {0x69, ...}` initialiser in section
+    /// 2.3.2, which runs over four lines. The earlier form of this test
+    /// compared the constant with a second transcription in the test,
+    /// so one typo made in both places would have passed - and the
+    /// whole construction is deterministic under any 32 bytes, so a
+    /// mistyped one produces a working cipher that nobody else can
+    /// read.
     #[test]
     fn test_the_constant_is_the_rfcs() {
-        assert_eq!(hex(&C),
-                   "69007222 64c90423 8d3adb96 46e92ac4\
-                    18feac94 00ed0712 c086dcc2 ef4ca92b".replace(' ', ""));
+        let rfc = include_str!("../../rfcs/rfc4357.txt");
+        let start = rfc.find("Where C = {").expect("the constant's initialiser") + "Where C = {".len();
+        let end = rfc[start..].find('}').expect("the initialiser's end") + start;
+        let bytes: Vec<u8> = rfc[start..end].split(',')
+            .map(|item| item.trim().strip_prefix("0x").expect("a hex byte"))
+            .map(|digits| u8::from_str_radix(digits, 16).expect("two hex digits"))
+            .collect();
+        assert_eq!(bytes.len(), 32, "the RFC's initialiser has 32 bytes");
+        assert_eq!(hex(&C), hex(&bytes));
     }
 }

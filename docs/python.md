@@ -373,6 +373,21 @@ CAST-256 (`"cast256"`, or `"cast6"` as RFC 2612 also names it) is a
 16 byte key and the same key with sixteen zero bytes after it are the
 same key.
 
+Rijndael's wider blocks are `"rijndael-160"` to `"rijndael-256"`,
+named by block size in bits as mcrypt named them, each with a key of 16,
+20, 24, 28 or 32 bytes. `MCRYPT_RIJNDAEL_256` data is
+`"rijndael-256"`, not AES-256, and its IV is a whole 32 byte block:
+
+```python
+import allcrypt
+
+wide = allcrypt.Cipher("rijndael-256", bytes(32))
+assert wide.block_size == 32
+assert wide.encrypt("ecb", bytes(32)).hex().startswith("c6227e7740b7e53b")
+assert wide.decrypt("cbc", wide.encrypt("cbc", bytes(64), iv=bytes(32)),
+                    iv=bytes(32)) == bytes(64)
+```
+
 RC6 is the AES finalist from the same family as RC5: a 128 bit block, twenty
 rounds and a key of 1 to 255 bytes. It takes every mode a 128 bit
 cipher takes, including `rc6-eax`, `rc6-mgm` and `rc6-ocb`:
@@ -2961,7 +2976,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.1.0"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.2.0"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and

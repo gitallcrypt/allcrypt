@@ -633,10 +633,18 @@ impl Server {
         let is_gex = matches!(method, Method::DhGroupExchange { .. });
         let mut reader = Reader::new(&payload[1..]);
         match (exchange.stage, kind) {
-            (Stage::Method, msg::KEX_DH_GEX_REQUEST) if is_gex => {
-                let min = reader.uint32()?;
-                let preferred = reader.uint32()?;
-                let max = reader.uint32()?;
+            (Stage::Method, msg::KEX_DH_GEX_REQUEST | msg::KEX_DH_GEX_REQUEST_OLD) if is_gex => {
+                // The old form (RFC 4419 section 5, message 30) carries
+                // `n` alone; its bounds are the ones the RFC names, and
+                // the exchange hash will carry only `n`. Older clients
+                // still send it, and reaching old things is the point.
+                let old = kind == msg::KEX_DH_GEX_REQUEST_OLD;
+                let (min, preferred, max) = if old {
+                    let preferred = reader.uint32()?;
+                    (1024, preferred, 8192)
+                } else {
+                    (reader.uint32()?, reader.uint32()?, reader.uint32()?)
+                };
                 reader.finish("a group exchange request")?;
                 if !(min <= preferred && preferred <= max) {
                     return Err(format!("SSH: a group exchange request of {min} <= \
@@ -650,7 +658,7 @@ impl Server {
                 let mut writer = Writer::new();
                 writer.byte(msg::KEX_31)
                     .mpint(&group.p().to_bytes_be()).mpint(&group.g().to_bytes_be());
-                exchange.gex = Some(GroupExchange { min, preferred, max, group });
+                exchange.gex = Some(GroupExchange { min, preferred, max, group, old });
                 exchange.stage = Stage::GexInit;
                 self.send_now(&writer.finish())
             }

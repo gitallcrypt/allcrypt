@@ -416,11 +416,10 @@ mod tests {
                 Ok(())
             })();
             // Whatever it decided, it must not have panicked - and a
-            // truncated input must not have succeeded.
-            if cut < bytes.len() {
-                assert!(outcome.is_err() || cut == bytes.len(),
-                        "a truncation at {} parsed as complete", cut);
-            }
+            // truncated input must not have succeeded. Every `cut` in the
+            // range is a truncation, so there is no complete case to
+            // exempt.
+            assert!(outcome.is_err(), "a truncation at {} parsed as complete", cut);
         }
     }
 }

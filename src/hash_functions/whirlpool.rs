@@ -271,8 +271,12 @@ pub struct Whirlpool {
     /// The chaining value, and the cipher's key.
     hash: [u64; 8],
     buffer: BlockBuffer<BLOCK>,
-    /// **256 bits of bit count.** See the module comment: a 64 bit
-    /// field is wrong for every message, not just long ones.
+    /// **256 bits of bit count**, of which this holds the low 128 and
+    /// the padding writes the rest as zeros. See the module comment:
+    /// for any message under 2^64 bits a 64 bit field in the last
+    /// eight of the 32 bytes is byte-for-byte the same, so the width
+    /// is for messages no machine holds; what the vectors check is
+    /// *where* the field sits.
     bits: u128,
 }
 

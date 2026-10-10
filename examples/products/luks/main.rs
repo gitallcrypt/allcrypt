@@ -301,34 +301,24 @@ impl SectorCipher {
                 };
                 data.copy_from_slice(&out);
             }
+            // The library's modes, not a loop of single blocks: CBC
+            // decryption and ECB have every block of the sector in hand,
+            // and the modes hand them to `decrypt_blocks` together, which
+            // is where AES's constant-time path lives.
             Chain::Cbc => {
-                let mut previous = iv;
-                let mut out = Vec::with_capacity(size);
-                for block in data.chunks_mut(size) {
-                    out.clear();
-                    if encrypt {
-                        block.iter_mut().zip(&previous).for_each(|(a, b)| *a ^= b);
-                        self.data.block_encrypt(block, &mut out);
-                        block.copy_from_slice(&out);
-                        previous.copy_from_slice(block);
-                    } else {
-                        self.data.block_decrypt(block, &mut out);
-                        out.iter_mut().zip(&previous).for_each(|(a, b)| *a ^= b);
-                        previous.copy_from_slice(block);
-                        block.copy_from_slice(&out);
-                    }
+                let mut out = Vec::with_capacity(data.len());
+                if encrypt {
+                    self.data.cbc_encrypt(data, &mut out, iv)?;
+                } else {
+                    self.data.cbc_decrypt(data, &mut out, iv)?;
                 }
+                data.copy_from_slice(&out);
             }
             Chain::Ecb => {
-                let mut out = Vec::with_capacity(size);
-                for block in data.chunks_mut(size) {
-                    out.clear();
-                    if encrypt {
-                        self.data.block_encrypt(block, &mut out);
-                    } else {
-                        self.data.block_decrypt(block, &mut out);
-                    }
-                    block.copy_from_slice(&out);
+                if encrypt {
+                    self.data.encrypt_blocks(data)?;
+                } else {
+                    self.data.decrypt_blocks(data)?;
                 }
             }
         }
@@ -350,9 +340,18 @@ impl SectorCipher {
 // --------------------------------------------------------- the image ---
 
 fn read_at(image: &[u8], offset: usize, length: usize) -> Result<&[u8], String> {
-    image.get(offset..offset + length).ok_or_else(|| format!(
-        "LUKS: the image ends before byte {} - truncated, or not this header's disk.",
-        offset + length))
+    offset.checked_add(length).and_then(|end| image.get(offset..end)).ok_or_else(|| format!(
+        "LUKS: the image ends before byte {} + {length} - truncated, or not this header's \
+         disk.", offset))
+}
+
+/// The sector sizes the kernel's dm-crypt and cryptsetup accept.
+fn check_sector_size(sector_size: usize) -> Result<(), String> {
+    if ![512, 1024, 2048, 4096].contains(&sector_size) {
+        return Err(format!("LUKS: a sector size of {sector_size}; 512, 1024, 2048 and 4096 are \
+                            possible."));
+    }
+    Ok(())
 }
 
 fn be32(bytes: &[u8], at: usize) -> u32 {
@@ -379,7 +378,11 @@ fn put_c_string(out: &mut [u8], text: &str) -> Result<(), String> {
 /// Decrypt a keyslot's area and merge it into a candidate volume key.
 fn unlock_area(image: &[u8], offset: usize, spec: &CipherSpec, area_key: &[u8], key_len: usize,
                stripes: usize, af_hash: &str) -> Result<Vec<u8>, String> {
-    let length = (key_len * stripes).div_ceil(SECTOR) * SECTOR;
+    // Both counts come from the header, and their product sizes the
+    // read; the library's AF merge checks them again.
+    let length = key_len.checked_mul(stripes).and_then(|n| n.checked_add(SECTOR - 1))
+        .map(|n| n / SECTOR * SECTOR)
+        .ok_or("LUKS: a keyslot's key size and stripes multiply past memory.")?;
     let mut material = read_at(image, offset, length)?.to_vec();
     SectorCipher::new(spec, area_key)?.crypt_area(0, &mut material, SECTOR, false)?;
     af_merge(&material, key_len, stripes, af_hash)
@@ -399,8 +402,14 @@ struct Unlocked {
 
 impl Unlocked {
     fn decrypt_data(&self, image: &[u8]) -> Result<Vec<u8>, String> {
+        check_sector_size(self.sector_size)?;
+        if self.data_offset > image.len() {
+            return Err(format!("LUKS: the data starts at byte {}, past the end of the {} byte \
+                                image.", self.data_offset, image.len()));
+        }
         let end = match self.data_length {
-            Some(length) => self.data_offset + length,
+            Some(length) => self.data_offset.checked_add(length)
+                .ok_or("LUKS: the segment's offset and size add past memory.")?,
             None => image.len() - (image.len() - self.data_offset) % self.sector_size,
         };
         let mut data = read_at(image, self.data_offset, end - self.data_offset)?.to_vec();
@@ -519,6 +528,11 @@ struct Luks2 {
 const LUKS2_BINARY: usize = 4096;
 /// The checksum field's place in the binary header.
 const LUKS2_CSUM: core::ops::Range<usize> = 448..512;
+/// The header sizes cryptsetup allows: binary header plus JSON area,
+/// 16 KiB to 4 MiB in powers of two. The secondary copy sits right
+/// after the primary's area, so these are also where to look for it.
+const LUKS2_HEADER_SIZES: [usize; 9] = [16384, 32768, 65536, 131072, 262144, 524288, 1048576,
+                                        2097152, 4194304];
 
 impl Luks2 {
     /// The primary header, or the secondary if the primary is damaged.
@@ -526,10 +540,7 @@ impl Luks2 {
         match Luks2::parse_at(image, 0) {
             Ok(header) => Ok(header),
             Err(primary) => {
-                // The secondary sits right after the primary's area,
-                // whose size is one of the allowed values.
-                for size in [16384usize, 32768, 65536, 131072, 262144, 524288, 1048576,
-                             2097152, 4194304] {
+                for size in LUKS2_HEADER_SIZES {
                     if let Ok(header) = Luks2::parse_at(image, size) {
                         return Ok(header);
                     }
@@ -545,7 +556,13 @@ impl Luks2 {
         if &b[..6] != magic || u16::from_be_bytes([b[6], b[7]]) != 2 {
             return Err("LUKS: not a LUKS2 header.".to_string());
         }
-        let hdr_size = be64(b, 8) as usize;
+        // The checksum is computed over `hdr_size` bytes, so the size
+        // has to be checked before it sizes anything: a small one would
+        // not even hold the checksum field or the JSON area.
+        let hdr_size = usize::try_from(be64(b, 8)).ok()
+            .filter(|size| LUKS2_HEADER_SIZES.contains(size))
+            .ok_or_else(|| format!("LUKS2: a header size of {} is not one cryptsetup writes \
+                                    (16 KiB to 4 MiB, powers of two).", be64(b, 8)))?;
         if be64(b, 256) as usize != offset {
             return Err("LUKS2: the header's offset field disagrees with where it is.".to_string());
         }
@@ -622,6 +639,8 @@ impl Luks2 {
             return Err("LUKS2: the segment is not a crypt segment.".to_string());
         }
         let size = segment.field("size")?;
+        let sector_size = segment.field("sector_size")?.as_u64()?;
+        check_sector_size(usize::try_from(sector_size).unwrap_or(0))?;
         Ok(Unlocked {
             version: 2,
             keyslot: keyslot.parse().unwrap_or(0),
@@ -630,7 +649,7 @@ impl Luks2 {
             data_offset: segment.field("offset")?.as_u64()? as usize,
             data_length: if size.as_str().ok() == Some("dynamic") { None }
                          else { Some(size.as_u64()? as usize) },
-            sector_size: segment.field("sector_size")?.as_u64()? as usize,
+            sector_size: sector_size as usize,
             iv_tweak: segment.field("iv_tweak")?.as_u64()?,
         })
     }
@@ -1047,6 +1066,36 @@ mod tests {
         }
     }
 
+    /// CBC and ECB sectors went through `block_encrypt` one block at a
+    /// time, which bypasses the cipher's `encrypt_blocks` and with it
+    /// AES's constant-time path; the result was right, so the fixtures
+    /// could not tell. The sector cipher now goes through the library's
+    /// modes, and this pins each chain and IV mode to the mode called
+    /// directly on the same cipher, both ways round.
+    #[test]
+    fn test_cbc_and_ecb_sectors_are_the_library_modes() {
+        let key = [7u8; 32];
+        let sector: Vec<u8> = (0..512u32).map(|i| (i * 3 % 251) as u8).collect();
+        for spec in ["aes-cbc-essiv:sha256", "aes-cbc-plain64", "serpent-cbc-plain",
+                     "aes-ecb", "twofish-ecb"] {
+            let spec = CipherSpec::parse_joined(spec).unwrap();
+            let mut ours = SectorCipher::new(&spec, &key).unwrap();
+            let iv = ours.iv(5);
+            let mut sealed = sector.clone();
+            ours.crypt(5, &mut sealed, true).unwrap();
+            let mut expected = Vec::new();
+            let mut cipher = AnyBlockCipher::new(&spec.cipher, &key, None).unwrap();
+            if spec.chain == Chain::Cbc {
+                cipher.cbc_encrypt(&sector, &mut expected, iv).unwrap();
+            } else {
+                cipher.ecb_encrypt(&sector, &mut expected).unwrap();
+            }
+            assert_eq!(sealed, expected, "{}", spec.joined());
+            ours.crypt(5, &mut sealed, false).unwrap();
+            assert_eq!(sealed, sector, "{}", spec.joined());
+        }
+    }
+
     /// Images `cryptsetup` 2.8 made, kept sparse in `fixtures/luks/`:
     /// LUKS1 and LUKS2, PBKDF2 and Argon2, 512 and 4096 byte sectors,
     /// with data `cryptsetup reencrypt --encrypt` wrote in userspace.
@@ -1082,5 +1131,102 @@ mod tests {
         assert_eq!(open(&image, b"pw").unwrap().volume_key, key);
         image[16384 + 300] ^= 1;
         assert!(open(&image, b"pw").err().unwrap().contains("checksum"));
+    }
+
+    /// The binary header's size field says how many bytes the checksum
+    /// covers, and the buffer of that size was read and checksummed
+    /// before the size was looked at. A size under 512 panicked on the
+    /// checksum field's slice; one between 512 and 4095 passed a
+    /// checksum computed over those bytes - which the writer of the
+    /// header controls - and panicked on the JSON area's slice. Every
+    /// fixture and every image `format` writes has a 16 KiB header, so
+    /// no test had another size. The size is now checked against the
+    /// values cryptsetup allows before any read it sizes.
+    #[test]
+    fn test_luks2_header_size_is_checked_before_it_sizes_anything() {
+        let params = small(2, "aes-xts-plain64", "pbkdf2", 512);
+        let (image, key) = format(&params, b"pw", &[1u8; 4096], &mut counter_stream(3))
+            .unwrap();
+        // Both copies, the checksum made right where its field is in
+        // the bytes it covers.
+        let with_size = |size: u64| {
+            let mut image = image.clone();
+            for at in [0usize, 16384] {
+                image[at + 8..at + 16].copy_from_slice(&size.to_be_bytes());
+                if (512..=image.len() as u64 - at as u64).contains(&size) {
+                    let mut copy = image[at..at + size as usize].to_vec();
+                    copy[LUKS2_CSUM].fill(0);
+                    let checksum = hash("sha256", &[&copy]).unwrap();
+                    image[at + 448..at + 480].copy_from_slice(&checksum);
+                }
+            }
+            image
+        };
+        for size in [0u64, 256, 512, 1024, 4096, 8192, 12288, 16383, 24576, u64::MAX] {
+            let error = open(&with_size(size), b"pw").err().unwrap_or_else(|| panic!("{size}"));
+            assert!(error.contains("header size"), "{size}: {error}");
+        }
+        // A primary header with a wrong size is damaged, and the
+        // secondary stands in for it.
+        let mut primary_only = image.clone();
+        primary_only[8..16].copy_from_slice(&8192u64.to_be_bytes());
+        assert_eq!(open(&primary_only, b"pw").unwrap().volume_key, key);
+    }
+
+    /// `from` replaced by `to` in both copies of a LUKS2 header's JSON,
+    /// the checksums made right again. The JSON area is zero padded,
+    /// so the text may change length.
+    fn with_json(image: &[u8], from: &str, to: &str) -> Vec<u8> {
+        let mut image = image.to_vec();
+        for at in [0usize, 16384] {
+            let json = c_string(&image[at + LUKS2_BINARY..at + 16384]);
+            assert!(json.contains(from), "{from}");
+            let json = json.replace(from, to);
+            image[at + LUKS2_BINARY..at + 16384].fill(0);
+            image[at + LUKS2_BINARY..at + LUKS2_BINARY + json.len()]
+                .copy_from_slice(json.as_bytes());
+            image[at + 448..at + 512].fill(0);
+            let checksum = hash("sha256", &[&image[at..at + 16384]]).unwrap();
+            image[at + 448..at + 480].copy_from_slice(&checksum);
+        }
+        image
+    }
+
+    /// The segment's `sector_size` and `offset` came out of the JSON
+    /// unchecked: a sector size of 0 panicked in `chunks_mut`, an offset
+    /// past the image underflowed `image.len() - data_offset`, and an
+    /// offset plus a size could overflow. The fixtures are cryptsetup's
+    /// and this example's own images, whose segments are all in range,
+    /// so no test had a segment outside it.
+    #[test]
+    fn test_a_segment_outside_the_image_or_the_format_is_refused() {
+        let params = small(2, "aes-xts-plain64", "pbkdf2", 512);
+        let (image, key) = format(&params, b"pw", &[1u8; 4096], &mut counter_stream(3))
+            .unwrap();
+        let data_offset = open(&image, b"pw").unwrap().data_offset;
+        for bad in ["0", "513", "8192", "18446744073709551615"] {
+            let changed = with_json(&image, "\"sector_size\":512", &format!("\"sector_size\":{bad}"));
+            let error = open(&changed, b"pw").err().unwrap_or_else(|| panic!("{bad}"));
+            assert!(error.contains("sector size"), "{bad}: {error}");
+        }
+        let offset = format!("\"offset\":\"{data_offset}\"");
+        let beyond = with_json(&image, &offset, &format!("\"offset\":\"{}\"", image.len() + 1));
+        let unlocked = open(&beyond, b"pw").unwrap();
+        assert_eq!(unlocked.volume_key, key);
+        let error = unlocked.decrypt_data(&image).err().unwrap();
+        assert!(error.contains("past the end"), "{error}");
+        let huge = with_json(&image, "\"size\":\"dynamic\"",
+                             "\"size\":\"18446744073709551615\"");
+        let error = open(&huge, b"pw").unwrap().decrypt_data(&image).err().unwrap();
+        assert!(error.contains("past memory"), "{error}");
+
+        // LUKS1's stripes count multiplies into the keyslot area's
+        // length, which has to lie inside the image.
+        let params = small(1, "aes-xts-plain64", "pbkdf2", 512);
+        let (mut image, _) = format(&params, b"pw", &[1u8; 4096], &mut counter_stream(3))
+            .unwrap();
+        image[208 + 44..208 + 48].copy_from_slice(&u32::MAX.to_be_bytes());
+        let error = open(&image, b"pw").err().unwrap();
+        assert!(error.contains("the image ends before"), "{error}");
     }
 }

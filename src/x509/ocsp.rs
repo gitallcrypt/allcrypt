@@ -276,7 +276,9 @@ fn hash_name(oid: Oid<'_>) -> Result<&'static str, String> {
     }
 }
 
-fn hash_oid(hash: &str) -> Result<&'static [u8], String> {
+/// The AlgorithmIdentifier OID for a CertID hash name. The one table for
+/// reading a response and for writing one in `builder`.
+pub(crate) fn hash_oid(hash: &str) -> Result<&'static [u8], String> {
     match hash {
         "sha1" => Ok(oids::SHA1),
         "sha256" => Ok(oids::SHA256),
@@ -505,10 +507,33 @@ fn read_single_response<'a>(reader: &mut Reader<'a>)
     } else {
         None
     };
-    // singleExtensions [1] EXPLICIT, read past: the ones defined here
-    // (archive cutoff, CRL references) do not change the status.
+    // singleExtensions [1] EXPLICIT. None of the ones RFC 6960 defines
+    // (archive cutoff, CRL references) changes the status, so none is
+    // acted on - but a *critical* one is the responder saying the
+    // answer cannot be understood without it, and a CRL entry with an
+    // unrecognised critical extension is refused on the same grounds.
     if single.peek_tag() == Some(Tag::context(1, true)) {
-        single.read_any()?;
+        let mut wrapper = single.read_constructed(Tag::context(1, true))?;
+        let mut list = wrapper.read_sequence()?;
+        wrapper.finish()?;
+        while !list.is_empty() {
+            let mut extension = list.read_sequence()?;
+            let oid = extension.read_oid()?;
+            let critical = if extension.peek_tag()
+                    == Some(Tag::universal(asn1::tag::BOOLEAN)) {
+                extension.read_bool()?
+            } else {
+                false
+            };
+            extension.read_octet_string()?;
+            extension.finish()?;
+            if critical {
+                return Err(format!(
+                    "A SingleResponse carries a critical extension this does not \
+                     recognise ({}), so what the answer means cannot be \
+                     established.", oid));
+            }
+        }
     }
     single.finish()?;
 
@@ -794,10 +819,8 @@ mod tests {
     /// readings are plausible and only one matches anybody.
     #[test]
     fn test_the_key_hash_is_over_the_bit_string_contents() {
-        let key = TestKey::new();
         let der = tests_support::leaf(|_| {});
         let certificate = Certificate::parse(&der).unwrap();
-        let _ = key;
 
         let bits = public_key_bits(&certificate).unwrap();
 
@@ -1288,6 +1311,36 @@ mod tests {
         // A caller that sent no nonce does not mind a response carrying
         // one, since it cannot be checked either way.
         assert_eq!(responder.check(&matching, None), Status::NotRevoked);
+    }
+
+    /// A critical singleExtension this code does not understand makes
+    /// the answer unusable, as it does for a CRL entry.
+    ///
+    /// What was wrong: `read_single_response` read past the whole
+    /// `singleExtensions` field without looking inside, so a critical
+    /// extension - the responder saying the status cannot be understood
+    /// without it - was ignored and the status taken at face value,
+    /// while `crl.rs` refuses a CRL entry carrying an unrecognised
+    /// critical extension. The builder wrote no singleExtensions, so no
+    /// test could carry one. A non-critical one is still read past.
+    #[test]
+    fn test_a_critical_single_extension_is_refused() {
+        let responder = Responder::new();
+        let private_oid = asn1::encode_oid("1.3.6.1.4.1.99999.7").unwrap();
+
+        let critical = responder.response(OcspStatus::Good, |b| {
+            b.responses[0].extensions = vec![(private_oid.clone(), true, vec![0x05, 0x00])];
+        });
+        match responder.check(&critical, None) {
+            Status::Unknown(why) => assert!(why.contains("critical extension"), "{}", why),
+            other => panic!("expected unknown, got {:?}", other),
+        }
+
+        // The same extension marked non-critical changes nothing.
+        let harmless = responder.response(OcspStatus::Good, |b| {
+            b.responses[0].extensions = vec![(private_oid.clone(), false, vec![0x05, 0x00])];
+        });
+        assert_eq!(responder.check(&harmless, None), Status::NotRevoked);
     }
 
     /// The nonce is checked **after** the signature. An unsigned nonce

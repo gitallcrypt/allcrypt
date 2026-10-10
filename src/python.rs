@@ -39,7 +39,6 @@ use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
 use crate::api::{self, AnyBlockCipher, AnyHash, AnyStreamCipher, CipherStream, Mode};
 use crate::block_ciphers::BlockCipher;
 use crate::hash_functions::HashFunction;
-use crate::block_ciphers::gost as allcrypt_gost;
 use crate::mac::Hmac as RsHmac;
 use crate::registry;
 use crate::Mac;
@@ -398,7 +397,7 @@ impl AeadEncryptor {
     }
 
     fn __repr__(&self) -> String {
-        "<allcrypt.AeadEncryptor aes-gcm>".to_string()
+        format!("<allcrypt.AeadEncryptor {}>", self.inner.name())
     }
 }
 
@@ -411,10 +410,11 @@ impl AeadEncryptor {
 /// `decrypt` and no streaming pair at all.
 fn refuse_if_it_cannot_stream(stream: &api::AeadStream) -> PyResult<()> {
     if stream.buffers_everything() {
-        return Err(err("CCM cannot be streamed: its authentication starts \
-                        with the message's length, so nothing can be \
-                        processed until all of it is here. Use encrypt() or \
-                        decrypt(), which take the whole message.".to_string()));
+        return Err(err(format!(
+            "{} cannot be streamed here: it buffers the whole message before \
+             producing anything (see AeadStream::buffers_everything in the \
+             Rust API for why each mode does). Use encrypt() or decrypt(), \
+             which take the whole message.", stream.name())));
     }
     Ok(())
 }
@@ -428,6 +428,10 @@ fn refuse_if_it_cannot_stream(stream: &api::AeadStream) -> PyResult<()> {
 pub struct Aead {
     name: String,
     key: Vec<u8>,
+}
+
+impl Drop for Aead {
+    fn drop(&mut self) { api::wipe(&mut self.key); }
 }
 
 #[pymethods]
@@ -544,6 +548,12 @@ pub struct Cipher {
     block_size: usize,
 }
 
+// The key is kept to build each stream from; it is wiped when the
+// object goes, as the `api` key types' private halves are.
+impl Drop for Cipher {
+    fn drop(&mut self) { api::wipe(&mut self.key); }
+}
+
 impl Cipher {
     fn stream(&self, mode: &str, iv: Option<Bytes>, decrypting: bool) -> PyResult<Encryptor> {
         let cipher = AnyBlockCipher::new(&self.name, &self.key, self.param.as_deref())
@@ -648,14 +658,14 @@ impl PyStreamCipher {
         Ok(PyBytes::new(py, &out))
     }
 
-    fn encrypt<'py>(&mut self, py: Python<'py>, data: Bytes) -> Bound<'py, PyBytes> {
-        let out = py.allow_threads(|| self.inner.encrypt(&data));
-        PyBytes::new(py, &out)
+    fn encrypt<'py>(&mut self, py: Python<'py>, data: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.encrypt(&data)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
     }
 
-    fn decrypt<'py>(&mut self, py: Python<'py>, data: Bytes) -> Bound<'py, PyBytes> {
-        let out = py.allow_threads(|| self.inner.decrypt(&data));
-        PyBytes::new(py, &out)
+    fn decrypt<'py>(&mut self, py: Python<'py>, data: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.decrypt(&data)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
     }
 
     /// Whether encrypting and decrypting are one operation (`update`).
@@ -694,7 +704,7 @@ fn unpad_pkcs7<'py>(py: Python<'py>, data: Bytes, block_size: usize) -> PyResult
 #[pyfunction]
 fn cmac<'py>(py: Python<'py>, cipher: &str, key: Bytes, data: Bytes)
              -> PyResult<Bound<'py, PyBytes>> {
-    let out = crate::mac::cmac::cmac(cipher, &key, &data).map_err(err)?;
+    let out = py.allow_threads(|| api::cmac(cipher, &key, &data)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -704,7 +714,9 @@ fn cmac<'py>(py: Python<'py>, cipher: &str, key: Bytes, data: Bytes)
 #[pyo3(signature = (cipher, key, data, iv = None, zero_pad = false))]
 fn cbc_mac<'py>(py: Python<'py>, cipher: &str, key: Bytes, data: Bytes, iv: Option<Bytes>,
                 zero_pad: bool) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::cbc_mac(cipher, &key, &data, iv.as_deref(), zero_pad).map_err(err)?;
+    let out = py.allow_threads(
+        || api::cbc_mac(cipher, &key, &data, iv.as_deref(), zero_pad))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -722,7 +734,7 @@ fn office_xor_verifier(password: Bytes) -> PyResult<u16> {
 #[pyo3(signature = (password, data, index = 0))]
 fn office_xor_decrypt<'py>(py: Python<'py>, password: Bytes, data: Bytes, index: usize)
                            -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::office_xor_decrypt(&password, &data, index).map_err(err)?;
+    let out = py.allow_threads(|| api::office_xor_decrypt(&password, &data, index)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -730,7 +742,7 @@ fn office_xor_decrypt<'py>(py: Python<'py>, password: Bytes, data: Bytes, index:
 #[pyo3(signature = (password, data, index = 0))]
 fn office_xor_encrypt<'py>(py: Python<'py>, password: Bytes, data: Bytes, index: usize)
                            -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::office_xor_encrypt(&password, &data, index).map_err(err)?;
+    let out = py.allow_threads(|| api::office_xor_encrypt(&password, &data, index)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -800,7 +812,8 @@ fn umac<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, data: Bytes, tag_len: us
 #[pyo3(signature = (ikm, length, salt = None, info = None, digestmod = "sha256"))]
 fn hkdf<'py>(py: Python<'py>, ikm: Bytes, length: usize, salt: Option<Bytes>,
              info: Option<Bytes>, digestmod: &str) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::hkdf(digestmod, salt.as_deref().unwrap_or(&[]), &ikm, info.as_deref().unwrap_or(&[]), length)
+    let out = py.allow_threads(
+        || api::hkdf(digestmod, salt.as_deref().unwrap_or(&[]), &ikm, info.as_deref().unwrap_or(&[]), length))
         .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
@@ -811,8 +824,8 @@ fn hkdf<'py>(py: Python<'py>, ikm: Bytes, length: usize, salt: Option<Bytes>,
 fn kbkdf_counter<'py>(py: Python<'py>, prf: &str, key: Bytes, length: usize,
                       label: Option<Bytes>, context: Option<Bytes>)
                       -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::kbkdf_counter(prf, &key, label.as_deref().unwrap_or(&[]),
-                                 context.as_deref().unwrap_or(&[]), length).map_err(err)?;
+    let out = py.allow_threads(|| api::kbkdf_counter(prf, &key, label.as_deref().unwrap_or(&[]),
+                                 context.as_deref().unwrap_or(&[]), length)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -822,9 +835,9 @@ fn kbkdf_counter<'py>(py: Python<'py>, prf: &str, key: Bytes, length: usize,
 fn kbkdf_feedback<'py>(py: Python<'py>, prf: &str, key: Bytes, length: usize,
                        iv: Option<Bytes>, label: Option<Bytes>, context: Option<Bytes>)
                        -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::kbkdf_feedback(prf, &key, iv.as_deref().unwrap_or(&[]),
+    let out = py.allow_threads(|| api::kbkdf_feedback(prf, &key, iv.as_deref().unwrap_or(&[]),
                                   label.as_deref().unwrap_or(&[]),
-                                  context.as_deref().unwrap_or(&[]), length).map_err(err)?;
+                                  context.as_deref().unwrap_or(&[]), length)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -833,7 +846,8 @@ fn kbkdf_feedback<'py>(py: Python<'py>, prf: &str, key: Bytes, length: usize,
 #[pyo3(signature = (z, length, other_info = None, hash = "sha256"))]
 fn concat_kdf<'py>(py: Python<'py>, z: Bytes, length: usize, other_info: Option<Bytes>,
                    hash: &str) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::concat_kdf(hash, &z, other_info.as_deref().unwrap_or(&[]), length)
+    let out = py.allow_threads(
+        || api::concat_kdf(hash, &z, other_info.as_deref().unwrap_or(&[]), length))
         .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
@@ -843,22 +857,27 @@ fn concat_kdf<'py>(py: Python<'py>, z: Bytes, length: usize, other_info: Option<
 #[pyo3(signature = (z, length, shared_info = None, hash = "sha256"))]
 fn x963_kdf<'py>(py: Python<'py>, z: Bytes, length: usize, shared_info: Option<Bytes>,
                  hash: &str) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::x963_kdf(hash, &z, shared_info.as_deref().unwrap_or(&[]), length)
+    let out = py.allow_threads(
+        || api::x963_kdf(hash, &z, shared_info.as_deref().unwrap_or(&[]), length))
         .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
 /// RFC 3961's n-fold.
 #[pyfunction]
-fn kerberos_nfold<'py>(py: Python<'py>, data: Bytes, length: usize) -> Bound<'py, PyBytes> {
-    PyBytes::new(py, &api::kerberos_nfold(&data, length))
+fn kerberos_nfold<'py>(py: Python<'py>, data: Bytes, length: usize)
+                      -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kerberos_nfold(&data, length)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
 }
 
 /// RFC 3961's DR under a block cipher.
 #[pyfunction]
 fn kerberos_derive_random<'py>(py: Python<'py>, cipher: &str, key: Bytes, constant: Bytes,
                                length: usize) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::kerberos_derive_random(cipher, &key, &constant, length).map_err(err)?;
+    let out = py.allow_threads(
+        || api::kerberos_derive_random(cipher, &key, &constant, length))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -885,7 +904,9 @@ fn kerberos_random_to_key<'py>(py: Python<'py>, cipher: &str, data: Bytes)
 #[pyfunction]
 fn openpgp_s2k<'py>(py: Python<'py>, hash_name: &str, passphrase: Bytes, salt: Bytes,
                     count: usize, length: usize) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::openpgp_s2k(hash_name, &passphrase, &salt, count, length).map_err(err)?;
+    let out = py.allow_threads(
+        || api::openpgp_s2k(hash_name, &passphrase, &salt, count, length))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -900,7 +921,7 @@ fn openpgp_s2k_count(coded: u8) -> usize {
 #[pyfunction]
 fn sevenzip_aes_key<'py>(py: Python<'py>, password: Bytes, salt: Bytes, cycles: u8)
                          -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::sevenzip_aes_key(&password, &salt, cycles).map_err(err)?;
+    let out = py.allow_threads(|| api::sevenzip_aes_key(&password, &salt, cycles)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -908,7 +929,7 @@ fn sevenzip_aes_key<'py>(py: Python<'py>, password: Bytes, salt: Bytes, cycles: 
 #[pyfunction]
 fn keepass_aes_kdf<'py>(py: Python<'py>, key: Bytes, seed: Bytes, rounds: u64)
                         -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::keepass_aes_kdf(&key, &seed, rounds).map_err(err)?;
+    let out = py.allow_threads(|| api::keepass_aes_kdf(&key, &seed, rounds)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -917,7 +938,7 @@ fn keepass_aes_kdf<'py>(py: Python<'py>, key: Bytes, seed: Bytes, rounds: u64)
 #[pyo3(signature = (key, stripes = 4000, hash = "sha256"))]
 fn luks_af_split<'py>(py: Python<'py>, key: Bytes, stripes: usize, hash: &str)
                       -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::luks_af_split(&key, stripes, hash).map_err(err)?;
+    let out = py.allow_threads(|| api::luks_af_split(&key, stripes, hash)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -926,7 +947,9 @@ fn luks_af_split<'py>(py: Python<'py>, key: Bytes, stripes: usize, hash: &str)
 #[pyo3(signature = (material, key_len, stripes = 4000, hash = "sha256"))]
 fn luks_af_merge<'py>(py: Python<'py>, material: Bytes, key_len: usize, stripes: usize,
                       hash: &str) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::luks_af_merge(&material, key_len, stripes, hash).map_err(err)?;
+    let out = py.allow_threads(
+        || api::luks_af_merge(&material, key_len, stripes, hash))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -987,7 +1010,9 @@ fn wpa_pmkid<'py>(py: Python<'py>, pmk: Bytes, aa: Bytes, spa: Bytes)
 #[pyfunction]
 fn bitlocker_encrypt_sector<'py>(py: Python<'py>, method: &str, key: Bytes, byte_offset: u64,
                                  sector: Bytes) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::bitlocker_encrypt_sector(method, &key, byte_offset, &sector).map_err(err)?;
+    let out = py.allow_threads(
+        || api::bitlocker_encrypt_sector(method, &key, byte_offset, &sector))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -995,7 +1020,9 @@ fn bitlocker_encrypt_sector<'py>(py: Python<'py>, method: &str, key: Bytes, byte
 #[pyfunction]
 fn bitlocker_decrypt_sector<'py>(py: Python<'py>, method: &str, key: Bytes, byte_offset: u64,
                                  sector: Bytes) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::bitlocker_decrypt_sector(method, &key, byte_offset, &sector).map_err(err)?;
+    let out = py.allow_threads(
+        || api::bitlocker_decrypt_sector(method, &key, byte_offset, &sector))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1015,7 +1042,7 @@ fn lm_hash<'py>(py: Python<'py>, password: Bytes) -> PyResult<Bound<'py, PyBytes
 /// The NTLM hash of a password, username and domain.
 #[pyfunction]
 fn ntlmv2_hash<'py>(py: Python<'py>, password: &str, username: &str, domain: &str) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::ntlmv2_hash(&password, &username, &domain);
+    let out = api::ntlmv2_hash(password, username, domain);
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1023,7 +1050,7 @@ fn ntlmv2_hash<'py>(py: Python<'py>, password: &str, username: &str, domain: &st
 #[pyfunction]
 fn bitlocker_password_key<'py>(py: Python<'py>, password: &str, salt: Bytes)
                                -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::bitlocker_password_key(password, &salt).map_err(err)?;
+    let out = py.allow_threads(|| api::bitlocker_password_key(password, &salt)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1032,7 +1059,9 @@ fn bitlocker_password_key<'py>(py: Python<'py>, password: &str, salt: Bytes)
 #[pyfunction]
 fn bitlocker_recovery_password_key<'py>(py: Python<'py>, recovery: &str, salt: Bytes)
                                         -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::bitlocker_recovery_password_key(recovery, &salt).map_err(err)?;
+    let out = py.allow_threads(
+        || api::bitlocker_recovery_password_key(recovery, &salt))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1051,7 +1080,9 @@ fn pbkdf2_hmac<'py>(py: Python<'py>, hash_name: &str, password: Bytes, salt: Byt
         // Rust side keeps an explicit length and no hidden default.
         None => api::AnyHash::new(hash_name).map_err(err)?.digest_len(),
     };
-    let out = api::pbkdf2(hash_name, &password, &salt, iterations, length).map_err(err)?;
+    let out = py.allow_threads(
+        || api::pbkdf2(hash_name, &password, &salt, iterations, length))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1210,7 +1241,7 @@ fn shake<'py>(py: Python<'py>, name: &str, data: Bytes, length: usize)
 #[pyo3(signature = (password, *, salt, n, r, p, dklen = 64))]
 fn scrypt<'py>(py: Python<'py>, password: Bytes, salt: Bytes, n: u64, r: u32,
                p: u32, dklen: usize) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::scrypt(&password, &salt, n, r, p, dklen).map_err(err)?;
+    let out = py.allow_threads(|| api::scrypt(&password, &salt, n, r, p, dklen)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1229,9 +1260,9 @@ fn argon2<'py>(py: Python<'py>, password: Bytes, salt: Bytes, variant: &str,
                memory_kib: u32, passes: u32, lanes: u32, secret: Option<Bytes>,
                associated_data: Option<Bytes>, dklen: usize)
                -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::argon2(variant, &password, &salt, memory_kib, passes, lanes,
+    let out = py.allow_threads(|| api::argon2(variant, &password, &salt, memory_kib, passes, lanes,
                           secret.as_deref().unwrap_or(&[]), associated_data.as_deref().unwrap_or(&[]),
-                          dklen).map_err(err)?;
+                          dklen)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1240,15 +1271,19 @@ fn argon2<'py>(py: Python<'py>, password: Bytes, salt: Bytes, variant: &str,
 #[pyo3(signature = (secret, label, seed, length, digestmod = "sha256"))]
 fn tls12_prf<'py>(py: Python<'py>, secret: Bytes, label: Bytes, seed: Bytes,
                   length: usize, digestmod: &str) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::tls12_prf(digestmod, &secret, &label, &seed, length).map_err(err)?;
+    let out = py.allow_threads(
+        || api::tls12_prf(digestmod, &secret, &label, &seed, length))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
 /// The TLS 1.0/1.1 PRF (RFC 2246 section 5). The hashes are fixed by the spec.
 #[pyfunction]
 fn tls10_prf<'py>(py: Python<'py>, secret: Bytes, label: Bytes, seed: Bytes,
-                  length: usize) -> Bound<'py, PyBytes> {
-    PyBytes::new(py, &api::tls10_prf(&secret, &label, &seed, length))
+                  length: usize) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::tls10_prf(&secret, &label, &seed, length))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
 }
 
 // --------------------------------------------------------- elliptic curves ---
@@ -1536,7 +1571,7 @@ impl PyDsaKey {
     /// The bit length of ``p``.
     #[getter]
     fn key_size(&self) -> usize {
-        self.inner.inner().public.parameters.p.bit_len()
+        self.inner.bits()
     }
 
     fn __repr__(&self) -> String {
@@ -1912,7 +1947,7 @@ fn forget_oid(oid: &str) -> bool {
 /// to make a new parameter set is to start from one that exists.
 #[pyfunction]
 fn gost_sbox(name: &str) -> PyResult<Vec<Vec<u8>>> {
-    allcrypt_gost::GostCrypto::sbox_named(name).map_err(err)
+    api::gost_sbox(name).map_err(err)
 }
 
 /// A curve's domain parameters, in the shape `register_oid` takes.
@@ -1939,30 +1974,12 @@ fn gost_sbox(name: &str) -> PyResult<Vec<Vec<u8>>> {
 #[pyfunction]
 fn curve_parameters<'py>(py: Python<'py>, name: &str)
                          -> PyResult<Bound<'py, PyDict>> {
-    let curve = crate::ec::curves::by_name(name).map_err(err)?;
-    let x = curve.g.x().ok_or_else(|| PyValueError::new_err(
-        "the base point is the identity"))?;
-    let y = curve.g.y().ok_or_else(|| PyValueError::new_err(
-        "the base point is the identity"))?;
-
-    // Padded to an even number of digits, so every value is a whole
-    // number of bytes and `bytes.fromhex` accepts it. `to_hex` drops
-    // leading zeros, which for a cofactor of one gives `"1"` - a string
-    // that reads as hex fine and is not a byte.
-    let even = |value: &crate::bignum::BigUint| {
-        let hex = value.to_hex();
-        if hex.len() % 2 == 1 { format!("0{}", hex) } else { hex }
-    };
-
+    // Each value padded to whole bytes by `api::curve_parameters`, so
+    // `bytes.fromhex` accepts it.
     let dict = PyDict::new(py);
-    dict.set_item("name", curve.name)?;
-    dict.set_item("p", even(&curve.p))?;
-    dict.set_item("a", even(&curve.a))?;
-    dict.set_item("b", even(&curve.b))?;
-    dict.set_item("gx", even(x))?;
-    dict.set_item("gy", even(y))?;
-    dict.set_item("n", even(&curve.n))?;
-    dict.set_item("cofactor", even(&curve.h))?;
+    for (field, value) in api::curve_parameters(name).map_err(err)? {
+        dict.set_item(field, value)?;
+    }
     Ok(dict)
 }
 
@@ -2280,14 +2297,14 @@ fn key_unwrap_with_padding<'py>(py: Python<'py>, kek: Bytes, data: Bytes, cipher
 #[pyo3(signature = (kek, cek, iv = None))]
 fn cms_3des_key_wrap<'py>(py: Python<'py>, kek: Bytes, cek: Bytes, iv: Option<Bytes>)
                           -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::cms_3des_key_wrap(&kek, &cek, iv.as_deref()).map_err(err)?;
+    let out = py.allow_threads(|| api::cms_3des_key_wrap(&kek, &cek, iv.as_deref())).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
 #[pyfunction]
 fn cms_3des_key_unwrap<'py>(py: Python<'py>, kek: Bytes, wrapped: Bytes)
                             -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::cms_3des_key_unwrap(&kek, &wrapped).map_err(err)?;
+    let out = py.allow_threads(|| api::cms_3des_key_unwrap(&kek, &wrapped)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -2298,7 +2315,8 @@ fn cms_3des_key_unwrap<'py>(py: Python<'py>, kek: Bytes, wrapped: Bytes)
 fn cms_rc2_key_wrap<'py>(py: Python<'py>, kek: Bytes, effective_bits: usize, cek: Bytes,
                          pad: Option<Bytes>, iv: Option<Bytes>)
                          -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::cms_rc2_key_wrap(&kek, effective_bits, &cek, pad.as_deref(), iv.as_deref())
+    let out = py.allow_threads(
+        || api::cms_rc2_key_wrap(&kek, effective_bits, &cek, pad.as_deref(), iv.as_deref()))
         .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
@@ -2306,7 +2324,9 @@ fn cms_rc2_key_wrap<'py>(py: Python<'py>, kek: Bytes, effective_bits: usize, cek
 #[pyfunction]
 fn cms_rc2_key_unwrap<'py>(py: Python<'py>, kek: Bytes, effective_bits: usize, wrapped: Bytes)
                            -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::cms_rc2_key_unwrap(&kek, effective_bits, &wrapped).map_err(err)?;
+    let out = py.allow_threads(
+        || api::cms_rc2_key_unwrap(&kek, effective_bits, &wrapped))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -2316,14 +2336,16 @@ fn cms_rc2_key_unwrap<'py>(py: Python<'py>, kek: Bytes, effective_bits: usize, w
 #[pyo3(signature = (cipher, kek, iv, cek, padding = None))]
 fn pwri_key_wrap<'py>(py: Python<'py>, cipher: &str, kek: Bytes, iv: Bytes, cek: Bytes,
                       padding: Option<Bytes>) -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::pwri_key_wrap(cipher, &kek, &iv, &cek, padding.as_deref()).map_err(err)?;
+    let out = py.allow_threads(
+        || api::pwri_key_wrap(cipher, &kek, &iv, &cek, padding.as_deref()))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
 #[pyfunction]
 fn pwri_key_unwrap<'py>(py: Python<'py>, cipher: &str, kek: Bytes, iv: Bytes, wrapped: Bytes)
                         -> PyResult<Bound<'py, PyBytes>> {
-    let out = api::pwri_key_unwrap(cipher, &kek, &iv, &wrapped).map_err(err)?;
+    let out = py.allow_threads(|| api::pwri_key_unwrap(cipher, &kek, &iv, &wrapped)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -3413,7 +3435,7 @@ fn ml_dsa_parameter_sets() -> Vec<&'static str> {
 /// both ways against OpenSSH 10.0's `ssh-keygen`.
 #[pyclass(name = "SshKey", module = "allcrypt")]
 pub struct PySshKey {
-    inner: crate::ssh::private_key::PrivateKey,
+    inner: api::SshPrivateKey,
     comment: String,
 }
 
@@ -3427,7 +3449,7 @@ impl PySshKey {
     fn generate(py: Python<'_>, kind: &str, bits: Option<usize>, comment: &str)
                 -> PyResult<PySshKey> {
         let inner = py.allow_threads(
-            || crate::ssh::private_key::PrivateKey::generate(kind, bits)).map_err(err)?;
+            || api::ssh_generate_key(kind, bits)).map_err(err)?;
         Ok(PySshKey { inner, comment: comment.to_string() })
     }
 
@@ -3438,7 +3460,7 @@ impl PySshKey {
     fn from_openssh(py: Python<'_>, text: &str, passphrase: Option<Bytes>)
                     -> PyResult<PySshKey> {
         let (inner, comment) = py.allow_threads(
-            || crate::ssh::private_key::read(text, passphrase.as_deref()))
+            || api::ssh_read_private_key(text, passphrase.as_deref()))
             .map_err(err)?;
         Ok(PySshKey { inner, comment })
     }
@@ -3449,12 +3471,9 @@ impl PySshKey {
     #[pyo3(signature = (passphrase = None, cipher = "aes256-ctr", rounds = 16))]
     fn to_openssh(&self, py: Python<'_>, passphrase: Option<Bytes>, cipher: &str,
                   rounds: u32) -> PyResult<String> {
-        py.allow_threads(|| {
-            let encryption = passphrase.as_deref().map(|passphrase| {
-                crate::ssh::private_key::Encryption { cipher, passphrase, rounds }
-            });
-            crate::ssh::private_key::write(&self.inner, &self.comment, encryption.as_ref())
-        }).map_err(err)
+        py.allow_threads(|| api::ssh_write_private_key(&self.inner, &self.comment,
+                                                       passphrase.as_deref(), cipher, rounds))
+            .map_err(err)
     }
 
     #[getter]
@@ -3475,7 +3494,7 @@ impl PySshKey {
     fn sign<'py>(&self, py: Python<'py>, data: Bytes, algorithm: Option<&str>)
                  -> PyResult<Bound<'py, PyBytes>> {
         let out = py.allow_threads(
-            || crate::ssh::signature::sign(&self.inner, &data, algorithm)).map_err(err)?;
+            || api::ssh_sign(&self.inner, &data, algorithm)).map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -3484,7 +3503,7 @@ impl PySshKey {
     fn sshsig(&self, py: Python<'_>, message: Bytes, namespace: &str, hash: &str)
               -> PyResult<String> {
         py.allow_threads(
-            || crate::ssh::signature::sshsig_sign(&self.inner, namespace, &message, hash))
+            || api::ssh_sshsig_sign(&self.inner, namespace, &message, hash))
             .map_err(err)
     }
 
@@ -3497,7 +3516,7 @@ impl PySshKey {
 /// An SSH public key, as a `.pub` / `authorized_keys` line or a blob.
 #[pyclass(name = "SshPublicKey", module = "allcrypt")]
 pub struct PySshPublicKey {
-    inner: crate::ssh::keys::PublicKey,
+    inner: api::SshPublicKey,
     comment: String,
     options: String,
 }
@@ -3507,15 +3526,14 @@ impl PySshPublicKey {
     /// One line of a `.pub` or `authorized_keys` file, options and all.
     #[staticmethod]
     fn from_line(line: &str) -> PyResult<PySshPublicKey> {
-        let read = crate::ssh::keys::parse_line(line).map_err(err)?;
-        Ok(PySshPublicKey { inner: read.key, comment: read.comment.to_string(),
-                            options: read.options.to_string() })
+        let (inner, comment, options) = api::ssh_parse_public_line(line).map_err(err)?;
+        Ok(PySshPublicKey { inner, comment, options })
     }
 
     /// The binary blob, as SSH sends it.
     #[staticmethod]
     fn from_blob(blob: Bytes) -> PyResult<PySshPublicKey> {
-        let inner = crate::ssh::keys::PublicKey::from_blob(&blob).map_err(err)?;
+        let inner = api::ssh_public_key_from_blob(&blob).map_err(err)?;
         Ok(PySshPublicKey { inner, comment: String::new(), options: String::new() })
     }
 
@@ -3559,8 +3577,7 @@ impl PySshPublicKey {
     /// raises for one that cannot be read or names an algorithm this key
     /// does not sign with.
     fn verify(&self, py: Python<'_>, data: Bytes, signature: Bytes) -> PyResult<bool> {
-        py.allow_threads(|| crate::ssh::signature::verify(&self.inner, &data, &signature))
-            .map(|verified| verified.is_some()).map_err(err)
+        py.allow_threads(|| api::ssh_verify(&self.inner, &data, &signature)).map_err(err)
     }
 
     fn __eq__(&self, other: &PySshPublicKey) -> bool { self.inner == other.inner }
@@ -3580,7 +3597,7 @@ impl PySshPublicKey {
 /// socket.
 #[pyclass(name = "SshClient", module = "allcrypt")]
 pub struct PySshClient {
-    inner: crate::ssh::client::Client,
+    inner: api::SshClient,
 }
 
 fn leak_names(names: Option<Vec<String>>) -> Option<Vec<&'static str>> {
@@ -3590,12 +3607,7 @@ fn leak_names(names: Option<Vec<String>>) -> Option<Vec<&'static str>> {
 }
 
 fn static_name(name: &str) -> &'static str {
-    use crate::ssh::{cipher, kex, mac};
-    kex::METHODS.iter().map(|m| m.name)
-        .chain(cipher::CIPHERS.iter().map(|c| c.name))
-        .chain(mac::MACS.iter().map(|m| m.name))
-        .chain(["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
-                "ecdsa-sha2-nistp521", "rsa-sha2-512", "rsa-sha2-256", "ssh-rsa", "ssh-dss"])
+    api::ssh_algorithm_names().into_iter()
         .find(|known| *known == name)
         // An unknown name stays unknown: negotiation will refuse it with
         // the server's list beside ours, which is the better message.
@@ -3623,7 +3635,8 @@ impl PySshClient {
            kex: Option<Vec<String>>, ciphers: Option<Vec<String>>,
            macs: Option<Vec<String>>, host_key_algorithms: Option<Vec<String>>)
            -> PyResult<PySshClient> {
-        use crate::ssh::client::{Auth, Client, ClientConfig, HostKeyCheck};
+        use api::{SshAuth as Auth, SshClient as Client, SshClientConfig as ClientConfig,
+                  SshHostKeyCheck as HostKeyCheck};
         let check = match host_key {
             None => HostKeyCheck::AcceptAny,
             Some(value) => {
@@ -3739,7 +3752,7 @@ impl PySshClient {
 /// drives it over a socket.
 #[pyclass(name = "SshServer", module = "allcrypt")]
 pub struct PySshServer {
-    inner: crate::ssh::server::Server,
+    inner: api::SshServer,
 }
 
 #[pymethods]
@@ -3757,7 +3770,7 @@ impl PySshServer {
            kex: Option<Vec<String>>, ciphers: Option<Vec<String>>,
            macs: Option<Vec<String>>, host_key_algorithms: Option<Vec<String>>,
            banner: Option<String>) -> PyResult<PySshServer> {
-        use crate::ssh::server::{Server, ServerConfig};
+        use api::{SshServer as Server, SshServerConfig as ServerConfig};
         let mut config = ServerConfig::new(host_keys.iter().map(|k| k.inner.clone()).collect());
         for (user, credential) in authorized {
             if let Ok(key) = credential.extract::<PyRef<'_, PySshPublicKey>>() {
@@ -3822,7 +3835,7 @@ impl PySshServer {
     /// client has asked.
     #[getter]
     fn request(&self) -> Option<(&'static str, Option<String>)> {
-        use crate::ssh::server::SessionRequest;
+        use api::SshSessionRequest as SessionRequest;
         self.inner.request().map(|request| match request {
             SessionRequest::Exec(command) => ("exec", Some(command.clone())),
             SessionRequest::Shell => ("shell", None),
@@ -3888,7 +3901,7 @@ impl PySshServer {
 fn sshsig_verify(py: Python<'_>, signature: &str, message: Bytes, namespace: &str)
                  -> PyResult<PySshPublicKey> {
     let inner = py.allow_threads(
-        || crate::ssh::signature::sshsig_verify(signature, namespace, &message))
+        || api::ssh_sshsig_verify(signature, namespace, &message))
         .map_err(err)?;
     Ok(PySshPublicKey { inner, comment: String::new(), options: String::new() })
 }
@@ -4215,7 +4228,7 @@ fn encrypt_private_key(py: Python<'_>, key: Bytes, password: Bytes, scheme: &str
     let der = api::encrypt_private_key(&key, &password, scheme, prf, iterations,
                                        salt.as_deref(), iv.as_deref()).map_err(err)?;
     if pem {
-        let text = crate::pem::wrap("ENCRYPTED PRIVATE KEY", &der);
+        let text = api::pem_wrap("ENCRYPTED PRIVATE KEY", &der);
         return Ok(PyBytes::new(py, text.as_bytes()).into_any().unbind());
     }
     Ok(PyBytes::new(py, &der).into_any().unbind())
@@ -4224,7 +4237,7 @@ fn encrypt_private_key(py: Python<'_>, key: Bytes, password: Bytes, scheme: &str
 /// The scheme names `encrypt_private_key` takes.
 #[pyfunction]
 fn encryption_schemes() -> Vec<&'static str> {
-    crate::x509::encrypted_key::scheme_names()
+    api::encryption_schemes()
 }
 
 /// How an encrypted private key was encrypted, without the password: a
@@ -5084,6 +5097,12 @@ impl PyTlsServer {
 // ----------------------------------------------------------------- module ---
 
 
+/// Cryptography in Rust, old algorithms included.
+///
+/// Errors: a value the library refuses raises `CryptoError` (a
+/// `ValueError`). A negative number where a length, count, size or index
+/// is expected is refused earlier, by the conversion to an unsigned
+/// integer, and raises `OverflowError`, which is not a `ValueError`.
 #[pymodule]
 fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Hash>()?;

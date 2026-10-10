@@ -230,6 +230,11 @@ impl Parser<'_> {
     fn hex4(&mut self) -> Result<u32, String> {
         let digits = self.bytes.get(self.at..self.at + 4)
             .ok_or("JSON: a \\u escape cut short.")?;
+        // Four hex digits exactly: `from_str_radix` alone would also
+        // take a sign, and `"\u+1ab"` is a string no other parser reads.
+        if !digits.iter().all(u8::is_ascii_hexdigit) {
+            return Err("JSON: a bad \\u escape.".to_string());
+        }
         let text = std::str::from_utf8(digits).map_err(|_| "JSON: a bad \\u escape.")?;
         let value = u32::from_str_radix(text, 16).map_err(|_| "JSON: a bad \\u escape.")?;
         self.at += 4;
@@ -360,10 +365,16 @@ mod tests {
         assert_eq!(parse(" [ 1 , 2 ] \n").unwrap().to_text(), "[1,2]");
     }
 
+    /// `\u` escapes went through `from_str_radix`, which takes a sign,
+    /// so `"\u+1ab"` and `"\u-1ab"` parsed where every other JSON
+    /// parser refuses them; two readers disagreeing on a header is what
+    /// this module exists to avoid. The refused list had no signed
+    /// escape.
     #[test]
     fn test_json_refuses_what_it_should() {
         for bad in [r#"{"a":1,"a":2}"#, "[1,]", "{\"a\" 1}", "01", "1.", "-", "\"\\x\"",
-                    "\"\\ud800\"", "\"\\udc00\"", "\"a\nb\"", "[1] x", "", "tru", "{\"a\":}"] {
+                    "\"\\ud800\"", "\"\\udc00\"", "\"a\nb\"", "[1] x", "", "tru", "{\"a\":}",
+                    "\"\\u+1ab\"", "\"\\u-1ab\"", "\"\\u 1ab\""] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
         let deep = "[".repeat(100) + &"]".repeat(100);

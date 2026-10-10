@@ -64,15 +64,14 @@ fn fixed_data(label: &[u8], context: &[u8], length: usize) -> Result<Vec<u8>, St
 pub fn kbkdf_counter(prf: Prf<'_>, key: &[u8], label: &[u8], context: &[u8], length: usize)
                      -> Result<Vec<u8>, String> {
     let fixed = fixed_data(label, context, length)?;
-    let mut out = Vec::with_capacity(length + 64);
+    let mut out = crate::kdf::output_buffer(length, "SP 800-108")?;
     let mut counter = 1u32;
     while out.len() < length {
         let mut input = counter.to_be_bytes().to_vec();
         input.extend_from_slice(&fixed);
-        out.extend(prf.apply(key, &input)?);
+        take_block(&mut out, &prf.apply(key, &input)?, length);
         counter = counter.checked_add(1).ok_or("SP 800-108's counter ran out.")?;
     }
-    out.truncate(length);
     Ok(out)
 }
 
@@ -82,7 +81,7 @@ pub fn kbkdf_counter(prf: Prf<'_>, key: &[u8], label: &[u8], context: &[u8], len
 pub fn kbkdf_feedback(prf: Prf<'_>, key: &[u8], iv: &[u8], label: &[u8], context: &[u8],
                       length: usize) -> Result<Vec<u8>, String> {
     let fixed = fixed_data(label, context, length)?;
-    let mut out = Vec::with_capacity(length + 64);
+    let mut out = crate::kdf::output_buffer(length, "SP 800-108")?;
     let mut previous = iv.to_vec();
     let mut counter = 1u32;
     while out.len() < length {
@@ -90,11 +89,18 @@ pub fn kbkdf_feedback(prf: Prf<'_>, key: &[u8], iv: &[u8], label: &[u8], context
         input.extend_from_slice(&counter.to_be_bytes());
         input.extend_from_slice(&fixed);
         previous = prf.apply(key, &input)?;
-        out.extend_from_slice(&previous);
+        take_block(&mut out, &previous, length);
         counter = counter.checked_add(1).ok_or("SP 800-108's counter ran out.")?;
     }
-    out.truncate(length);
     Ok(out)
+}
+
+/// Append `block` to `out`, cut at `length`: the output buffer was
+/// reserved at exactly `length`, so the final block must not push it
+/// past that and force a second allocation of the same size.
+fn take_block(out: &mut Vec<u8>, block: &[u8], length: usize) {
+    let take = core::cmp::min(block.len(), length - out.len());
+    out.extend_from_slice(&block[..take]);
 }
 
 fn hash_parts(hash: &str, parts: &[&[u8]]) -> Result<Vec<u8>, String> {
@@ -109,26 +115,26 @@ fn hash_parts(hash: &str, parts: &[&[u8]]) -> Result<Vec<u8>, String> {
 /// `Hash([i]_32 || Z || OtherInfo)` for i from 1.
 pub fn concat_kdf(hash: &str, z: &[u8], other_info: &[u8], length: usize)
                   -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(length + 64);
+    let mut out = crate::kdf::output_buffer(length, "The Concat KDF")?;
     let mut counter = 1u32;
     while out.len() < length {
-        out.extend(hash_parts(hash, &[&counter.to_be_bytes(), z, other_info])?);
+        take_block(&mut out, &hash_parts(hash, &[&counter.to_be_bytes(), z, other_info])?,
+                   length);
         counter = counter.checked_add(1).ok_or("The KDF's counter ran out.")?;
     }
-    out.truncate(length);
     Ok(out)
 }
 
 /// ANSI X9.63's KDF: `Hash(Z || [i]_32 || SharedInfo)` for i from 1.
 pub fn x963_kdf(hash: &str, z: &[u8], shared_info: &[u8], length: usize)
                 -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(length + 64);
+    let mut out = crate::kdf::output_buffer(length, "The X9.63 KDF")?;
     let mut counter = 1u32;
     while out.len() < length {
-        out.extend(hash_parts(hash, &[z, &counter.to_be_bytes(), shared_info])?);
+        take_block(&mut out, &hash_parts(hash, &[z, &counter.to_be_bytes(), shared_info])?,
+                   length);
         counter = counter.checked_add(1).ok_or("The KDF's counter ran out.")?;
     }
-    out.truncate(length);
     Ok(out)
 }
 
@@ -182,6 +188,29 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Each KDF here reserved `length + 64` bytes before its first hash,
+    /// with no ceiling but the `u32` counter (and, for SP 800-108, the
+    /// 32-bit length field), so a length in the gigabytes aborted at
+    /// the allocator rather than erroring. The existing tests derived
+    /// a few dozen bytes. Every request here is refused before any
+    /// allocation.
+    #[test]
+    fn test_an_oversized_output_is_an_error_not_an_abort() {
+        let too_long = crate::kdf::MAX_OUTPUT_BYTES + 1;
+        assert!(concat_kdf("sha256", b"z", b"", too_long).unwrap_err().contains("at most"));
+        assert!(x963_kdf("sha256", b"z", b"", too_long).unwrap_err().contains("at most"));
+        // SP 800-108's 32-bit bit-length field refuses 1 GiB + 1 on its
+        // own; 500 MiB is within that field and past nothing else, so
+        // it is the cap that answers.
+        let cap_only = 500 << 20;
+        assert!(cap_only <= crate::kdf::MAX_OUTPUT_BYTES);
+        let prf = Prf::Hmac("sha256");
+        assert!(kbkdf_counter(prf, b"k", b"l", b"c", too_long).is_err());
+        assert!(kbkdf_feedback(prf, b"k", b"", b"l", b"c", too_long).is_err());
+        assert!(kbkdf_counter(prf, b"k", b"l", b"c", 1 << 29).is_err(),
+                "2^29 bytes is 2^32 bits, past the length field");
     }
 
     #[test]

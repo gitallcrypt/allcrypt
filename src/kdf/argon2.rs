@@ -109,9 +109,21 @@ const ADDRESSES_PER_BLOCK: usize = 128;
 
 type Block = [u64; BLOCK_WORDS];
 
+/// The most memory one derivation will hold, in kibibytes: 4 GiB.
+///
+/// `memory_kib` is a `u32`, so the type alone allows 4 TiB, and the only
+/// check was that the block count times 1024 fits in `usize` - which it
+/// does, so `memory_kib: u32::MAX` reached the allocator, where failure
+/// is an abort rather than an error. RFC 9106's first recommended option
+/// is 2 GiB; nothing deployed asks for more than this.
+pub const MAX_MEMORY_KIB: u32 = 4 << 20;
+
+/// The most lanes RFC 9106 allows: 2^24 - 1.
+pub const MAX_LANES: u32 = (1 << 24) - 1;
+
 /// Everything Argon2 takes. Built with `Argon2::new` and adjusted, so
 /// adding a field later does not break callers.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Argon2 {
     pub variant: Variant,
     /// Memory in **kibibytes**, the RFC's `m`. At least `8 * p`.
@@ -126,6 +138,24 @@ pub struct Argon2 {
     pub secret: Vec<u8>,
     /// The optional associated data, the RFC's `X`.
     pub associated_data: Vec<u8>,
+}
+
+/// The secret is a pepper, held by the application precisely so that it
+/// is never written down beside a hash, so it is shown as a length and
+/// nothing else: a derived `Debug` printed it, and a `{:?}` of the
+/// parameters in a log line or a panic message is how it would have
+/// been written down anyway.
+impl core::fmt::Debug for Argon2 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Argon2")
+            .field("variant", &self.variant)
+            .field("memory_kib", &self.memory_kib)
+            .field("passes", &self.passes)
+            .field("lanes", &self.lanes)
+            .field("secret", &format_args!("[{} bytes]", self.secret.len()))
+            .field("associated_data", &self.associated_data)
+            .finish()
+    }
 }
 
 impl Argon2 {
@@ -156,6 +186,10 @@ impl Argon2 {
         if self.lanes == 0 {
             return Err("Argon2 needs at least one lane.".to_string());
         }
+        if self.lanes > MAX_LANES {
+            return Err(format!("Argon2 allows up to {} lanes; {} is too many.",
+                               MAX_LANES, self.lanes));
+        }
         if self.passes == 0 {
             return Err("Argon2 needs at least one pass.".to_string());
         }
@@ -163,14 +197,26 @@ impl Argon2 {
             return Err(format!("An Argon2 tag is at least 4 bytes; {} is not.",
                                length));
         }
+        // The tag length is a 32-bit field of H0, and the output is
+        // reserved before the first BLAKE2b, so both bounds apply.
+        if u32::try_from(length).is_err() || length > crate::kdf::MAX_OUTPUT_BYTES {
+            return Err(format!("An Argon2 tag is at most {} bytes here; {} is too long.",
+                               crate::kdf::MAX_OUTPUT_BYTES, length));
+        }
         if salt.len() < 8 {
             return Err(format!("An Argon2 salt is at least 8 bytes (RFC 9106 \
                                 recommends 16); this one is {}.", salt.len()));
         }
-        if self.memory_kib < 8 * self.lanes {
+        // `8 * lanes` in u64: with lanes at its ceiling the product does
+        // not fit a u32.
+        if (self.memory_kib as u64) < 8 * self.lanes as u64 {
             return Err(format!("Argon2 needs at least 8 KiB per lane, so at \
                                 least {} KiB for {} lanes; {} is not enough.",
-                               8 * self.lanes, self.lanes, self.memory_kib));
+                               8 * self.lanes as u64, self.lanes, self.memory_kib));
+        }
+        if self.memory_kib > MAX_MEMORY_KIB {
+            return Err(format!("Argon2 may use at most {} KiB in one call; {} is \
+                                too much.", MAX_MEMORY_KIB, self.memory_kib));
         }
 
         // m' = 4 * p * floor(m / 4p): the memory is rounded down to a
@@ -187,8 +233,13 @@ impl Argon2 {
         let h0 = self.pre_hash(password, salt, length as u32);
 
         // The whole memory, as one flat vector indexed
-        // `lane * lane_length + column`.
-        let mut memory: Vec<Block> = vec![[0u64; BLOCK_WORDS]; blocks];
+        // `lane * lane_length + column`. Reserved with `try_reserve_exact`
+        // so that a refusal is an error: `vec![..; blocks]` would abort.
+        let mut memory: Vec<Block> = Vec::new();
+        memory.try_reserve_exact(blocks).map_err(|_| format!(
+            "Could not allocate the {} KiB Argon2 with m={} needs.",
+            blocks, self.memory_kib))?;
+        memory.resize(blocks, [0u64; BLOCK_WORDS]);
         for lane in 0..lanes {
             for column in 0..2u32 {
                 let mut input = Vec::with_capacity(h0.len() + 8);
@@ -780,6 +831,49 @@ mod tests {
         argon = rfc_parameters(Variant::Id);
         argon.memory_kib = 8;   // needs 8 * 4 lanes
         assert!(argon.derive(&PASSWORD, &SALT, 32).is_err(), "too little memory");
+    }
+
+    /// `Argon2` derived `Debug`, so `{:?}` printed the pepper. No test
+    /// formatted the parameters; nothing checked what came out.
+    #[test]
+    fn test_debug_does_not_print_the_secret() {
+        let argon = rfc_parameters(Variant::Id);
+        assert_eq!(argon.secret, vec![0x03; 8]);
+        let shown = format!("{:?}", argon);
+        assert!(!shown.contains("3, 3, 3"), "{shown}");
+        assert!(shown.contains("secret: [8 bytes]"), "{shown}");
+        assert!(shown.contains("memory_kib: 32"), "{shown}");
+    }
+
+    /// `memory_kib` is a `u32` and the only check was that the block
+    /// count times 1024 fits in `usize`, so `u32::MAX` (4 TiB) passed
+    /// and reached the allocator, where failure is an abort. `8 *
+    /// lanes` was computed in `u32` and overflowed for a lane count
+    /// past 2^29. The existing tests used the RFC's 32 KiB. Every
+    /// request here is refused before any allocation.
+    #[test]
+    fn test_oversized_parameters_are_errors_not_aborts() {
+        let mut argon = rfc_parameters(Variant::Id);
+        argon.memory_kib = u32::MAX;
+        let reason = argon.derive(&PASSWORD, &SALT, 32).unwrap_err();
+        assert!(reason.contains("at most"), "{reason}");
+        argon.memory_kib = MAX_MEMORY_KIB + 1;
+        assert!(argon.derive(&PASSWORD, &SALT, 32).is_err());
+
+        argon = rfc_parameters(Variant::Id);
+        argon.lanes = u32::MAX;
+        assert!(argon.derive(&PASSWORD, &SALT, 32).unwrap_err().contains("lanes"));
+        argon.lanes = MAX_LANES + 1;
+        assert!(argon.derive(&PASSWORD, &SALT, 32).is_err());
+        // The most lanes allowed, with too little memory for them: the
+        // per-lane check must not overflow on the way to its answer.
+        argon.lanes = MAX_LANES;
+        argon.memory_kib = u32::MAX;
+        assert!(argon.derive(&PASSWORD, &SALT, 32).is_err());
+
+        argon = rfc_parameters(Variant::Id);
+        assert!(argon.derive(&PASSWORD, &SALT, usize::MAX).unwrap_err()
+                    .contains("too long"));
     }
 
     // Read out of RFC 9106 rather than typed.

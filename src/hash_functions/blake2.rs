@@ -83,7 +83,7 @@ const SIGMA: [[usize; 16]; 10] = [
 ///
 /// Default is the plain unkeyed hash at its maximum output length,
 /// which is what `BLAKE2b::new(&[])` gives.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Params {
     /// Output length in bytes: 1..=64 for BLAKE2b, 1..=32 for BLAKE2s.
     /// Part of the parameter block, so two lengths give unrelated
@@ -98,6 +98,21 @@ pub struct Params {
     /// The same sizes as `salt`. Domain separation: the same key and
     /// message under two personalisations give unrelated results.
     pub personal: Vec<u8>,
+}
+
+/// The key is a MAC key, so it is shown as a length and nothing else:
+/// a derived `Debug` printed it, and a `{:?}` of a configuration in a
+/// log line or a panic message is how key material leaks into text
+/// nobody treats as secret.
+impl core::fmt::Debug for Params {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Params")
+            .field("digest_len", &self.digest_len)
+            .field("key", &format_args!("[{} bytes]", self.key.len()))
+            .field("salt", &self.salt)
+            .field("personal", &self.personal)
+            .finish()
+    }
 }
 
 macro_rules! blake2 {
@@ -548,6 +563,18 @@ mod tests {
             digest_len: 64, salt: vec![0; 15], ..Params::default() }).is_err());
         assert!(Blake2s::with_params(&Params {
             digest_len: 32, personal: vec![0; 9], ..Params::default() }).is_err());
+    }
+
+    /// `Params` derived `Debug`, so `{:?}` printed the MAC key. No test
+    /// formatted the parameters; nothing checked what came out.
+    #[test]
+    fn test_debug_does_not_print_the_key() {
+        let params = Params { digest_len: 32, key: vec![0x42; 16],
+                              salt: vec![1; 16], ..Params::default() };
+        let shown = format!("{:?}", params);
+        assert!(!shown.contains("66, 66"), "{shown}");
+        assert!(shown.contains("key: [16 bytes]"), "{shown}");
+        assert!(shown.contains("salt: [1, 1"), "{shown}");
     }
 
     /// Helper: hash one message and finish, for the tests above.

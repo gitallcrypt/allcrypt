@@ -98,13 +98,19 @@ pub struct Gost94 {
     sigma: [u8; BLOCK],
     /// The message length in *bits*, modulo 2^256.
     length: [u8; BLOCK],
-    /// Bytes taken in and not yet compressed.
+    /// Bytes taken in and not yet compressed: the first `pending_len`
+    /// of this array.
     ///
     /// **Between one and thirty-two of them**, once anything has been
     /// fed: a full block is held back rather than compressed, because
     /// whether it is the last one decides whether it is padded. See
-    /// the note at the top of the file.
-    pending: Vec<u8>,
+    /// the note at the top of the file. A fixed array rather than a
+    /// `Vec`, so that `update` holds at most one block however much it
+    /// is given: the earlier `Vec` took a copy of the whole input
+    /// before compressing any of it, which for a large buffer was a
+    /// second copy of the message.
+    pending: [u8; BLOCK],
+    pending_len: usize,
     /// The block cipher under the parameter set's S-box, built once:
     /// each compression re-keys it four times with `set_key`, which
     /// leaves the substitution tables alone.
@@ -146,7 +152,8 @@ impl Gost94 {
             h: [0; BLOCK],
             sigma: [0; BLOCK],
             length: [0; BLOCK],
-            pending: Vec::with_capacity(BLOCK),
+            pending: [0; BLOCK],
+            pending_len: 0,
             cipher: GostCrypto::new_with_sbox(vec![0; 32], sbox)?,
             name: canonical,
         };
@@ -166,25 +173,34 @@ impl Gost94 {
         add_into(sigma, &m);
     }
 
+    /// The final three steps over copies of the three state words, so
+    /// the hash itself is untouched and can go on being fed.
+    ///
+    /// The cipher is borrowed rather than copied: it carries the
+    /// parameter set's 4 KiB table, and nothing about it survives a
+    /// step - every `chi` sets all four keys before using them - so
+    /// finishing through it leaves it as good as new for the next
+    /// `update`. Cloning the whole hash for each `digest`, as before,
+    /// copied that table every time, and HMAC-GOST digests twice per
+    /// MAC.
     fn finish(&mut self) -> Vec<u8> {
+        let (mut h, mut sigma, mut length) = (self.h, self.sigma, self.length);
         // The tail, zero padded at the high end - which is after the
         // message bytes, since index 0 is the first byte.
-        let left = std::mem::take(&mut self.pending);
         let mut last = [0u8; BLOCK];
-        last[..left.len()].copy_from_slice(&left);
+        last[..self.pending_len].copy_from_slice(&self.pending[..self.pending_len]);
         // **Even when there is nothing left.** An empty final block is
         // still a block: the standard's step 2 runs for any remaining
         // length of 256 bits or fewer, and a message that ended on a
         // block boundary has zero left over. Skipping it here would
         // make every message whose length is a multiple of 32 bytes -
         // including the empty one - hash to something else.
-        let Gost94 { h, sigma, length, cipher, .. } = self;
-        Gost94::absorb(h, sigma, length, cipher, &last, left.len() as u64 * 8);
+        Gost94::absorb(&mut h, &mut sigma, &mut length, &mut self.cipher, &last,
+                       self.pending_len as u64 * 8);
 
         // Then the length, then the checksum, through the same step.
-        let (length, sigma) = (*length, *sigma);
-        *h = chi(&length, h, cipher);
-        *h = chi(&sigma, h, cipher);
+        h = chi(&length, &h, &mut self.cipher);
+        h = chi(&sigma, &h, &mut self.cipher);
         h.to_vec()
     }
 }
@@ -209,28 +225,41 @@ impl HashFunction for Gost94 {
         BLOCK
     }
 
-    fn update(&mut self, input: &[u8]) {
-        self.pending.extend_from_slice(input);
-        // **Strictly greater**, not "at least". A block is compressed
-        // only once something has arrived after it, because the last
-        // block of the message is the padded one and a block that
-        // fills the buffer exactly may still be the last.
-        let mut done = 0;
-        while self.pending.len() - done > BLOCK {
-            let Gost94 { h, sigma, length, cipher, pending, .. } = self;
-            Gost94::absorb(h, sigma, length, cipher, &pending[done..done + BLOCK],
-                           BLOCK as u64 * 8);
-            done += BLOCK;
+    fn update(&mut self, mut input: &[u8]) {
+        // **A block is compressed only once something has arrived
+        // after it**, because the last block of the message is the
+        // padded one and a block that fills the buffer exactly may
+        // still be the last. So: everything fits beside what is held
+        // when the total is a block or less, and nothing is compressed.
+        if self.pending_len + input.len() <= BLOCK {
+            self.pending[self.pending_len..self.pending_len + input.len()]
+                .copy_from_slice(input);
+            self.pending_len += input.len();
+            return;
         }
-        // One shift for the whole call, not one per block.
-        self.pending.drain(..done);
+        let Gost94 { h, sigma, length, cipher, pending, pending_len, .. } = self;
+        // More than a block in all, so the held block is not the last:
+        // top it up from the input and compress it.
+        let take = BLOCK - *pending_len;
+        pending[*pending_len..].copy_from_slice(&input[..take]);
+        input = &input[take..];
+        Gost94::absorb(h, sigma, length, cipher, pending, BLOCK as u64 * 8);
+        // Whole blocks straight out of the input while at least one
+        // byte follows them - strictly greater, for the reason above.
+        while input.len() > BLOCK {
+            Gost94::absorb(h, sigma, length, cipher, &input[..BLOCK], BLOCK as u64 * 8);
+            input = &input[BLOCK..];
+        }
+        // One to thirty-two bytes remain, and they are held.
+        pending[..input.len()].copy_from_slice(input);
+        *pending_len = input.len();
     }
 
-    /// Of everything so far, on a copy: `finish` pads and absorbs into
-    /// the state, so finishing in place would leave the hash unable to
-    /// give the same digest twice or to go on after one.
+    /// Of everything so far, on copies of the state words: `finish`
+    /// pads and absorbs, so finishing in place would leave the hash
+    /// unable to give the same digest twice or to go on after one.
     fn digest(&mut self) -> Vec<u8> {
-        self.clone().finish()
+        self.finish()
     }
 }
 
@@ -872,6 +901,42 @@ mod tests {
                 .is_err(),
                 "a 28147 parameter set is not a 34.11 one");
         assert!(Gost94::with_param_set(&[], "Default").is_err());
+    }
+
+    /// `update` copied its whole input into a `Vec` before compressing
+    /// a block of it, so hashing a large buffer needed a second copy of
+    /// it, and `digest` cloned the hash - with its boxed 4 KiB table -
+    /// every call. The streaming test below fed at most 137 bytes, for
+    /// which a `Vec` and a block-sized array behave alike. The pending
+    /// store is now a block-sized array, which the first assertion
+    /// checks by type, and the rest pins the hold-back rule on piece
+    /// sizes that cross the block boundary every way: several blocks in
+    /// one call, exactly a block, a block and one, and byte by byte.
+    #[test]
+    fn test_update_holds_at_most_one_block() {
+        let message: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
+        let one_shot = Gost94::new(&message).digest();
+        let mut hash = Gost94::new(&[]);
+        hash.update(&message);
+        let held: &[u8; BLOCK] = &hash.pending;
+        assert_eq!(held.len(), BLOCK);
+        assert!(hash.pending_len >= 1 && hash.pending_len <= BLOCK);
+        assert_eq!(hash.digest(), one_shot);
+        for piece in [1usize, 31, 32, 33, 63, 64, 65, 100, 999] {
+            let mut hash = Gost94::new(&[]);
+            for chunk in message.chunks(piece) {
+                hash.update(chunk);
+                assert!(hash.pending_len >= 1 && hash.pending_len <= BLOCK,
+                        "{} held after a piece of {}", hash.pending_len, piece);
+            }
+            assert_eq!(hash.digest(), one_shot, "pieces of {}", piece);
+            // And `digest` twice, then more input, still agrees.
+            assert_eq!(hash.digest(), one_shot, "second digest, pieces of {}", piece);
+            hash.update(b"tail");
+            let mut whole = message.clone();
+            whole.extend_from_slice(b"tail");
+            assert_eq!(hash.digest(), Gost94::new(&whole).digest(), "after digest");
+        }
     }
 
     /// Feeding the same message in pieces is the same hash.

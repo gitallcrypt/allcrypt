@@ -49,12 +49,13 @@ fn md5(parts: &[&[u8]]) -> Vec<u8> {
     hash.digest()
 }
 
-fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
+/// RC4 of `data` under `key`. A key the cipher refuses - empty, or past
+/// 256 bytes - is an error, not an empty result that a verifier would
+/// then read as a wrong password.
+fn rc4(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(data.len());
-    if let Ok(mut cipher) = RC4::new(key.to_vec()) {
-        cipher.crypt(data, &mut out);
-    }
-    out
+    RC4::new(key.to_vec())?.crypt(data, &mut out);
+    Ok(out)
 }
 
 fn pad(password: &[u8]) -> [u8; 32] {
@@ -188,25 +189,25 @@ impl Legacy<'_> {
     }
 
     /// Algorithms 4 and 5: what `U` must be for this file key.
-    fn u_for(&self, key: &[u8]) -> Vec<u8> {
+    fn u_for(&self, key: &[u8]) -> Result<Vec<u8>, String> {
         if self.r == 2 {
             return rc4(key, &PADDING);
         }
-        let mut value = rc4(key, &md5(&[&PADDING, self.id]));
+        let mut value = rc4(key, &md5(&[&PADDING, self.id]))?;
         for i in 1..=19u8 {
             let round: Vec<u8> = key.iter().map(|k| k ^ i).collect();
-            value = rc4(&round, &value);
+            value = rc4(&round, &value)?;
         }
         // Sixteen arbitrary bytes complete the 32; these are what qpdf
         // and Acrobat write.
         value.extend_from_slice(&PADDING[..16]);
-        value
+        Ok(value)
     }
 
-    fn user_matches(&self, key: &[u8], u: &[u8]) -> bool {
-        let expected = self.u_for(key);
+    fn user_matches(&self, key: &[u8], u: &[u8]) -> Result<bool, String> {
+        let expected = self.u_for(key)?;
         let compared = if self.r == 2 { 32 } else { 16 };
-        u.len() >= compared && expected[..compared] == u[..compared]
+        Ok(u.len() >= compared && expected[..compared] == u[..compared])
     }
 
     /// Algorithm 3's first steps: the RC4 key the owner password gives.
@@ -222,7 +223,7 @@ impl Legacy<'_> {
     }
 
     /// Algorithm 7: the padded user password `O` hides under the owner's.
-    fn user_from_owner(&self, owner: &[u8]) -> Vec<u8> {
+    fn user_from_owner(&self, owner: &[u8]) -> Result<Vec<u8>, String> {
         let key = self.owner_key(owner);
         if self.r == 2 {
             return rc4(&key, self.o);
@@ -230,22 +231,22 @@ impl Legacy<'_> {
         let mut value = self.o.to_vec();
         for i in (0..=19u8).rev() {
             let round: Vec<u8> = key.iter().map(|k| k ^ i).collect();
-            value = rc4(&round, &value);
+            value = rc4(&round, &value)?;
         }
-        value
+        Ok(value)
     }
 
     /// Algorithm 3: `O` for an owner and a user password.
-    fn o_for(&self, owner: &[u8], user: &[u8]) -> Vec<u8> {
+    fn o_for(&self, owner: &[u8], user: &[u8]) -> Result<Vec<u8>, String> {
         let key = self.owner_key(owner);
-        let mut value = rc4(&key, &pad(user));
+        let mut value = rc4(&key, &pad(user))?;
         if self.r >= 3 {
             for i in 1..=19u8 {
                 let round: Vec<u8> = key.iter().map(|k| k ^ i).collect();
-                value = rc4(&round, &value);
+                value = rc4(&round, &value)?;
             }
         }
-        value
+        Ok(value)
     }
 }
 
@@ -393,13 +394,13 @@ impl Security {
         let legacy = Legacy { r, length: key_length(v, int(encrypt, "Length")), o, p, id,
                               encrypt_metadata };
         // Owner first, as above: the empty password is commonly both.
-        let recovered = legacy.user_from_owner(password);
+        let recovered = legacy.user_from_owner(password)?;
         let owner_key = legacy.file_key(&recovered);
-        let (key, which) = if legacy.user_matches(&owner_key, u) {
+        let (key, which) = if legacy.user_matches(&owner_key, u)? {
             (owner_key, Which::Owner)
         } else {
             let user_key = legacy.file_key(password);
-            if !legacy.user_matches(&user_key, u) {
+            if !legacy.user_matches(&user_key, u)? {
                 return Err("Wrong password.".to_string());
             }
             (user_key, Which::User)
@@ -445,7 +446,7 @@ impl Security {
                    -> Result<Vec<u8>, String> {
         match method {
             Method::Identity => Ok(data.to_vec()),
-            Method::Rc4 => Ok(rc4(&self.object_key(number, generation, method), data)),
+            Method::Rc4 => rc4(&self.object_key(number, generation, method), data),
             Method::AesV2 | Method::AesV3 => {
                 if data.is_empty() {
                     // Seen in files written by several producers for an
@@ -468,7 +469,7 @@ impl Security {
                    -> Result<Vec<u8>, String> {
         match method {
             Method::Identity => Ok(data.to_vec()),
-            Method::Rc4 => Ok(rc4(&self.object_key(number, generation, method), data)),
+            Method::Rc4 => rc4(&self.object_key(number, generation, method), data),
             Method::AesV2 | Method::AesV3 => {
                 let mut out = allcrypt::api::random_bytes(16)?;
                 let padded = allcrypt::api::pad_pkcs7(data, 16)?;
@@ -547,10 +548,10 @@ impl Security {
             let length = bits as usize / 8;
             let mut legacy = Legacy { r, length, o: &[], p: permissions, id,
                                       encrypt_metadata: true };
-            let o = legacy.o_for(owner, user);
+            let o = legacy.o_for(owner, user)?;
             legacy.o = &o;
             let key = legacy.file_key(user);
-            let u = legacy.u_for(&key);
+            let u = legacy.u_for(&key)?;
             dict.push((b"O".to_vec(), Object::String(o.clone())));
             dict.push((b"U".to_vec(), Object::String(u)));
             let filters = if v == 4 { vec![(b"StdCF".to_vec(), method)] } else { Vec::new() };
@@ -568,6 +569,17 @@ impl Security {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rc4` swallowed the cipher's refusal of its key and returned
+    /// nothing, so an empty key would have decrypted to nothing and
+    /// been reported as a wrong password. Every key here is five bytes
+    /// or more, so no test reached the empty result.
+    #[test]
+    fn test_rc4_refuses_a_key_the_cipher_refuses() {
+        assert!(rc4(&[], b"data").is_err());
+        assert!(rc4(&[0; 257], b"data").is_err());
+        assert_eq!(rc4(b"key", b"data").unwrap().len(), 4);
+    }
 
     #[test]
     fn test_every_scheme_opens_with_either_password_and_refuses_others() {
