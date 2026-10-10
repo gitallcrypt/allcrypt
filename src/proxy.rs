@@ -280,6 +280,7 @@ pub fn is_self_signed(certificate: &Certificate<'_>) -> bool {
         allow_md5: true,
         allow_expired: true,
         min_rsa_bits: 512,
+        max_key_bits: crate::x509::verify::Policy::MAX_KEY_BITS,
         max_chain_length: 8,
         require_revocation: false,
     };

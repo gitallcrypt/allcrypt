@@ -189,7 +189,7 @@ pub fn open_cookie_reply(reply: &[u8], peer_public: &Key, last_mac1: &[u8; 16])
 // ------------------------------------------------------------------ handshake --
 
 /// The initiator's state between its initiation and the response.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Pending {
     pub chaining_key: Key,
     pub hash: Key,
@@ -197,13 +197,35 @@ pub struct Pending {
     pub sender: u32,
 }
 
+/// The transcript hash is public; the chaining key and the ephemeral
+/// private key are not.
+impl std::fmt::Debug for Pending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::hidden::HiddenBytes;
+        f.debug_struct("Pending").field("chaining_key", &HiddenBytes(&self.chaining_key))
+            .field("hash", &self.hash)
+            .field("ephemeral_private", &HiddenBytes(&self.ephemeral_private))
+            .field("sender", &self.sender).finish()
+    }
+}
+
 /// Transport keys, and the indices each side names the session by.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Session {
     pub send: Key,
     pub receive: Key,
     pub local_index: u32,
     pub remote_index: u32,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::hidden::HiddenBytes;
+        f.debug_struct("Session").field("send", &HiddenBytes(&self.send))
+            .field("receive", &HiddenBytes(&self.receive))
+            .field("local_index", &self.local_index)
+            .field("remote_index", &self.remote_index).finish()
+    }
 }
 
 /// What the responder learns from an initiation.

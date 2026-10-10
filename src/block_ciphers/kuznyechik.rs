@@ -492,11 +492,11 @@ mod tests {
         let iv = vec![0x5au8; BLOCK_SIZE];
 
         let mut ciphertext = Vec::new();
-        cipher.cbc_encrypt(&plaintext, &mut ciphertext, iv.clone()).unwrap();
+        cipher.cbc_encrypt(&plaintext, &mut ciphertext, &iv).unwrap();
         assert_ne!(ciphertext, plaintext);
 
         let mut back = Vec::new();
-        cipher.cbc_decrypt(&ciphertext, &mut back, iv).unwrap();
+        cipher.cbc_decrypt(&ciphertext, &mut back, &iv).unwrap();
         assert_eq!(back, plaintext);
     }
 

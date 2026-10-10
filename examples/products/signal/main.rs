@@ -23,6 +23,10 @@ mod rng;
 mod session;
 mod wire;
 
+#[path = "../shared/hidden.rs"]
+mod hidden;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;

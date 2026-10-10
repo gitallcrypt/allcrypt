@@ -32,44 +32,25 @@ mod noise;
 
 #[path = "../shared/base64.rs"]
 mod base64;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
+use cli::{hex, value};
 use noise::{Key, Pending, ReplayWindow, Session};
 
 // ----------------------------------------------------------------- arguments --
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
-}
-
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    cli::positional(args, &[], &[])
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let text = text.trim();
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("{text}: not hex."));
-    }
-    Ok((0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex")).collect())
+    cli::unhex(text.trim(), &[])
 }
 
 fn fixed<const N: usize>(bytes: Vec<u8>, what: &str) -> Result<[u8; N], String> {

@@ -524,15 +524,15 @@ def test_catalogue_entries_all_work():
     # loop in `test_name_enums.py`.
     for name in allcrypt.block_ciphers_available:
         sizes = []
-        for length in (5, 8, 16, 24, 32, 56):
+        for length in (5, 8, 16, 24, 32, 56, 64):
             try:
                 sizes.append(allcrypt.Cipher(name, bytes(length)).block_size)
             except allcrypt.CryptoError:
                 pass
         assert sizes, f"{name} constructs at no key length"
-        # Rijndael's wider blocks are the one family named by block
-        # size; every other cipher is a 64 or 128 bit block.
-        if name.startswith("rijndael-"):
+        # Rijndael and Kalyna are the families named by block size;
+        # every other cipher is a 64 or 128 bit block.
+        if name.startswith(("rijndael-", "kalyna-")):
             allowed = {int(name.split("-")[1]) // 8}
         else:
             allowed = {8, 16}

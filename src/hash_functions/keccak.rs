@@ -303,7 +303,18 @@ impl Keccak {
 }
 
 impl HashFunction for Keccak {
-    fn name(&self) -> String { self.name.to_string() }
+    /// The catalogue name, with the length spelled out where it is not
+    /// the one the bare name means, so `AnyHash::new` reads it back as
+    /// this same function.
+    fn name(&self) -> String {
+        let bits = self.digest_len * 8;
+        match self.name {
+            "keccak" => format!("keccak_{bits}"),
+            "shake_128" if self.digest_len != 16 => format!("shake_128_{bits}"),
+            "shake_256" if self.digest_len != 32 => format!("shake_256_{bits}"),
+            other => other.to_string(),
+        }
+    }
 
     fn digest_len(&self) -> usize { self.digest_len }
 

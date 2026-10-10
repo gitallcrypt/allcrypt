@@ -183,7 +183,7 @@ pub struct Camellia {
 }
 
 impl Camellia {
-    pub fn new(key: Vec<u8>) -> Result<Camellia, String> {
+    pub fn new(key: &[u8]) -> Result<Camellia, String> {
         if key.len() != 16 && key.len() != 24 && key.len() != 32 {
             return Err(format!("A Camellia key is 16, 24 or 32 bytes; this one \
                                 is {}.", key.len()));
@@ -372,7 +372,7 @@ mod tests {
              "9acc237dff16d76c20ef7c919e3a7509"),
         ];
         for (key, expected) in cases {
-            let mut cipher = Camellia::new(unhex(key)).unwrap();
+            let mut cipher = Camellia::new(&unhex(key)).unwrap();
             let mut out = Vec::new();
             cipher.block_encrypt(&unhex(plaintext), &mut out);
             assert_eq!(hex(&out), expected, "key {}", key);
@@ -406,9 +406,9 @@ mod tests {
         // What this pins is the complement specifically: a key whose
         // last 64 bits are all zero must *not* behave as a 128 bit key
         // extended with zeros, because the complement makes KR nonzero.
-        let short = Camellia::new(unhex("0123456789abcdeffedcba9876543210")).unwrap();
+        let short = Camellia::new(&unhex("0123456789abcdeffedcba9876543210")).unwrap();
         let long = Camellia::new(
-            unhex("0123456789abcdeffedcba98765432100000000000000000")).unwrap();
+            &unhex("0123456789abcdeffedcba98765432100000000000000000")).unwrap();
         assert_ne!(short.k[0], long.k[0],
                    "a 192 bit key with a zero tail behaved as a 128 bit key, \
                     so KR is being zero padded rather than complemented");
@@ -427,14 +427,14 @@ mod tests {
     /// The round count follows the key length.
     #[test]
     fn test_the_round_count_follows_the_key_length() {
-        assert_eq!(Camellia::new(vec![0; 16]).unwrap().rounds(), 18);
-        assert_eq!(Camellia::new(vec![0; 24]).unwrap().rounds(), 24);
-        assert_eq!(Camellia::new(vec![0; 32]).unwrap().rounds(), 24);
+        assert_eq!(Camellia::new(&[0; 16]).unwrap().rounds(), 18);
+        assert_eq!(Camellia::new(&[0; 24]).unwrap().rounds(), 24);
+        assert_eq!(Camellia::new(&[0; 32]).unwrap().rounds(), 24);
     }
 
     #[test]
     fn test_encryption_is_not_symmetric() {
-        let mut cipher = Camellia::new(vec![7; 16]).unwrap();
+        let mut cipher = Camellia::new(&[7; 16]).unwrap();
         let block: Vec<u8> = (0..16).collect();
         let mut encrypted = Vec::new();
         let mut decrypted = Vec::new();
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn test_a_wrong_key_length_is_an_error() {
         for length in [0usize, 8, 15, 17, 20, 23, 25, 31, 33] {
-            assert!(Camellia::new(vec![0; length]).is_err(),
+            assert!(Camellia::new(&vec![0; length]).is_err(),
                     "{} bytes should be refused", length);
         }
     }

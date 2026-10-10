@@ -195,10 +195,10 @@ impl SectorCipher {
             Method::AesCbc128 | Method::AesCbc256 => (key, None),
             _ => {
                 let (data, tweak) = key.split_at(key.len() / 2);
-                (data, Some(AesCrypto::new(tweak.to_vec())?))
+                (data, Some(AesCrypto::new(tweak)?))
             }
         };
-        Ok(SectorCipher { method, data: AesCrypto::new(data.to_vec())?, tweak })
+        Ok(SectorCipher { method, data: AesCrypto::new(data)?, tweak })
     }
 
     pub fn method(&self) -> Method {
@@ -255,7 +255,7 @@ impl SectorCipher {
         }
         let iv = self.eboiv(byte_offset);
         let mut out = Vec::with_capacity(sector.len());
-        self.data.cbc_encrypt(sector, &mut out, iv)?;
+        self.data.cbc_encrypt(sector, &mut out, &iv)?;
         sector.copy_from_slice(&out);
         Ok(())
     }
@@ -271,7 +271,7 @@ impl SectorCipher {
         }
         let iv = self.eboiv(byte_offset);
         let mut out = Vec::with_capacity(sector.len());
-        self.data.cbc_decrypt(sector, &mut out, iv)?;
+        self.data.cbc_decrypt(sector, &mut out, &iv)?;
         sector.copy_from_slice(&out);
         if let Method::AesCbcElephant128 | Method::AesCbcElephant256 = self.method {
             let mut d = words(sector);
@@ -469,11 +469,11 @@ mod tests {
         let mut sector = plain.clone();
         SectorCipher::new(Method::AesCbc128, &key).unwrap()
             .encrypt_sector(0x1234_5600, &mut sector).unwrap();
-        let mut aes = AesCrypto::new(key).unwrap();
+        let mut aes = AesCrypto::new(&key).unwrap();
         let mut iv = Vec::new();
         aes.block_encrypt(&offset_block(0x1234_5600), &mut iv);
         let mut want = Vec::new();
-        aes.cbc_encrypt(&plain, &mut want, iv).unwrap();
+        aes.cbc_encrypt(&plain, &mut want, &iv).unwrap();
         assert_eq!(sector, want);
     }
 
@@ -501,8 +501,8 @@ mod tests {
         let mut sector = plain.clone();
         SectorCipher::new(Method::AesXts128, &key).unwrap().encrypt_sector(3 * 4096, &mut sector)
             .unwrap();
-        let want = xts::encrypt(&mut AesCrypto::new(key[..16].to_vec()).unwrap(),
-                                &mut AesCrypto::new(key[16..].to_vec()).unwrap(),
+        let want = xts::encrypt(&mut AesCrypto::new(&key[..16]).unwrap(),
+                                &mut AesCrypto::new(&key[16..]).unwrap(),
                                 &xts::sector_tweak(3), &plain).unwrap();
         assert_eq!(sector, want);
     }

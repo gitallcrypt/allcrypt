@@ -91,10 +91,10 @@ impl CbcHmac {
         if iv.len() != 16 {
             return Err(format!("The IV is 16 bytes, not {}.", iv.len()));
         }
-        let mut cipher = AesCrypto::new(self.enc_key.clone())?;
+        let mut cipher = AesCrypto::new(&self.enc_key)?;
         let mut ciphertext = Vec::with_capacity(plaintext.len() + 16);
         cipher.cbc_encrypt(&crate::api::pad_pkcs7(plaintext, 16)?, &mut ciphertext,
-                           iv.to_vec())?;
+                           iv)?;
         let tag = self.tag(aad, iv, &ciphertext);
         Ok((ciphertext, tag))
     }
@@ -111,9 +111,9 @@ impl CbcHmac {
         if bytes_differ(&self.tag(aad, iv, ciphertext), tag) {
             return Err(FAILURE.to_string());
         }
-        let mut cipher = AesCrypto::new(self.enc_key.clone())?;
+        let mut cipher = AesCrypto::new(&self.enc_key)?;
         let mut plaintext = Vec::with_capacity(ciphertext.len());
-        cipher.cbc_decrypt(ciphertext, &mut plaintext, iv.to_vec())?;
+        cipher.cbc_decrypt(ciphertext, &mut plaintext, iv)?;
         crate::api::unpad_pkcs7(&plaintext, 16).map_err(|_| FAILURE.to_string())
     }
 }
@@ -183,8 +183,8 @@ mod tests {
         let aead = CbcHmac::new(Variant::Aes128HmacSha256, &key).unwrap();
         let (e, _) = aead.encrypt(&[0; 16], b"", b"x").unwrap();
         let mut want = Vec::new();
-        AesCrypto::new(key[16..].to_vec()).unwrap()
-            .cbc_encrypt(&crate::api::pad_pkcs7(b"x", 16).unwrap(), &mut want, vec![0; 16])
+        AesCrypto::new(&key[16..]).unwrap()
+            .cbc_encrypt(&crate::api::pad_pkcs7(b"x", 16).unwrap(), &mut want, &[0; 16])
             .unwrap();
         assert_eq!(e, want);
         assert!(CbcHmac::new(Variant::Aes256HmacSha512, &key).is_err());

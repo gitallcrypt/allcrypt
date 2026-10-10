@@ -172,7 +172,7 @@ impl Encryption {
             Cipher::Blowfish => {
                 let mut cipher = AnyBlockCipher::new("blowfish", key, None)?;
                 let mut out = Vec::with_capacity(data.len());
-                cipher.cfb_decrypt(data, &mut out, self.iv.clone())?;
+                cipher.cfb_decrypt(data, &mut out, &self.iv)?;
                 out
             }
             Cipher::AesCbc => {
@@ -181,7 +181,7 @@ impl Encryption {
                 }
                 let mut cipher = AnyBlockCipher::new("aes", key, None)?;
                 let mut out = Vec::with_capacity(data.len());
-                cipher.cbc_decrypt(data, &mut out, self.iv.clone())?;
+                cipher.cbc_decrypt(data, &mut out, &self.iv)?;
                 // W3C padding: the last byte counts the padding, and the
                 // rest of it is arbitrary.
                 let pad = usize::from(*out.last().expect("not empty"));
@@ -216,14 +216,14 @@ impl Encryption {
             Cipher::Blowfish => {
                 let mut cipher = AnyBlockCipher::new("blowfish", key, None)?;
                 let mut out = Vec::with_capacity(deflated.len());
-                cipher.cfb_encrypt(deflated, &mut out, self.iv.clone())?;
+                cipher.cfb_encrypt(deflated, &mut out, &self.iv)?;
                 Ok(out)
             }
             Cipher::AesCbc => {
                 let mut cipher = AnyBlockCipher::new("aes", key, None)?;
                 let mut out = Vec::with_capacity(deflated.len() + 16);
                 cipher.cbc_encrypt(&allcrypt::api::pad_pkcs7(deflated, 16)?, &mut out,
-                                   self.iv.clone())?;
+                                   &self.iv)?;
                 Ok(out)
             }
             Cipher::AesGcm => {

@@ -86,7 +86,7 @@ impl MD5 {
 impl HashFunction for MD5 {
     fn block_size(&self) -> usize { 64 }
     fn name(&self) -> String {
-        "MD5".to_string()
+        "md5".to_string()
     }
     fn digest_len(&self) -> usize {
         16

@@ -52,7 +52,6 @@ fn address_for(k: &BigUint, compressed: bool) -> String {
 }
 
 /// What a decryption gives back.
-#[derive(Debug)]
 pub struct Decrypted {
     pub key: BigUint,
     pub compressed: bool,
@@ -60,6 +59,14 @@ pub struct Decrypted {
     /// The lot and sequence numbers, for an EC-multiplied key that has
     /// them.
     pub lot_sequence: Option<(u32, u32)>,
+}
+
+impl std::fmt::Debug for Decrypted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decrypted").field("key", &crate::hidden::Hidden)
+            .field("compressed", &self.compressed).field("address", &self.address)
+            .field("lot_sequence", &self.lot_sequence).finish()
+    }
 }
 
 /// A passphrase as BIP-38 hashes it: NFC, in UTF-8.

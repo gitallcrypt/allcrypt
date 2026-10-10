@@ -294,7 +294,7 @@ fn process_block_64(state: &[u64; 8], block: &[u8]) -> (u64, u64, u64, u64, u64,
 impl HashFunction for SHA224 {
     fn block_size(&self) -> usize { 64 }
     fn name(&self) -> String {
-        "SHA224".to_string()
+        "sha224".to_string()
     }
     fn digest_len(&self) -> usize {
         28
@@ -335,7 +335,7 @@ impl HashFunction for SHA224 {
 impl HashFunction for SHA256 {
     fn block_size(&self) -> usize { 64 }
     fn name(&self) -> String {
-        "SHA256".to_string()
+        "sha256".to_string()
     }
     fn digest_len(&self) -> usize {
         32
@@ -377,7 +377,7 @@ impl HashFunction for SHA256 {
 impl HashFunction for SHA384 {
     fn block_size(&self) -> usize { 128 }
     fn name(&self) -> String {
-        "SHA384".to_string()
+        "sha384".to_string()
     }
     fn digest(&mut self) -> Vec<u8> {
         let blocksize = 128;
@@ -430,9 +430,9 @@ impl HashFunction for SHA512 {
     fn block_size(&self) -> usize { 128 }
     fn name(&self) -> String {
         if self.output_bits != 512 {
-            return format!("SHA512/{}", self.output_bits);
+            return format!("sha512_{}", self.output_bits);
         }
-        "SHA512".to_string()
+        "sha512".to_string()
     }
     fn digest(&mut self) -> Vec<u8> {
         let blocksize = 128;

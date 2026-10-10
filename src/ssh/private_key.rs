@@ -247,15 +247,17 @@ pub fn read(text: &str, passphrase: Option<&[u8]>) -> Result<(PrivateKey, String
     let private = read_private_fields(&mut reader)?;
     let comment = reader.text()?.to_string();
     // The padding brings the section up to a whole number of cipher
-    // blocks, so a valid file has fewer than one block of it. Checked
-    // before the byte values: a bound on the length is what keeps the
-    // expected sequence inside a `u8`, and anything longer is trailing
-    // data, not padding.
+    // blocks. OpenSSH writes fewer than one block of it, but **a whole
+    // block is valid too**: python-cryptography pads an already aligned
+    // section with a full block, and OpenSSH's own reader
+    // (`private2_check_padding`) bounds only the byte values, 1, 2, 3,
+    // ... So the bound here is the one that keeps that sequence inside
+    // a `u8`, 255 bytes, checked before the values; anything longer is
+    // trailing data, not padding.
     let padding = reader.rest();
-    if padding.len() >= spec.block_size {
-        return Err(format!("SSH: {} bytes follow the comment, and the padding \
-                            for {} is under {}.",
-                           padding.len(), cipher_name, spec.block_size));
+    if padding.len() > 255 {
+        return Err(format!("SSH: {} bytes follow the comment; padding is \
+                            at most 255.", padding.len()));
     }
     for (expected, padding) in (1..=255u8).zip(padding) {
         if *padding != expected {
@@ -481,8 +483,8 @@ mod tests {
         pem::wrap(LABEL, &out.finish())
     }
 
-    /// Padding longer than a cipher block is refused, whatever its
-    /// bytes.
+    /// Padding longer than 255 bytes is refused, whatever its bytes,
+    /// and a whole block of it is accepted.
     ///
     /// What was wrong: the padding check zipped the trailing bytes with
     /// `(1u8..)`, an unbounded range that panics on overflow in a debug
@@ -490,8 +492,13 @@ mod tests {
     /// `1..=255, 0, 1, ...` therefore took down a debug build and was
     /// *accepted* by a release build. The round-trip tests only ever
     /// read files `write` had made, whose padding is under one block.
-    /// The length is now bounded by the block size before any byte is
-    /// compared, and the sequence itself is `1..=255`.
+    /// The length is now bounded before any byte is compared, and the
+    /// sequence itself is `1..=255`.
+    ///
+    /// The bound was the cipher's block size for a while, which refused
+    /// half the P-256 keys python-cryptography writes: it pads an
+    /// aligned section with a whole block, and OpenSSH reads that. The
+    /// bound is 255 now, the most a `u8` sequence can count.
     #[test]
     fn test_padding_of_a_block_or_more_is_refused() {
         let key = a_key();
@@ -512,9 +519,10 @@ mod tests {
         let error = read(&file_with_section(&key, &section.finish()), None).unwrap_err();
         assert!(error.contains("follow the comment"), "{error}");
 
-        // Exactly one block of correctly numbered padding is also too
-        // much: a section that was already aligned gets none. The
-        // comment is sized to align the section without padding.
+        // Exactly one block of correctly numbered padding is accepted:
+        // python-cryptography writes it for a section that was already
+        // aligned. The comment is sized to align the section without
+        // padding.
         let mut section = Writer::new();
         section.uint32(7).uint32(7);
         write_private_fields(&key, &mut section);
@@ -524,8 +532,8 @@ mod tests {
         for padding in 1..=block_size as u8 {
             section.byte(padding);
         }
-        let error = read(&file_with_section(&key, &section.finish()), None).unwrap_err();
-        assert!(error.contains("follow the comment"), "{error}");
+        let (read_back, _) = read(&file_with_section(&key, &section.finish()), None).unwrap();
+        assert!(read_back.public() == key.public());
     }
 
     /// A round count that would stall the reader is refused before the

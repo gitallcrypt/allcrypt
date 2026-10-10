@@ -39,24 +39,19 @@ mod fve;
 mod write;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
+use cli::hex;
 use fve::{Metadata, Secret};
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let text: String = text.split_whitespace().collect();
-    if !text.len().is_multiple_of(2) {
-        return Err("An odd number of hex digits.".to_string());
-    }
-    (0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|e| e.to_string()))
-        .collect()
+    cli::unhex(text, &[' ', '\t', '\r', '\n'])
 }
 
 /// A FILETIME (100 ns since 1601) as a UTC date and time.

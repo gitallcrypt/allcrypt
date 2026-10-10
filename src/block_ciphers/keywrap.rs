@@ -519,11 +519,11 @@ mod tests {
     #[test]
     fn test_rfc3394_vectors() {
         for vector in parse_vectors() {
-            let mut cipher = AesCrypto::new(vector.kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&vector.kek).unwrap();
             let wrapped = wrap(&mut cipher, &vector.data).unwrap();
             assert_eq!(hex(&wrapped), hex(&vector.output), "{}", vector.section);
 
-            let mut cipher = AesCrypto::new(vector.kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&vector.kek).unwrap();
             let back = unwrap(&mut cipher, &vector.output).unwrap();
             assert_eq!(hex(&back), hex(&vector.data), "{}", vector.section);
         }
@@ -541,11 +541,11 @@ mod tests {
         assert_eq!(cases.len(), 2, "RFC 5649 section 6 has two examples");
         let mut saw_single_block = false;
         for (kek, data, output) in cases {
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             let wrapped = wrap_with_padding(&mut cipher, &data).unwrap();
             assert_eq!(hex(&wrapped), hex(&output));
 
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             assert_eq!(hex(&unwrap_with_padding(&mut cipher, &output).unwrap()),
                        hex(&data));
             if output.len() == 16 {
@@ -613,12 +613,12 @@ mod tests {
         let kek = [0x42u8; 32];
         for length in 1..=64usize {
             let data: Vec<u8> = (0..length).map(|i| (i * 7 + length) as u8).collect();
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             let wrapped = wrap_with_padding(&mut cipher, &data).unwrap();
             assert_eq!(wrapped.len(), length.div_ceil(8) * 8 + 8,
                        "length {}", length);
 
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             assert_eq!(unwrap_with_padding(&mut cipher, &wrapped).unwrap(), data,
                        "length {}", length);
         }
@@ -632,19 +632,19 @@ mod tests {
     fn test_every_altered_bit_is_refused() {
         let kek = [0x11u8; 16];
         let data = [0x22u8; 32];
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         let wrapped = wrap(&mut cipher, &data).unwrap();
 
         for index in 0..wrapped.len() {
             let mut broken = wrapped.clone();
             broken[index] ^= 1 << (index % 8);
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             assert!(unwrap(&mut cipher, &broken).is_err(),
                     "byte {} altered and the wrapping still unwrapped", index);
         }
 
         // And the wrong key.
-        let mut cipher = AesCrypto::new([0x12u8; 16].to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&[0x12u8; 16]).unwrap();
         assert!(unwrap(&mut cipher, &wrapped).is_err());
     }
 
@@ -653,12 +653,12 @@ mod tests {
         let kek = [0x33u8; 24];
         for length in [1usize, 7, 8, 9, 20, 33] {
             let data: Vec<u8> = (0..length).map(|i| i as u8).collect();
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             let wrapped = wrap_with_padding(&mut cipher, &data).unwrap();
             for index in 0..wrapped.len() {
                 let mut broken = wrapped.clone();
                 broken[index] ^= 0x80;
-                let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+                let mut cipher = AesCrypto::new(&kek).unwrap();
                 assert!(unwrap_with_padding(&mut cipher, &broken).is_err(),
                         "length {}, byte {} altered and it still unwrapped",
                         length, index);
@@ -669,7 +669,7 @@ mod tests {
     /// RFC 3394 refuses what it cannot wrap rather than padding.
     #[test]
     fn test_the_unpadded_form_refuses_lengths_it_cannot_represent() {
-        let mut cipher = AesCrypto::new([0u8; 16].to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&[0u8; 16]).unwrap();
         for length in [0usize, 1, 7, 8, 9, 15, 17, 20] {
             assert!(wrap(&mut cipher, &vec![0u8; length]).is_err(),
                     "{} bytes was wrapped by the unpadded form", length);
@@ -682,7 +682,7 @@ mod tests {
     /// that looks like a wrapping.
     #[test]
     fn test_a_64_bit_block_cipher_is_refused() {
-        let mut des = crate::block_ciphers::des::Des::new([0x01u8; 8].to_vec()).unwrap();
+        let mut des = crate::block_ciphers::des::Des::new(&[0x01u8; 8]).unwrap();
         assert!(wrap(&mut des, &[0u8; 16]).is_err());
         assert!(unwrap(&mut des, &[0u8; 24]).is_err());
         assert!(wrap_with_padding(&mut des, &[0u8; 5]).is_err());
@@ -695,8 +695,8 @@ mod tests {
     fn test_wrapping_is_deterministic() {
         let kek = [0x55u8; 32];
         let data = [0x66u8; 40];
-        let mut first = AesCrypto::new(kek.to_vec()).unwrap();
-        let mut second = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut first = AesCrypto::new(&kek).unwrap();
+        let mut second = AesCrypto::new(&kek).unwrap();
         assert_eq!(wrap(&mut first, &data).unwrap(), wrap(&mut second, &data).unwrap());
     }
 
@@ -711,11 +711,11 @@ mod tests {
         let kek = [0x77u8; 16];
         for length in [1usize, 7, 8, 9] {
             let data = vec![0xabu8; length];
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             let wrapped = wrap_with_padding(&mut cipher, &data).unwrap();
             assert_eq!(wrapped.len(), if length <= 8 { 16 } else { 24 },
                        "length {}", length);
-            let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+            let mut cipher = AesCrypto::new(&kek).unwrap();
             assert_eq!(unwrap_with_padding(&mut cipher, &wrapped).unwrap(), data);
         }
     }
@@ -729,7 +729,7 @@ mod tests {
     #[test]
     fn test_a_length_field_that_does_not_match_the_padding_is_refused() {
         let kek = [0x99u8; 16];
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
 
         // Two registers of data, but a length field claiming one byte:
         // the padded length would then be 15 bytes too long.
@@ -743,7 +743,7 @@ mod tests {
             forged.extend_from_slice(register);
         }
 
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         assert!(unwrap_with_padding(&mut cipher, &forged).is_err(),
                 "a length field 15 bytes short of the padding was accepted");
 
@@ -752,13 +752,13 @@ mod tests {
         a[..4].copy_from_slice(&AIV);
         a[4..].copy_from_slice(&9u32.to_be_bytes());
         let mut registers = vec![[0xccu8; 8], [0xcc, 1, 0, 0, 0, 0, 0, 0]];
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         wrap_core(&mut cipher, &mut a, &mut registers).unwrap();
         let mut forged = a.to_vec();
         for register in &registers {
             forged.extend_from_slice(register);
         }
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         assert!(unwrap_with_padding(&mut cipher, &forged).is_err(),
                 "a non-zero pad byte was accepted");
 
@@ -771,13 +771,13 @@ mod tests {
         a[..4].copy_from_slice(&AIV);
         a[4..].copy_from_slice(&1u32.to_be_bytes());
         let mut registers = vec![[0u8; 8], [0u8; 8]];
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         wrap_core(&mut cipher, &mut a, &mut registers).unwrap();
         let mut forged = a.to_vec();
         for register in &registers {
             forged.extend_from_slice(register);
         }
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         assert!(unwrap_with_padding(&mut cipher, &forged).is_err(),
                 "a length field 15 bytes short of a validly padded wrapping \
                  was accepted");
@@ -790,26 +790,26 @@ mod tests {
         a[..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
         a[4..].copy_from_slice(&16u32.to_be_bytes());
         let mut registers = vec![[0xddu8; 8], [0xddu8; 8]];
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         wrap_core(&mut cipher, &mut a, &mut registers).unwrap();
         let mut forged = a.to_vec();
         for register in &registers {
             forged.extend_from_slice(register);
         }
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         assert!(unwrap_with_padding(&mut cipher, &forged).is_err(),
                 "a wrapping with the wrong initial value was accepted");
 
         // And the two forms do not unwrap each other's output, which is
         // the same property seen from the outside.
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         let plain = wrap(&mut cipher, &[0x5au8; 16]).unwrap();
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         assert!(unwrap_with_padding(&mut cipher, &plain).is_err(),
                 "an RFC 3394 wrapping unwrapped as an RFC 5649 one");
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         let padded = wrap_with_padding(&mut cipher, &[0x5au8; 16]).unwrap();
-        let mut cipher = AesCrypto::new(kek.to_vec()).unwrap();
+        let mut cipher = AesCrypto::new(&kek).unwrap();
         assert!(unwrap(&mut cipher, &padded).is_err(),
                 "an RFC 5649 wrapping unwrapped as an RFC 3394 one");
     }
@@ -845,7 +845,7 @@ mod tests {
     /// the check, so the error it produces is pinned here.
     #[test]
     fn test_the_block_size_error_says_what_is_wrong() {
-        let mut des = crate::block_ciphers::des::Des::new([0x01u8; 8].to_vec()).unwrap();
+        let mut des = crate::block_ciphers::des::Des::new(&[0x01u8; 8]).unwrap();
         let error = wrap(&mut des, &[0u8; 16]).unwrap_err();
         assert!(error.contains("128 bit block"), "{}", error);
         assert!(error.contains("8 bytes"), "{}", error);

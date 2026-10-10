@@ -431,11 +431,11 @@ pub struct Des {
 }
 
 impl Des {
-    pub fn new(key: Vec<u8>) -> Result<Des, String> {
+    pub fn new(key: &[u8]) -> Result<Des, String> {
         if key.len() != 8 {
             return Err(format!("DES takes an 8 byte key, got {}.", key.len()));
         }
-        Ok(Des { keys: schedule(to_u64(&key)).map(subkey_groups) })
+        Ok(Des { keys: schedule(to_u64(key)).map(subkey_groups) })
     }
 
     /// Whether this key is one of the four weak or twelve semi-weak keys.
@@ -492,7 +492,7 @@ pub struct TripleDes {
 }
 
 impl TripleDes {
-    pub fn new(key: Vec<u8>) -> Result<TripleDes, String> {
+    pub fn new(key: &[u8]) -> Result<TripleDes, String> {
         let (k1, k2, k3) = match key.len() {
             8 => (&key[0..8], &key[0..8], &key[0..8]),
             16 => (&key[0..8], &key[8..16], &key[0..8]),
@@ -501,9 +501,9 @@ impl TripleDes {
                 "Triple DES takes an 8, 16 or 24 byte key, got {}.", other)),
         };
         Ok(TripleDes {
-            first: Des::new(k1.to_vec())?,
-            second: Des::new(k2.to_vec())?,
-            third: Des::new(k3.to_vec())?,
+            first: Des::new(k1)?,
+            second: Des::new(k2)?,
+            third: Des::new(k3)?,
         })
     }
 }
@@ -541,7 +541,7 @@ mod tests {
     }
 
     fn des(key: &str, plaintext: &str) -> String {
-        let mut cipher = Des::new(unhex(key)).unwrap();
+        let mut cipher = Des::new(&unhex(key)).unwrap();
         let mut out = Vec::new();
         cipher.block_encrypt(&unhex(plaintext), &mut out);
         hex(&out)
@@ -574,7 +574,7 @@ mod tests {
         let key = unhex("133457799bbcdff1");
         for value in ["0000000000000000", "ffffffffffffffff",
                       "0123456789abcdef", "deadbeefcafebabe"] {
-            let mut cipher = Des::new(key.clone()).unwrap();
+            let mut cipher = Des::new(&key).unwrap();
             let mut encrypted = Vec::new();
             cipher.block_encrypt(&unhex(value), &mut encrypted);
 
@@ -595,7 +595,7 @@ mod tests {
         for byte in 0..8 {
             let mut key = unhex("133457799bbcdff1");
             key[byte] ^= 0x01;
-            let mut cipher = Des::new(key).unwrap();
+            let mut cipher = Des::new(&key).unwrap();
             let mut out = Vec::new();
             cipher.block_encrypt(&unhex("0123456789abcdef"), &mut out);
             assert_eq!(hex(&out), base, "parity bit in byte {} mattered", byte);
@@ -612,7 +612,7 @@ mod tests {
             let key = weak.to_be_bytes().to_vec();
             assert!(Des::is_weak(&key), "0x{:016x} not reported weak", weak);
 
-            let mut cipher = Des::new(key.clone()).unwrap();
+            let mut cipher = Des::new(&key).unwrap();
             let mut once = Vec::new();
             cipher.block_encrypt(&plaintext, &mut once);
             let mut twice = Vec::new();
@@ -623,8 +623,8 @@ mod tests {
 
         // A semi-weak pair: one's encryption is the other's.
         for pair in SEMI_WEAK_KEYS.chunks(2) {
-            let mut a = Des::new(pair[0].to_be_bytes().to_vec()).unwrap();
-            let mut b = Des::new(pair[1].to_be_bytes().to_vec()).unwrap();
+            let mut a = Des::new(&pair[0].to_be_bytes()).unwrap();
+            let mut b = Des::new(&pair[1].to_be_bytes()).unwrap();
             let mut once = Vec::new();
             a.block_encrypt(&plaintext, &mut once);
             let mut back = Vec::new();
@@ -650,12 +650,12 @@ mod tests {
         let key = unhex("133457799bbcdff1");
         let plaintext = unhex("0123456789abcdef");
 
-        let mut single = Des::new(key.clone()).unwrap();
+        let mut single = Des::new(&key).unwrap();
         let mut from_des = Vec::new();
         single.block_encrypt(&plaintext, &mut from_des);
 
         for repeated in [key.repeat(1), key.repeat(2), key.repeat(3)] {
-            let mut triple = TripleDes::new(repeated.clone()).unwrap();
+            let mut triple = TripleDes::new(&repeated).unwrap();
             let mut from_triple = Vec::new();
             triple.block_encrypt(&plaintext, &mut from_triple);
             assert_eq!(from_triple, from_des,
@@ -668,7 +668,7 @@ mod tests {
         let plaintext = unhex("0123456789abcdef");
         for key in ["0123456789abcdef23456789abcdef01",
                     "0123456789abcdef23456789abcdef01456789abcdef0123"] {
-            let mut cipher = TripleDes::new(unhex(key)).unwrap();
+            let mut cipher = TripleDes::new(&unhex(key)).unwrap();
             let mut encrypted = Vec::new();
             cipher.block_encrypt(&plaintext, &mut encrypted);
             assert_ne!(encrypted, plaintext);
@@ -686,12 +686,12 @@ mod tests {
         let k2 = "23456789abcdef01";
         let plaintext = unhex("0123456789abcdef");
 
-        let mut two = TripleDes::new(unhex(&format!("{}{}", k1, k2))).unwrap();
+        let mut two = TripleDes::new(&unhex(&format!("{}{}", k1, k2))).unwrap();
         let mut from_two = Vec::new();
         two.block_encrypt(&plaintext, &mut from_two);
 
         let mut three =
-            TripleDes::new(unhex(&format!("{}{}{}", k1, k2, k1))).unwrap();
+            TripleDes::new(&unhex(&format!("{}{}{}", k1, k2, k1))).unwrap();
         let mut from_three = Vec::new();
         three.block_encrypt(&plaintext, &mut from_three);
 
@@ -701,16 +701,16 @@ mod tests {
     #[test]
     fn test_key_lengths_are_checked() {
         for length in [0usize, 1, 7, 9, 16, 24] {
-            assert!(Des::new(vec![0; length]).is_err(), "DES took {} bytes", length);
+            assert!(Des::new(&vec![0; length]).is_err(), "DES took {} bytes", length);
         }
-        assert!(Des::new(vec![0; 8]).is_ok());
+        assert!(Des::new(&[0; 8]).is_ok());
 
         for length in [0usize, 7, 9, 15, 17, 23, 25, 32] {
-            assert!(TripleDes::new(vec![0; length]).is_err(),
+            assert!(TripleDes::new(&vec![0; length]).is_err(),
                     "3DES took {} bytes", length);
         }
         for length in [8usize, 16, 24] {
-            assert!(TripleDes::new(vec![0; length]).is_ok());
+            assert!(TripleDes::new(&vec![0; length]).is_ok());
         }
     }
 
@@ -903,14 +903,14 @@ mod tests {
         let key = unhex("133457799bbcdff1");
         let plaintext = unhex("0123456789abcdef");
 
-        let mut cipher = Des::new(key.clone()).unwrap();
+        let mut cipher = Des::new(&key).unwrap();
         let mut base = Vec::new();
         cipher.block_encrypt(&plaintext, &mut base);
 
         for bit in 0..64 {
             let mut altered = plaintext.clone();
             altered[bit / 8] ^= 1 << (7 - bit % 8);
-            let mut cipher = Des::new(key.clone()).unwrap();
+            let mut cipher = Des::new(&key).unwrap();
             let mut out = Vec::new();
             cipher.block_encrypt(&altered, &mut out);
 

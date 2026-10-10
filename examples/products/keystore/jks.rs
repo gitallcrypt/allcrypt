@@ -54,11 +54,24 @@ pub fn utf16be(password: &[u8]) -> Result<Vec<u8>, String> {
     Ok(text.encode_utf16().flat_map(u16::to_be_bytes).collect())
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Entry {
     PrivateKey { pkcs8: Vec<u8>, chain: Vec<Vec<u8>> },
     Certificate(Vec<u8>),
     Secret { algorithm: String, key: Vec<u8> },
+}
+
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::hidden::HiddenBytes;
+        match self {
+            Entry::PrivateKey { pkcs8, chain } => f.debug_struct("PrivateKey")
+                .field("pkcs8", &HiddenBytes(pkcs8)).field("chain", chain).finish(),
+            Entry::Certificate(der) => f.debug_tuple("Certificate").field(der).finish(),
+            Entry::Secret { algorithm, key } => f.debug_struct("Secret")
+                .field("algorithm", algorithm).field("key", &HiddenBytes(key)).finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -119,7 +119,7 @@ pub fn cp_divers(ukm: &[u8], key: &[u8], sbox: &str) -> Result<Vec<u8>, String> 
         // The key encrypts itself, under itself, in CFB with S as the
         // IV. All three being the same value is not a simplification -
         // it is what the RFC says.
-        let mut cipher = GostCrypto::new(current.clone(), sbox.to_string())?;
+        let mut cipher = GostCrypto::new(&current, sbox)?;
         let mut state = CfbState::new(&mut cipher, &s, false)?;
         let mut next = current.clone();
         state.apply(&mut cipher, &mut next)?;
@@ -210,7 +210,7 @@ pub fn kexp28147(secret: &[u8], key: &[u8], iv: &[u8], sbox: &str)
     }
     let mac = gost28147imit(iv, key, secret, sbox)?;
 
-    let mut cipher = GostCrypto::new(key.to_vec(), sbox.to_string())?;
+    let mut cipher = GostCrypto::new(key, sbox)?;
     let mut encrypted = Vec::with_capacity(secret.len());
     for block in secret.chunks(8) {
         cipher.block_encrypt(block, &mut encrypted);
@@ -238,7 +238,7 @@ pub fn kimp28147(wrapped: &[u8], key: &[u8], iv: &[u8], sbox: &str)
                     the handshake derived.".to_string());
     }
 
-    let mut cipher = GostCrypto::new(key.to_vec(), sbox.to_string())?;
+    let mut cipher = GostCrypto::new(key, sbox)?;
     let mut secret = Vec::with_capacity(32);
     for block in wrapped[UKM_LEN..UKM_LEN + 32].chunks(8) {
         cipher.block_decrypt(block, &mut secret);

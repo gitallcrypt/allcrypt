@@ -367,9 +367,9 @@ impl Whirlpool {
 impl HashFunction for Whirlpool {
     fn name(&self) -> String {
         match self.version {
-            Version::Zero => "Whirlpool-0",
-            Version::Tweaked => "Whirlpool-T",
-            Version::Final => "Whirlpool",
+            Version::Zero => "whirlpool_0",
+            Version::Tweaked => "whirlpool_t",
+            Version::Final => "whirlpool",
         }.to_string()
     }
 
@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn test_the_name_and_sizes() {
         let h = Whirlpool::new(&[]);
-        assert_eq!(h.name(), "Whirlpool");
+        assert_eq!(h.name(), "whirlpool");
         assert_eq!(h.digest_len(), 64);
         assert_eq!(h.block_size(), BLOCK);
         assert_eq!(Whirlpool::default().clone().digest().len(), 64);

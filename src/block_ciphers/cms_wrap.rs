@@ -6,6 +6,12 @@
 //!   the output depend on every bit of the key, which one CBC pass
 //!   would not. OpenSSL still writes the Triple-DES one for an EC
 //!   recipient of 3DES content.
+//! - **Ukraine's GOST key wrap** (DSTU): RFC 3217's shape - a check
+//!   value, a first pass under a random IV, the IV and result reversed,
+//!   a second pass under the same fixed IV - with GOST 28147-89 in CFB
+//!   for both passes and a 4-byte GOST MAC of the key as the check
+//!   value, all under the DSTU 4145 default DKE. A 32-byte key wraps to
+//!   44 bytes. It is how Ukrainian key containers carry a session key.
 //! - **RFC 3211's password recipient wrap** (PWRI): a length byte, three
 //!   check bytes and the key, padded to two blocks or more, encrypted in
 //!   CBC twice - the second pass chained on from the first pass's last
@@ -15,12 +21,14 @@
 //! error does not say which check failed.
 
 use crate::block_ciphers::des::{set_odd_parity, TripleDes};
+use crate::block_ciphers::gost::{GostCrypto, DSTU_PARAM_SET};
 #[cfg(test)]
 use crate::block_ciphers::des::has_odd_parity;
 use crate::block_ciphers::rc2::RC2;
 use crate::block_ciphers::BlockCipher;
 use crate::hash_functions::sha1::SHA1;
 use crate::hash_functions::HashFunction;
+use crate::Mac;
 
 /// RFC 3217 3.1's fixed IV for the outer pass.
 const OUTER_IV: [u8; 8] = [0x4a, 0xdd, 0xa2, 0x2c, 0x79, 0xe8, 0x21, 0x05];
@@ -37,10 +45,10 @@ fn checksum(data: &[u8]) -> Vec<u8> {
 fn two_passes<C: BlockCipher + ?Sized>(cipher: &mut C, data: &[u8], iv: &[u8])
                                        -> Result<Vec<u8>, String> {
     let mut temp2 = iv.to_vec();
-    cipher.cbc_encrypt(data, &mut temp2, iv.to_vec())?;
+    cipher.cbc_encrypt(data, &mut temp2, iv)?;
     temp2.reverse();
     let mut out = Vec::with_capacity(temp2.len());
-    cipher.cbc_encrypt(&temp2, &mut out, OUTER_IV.to_vec())?;
+    cipher.cbc_encrypt(&temp2, &mut out, &OUTER_IV)?;
     Ok(out)
 }
 
@@ -48,10 +56,10 @@ fn two_passes<C: BlockCipher + ?Sized>(cipher: &mut C, data: &[u8], iv: &[u8])
 fn undo_two_passes<C: BlockCipher + ?Sized>(cipher: &mut C, wrapped: &[u8])
                                             -> Result<Vec<u8>, String> {
     let mut temp3 = Vec::with_capacity(wrapped.len());
-    cipher.cbc_decrypt(wrapped, &mut temp3, OUTER_IV.to_vec())?;
+    cipher.cbc_decrypt(wrapped, &mut temp3, &OUTER_IV)?;
     temp3.reverse();
     let mut data = Vec::with_capacity(temp3.len() - 8);
-    cipher.cbc_decrypt(&temp3[8..], &mut data, temp3[..8].to_vec())?;
+    cipher.cbc_decrypt(&temp3[8..], &mut data, &temp3[..8])?;
     Ok(data)
 }
 
@@ -68,7 +76,7 @@ pub fn wrap_3des(kek: &[u8], cek: &[u8], iv: &[u8]) -> Result<Vec<u8>, String> {
     set_odd_parity(&mut cekicv);
     let icv = checksum(&cekicv);
     cekicv.extend_from_slice(&icv);
-    two_passes(&mut TripleDes::new(kek.to_vec())?, &cekicv, iv)
+    two_passes(&mut TripleDes::new(kek)?, &cekicv, iv)
 }
 
 /// RFC 3217 3.2. Refuses a key whose checksum or parity is wrong.
@@ -76,12 +84,66 @@ pub fn unwrap_3des(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, String> {
     if wrapped.len() != 40 {
         return Err(WRONG_KEK.to_string());
     }
-    let cekicv = undo_two_passes(&mut TripleDes::new(kek.to_vec())?, wrapped)?;
+    let cekicv = undo_two_passes(&mut TripleDes::new(kek)?, wrapped)?;
     let (cek, icv) = cekicv.split_at(24);
     let mut parity = cek.to_vec();
     set_odd_parity(&mut parity);
     let mismatched = crate::bignum::ct::bytes_differ(&checksum(cek), icv);
     if mismatched || parity != cek {
+        return Err(WRONG_KEK.to_string());
+    }
+    Ok(cek.to_vec())
+}
+
+/// GOST 28147-89 under the DSTU 4145 default DKE, keyed by `kek`.
+fn dstu_gost(kek: &[u8]) -> Result<GostCrypto, String> {
+    GostCrypto::new(kek, DSTU_PARAM_SET)
+}
+
+/// The DSTU wrap's check value: the first four bytes of the GOST MAC of
+/// the key under the key-encryption key.
+fn dstu_check(kek: &[u8], cek: &[u8]) -> Result<[u8; 4], String> {
+    let mut mac = dstu_gost(kek)?;
+    mac.update(cek);
+    let tag = mac.digest();
+    Ok([tag[0], tag[1], tag[2], tag[3]])
+}
+
+/// Ukraine's GOST key wrap: a 32-byte GOST key under a 32-byte
+/// key-encryption key with an 8-byte random `iv`. The result is 44
+/// bytes: GOST CFB under `iv` over the key and its 4-byte MAC, the IV
+/// and that result reversed, and GOST CFB again under RFC 3217's fixed
+/// IV.
+pub fn wrap_gost_dstu(kek: &[u8], cek: &[u8], iv: &[u8]) -> Result<Vec<u8>, String> {
+    if cek.len() != 32 || iv.len() != 8 {
+        return Err("The DSTU GOST key wrap takes a 32-byte key and an 8-byte IV.".to_string());
+    }
+    let mut gost = dstu_gost(kek)?;
+    let mut cekicv = cek.to_vec();
+    cekicv.extend_from_slice(&dstu_check(kek, cek)?);
+    let mut temp2 = iv.to_vec();
+    gost.cfb_encrypt(&cekicv, &mut temp2, iv)?;
+    temp2.reverse();
+    let mut out = Vec::with_capacity(temp2.len());
+    gost.cfb_encrypt(&temp2, &mut out, &OUTER_IV)?;
+    Ok(out)
+}
+
+/// The inverse of `wrap_gost_dstu`. Refuses anything whose check value
+/// does not match, with the one message every failure gives.
+pub fn unwrap_gost_dstu(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, String> {
+    if wrapped.len() != 44 {
+        return Err(WRONG_KEK.to_string());
+    }
+    let mut gost = dstu_gost(kek)?;
+    let mut temp2 = Vec::with_capacity(44);
+    gost.cfb_decrypt(wrapped, &mut temp2, &OUTER_IV)?;
+    temp2.reverse();
+    let (iv, inner) = temp2.split_at(8);
+    let mut cekicv = Vec::with_capacity(36);
+    gost.cfb_decrypt(inner, &mut cekicv, iv)?;
+    let (cek, icv) = cekicv.split_at(32);
+    if crate::bignum::ct::bytes_differ(&dstu_check(kek, cek)?, icv) {
         return Err(WRONG_KEK.to_string());
     }
     Ok(cek.to_vec())
@@ -150,9 +212,9 @@ pub fn pwri_wrap<C: BlockCipher + ?Sized>(cipher: &mut C, iv: &[u8], cek: &[u8],
     }
     formatted.extend_from_slice(&padding[..need]);
     let mut first = Vec::with_capacity(total);
-    cipher.cbc_encrypt(&formatted, &mut first, iv.to_vec())?;
+    cipher.cbc_encrypt(&formatted, &mut first, iv)?;
     let mut second = Vec::with_capacity(total);
-    cipher.cbc_encrypt(&first, &mut second, first[total - block..].to_vec())?;
+    cipher.cbc_encrypt(&first, &mut second, &first[total - block..])?;
     Ok(second)
 }
 
@@ -172,9 +234,9 @@ pub fn pwri_unwrap<C: BlockCipher + ?Sized>(cipher: &mut C, iv: &[u8], wrapped: 
         *b ^= p;
     }
     let mut inner = Vec::with_capacity(n);
-    cipher.cbc_decrypt(wrapped, &mut inner, last)?;
+    cipher.cbc_decrypt(wrapped, &mut inner, &last)?;
     let mut formatted = Vec::with_capacity(n);
-    cipher.cbc_decrypt(&inner, &mut formatted, iv.to_vec())?;
+    cipher.cbc_decrypt(&inner, &mut formatted, iv)?;
     let length = usize::from(formatted[0]);
     let check = (formatted[1] ^ formatted[4]) & (formatted[2] ^ formatted[5])
         & (formatted[3] ^ formatted[6]);
@@ -266,7 +328,7 @@ mod tests {
         let (second, _) = field(doc, after_first, "second encr.");
         assert_eq!((key.len(), cek.len(), padding.len(), iv.len(), second.len()),
                    (8, 8, 4, 8, 16));
-        let mut des = Des::new(key).unwrap();
+        let mut des = Des::new(&key).unwrap();
         assert_eq!(pwri_wrap(&mut des, &iv, &cek, &padding).unwrap(), second);
         assert_eq!(pwri_unwrap(&mut des, &iv, &second).unwrap(), cek);
         let mut bent = second.clone();
@@ -285,7 +347,7 @@ mod tests {
         let mut cekicv = cek.to_vec();
         cekicv.extend_from_slice(&checksum(&cek));
         let iv = [9u8; 8];
-        let wrapped = two_passes(&mut TripleDes::new(kek.to_vec()).unwrap(), &cekicv, &iv)
+        let wrapped = two_passes(&mut TripleDes::new(&kek).unwrap(), &cekicv, &iv)
             .unwrap();
         assert!(unwrap_3des(&kek, &wrapped).is_err());
         let mut fixed = cek;
@@ -334,7 +396,7 @@ mod tests {
         assert_eq!(unwrap_3des(&kek, &wrapped).unwrap(), fixed);
         let mut bad_icv = fixed.clone();
         bad_icv.extend_from_slice(&[0; 8]);
-        let wrapped = two_passes(&mut TripleDes::new(kek.to_vec()).unwrap(), &bad_icv, &[3; 8])
+        let wrapped = two_passes(&mut TripleDes::new(&kek).unwrap(), &bad_icv, &[3; 8])
             .unwrap();
         assert!(unwrap_3des(&kek, &wrapped).is_err());
         // Wrong lengths are refused, not split.
@@ -362,7 +424,7 @@ mod tests {
     #[test]
     fn test_pwri_is_two_blocks_at_least() {
         use crate::block_ciphers::aes::AesCrypto;
-        let mut aes = AesCrypto::new(vec![7; 16]).unwrap();
+        let mut aes = AesCrypto::new(&[7; 16]).unwrap();
         let wrapped = pwri_wrap(&mut aes, &[0; 16], &[1, 2, 3, 4, 5, 6, 7, 8], &[0; 32]).unwrap();
         assert_eq!(wrapped.len(), 32);
         assert_eq!(pwri_unwrap(&mut aes, &[0; 16], &wrapped).unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);

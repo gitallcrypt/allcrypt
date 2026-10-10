@@ -38,7 +38,7 @@ fn qr(a: usize, b: usize, c: usize, d: usize, state: &mut [u32; 16]) {
 }
 
 impl Chacha {
-    pub fn new(key: Vec<u8>, nonce: Vec<u8>, rounds: usize) -> Result<Chacha, String> {
+    pub fn new(key: &[u8], nonce: &[u8], rounds: usize) -> Result<Chacha, String> {
         if key.len() != 16 && key.len() != 32 {
             return Err(format!("Wrong key length {}. Must be 16 or 32.", key.len()));
         }
@@ -391,7 +391,7 @@ pub fn xchacha20_subkey(key: &[u8], nonce: &[u8]) -> Result<([u8; 32], [u8; 12])
 /// wrapping.
 pub fn xchacha20(key: &[u8], nonce: &[u8]) -> Result<Chacha, String> {
     let (subkey, short) = xchacha20_subkey(key, nonce)?;
-    Chacha::new(subkey.to_vec(), short[4..].to_vec(), 20)
+    Chacha::new(&subkey, &short[4..], 20)
 }
 
 #[cfg(test)]
@@ -494,14 +494,14 @@ mod tests {
     #[test]
     fn test_the_32_bit_counter_refuses_to_wrap() {
         let (key, nonce) = (vec![5u8; 32], vec![6u8; 12]);
-        let mut block_zero = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut block_zero = Chacha::new(&key, &nonce, 20).unwrap();
         let mut first = Vec::new();
         block_zero.try_crypt(&[0u8; 64], &mut first).unwrap();
 
         for before_wrap in [0u32, 1, 3, 5, 9] {
             let blocks = before_wrap as usize + 1;
             let make = || {
-                let mut c = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+                let mut c = Chacha::new(&key, &nonce, 20).unwrap();
                 c.set_counter(u32::MAX - before_wrap).unwrap();
                 c
             };
@@ -535,11 +535,11 @@ mod tests {
 
         // Exactly to the wrap is fine, and a partial last block whose
         // production was the wrap can still be finished.
-        let mut exact = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut exact = Chacha::new(&key, &nonce, 20).unwrap();
         exact.set_counter(u32::MAX - 1).unwrap();
         exact.apply(&mut [0u8; 128]).unwrap();
         assert!(exact.apply(&mut [0u8; 1]).is_err());
-        let mut partial = Chacha::new(key, nonce, 20).unwrap();
+        let mut partial = Chacha::new(&key, &nonce, 20).unwrap();
         partial.set_counter(u32::MAX).unwrap();
         partial.apply(&mut [0u8; 10]).unwrap();
         partial.apply(&mut [0u8; 54]).unwrap();
@@ -555,7 +555,7 @@ mod tests {
         for nonce_len in [8usize, 12] {
             for rounds in [8usize, 12, 20] {
                 let make = || {
-                    let mut c = Chacha::new(vec![5u8; 32], vec![6u8; nonce_len], rounds).unwrap();
+                    let mut c = Chacha::new(&[5u8; 32], &vec![6u8; nonce_len], rounds).unwrap();
                     c.set_counter(u32::MAX - 1).unwrap();
                     c
                 };

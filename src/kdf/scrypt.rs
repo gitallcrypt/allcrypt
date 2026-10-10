@@ -67,13 +67,22 @@ pub const MAX_MEMORY_BYTES: u64 = 4 << 30;
 /// scrypt, RFC 7914 section 6.
 ///
 /// `n` is the CPU/memory cost and **must be a power of two greater than
-/// one** and, as the RFC has it, below `2^(128 * r / 8)`; `r` is the
-/// block size factor and `p` the parallelisation factor. Memory used is
-/// `128 * n * r` bytes, plus `128 * r * p` for the working buffer, and
-/// the two together are capped at `MAX_MEMORY_BYTES`.
+/// one**; `r` is the block size factor and `p` the parallelisation
+/// factor. Memory used is `128 * n * r` bytes, plus `128 * r * p` for the
+/// working buffer, and the two together are capped at
+/// `MAX_MEMORY_BYTES`.
+///
+/// **`n` is not held to RFC 7914's `N < 2^(128 * r / 8)`.** OpenSSL
+/// refuses past it; golang.org/x/crypto does not, and so neither does
+/// geth, whose own keystore test vector is `N = 2^18` with `r = 1` - four
+/// times the RFC's bound. Past it the function is still well defined and
+/// the same everywhere that computes it: `Integerify` reads 64 bits of
+/// the last block, as every implementation does, so `j mod N` is exact
+/// for any power of two up to `2^63`. Refusing would lose files that
+/// exist and protect nothing, so the memory cap is the only bound on `n`.
 ///
 /// # Errors
-/// A non-power-of-two `n` or one past the RFC's bound, a zero parameter,
+/// A non-power-of-two `n`, a zero parameter,
 /// a `p` past the RFC's ceiling, a request past `MAX_MEMORY_BYTES` or
 /// one the allocator refuses, or an output past
 /// `kdf::MAX_OUTPUT_BYTES`.
@@ -85,12 +94,6 @@ pub fn scrypt(password: &[u8], salt: &[u8], n: u64, r: u32, p: u32, length: usiz
     }
     if r == 0 || p == 0 {
         return Err("scrypt's r and p must both be at least 1.".to_string());
-    }
-    // RFC 7914 section 2: N < 2^(128 * r / 8), which is 2^(16 r). For
-    // r >= 4 that is wider than a u64, so only smaller r can fail it.
-    if 16 * (r as u64) < 64 && n >= 1u64 << (16 * r as u64) {
-        return Err(format!("scrypt with r={} allows N below 2^{}; {} is too large.",
-                           r, 16 * r, n));
     }
     // RFC 7914 section 6: p <= ((2^32 - 1) * 32) / (128 * r). Checked
     // because past it the final PBKDF2 call would be asked for more
@@ -393,11 +396,9 @@ mod tests {
         assert!(scrypt(b"pw", b"salt", 1 << 22, 8, 1, 32).unwrap_err()
                     .contains("most allowed"));
         assert!(scrypt(b"pw", b"salt", 16, 1024, 1 << 15, 32).is_err());
-        // RFC 7914's own bound, N < 2^(16 r): with r = 1, N = 65536 is
-        // one too many and well within the memory cap.
-        let reason = scrypt(b"pw", b"salt", 1 << 16, 1, 1, 32).unwrap_err();
-        assert!(reason.contains("below 2^16"), "{reason}");
-        assert!(scrypt(b"pw", b"salt", 1 << 15, 1, 1, 32).is_ok());
+        // RFC 7914's N < 2^(16 r) is not one of them (see `scrypt`):
+        // with r = 1, N = 2^16 is past it and well within the memory cap.
+        assert!(scrypt(b"pw", b"salt", 1 << 16, 1, 1, 32).is_ok());
         // An output past the KDF cap is refused as well.
         assert!(scrypt(b"pw", b"salt", 16, 1, 1, usize::MAX).unwrap_err()
                     .contains("at most"));

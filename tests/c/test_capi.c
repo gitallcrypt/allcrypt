@@ -558,6 +558,16 @@ static void rsa(const char *dir) {
            "PKCS#1 v1.5 decrypts what it encrypted");
     allcrypt_buffer_free(&plaintext);
     allcrypt_buffer_free(&ciphertext);
+    ok(allcrypt_rsa_encrypt_raw(public_key, message + 9, 50, &ciphertext), "raw encrypt");
+    print_buffer("rsa_raw_ciphertext", &ciphertext);
+    ok(allcrypt_rsa_decrypt_raw(key, ciphertext.data, ciphertext.len, &plaintext),
+       "raw decrypt");
+    expect(plaintext.len == n.len && memcmp(plaintext.data + n.len - 50, message + 9, 50) == 0,
+           "raw decryption returns the message at the key's size");
+    allcrypt_buffer_free(&plaintext);
+    allcrypt_buffer_free(&ciphertext);
+    refused(allcrypt_rsa_encrypt_raw(public_key, n.data, n.len, &ciphertext),
+            "a raw message equal to the modulus", "");
 
     /* The same key from its primes. */
     uint8_t *primes = read_file(dir, "rsa_primes.txt", &len);

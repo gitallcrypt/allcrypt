@@ -18,6 +18,8 @@ pub mod gcm;
 pub mod ghash;
 pub mod gost;
 pub mod idea;
+pub mod kalyna;
+pub mod kalyna_modes;
 pub mod keywrap;
 pub mod lrw;
 pub mod kuznyechik;
@@ -313,21 +315,21 @@ pub trait BlockCipher {
     // objects in `modes`. Call those directly to encrypt in several chunks,
     // or in place with no copying at all.
 
-    fn cbc_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
+    fn cbc_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
         // The whole input is in hand here, so reject a ragged length before
         // writing anything rather than emitting whole blocks and then failing.
         if !input.len().is_multiple_of(self.blocksize()) {
             return Err("Input length not a multiple of block size, (padding is needed).".to_string());
         }
-        let mut m = Cbc::encryptor(self, &iv)?;
+        let mut m = Cbc::encryptor(self, iv)?;
         m.update(input, result)?;
         m.finish()
     }
-    fn cbc_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
+    fn cbc_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
         if !input.len().is_multiple_of(self.blocksize()) {
             return Err("Input length not a multiple of block size, (padding is needed).".to_string());
         }
-        let mut m = Cbc::decryptor(self, &iv)?;
+        let mut m = Cbc::decryptor(self, iv)?;
         m.update(input, result)?;
         m.finish()
     }
@@ -359,34 +361,34 @@ pub trait BlockCipher {
     /// Propagating CBC, as used by Kerberos 4. See `modes::PcbcState`
     /// for what it propagates and why it does not achieve what it was
     /// meant to.
-    fn pcbc_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
+    fn pcbc_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
         if !input.len().is_multiple_of(self.blocksize()) {
             return Err("Input length not a multiple of block size, (padding is needed).".to_string());
         }
-        let mut m = Pcbc::encryptor(self, &iv)?;
+        let mut m = Pcbc::encryptor(self, iv)?;
         m.update(input, result)?;
         m.finish()
     }
-    fn pcbc_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
+    fn pcbc_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
         if !input.len().is_multiple_of(self.blocksize()) {
             return Err("Input length not a multiple of block size, (padding is needed).".to_string());
         }
-        let mut m = Pcbc::decryptor(self, &iv)?;
+        let mut m = Pcbc::decryptor(self, iv)?;
         m.update(input, result)?;
         m.finish()
     }
 
-    fn cfb_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
-        Cfb::encryptor(self, &iv)?.update(input, result)
+    fn cfb_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
+        Cfb::encryptor(self, iv)?.update(input, result)
     }
-    fn cfb_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
-        Cfb::decryptor(self, &iv)?.update(input, result)
+    fn cfb_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
+        Cfb::decryptor(self, iv)?.update(input, result)
     }
 
-    fn ofb_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
-        Ofb::new(self, &iv)?.update(input, result)
+    fn ofb_encrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
+        Ofb::new(self, iv)?.update(input, result)
     }
-    fn ofb_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: Vec<u8>) -> Result<(), String> {
+    fn ofb_decrypt(&mut self, input: &[u8], result: &mut Vec<u8>, iv: &[u8]) -> Result<(), String> {
         self.ofb_encrypt(input, result, iv)
     }
 
@@ -738,13 +740,13 @@ fn test_ctr_refuses_an_empty_iv() {
 fn test_modes_reject_short_block_output() {
     let mut crypto = Test{size: 16}; // block_encrypt writes nothing at all
     let mut result = vec![];
-    assert!(crypto.cbc_encrypt(&[0; 32], &mut result, vec![0; 16]).is_err());
+    assert!(crypto.cbc_encrypt(&[0; 32], &mut result, &[0; 16]).is_err());
     result.clear();
-    assert!(crypto.cfb_encrypt(&[0; 32], &mut result, vec![0; 16]).is_err());
+    assert!(crypto.cfb_encrypt(&[0; 32], &mut result, &[0; 16]).is_err());
     result.clear();
-    assert!(crypto.ofb_encrypt(&[0; 32], &mut result, vec![0; 16]).is_err());
+    assert!(crypto.ofb_encrypt(&[0; 32], &mut result, &[0; 16]).is_err());
     result.clear();
-    assert!(crypto.cbc_decrypt(&[0; 32], &mut result, vec![0; 16]).is_err());
+    assert!(crypto.cbc_decrypt(&[0; 32], &mut result, &[0; 16]).is_err());
 }
 
 /// The mode helpers must not assume `result` starts out empty.
@@ -755,15 +757,15 @@ fn test_modes_append_to_non_empty_result() {
     let iv = vec![0x11u8; 16];
 
     let mut fresh = vec![];
-    crypto.cbc_encrypt(&plain, &mut fresh, iv.clone()).unwrap();
+    crypto.cbc_encrypt(&plain, &mut fresh, &iv).unwrap();
 
     let mut prefixed = vec![0xde, 0xad, 0xbe, 0xef];
-    crypto.cbc_encrypt(&plain, &mut prefixed, iv.clone()).unwrap();
+    crypto.cbc_encrypt(&plain, &mut prefixed, &iv).unwrap();
     assert_eq!(&prefixed[4..], &fresh[..], "CBC output changed when result was not empty");
 
     let mut fresh_cfb = vec![];
-    crypto.cfb_encrypt(&plain, &mut fresh_cfb, iv.clone()).unwrap();
+    crypto.cfb_encrypt(&plain, &mut fresh_cfb, &iv).unwrap();
     let mut prefixed_cfb = vec![0xde, 0xad, 0xbe, 0xef];
-    crypto.cfb_encrypt(&plain, &mut prefixed_cfb, iv).unwrap();
+    crypto.cfb_encrypt(&plain, &mut prefixed_cfb, &iv).unwrap();
     assert_eq!(&prefixed_cfb[4..], &fresh_cfb[..], "CFB output changed when result was not empty");
 }

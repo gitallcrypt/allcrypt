@@ -164,7 +164,7 @@ impl Cipher {
                 nonce: iv.try_into().map_err(|_| "SSH: GCM IV length".to_string())?,
             },
             Kind::Rc4 { discard } => {
-                let mut rc4 = RC4::new(key.to_vec())?;
+                let mut rc4 = RC4::new(key)?;
                 let mut thrown = Vec::with_capacity(discard);
                 rc4.crypt(&vec![0u8; discard], &mut thrown);
                 State::Rc4(rc4)
@@ -192,8 +192,8 @@ impl Cipher {
     pub fn peek_length(&self, sequence: u32, encrypted: &[u8]) -> Result<u32, String> {
         match &self.state {
             State::ChaChaPoly { header, .. } => {
-                let mut length = Chacha::new(header.to_vec(),
-                                             u64::from(sequence).to_be_bytes().to_vec(), 20)?;
+                let mut length = Chacha::new(&header[..],
+                                             &u64::from(sequence).to_be_bytes(), 20)?;
                 let mut out = Vec::with_capacity(4);
                 length.crypt(encrypted.get(..4).ok_or("SSH: a length is four bytes.")?,
                              &mut out);
@@ -267,11 +267,11 @@ impl Cipher {
                 // Block zero of the main key is the Poly1305 key, and the
                 // same stream then carries on into block one, where the
                 // payload starts.
-                let mut payload = Chacha::new(main.to_vec(), nonce.to_vec(), 20)?;
+                let mut payload = Chacha::new(&main[..], &nonce, 20)?;
                 let mut poly_key = Vec::with_capacity(64);
                 payload.crypt(&[0u8; 64], &mut poly_key);
                 let mut mac = Poly1305::new(&poly_key[..32])?;
-                let mut length = Chacha::new(header.to_vec(), nonce.to_vec(), 20)?;
+                let mut length = Chacha::new(&header[..], &nonce, 20)?;
                 if self.encrypting {
                     length.crypt(aad, &mut out);
                     payload.crypt(body, &mut out);

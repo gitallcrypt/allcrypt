@@ -82,9 +82,9 @@ fn cbc(key: &[u8], iv: &[u8], data: &[u8], decrypt: bool) -> Result<Vec<u8>, Str
     let mut cipher = AnyBlockCipher::new("aes", key, None)?;
     let mut out = Vec::with_capacity(data.len());
     if decrypt {
-        cipher.cbc_decrypt(data, &mut out, iv.to_vec())?;
+        cipher.cbc_decrypt(data, &mut out, iv)?;
     } else {
-        cipher.cbc_encrypt(data, &mut out, iv.to_vec())?;
+        cipher.cbc_encrypt(data, &mut out, iv)?;
     }
     Ok(out)
 }

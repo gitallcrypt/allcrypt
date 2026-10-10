@@ -63,14 +63,14 @@ mod tests {
         let key = unhex("0123456789abcdef");
         let data: Vec<u8> = (0..40u8).collect();
         let mut ct = Vec::new();
-        Des::new(key.clone()).unwrap().cbc_encrypt(&data, &mut ct, vec![0; 8]).unwrap();
-        let tag = cbc_mac(&mut Des::new(key).unwrap(), &[0; 8], &data).unwrap();
+        Des::new(&key).unwrap().cbc_encrypt(&data, &mut ct, &[0; 8]).unwrap();
+        let tag = cbc_mac(&mut Des::new(&key).unwrap(), &[0; 8], &data).unwrap();
         assert_eq!(tag, ct[32..]);
     }
 
     #[test]
     fn test_whole_blocks_only_and_zero_padding() {
-        let mut des = Des::new(unhex("0123456789abcdef")).unwrap();
+        let mut des = Des::new(&unhex("0123456789abcdef")).unwrap();
         assert!(cbc_mac(&mut des, &[0; 8], &[]).is_err());
         assert!(cbc_mac(&mut des, &[0; 8], &[1; 9]).is_err());
         assert_eq!(cbc_mac_zero_padded(&mut des, &[0; 8], &[]).unwrap(),
@@ -83,7 +83,7 @@ mod tests {
     /// as a test: `M || (M XOR tag)` has the tag of `M`.
     #[test]
     fn test_the_length_extension_forgery() {
-        let mut des = Des::new(unhex("133457799bbcdff1")).unwrap();
+        let mut des = Des::new(&unhex("133457799bbcdff1")).unwrap();
         let m = b"8 bytes!";
         let tag = cbc_mac(&mut des, &[0; 8], m).unwrap();
         let mut forged = m.to_vec();

@@ -63,7 +63,7 @@ impl Rc6 {
     ///
     /// # Errors
     /// An empty key, or one longer than 255 bytes.
-    pub fn new(key: Vec<u8>) -> Result<Rc6, String> {
+    pub fn new(key: &[u8]) -> Result<Rc6, String> {
         if key.is_empty() || key.len() > MAX_KEY_BYTES {
             return Err(format!("Wrong key length {}. RC6 takes 1 to {MAX_KEY_BYTES} bytes.",
                                key.len()));
@@ -168,16 +168,16 @@ mod tests {
 
     #[test]
     fn test_key_lengths() {
-        assert!(Rc6::new(vec![]).is_err());
-        assert!(Rc6::new(vec![0; 256]).is_err());
+        assert!(Rc6::new(&[]).is_err());
+        assert!(Rc6::new(&[0; 256]).is_err());
         for n in [1, 16, 24, 32, 255] {
-            assert!(Rc6::new(vec![7; n]).is_ok(), "{n}");
+            assert!(Rc6::new(&vec![7; n]).is_ok(), "{n}");
         }
     }
 
     #[test]
     fn test_round_trip_and_one_block_appended() {
-        let mut c = Rc6::new((0..32).collect()).unwrap();
+        let mut c = Rc6::new(&(0..32).collect::<Vec<u8>>()).unwrap();
         let pt: Vec<u8> = (100..116).collect();
         let mut ct = vec![0xaa];
         c.block_encrypt(&pt, &mut ct);

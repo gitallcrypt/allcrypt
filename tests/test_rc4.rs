@@ -7,7 +7,7 @@ fn test_rc4() {
     let plain = "Plaintext".as_bytes();
     let ciphertext: Vec<u8> = vec![0xBB, 0xF3, 0x16, 0xE8, 0xD9, 0x40, 0xAF, 0x0A, 0xD3];
 
-    let mut crypto = RC4::new(key).unwrap();
+    let mut crypto = RC4::new(&key).unwrap();
 
     let mut result = vec![];
     let empty = vec![0; 256];
@@ -31,7 +31,7 @@ fn test_rc4() {
     let plain1 = "Attack".as_bytes();
     let plain2 = " at dawn".as_bytes();
     let key = "Secret".as_bytes();
-    let mut crypto = RC4::new(key.to_vec()).unwrap();
+    let mut crypto = RC4::new(key).unwrap();
     crypto.crypt(plain1, &mut result);
     assert_eq!(result, ciphertext1);
     result.clear();
@@ -42,23 +42,23 @@ fn test_rc4() {
 /// their tail silently ignored.
 #[test]
 fn test_rc4_rejects_bad_key_length() {
-    assert!(RC4::new(vec![]).is_err());
-    assert!(RC4::new(vec![0; 257]).is_err());
-    assert!(RC4::new(vec![0; 1]).is_ok());
-    assert!(RC4::new(vec![0; 256]).is_ok());
+    assert!(RC4::new(&[]).is_err());
+    assert!(RC4::new(&[0; 257]).is_err());
+    assert!(RC4::new(&[0; 1]).is_ok());
+    assert!(RC4::new(&[0; 256]).is_ok());
 }
 
 /// RFC 6229 test vectors, key 0102030405 (40 bit) and 0102030405060708090a
 /// 0b0c0d0e0f10 (128 bit), keystream at offset 0.
 #[test]
 fn test_rc4_rfc6229() {
-    let mut c = RC4::new(vec![0x01,0x02,0x03,0x04,0x05]).unwrap();
+    let mut c = RC4::new(&[0x01,0x02,0x03,0x04,0x05]).unwrap();
     let mut out = vec![];
     c.crypt(&[0u8; 16], &mut out);
     assert_eq!(allcrypt::to_hex(&out).to_lowercase(), "b2396305f03dc027ccc3524a0a1118a8");
 
     let key: Vec<u8> = (1..=16).collect();
-    let mut c = RC4::new(key).unwrap();
+    let mut c = RC4::new(&key).unwrap();
     let mut out = vec![];
     c.crypt(&[0u8; 16], &mut out);
     assert_eq!(allcrypt::to_hex(&out).to_lowercase(), "9ac7cc9a609d1ef7b2932899cde41b97");

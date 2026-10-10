@@ -810,3 +810,32 @@ def test_we_authenticate_before_tls12(version, name, kind, tmp_path):
     assert run.client.established
     assert run.client.version() == name
     assert run.server.getpeercert(True) == client.chain[0]
+
+
+# ------------------------------------------------ a key too large to use ---
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.parametrize("make", [
+    lambda c, **o: OurServer(client_identity=c, **o),
+    lambda c, **o: OurServer(client_identity=c, version=TLS12, **o),
+    lambda c, **o: LegacyServer(LEGACY[0][0], client_identity=c, **o),
+], ids=["tls13", "tls12", "tls10"])
+def test_a_client_key_above_the_ceiling_is_refused_before_use(make, tmp_path):
+    """A client's CertificateVerify is checked **before** its chain, so
+    the client's RSA key is used by a server that has authenticated
+    nothing yet - and an RSA verification costs whatever the key's author
+    chose. The ceiling has to apply there, on all three CertificateVerify
+    paths, and not only where a chain is judged; before it did, a client
+    could hand a server that merely requested certificates a modulus of
+    any size. Lowered to 1024 here so that a real 2048 bit key can stand
+    in for an enormous one."""
+    client = ClientIdentity(tmp_path, kind="rsa")
+    refused = make(client, request_client_certificate=True,
+                   client_max_key_bits=1024).pump()
+    assert not refused.server.established
+    assert "max_key_bits" in str(refused.server_error), refused.server_error
+
+    allowed = make(client, request_client_certificate=True,
+                   client_max_key_bits=2048).pump()
+    assert allowed.server_error is None, allowed.server_error
+    assert allowed.server.established

@@ -16,11 +16,25 @@ use crate::kdbx::{self, InnerBinary, InnerStream, Opened};
 use crate::xml::{Element, Node};
 use crate::{base64, hex};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Field {
     pub key: String,
     pub value: String,
     pub protected: bool,
+}
+
+/// A protected field's value - the password, normally - is not printed.
+impl std::fmt::Debug for Field {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("Field");
+        d.field("key", &self.key);
+        if self.protected {
+            d.field("value", &crate::hidden::Hidden);
+        } else {
+            d.field("value", &self.value);
+        }
+        d.field("protected", &self.protected).finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

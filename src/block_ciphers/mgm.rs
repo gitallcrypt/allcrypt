@@ -112,8 +112,12 @@ fn times_w(value: &mut [u8], reduction: u8) {
     }
     value[last] <<= 1;
     // Branchless: a conditional XOR here is a branch on a bit of a
-    // value derived from the key, and this is a MAC.
-    value[last] ^= reduction & overflow.wrapping_neg();
+    // value derived from the key, and this is a MAC. The mask is made
+    // opaque because writing it as a mask is not enough: LLVM saw that
+    // `overflow` is 0 or 1 and may compile the XOR back into a branch,
+    // as it did with the multiplier's bits in `gf_mul_into`.
+    let mask = crate::bignum::ct::opaque(u64::from(overflow)).wrapping_neg() as u8;
+    value[last] ^= reduction & mask;
 }
 
 /// `a (x) b` in GF(2^n), RFC 9058 section 3.
@@ -138,8 +142,11 @@ fn gf_mul_into(a: &[u8], b: &[u8], reduction: u8, product: &mut [u8]) {
             times_w(product, reduction);
             // `wrapping_neg` on 0 or 1 gives 0x00 or 0xff: the same
             // masked form the rest of this file uses, so no branch
-            // depends on the multiplicand.
-            let mask = ((byte >> bit) & 1).wrapping_neg();
+            // depends on the multiplicand - once the bit is opaque. As a
+            // plain mask, LLVM unrolled the loop and tested each bit
+            // with a jump (`js` for the top one).
+            let mask = (crate::bignum::ct::opaque(u64::from((byte >> bit) & 1)) as u8)
+                .wrapping_neg();
             for (p, v) in product.iter_mut().zip(b) {
                 *p ^= v & mask;
             }
@@ -153,24 +160,27 @@ fn gf_mul_into(a: &[u8], b: &[u8], reduction: u8, product: &mut [u8]) {
 /// half, which is a different counter.
 fn incr_r(block: &mut [u8]) {
     let half = block.len() / 2;
-    for i in (half..block.len()).rev() {
-        let (value, carried) = block[i].overflowing_add(1);
-        block[i] = value;
-        if !carried {
-            return;
-        }
-    }
+    increment(&mut block[half..]);
 }
 
 /// `incr_l`: add one to the **left** half, modulo 2^{n/2}.
 fn incr_l(block: &mut [u8]) {
     let half = block.len() / 2;
-    for i in (0..half).rev() {
-        let (value, carried) = block[i].overflowing_add(1);
-        block[i] = value;
-        if !carried {
-            return;
-        }
+    increment(&mut block[..half]);
+}
+
+/// Add one to a big-endian number, wrapping, with every byte touched.
+///
+/// **Not stopping at the first byte that does not carry**, because both
+/// counters start at a block enciphered under the key (`Y_1`, `Z_1`), so
+/// where the carry stops is a fact about a secret - and with AES's
+/// constant-time path underneath, it was the only one left in the mode.
+fn increment(number: &mut [u8]) {
+    let mut carry = 1u16;
+    for byte in number.iter_mut().rev() {
+        let sum = u16::from(*byte) + carry;
+        *byte = sum as u8;
+        carry = sum >> 8;
     }
 }
 
@@ -262,11 +272,14 @@ impl Mgm {
         Ok(())
     }
 
-    /// `E_K` of one block, into a fresh vector.
-    fn ek(cipher: &mut AnyBlockCipher, block: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(block.len());
-        cipher.block_encrypt(block, &mut out);
-        out
+    /// `E_K` of one block, through `encrypt_blocks` like the batches:
+    /// `Y_1`, `Z_1`, the last `H` and the tag are under the secret key and
+    /// the tag's input is secret too, and AES's one-block
+    /// `block_encrypt` is its table path.
+    fn ek(cipher: &mut AnyBlockCipher, block: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = block.to_vec();
+        cipher.encrypt_blocks(&mut out)?;
+        Ok(out)
     }
 
     /// The counter-mode half, in place. Used for both directions - a
@@ -284,7 +297,7 @@ impl Mgm {
         // and the two are only the same while `check_icn` holds.
         let mut counter = icn.to_vec();
         counter[0] &= 0x7f;
-        let mut y = Self::ek(cipher, &counter);
+        let mut y = Self::ek(cipher, &counter)?;
 
         // A batch of counters, enciphered together, XORed in. The last
         // batch's last block may be partial: the keystream runs a whole
@@ -317,7 +330,7 @@ impl Mgm {
         // Z_1 = E_K(1 || ICN).
         let mut separated = icn.to_vec();
         separated[0] |= 0x80;
-        let mut z = Self::ek(cipher, &separated);
+        let mut z = Self::ek(cipher, &separated)?;
 
         let mut sum = vec![0u8; bs];
         // A partial block is padded with zeros to the right, which is
@@ -364,13 +377,13 @@ impl Mgm {
             lengths[bs - 1 - i] = (bits_c >> (8 * i)) as u8;
         }
 
-        let h = Self::ek(cipher, &z);
+        let h = Self::ek(cipher, &z)?;
         gf_mul_into(&h, &lengths, self.reduction, &mut term);
         for (s, t) in sum.iter_mut().zip(&term) {
             *s ^= t;
         }
 
-        let mut tag = Self::ek(cipher, &sum);
+        let mut tag = Self::ek(cipher, &sum)?;
         tag.truncate(self.tag_len);
         Ok(tag)
     }
@@ -588,7 +601,7 @@ mod tests {
             // Y_1 = E_K(0 || ICN), then incr_r.
             let mut zero_led = icn.clone();
             zero_led[0] &= 0x7f;
-            let mut y = Mgm::ek(&mut cipher, &zero_led);
+            let mut y = Mgm::ek(&mut cipher, &zero_led).unwrap();
             for i in 1.. {
                 let Some(want) = dump_after(&example.section, &format!("Y_{i}:"))
                     else { break };
@@ -596,7 +609,7 @@ mod tests {
                 let gamma = dump_after(&example.section, &format!("E_K(Y_{i}):"))
                     .unwrap_or_else(|| panic!("{}: Y_{i} without E_K(Y_{i})",
                                               example.name));
-                assert_eq!(Mgm::ek(&mut cipher, &y), gamma,
+                assert_eq!(Mgm::ek(&mut cipher, &y).unwrap(), gamma,
                            "{}: E_K(Y_{i})", example.name);
                 incr_r(&mut y);
                 checked += 1;
@@ -605,7 +618,7 @@ mod tests {
             // Z_1 = E_K(1 || ICN), then incr_l.
             let mut one_led = icn.clone();
             one_led[0] |= 0x80;
-            let mut z = Mgm::ek(&mut cipher, &one_led);
+            let mut z = Mgm::ek(&mut cipher, &one_led).unwrap();
             for i in 1.. {
                 let Some(want) = dump_after(&example.section, &format!("Z_{i}:"))
                     else { break };
@@ -613,7 +626,7 @@ mod tests {
                 let h = dump_after(&example.section, &format!("H_{i}:"))
                     .unwrap_or_else(|| panic!("{}: Z_{i} without H_{i}",
                                               example.name));
-                assert_eq!(Mgm::ek(&mut cipher, &z), h, "{}: H_{i}", example.name);
+                assert_eq!(Mgm::ek(&mut cipher, &z).unwrap(), h, "{}: H_{i}", example.name);
                 incr_l(&mut z);
                 checked += 1;
             }
@@ -663,14 +676,14 @@ mod tests {
             // re-checks incr_l against the printed sequence.
             let mut one_led = example.need("ICN:");
             one_led[0] |= 0x80;
-            let mut z = Mgm::ek(&mut cipher, &one_led);
+            let mut z = Mgm::ek(&mut cipher, &one_led).unwrap();
             let mut sum = vec![0u8; block];
             let mut padded = vec![0u8; block];
             for part in [&aad, &ciphertext] {
                 for chunk in part.chunks(block) {
                     padded[..chunk.len()].copy_from_slice(chunk);
                     padded[chunk.len()..].fill(0);
-                    let term = gf_mul(&Mgm::ek(&mut cipher, &z), &padded, reduction);
+                    let term = gf_mul(&Mgm::ek(&mut cipher, &z).unwrap(), &padded, reduction);
                     for (s, t) in sum.iter_mut().zip(&term) {
                         *s ^= t;
                     }
@@ -679,7 +692,7 @@ mod tests {
             }
 
             let h = example.need(&format!("H_{last_index}:"));
-            assert_eq!(Mgm::ek(&mut cipher, &z), h,
+            assert_eq!(Mgm::ek(&mut cipher, &z).unwrap(), h,
                        "{}: the last H", example.name);
 
             let lengths = example.need("len(A) || len(C):");

@@ -15,13 +15,13 @@ fn test_chacha20_8() {
                                    0x02, 0x04, 0xc4, 0xee, 0x88, 0xa6, 0xab, 0x35];
 
     let mut result = vec![];
-    let mut crypto = Chacha::new(key, nonce, 8).unwrap();
+    let mut crypto = Chacha::new(&key, &nonce, 8).unwrap();
     crypto.crypt(&plain, &mut result);
     assert_eq!(result, ciphertext);
 
     let key: Vec<u8> = vec![0; 16];
     let nonce = vec![1, 0, 0, 0, 0, 0, 0, 0];
-    let mut crypto = Chacha::new(key, nonce, 8).unwrap();
+    let mut crypto = Chacha::new(&key, &nonce, 8).unwrap();
     let plain = vec![0; 128];
     let ciphertext = vec![0x25,0xf5,0xbe,0xc6,0x68,0x39,0x16,0xff,
                                    0x44,0xbc,0xcd,0x12,0xd1,0x02,0xe6,0x92,
@@ -57,7 +57,7 @@ fn test_chacha20_8() {
                                    0x22, 0xb8, 0xf9, 0xb1, 0xdb, 0x00, 0xcf, 0x06];
 
     let mut result = vec![];
-    let mut crypto = Chacha::new(key, nonce, 8).unwrap();
+    let mut crypto = Chacha::new(&key, &nonce, 8).unwrap();
     crypto.crypt(&plain, &mut result);
     assert_eq!(result, ciphertext);
 }
@@ -86,7 +86,7 @@ fn test_chacha20_12() {
                                    0xaf,0x12,0xbe,0x29,0x45,0x99,0xf8,0x90,
                                    0x60,0x56,0x45,0xe5,0x73,0x45,0x15,0x5b,
                                    0xc6,0xaf,0xcc,0x25,0x59,0x62,0xbf,0x2b]; 
-    let mut crypto = Chacha::new(key, nonce, 12).unwrap();
+    let mut crypto = Chacha::new(&key, &nonce, 12).unwrap();
     crypto.crypt(&plain, &mut result);                    
     assert_eq!(result, ciphertext);
 }
@@ -113,7 +113,7 @@ fn test_chacha20_20() {
                                     0x16,0xc2,0x55,0x3c,0xc6,0x0f,0x21,0xbb,
                                     0xfd,0x00,0x64,0x91,0xcb,0x17,0x88,0x8b,
                                     0x4f,0xb3,0x52,0x1c,0x4f,0xdd,0x87,0x45]; 
-    let mut crypto = Chacha::new(key, nonce, 20).unwrap();
+    let mut crypto = Chacha::new(&key, &nonce, 20).unwrap();
     crypto.crypt(&plain, &mut result);                    
     assert_eq!(result, ciphertext);
 
@@ -137,7 +137,7 @@ fn test_chacha20_20() {
     0x03,0x86,0x3f,0xa8,0x03,0xdc,0x71,0xd5,
     0x72,0x6b,0x2b,0x6b,0x31,0xaa,0x32,0x70,
     0x8a,0xfe,0x5a,0xf1,0xd6,0xb6,0x90,0x58]; 
-    let mut crypto = Chacha::new(key, nonce, 20).unwrap();
+    let mut crypto = Chacha::new(&key, &nonce, 20).unwrap();
     crypto.crypt(&plain, &mut result);                    
     assert_eq!(result, ciphertext);
 
@@ -161,7 +161,7 @@ fn test_chacha20_20() {
     0x8d,0xfd,0x49,0xd6,0x4a,0x11,0xd2,0x68,
     0x3a,0x1d,0x66,0x12,0x0a,0xc8,0x28,0xd6,
     0xca,0x97,0xc7,0xf6,0xeb,0x98,0x86,0x40]; 
-    let mut crypto = Chacha::new(key, nonce, 20).unwrap();
+    let mut crypto = Chacha::new(&key, &nonce, 20).unwrap();
     crypto.crypt(&plain[0..63], &mut result);
     crypto.crypt(&plain[63..128], &mut result);
 
@@ -180,13 +180,13 @@ fn test_chacha20_many_small_calls() {
     let nonce = vec![0u8; 12];
 
     // One byte at a time must equal the one-shot result.
-    let mut c = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+    let mut c = Chacha::new(&key, &nonce, 20).unwrap();
     let mut streamed = vec![];
     for _ in 0..200 {
         c.crypt(&[0u8], &mut streamed);
     }
 
-    let mut c = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+    let mut c = Chacha::new(&key, &nonce, 20).unwrap();
     let mut one_shot = vec![];
     c.crypt(&[0u8; 200], &mut one_shot);
 
@@ -196,7 +196,7 @@ fn test_chacha20_many_small_calls() {
     // Irregular splits, including ones that straddle the 64 byte block edge.
     for first in [1usize, 3, 7, 31, 33, 63, 64, 65, 100] {
         let plain: Vec<u8> = (0..500).map(|i| (i & 0xff) as u8).collect();
-        let mut c = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut c = Chacha::new(&key, &nonce, 20).unwrap();
         let mut streamed = vec![];
         let (mut i, mut step) = (0usize, first);
         while i < plain.len() {
@@ -205,7 +205,7 @@ fn test_chacha20_many_small_calls() {
             i = e;
             step = step * 2 + 1;
         }
-        let mut c = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut c = Chacha::new(&key, &nonce, 20).unwrap();
         let mut one_shot = vec![];
         c.crypt(&plain, &mut one_shot);
         assert_eq!(streamed, one_shot, "split starting at {}", first);
@@ -218,10 +218,10 @@ fn test_chacha20_many_small_calls() {
 fn test_chacha_rejects_bad_rounds() {
     let key = vec![0u8; 32];
     let nonce = vec![0u8; 12];
-    assert!(Chacha::new(key.clone(), nonce.clone(), 0).is_err());
-    assert!(Chacha::new(key.clone(), nonce.clone(), 7).is_err());
-    assert!(Chacha::new(key.clone(), nonce.clone(), 21).is_err());
+    assert!(Chacha::new(&key, &nonce, 0).is_err());
+    assert!(Chacha::new(&key, &nonce, 7).is_err());
+    assert!(Chacha::new(&key, &nonce, 21).is_err());
     for r in [8usize, 12, 20] {
-        assert!(Chacha::new(key.clone(), nonce.clone(), r).is_ok());
+        assert!(Chacha::new(&key, &nonce, r).is_ok());
     }
 }

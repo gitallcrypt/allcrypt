@@ -104,12 +104,12 @@ impl Cast256 {
     ///
     /// # Errors
     /// Any other key length.
-    pub fn new(key: Vec<u8>) -> Result<Cast256, String> {
+    pub fn new(key: &[u8]) -> Result<Cast256, String> {
         if !matches!(key.len(), 16 | 20 | 24 | 28 | 32) {
             return Err(format!("Wrong key length {}. CAST-256 takes 16, 20, 24, 28 or 32 \
                                 bytes.", key.len()));
         }
-        Ok(Cast256 { keys: Cast256::schedule(&key) })
+        Ok(Cast256 { keys: Cast256::schedule(key) })
     }
 
     pub(crate) fn schedule(key: &[u8]) -> [QuadKeys; QUAD_ROUNDS] {
@@ -281,7 +281,7 @@ mod tests {
                 assert_eq!(rounds[i].0, schedule[i], "keys, quad-round {}", i + 1);
                 assert_eq!(rounds[i].1, outs[i], "output, quad-round {}", i + 1);
             }
-            let mut cipher = Cast256::new(key.clone()).unwrap();
+            let mut cipher = Cast256::new(&key).unwrap();
             let mut out = Vec::new();
             cipher.block_encrypt(&pt[0], &mut out);
             assert_eq!(out, ct[0]);
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn test_key_lengths() {
         for n in 0..40 {
-            assert_eq!(Cast256::new(vec![1; n]).is_ok(), matches!(n, 16 | 20 | 24 | 28 | 32), "{n}");
+            assert_eq!(Cast256::new(&vec![1; n]).is_ok(), matches!(n, 16 | 20 | 24 | 28 | 32), "{n}");
         }
     }
 }

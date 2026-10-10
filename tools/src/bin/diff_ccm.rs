@@ -70,14 +70,14 @@ fn main() {
                     // field of B0 and how many bytes are kept.
                     let tag_len = [4usize, 6, 8, 10, 12, 14, 16][len % 7];
 
-                    let mut cipher = AesCrypto::new(key.clone()).unwrap();
+                    let mut cipher = AesCrypto::new(&key).unwrap();
                     let (ciphertext, tag) =
                         ccm::encrypt(&mut cipher, &nonce, &aad, &plaintext,
                                      tag_len).unwrap();
 
                     // And straight back, so the dump also records that our
                     // own decryption agrees with our own encryption.
-                    let mut cipher = AesCrypto::new(key.clone()).unwrap();
+                    let mut cipher = AesCrypto::new(&key).unwrap();
                     let recovered =
                         ccm::decrypt(&mut cipher, &nonce, &aad, &ciphertext, &tag)
                             .unwrap();
@@ -100,7 +100,7 @@ fn main() {
         let nonce = filler(12, 6);
         let aad = filler(aad_len, 7);
         let plaintext = filler(48, 8);
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let (ciphertext, tag) =
             ccm::encrypt(&mut cipher, &nonce, &aad, &plaintext, 16).unwrap();
         println!("ccm {} {} {} {} {} {}", hex(&key), hex(&nonce), hex(&aad),

@@ -507,6 +507,19 @@ pub enum GeneralName<'a> {
     DirectoryName(&'a [u8]),
     /// Anything else, kept by its context tag number.
     Other(u32, &'a [u8]),
+    /// A subjectAltName entry of a form this library reads that is not
+    /// well formed - a name with an embedded NUL or that is not UTF-8, an
+    /// address of the wrong length - kept by its tag number with its raw
+    /// contents.
+    ///
+    /// **Kept rather than refused**, because reading is not judging: one
+    /// odd entry used to make the whole certificate unparseable, so it
+    /// could not even be looked at. The judging is in `verify`: a
+    /// malformed entry matches no host, a malformed dNSName or URI still
+    /// stops the fallback to the common name as a well-formed one would,
+    /// and a constrained CA's certificate holding one of a constrained
+    /// form is refused, since it cannot be checked against the subtree.
+    Malformed(u32, &'a [u8]),
 }
 
 /// What a certificate's key may be used for, as the bits of RFC 5280 §4.2.1.3.
@@ -751,10 +764,29 @@ pub(crate) fn read_general_name<'a>(reader: &mut Reader<'a>,
     if tag.class != asn1::CLASS_CONTEXT {
         return Err("GeneralName must use a context tag.".to_string());
     }
-    // An embedded NUL in a name is the null-prefix attack. It is refused
-    // here rather than by whoever eventually compares the name, because
-    // by then it may have been handed to something that stops at NUL.
-    if content.contains(&0) && matches!(tag.number, 1 | 2 | 6) {
+    general_name_from(tag.number, content, address_lengths)
+}
+
+/// A subjectAltName entry: as `read_general_name`, except that an entry
+/// whose contents are ill-formed is kept as `GeneralName::Malformed`
+/// rather than refusing the certificate. Only the contents: a tag of the
+/// wrong class is still a structure that does not parse.
+fn read_subject_alt_name<'a>(reader: &mut Reader<'a>) -> Result<GeneralName<'a>, String> {
+    let (tag, content) = reader.read_any()?;
+    if tag.class != asn1::CLASS_CONTEXT {
+        return Err("GeneralName must use a context tag.".to_string());
+    }
+    Ok(general_name_from(tag.number, content, &ADDRESS_ONLY)
+        .unwrap_or(GeneralName::Malformed(tag.number, content)))
+}
+
+fn general_name_from<'a>(number: u32, content: &'a [u8], address_lengths: &[usize])
+                         -> Result<GeneralName<'a>, String> {
+    // An embedded NUL in a name is the null-prefix attack, so such a name
+    // never becomes a `Dns`, `Email` or `Uri` that something might hand to
+    // code that stops at NUL: it is refused where a name is required, and
+    // kept as `Malformed` - compared with nothing - in a subjectAltName.
+    if content.contains(&0) && matches!(number, 1 | 2 | 6) {
         return Err("GeneralName contains an embedded NUL.".to_string());
     }
     fn as_text(bytes: &[u8]) -> Result<&str, String> {
@@ -762,7 +794,7 @@ pub(crate) fn read_general_name<'a>(reader: &mut Reader<'a>,
             .map_err(|_| "GeneralName is not valid UTF-8.".to_string())
     }
 
-    Ok(match tag.number {
+    Ok(match number {
         1 => GeneralName::Email(as_text(content)?),
         2 => GeneralName::Dns(as_text(content)?),
         6 => GeneralName::Uri(as_text(content)?),
@@ -882,7 +914,7 @@ fn parse_general_names(value: &[u8]) -> Result<Vec<GeneralName<'_>>, String> {
 
     let mut names = Vec::new();
     while !sequence.is_empty() {
-        names.push(read_general_name(&mut sequence, &ADDRESS_ONLY)?);
+        names.push(read_subject_alt_name(&mut sequence)?);
     }
     Ok(names)
 }
@@ -1578,8 +1610,14 @@ mod tests {
             p.extensions = vec![(oids::SUBJECT_ALT_NAME.to_vec(), false,
                                  san(&[(2, b"evil.test\0.good.test")]))];
         });
-        let error = Certificate::parse(&der).unwrap_err();
-        assert!(error.contains("NUL"), "{}", error);
+        // In a subjectAltName it is kept as malformed, not refused, and
+        // matches neither half.
+        let leaf = Certificate::parse(&der).expect("one odd SAN entry made it unreadable");
+        assert_eq!(leaf.extensions.subject_alt_names,
+                   [GeneralName::Malformed(2, b"evil.test\0.good.test")]);
+        assert!(leaf.extensions.dns_names().is_empty());
+        assert!(!crate::x509::verify::matches_hostname(&leaf, "evil.test"));
+        assert!(!crate::x509::verify::matches_hostname(&leaf, "good.test"));
 
         // And in the common name, which is where the original attack
         // was. The certificate parses now - and the name does not come
@@ -1646,13 +1684,19 @@ mod tests {
         assert!(!crate::x509::verify::matches_hostname(&leaf, "evil.test"));
     }
 
+    /// An address of the wrong length is kept as malformed rather than
+    /// refusing the certificate, and is never an address: not three bytes
+    /// of one, and not padded into one.
     #[test]
-    fn test_bad_ip_address_length_is_rejected() {
+    fn test_a_bad_ip_address_length_is_kept_as_malformed() {
         let der = build(|p| {
             p.extensions = vec![(oids::SUBJECT_ALT_NAME.to_vec(), false,
                                  san(&[(7, &[192, 0, 2])]))];
         });
-        assert!(Certificate::parse(&der).is_err());
+        let leaf = Certificate::parse(&der).unwrap();
+        assert_eq!(leaf.extensions.subject_alt_names,
+                   [GeneralName::Malformed(7, &[192, 0, 2])]);
+        assert!(!crate::x509::verify::matches_hostname(&leaf, "192.0.2.0"));
     }
 
     #[test]

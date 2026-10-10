@@ -91,7 +91,7 @@ fn main() {
     let nonce: Vec<u8> = (0..12).map(|i| ((i*211+5)&0xff) as u8).collect();
     for n in &lens {
         let d = data(*n);
-        let mut c = chacha::Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut c = chacha::Chacha::new(&key, &nonce, 20).unwrap();
         let mut out = vec![];
         c.crypt(&d, &mut out);
         println!("chacha20/{} {}", n, to_hex(&out).to_lowercase());
@@ -99,7 +99,7 @@ fn main() {
     // Streaming: irregular splits must equal one-shot.
     for split in [1usize,2,3,7,15,16,17,31,32,33,63,64,65,100,127,128,129] {
         let d = data(1000);
-        let mut c = chacha::Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut c = chacha::Chacha::new(&key, &nonce, 20).unwrap();
         let mut out = vec![];
         let mut i = 0; let mut step = split;
         while i < d.len() {
@@ -112,7 +112,7 @@ fn main() {
     for kl in [1usize,2,5,16,32,64] {
         let k: Vec<u8> = (0..kl).map(|i| ((i*89+7)&0xff) as u8).collect();
         for n in [0usize,1,16,63,64,65,256,300,1024] {
-            let mut c = rc4::RC4::new(k.clone()).unwrap();
+            let mut c = rc4::RC4::new(&k).unwrap();
             let mut out = vec![];
             c.crypt(&data(n), &mut out);
             println!("rc4/{}/{} {}", kl, n, to_hex(&out).to_lowercase());
@@ -144,7 +144,7 @@ fn main() {
         let d = data(*n);
         for rounds in [20usize, 12, 8] {
             let mut c = salsa20::Salsa20::with_rounds(
-                salsa_key.clone(), salsa_nonce.clone(), rounds).unwrap();
+                &salsa_key, &salsa_nonce, rounds).unwrap();
             let mut out = vec![];
             c.crypt(&d, &mut out);
             println!("salsa{}/{} {}", rounds, n, to_hex(&out).to_lowercase());
@@ -154,7 +154,7 @@ fn main() {
     // a different cipher and not a doubled key.
     for n in &[0usize, 1, 63, 64, 65, 200] {
         let mut c = salsa20::Salsa20::new(
-            salsa_key[..16].to_vec(), salsa_nonce.clone()).unwrap();
+            &salsa_key[..16], &salsa_nonce).unwrap();
         let mut out = vec![];
         c.crypt(&data(*n), &mut out);
         println!("salsa20short/{} {}", n, to_hex(&out).to_lowercase());

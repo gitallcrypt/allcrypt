@@ -859,6 +859,56 @@ $ scripts/witness/rijndaelphp/build.sh          # builds /opt/rijndaelphp
 $ python3 scripts/make_rijndael_vectors.py      # rewrites vectors/rijndael.vec
 ```
 
+**Ukraine's GOST** has two witnesses as well: Bouncy Castle's GOST
+classes, given the S-box as its DSTU 4145 code expands a DKE (the
+`UaWitness` driver beside `BlockWitness`), and gost89, the JavaScript
+behind the dstucrypt tools, four of whose files
+`scripts/witness/gost89/build.sh` fetches once and checks against
+their SHA-256. It runs under Node with nothing installed. The script
+checks first that both carry the same default DKE.
+
+```console
+$ scripts/witness/bcwitness/build.sh            # builds /opt/bcwitness
+$ scripts/witness/gost89/build.sh               # builds /opt/gost89
+$ python3 scripts/make_dstu_gost_vectors.py     # rewrites vectors/dstu_gost.vec
+```
+
+**Kalyna** is checked against the reference implementation by its
+authors, which `scripts/witness/kalyna/build.sh` fetches once, checks
+against SHA-256 and compiles with a small stdin driver, and against
+Bouncy Castle's `DSTU7624Engine` through `UaWitness`. The standard's ten
+examples are read out of the reference's own `main.c`, and both must
+reproduce them; the two must also carry the same S-boxes.
+
+```console
+$ scripts/witness/kalyna/build.sh               # builds /opt/kalyna
+$ python3 scripts/make_kalyna_vectors.py        # rewrites vectors/kalyna.vec
+```
+
+**Kalyna's DSTU 7624 modes** - counter mode, MAC, key wrap, and the
+generic CBC, CFB and OFB - against Bouncy Castle's mode classes and
+PrivatBank's cryptonite, a C library of the Ukrainian standards. 30 of
+its files, pinned in `scripts/witness/cryptonite/cryptonite.sha256`,
+build its DSTU 7624 part with a stdin driver. The standard's examples
+come from Bouncy Castle's `DSTU7624Test.java`, fetched once and
+SHA-256 checked, and both witnesses must reproduce every one.
+
+```console
+$ scripts/witness/cryptonite/build.sh           # builds /opt/cryptonite
+$ python3 scripts/make_kalyna_mode_vectors.py   # rewrites vectors/kalyna_modes.vec
+```
+
+**Kupyna** the same way: its authors' reference implementation, fetched
+once by `scripts/witness/kupyna/build.sh`, and Bouncy Castle's
+`DSTU7564Digest`, which has the 256, 384 and 512-bit sizes; the other
+sizes are the reference's alone. The standard's examples come out of
+the reference's `main.c`.
+
+```console
+$ scripts/witness/kupyna/build.sh               # builds /opt/kupyna
+$ python3 scripts/make_kupyna_vectors.py        # rewrites vectors/kupyna.vec
+```
+
 **WireGuard**: wireguard-go (`WireGuard/wireguard-go`, its main branch)
 with the x/ modules at the versions its `go.mod` pins, all from GitHub,
 and `replace` lines for them and three empty stand-ins for modules the

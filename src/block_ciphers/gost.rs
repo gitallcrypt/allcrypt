@@ -5,7 +5,6 @@ use lazy_static::lazy_static;
 
 #[derive(Clone)]
 pub struct GostCrypto{
-    _key: Vec<u8>,
     sbox: Vec<Vec<u8>>,
     key32: [u32; 8],
     /// The precomputed substitution-and-rotation table, **boxed**.
@@ -26,8 +25,33 @@ pub struct GostCrypto{
     mac_blocks_done: usize,
  }
 
+/// The name of Ukraine's S-box, the DSTU 4145-2002 default long-term key
+/// element (DKE).
+///
+/// Ukraine adopted GOST 28147-89 and GOST R 34.11-94 as DSTU GOST
+/// 28147:2009 and GOST 34.311-95, and its signature standard, DSTU
+/// 4145-2002, carries the S-box as a parameter of the public key: a
+/// 64-byte DKE, absent when it is this default. It is the table of
+/// Ukrainian qualified signatures, key containers and the key wrap in
+/// `cms_wrap`. There is no OID for it; the name says where it is from.
+pub const DSTU_PARAM_SET: &str = "dstu4145-default-dke";
+
+/// DSTU 4145-2002's default DKE, packed as the standard and every key
+/// container carry it. Bouncy Castle's `DSTU4145Params.getDefaultDKE`
+/// and gost89's `packSbox(defaultSbox)` agree on it, and
+/// `vectors/dstu_gost.vec` records the value they agree on; a test
+/// compares this copy with that one.
+pub const DSTU4145_DEFAULT_DKE: [u8; 64] = [
+    0xa9, 0xd6, 0xeb, 0x45, 0xf1, 0x3c, 0x70, 0x82, 0x80, 0xc4, 0x96, 0x7b, 0x23, 0x1f, 0x5e, 0xad,
+    0xf6, 0x58, 0xeb, 0xa4, 0xc0, 0x37, 0x29, 0x1d, 0x38, 0xd9, 0x6b, 0xf0, 0x25, 0xca, 0x4e, 0x17,
+    0xf8, 0xe9, 0x72, 0x0d, 0xc6, 0x15, 0xb4, 0x3a, 0x28, 0x97, 0x5f, 0x0b, 0xc1, 0xde, 0xa3, 0x64,
+    0x38, 0xb5, 0x64, 0xea, 0x2c, 0x17, 0x9f, 0xd0, 0x12, 0x3e, 0x6d, 0xb8, 0xfa, 0xc5, 0x79, 0x04,
+];
+
 lazy_static! {
 static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
+    (DSTU_PARAM_SET.to_string(),
+     GostCrypto::sbox_from_dke(&DSTU4145_DEFAULT_DKE).expect("64 bytes")),
     ("id-Gost28147-89-TestParamSet".to_string(),
     vec![vec![4, 2, 15, 5, 9, 1, 0, 8, 14, 3, 11, 12, 13, 7, 10, 6],
         vec![12, 9, 15, 14, 8, 1, 3, 10, 2, 7, 4, 13, 6, 0, 11, 5],
@@ -114,7 +138,7 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
  }
 
  impl GostCrypto {
-    pub fn new(key: Vec<u8>, sbox_name: String) -> Result<GostCrypto, String> {
+    pub fn new(key: &[u8], sbox_name: &str) -> Result<GostCrypto, String> {
         // **An unknown name used to become CryptoPro-A.** A GOST cipher
         // is its S-box: two parameter sets are two different ciphers
         // that both encrypt and both decrypt, so substituting one for
@@ -122,7 +146,7 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
         // say so. A misspelt name in a configuration file, or a
         // parameter set this library has not got, came out as a
         // working cipher of the wrong kind.
-        GostCrypto::new_with_sbox(key, GostCrypto::sbox_named(&sbox_name)?)
+        GostCrypto::new_with_sbox(key, &GostCrypto::sbox_named(sbox_name)?)
     }
 
     /// The substitution rows of a named parameter set.
@@ -156,6 +180,73 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
         }
     }
 
+    /// Eight permutations of 0..16, and nothing else.
+    ///
+    /// The shape - eight rows of sixteen nibbles - is what the key
+    /// schedule's table expansion reads, so anything else would index
+    /// past a row or overflow the nibble shift. A row that repeats a
+    /// value has the right shape and is refused all the same: every
+    /// published GOST table is eight permutations, so a repeat is far
+    /// more likely a mistyped table than an intended one. The cipher
+    /// itself would still work - GOST is a Feistel network and decrypts
+    /// under any table - but each repeat makes the substitution lose
+    /// information, and the result is a different, weaker cipher that
+    /// nothing else computes. If a table in real use turns out to need
+    /// a repeat, this is the one place to relax.
+    ///
+    /// `new_with_sbox` and the registry both call it.
+    pub fn check_sbox(rows: &[Vec<u8>]) -> Result<(), String> {
+        if rows.len() != 8 {
+            return Err(format!(
+                "A GOST parameter set is eight substitution rows; got {}.",
+                rows.len()));
+        }
+        for (index, row) in rows.iter().enumerate() {
+            if row.len() != 16 {
+                return Err(format!(
+                    "Substitution row {} has {} entries; each is a \
+                     permutation of 0..16, so it has sixteen.",
+                    index + 1, row.len()));
+            }
+            let mut seen = [false; 16];
+            for &value in row {
+                if value >= 16 {
+                    return Err(format!(
+                        "Substitution row {} contains {}, and the entries \
+                         are nibbles.", index + 1, value));
+                }
+                if seen[value as usize] {
+                    return Err(format!(
+                        "Substitution row {} uses {} twice, so it is not a \
+                         permutation. Every published GOST table is eight \
+                         permutations of 0..16; check the table for a \
+                         mistyped entry.", index + 1, value));
+                }
+                seen[value as usize] = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// The substitution rows a DSTU 4145 DKE packs: 64 bytes, two
+    /// entries to a byte, high nibble first, row `K1` first. A DKE is
+    /// how a Ukrainian public key or key container names a non-default
+    /// S-box, so a table read from one goes straight to
+    /// `new_with_sbox`.
+    ///
+    /// **Not RFC 4357's packing.** RFC 4357 prints a parameter set
+    /// column by column, `K[2j]` and `K[2j+1]` of one input in a byte;
+    /// a DKE runs row by row. Unpacking one as the other gives a valid
+    /// S-box and a cipher nobody else computes.
+    pub fn sbox_from_dke(dke: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        if dke.len() != 64 {
+            return Err(format!("A DSTU 4145 DKE is 64 bytes, not {}.", dke.len()));
+        }
+        Ok(dke.chunks_exact(8)
+            .map(|row| row.iter().flat_map(|b| [b >> 4, b & 0x0f]).collect())
+            .collect())
+    }
+
     /// The name every caller that does not care should pass.
     pub const DEFAULT_PARAM_SET: &'static str =
         "id-Gost28147-89-CryptoPro-A-ParamSet";
@@ -184,12 +275,18 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
     /// loop that would have found this always passed the one length
     /// that works. They now try every length and require one to
     /// succeed, which is what found it.
-    pub fn new_with_sbox(key: Vec<u8>, sbox: Vec<Vec<u8>>)
+    ///
+    /// The table is checked as well, by `check_sbox`: the expansion
+    /// below indexes every entry of eight rows of sixteen, so a short
+    /// row would panic the same way a short key did, and a row that is
+    /// not a permutation is refused there for its own reason.
+    pub fn new_with_sbox(key: &[u8], sbox: &[Vec<u8>])
                          -> Result<GostCrypto, String> {
         if key.len() != 32 {
             return Err(format!("Wrong key length {}. GOST 28147-89 takes \
                                 32 bytes.", key.len()));
         }
+        GostCrypto::check_sbox(sbox)?;
         let mut key32: [u32; 8]= [0; 8];
         let mut s_table: Box<[[u32; 256]; 4]> = Box::new([[0; 256]; 4]);
         for i in 0..8 {
@@ -203,8 +300,7 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
             }
         }
         Ok(GostCrypto{
-            _key: key,
-            sbox,
+            sbox: sbox.to_vec(),
             key32,
             s_table,
             mac_state: vec![0;8],
@@ -220,8 +316,6 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
         for (word, bytes) in self.key32.iter_mut().zip(key.chunks_exact(4)) {
             *word = u32::from_le_bytes(bytes.try_into().unwrap());
         }
-        self._key.clear();
-        self._key.extend_from_slice(key);
     }
 
     /// One block, without the `Vec` of `block_encrypt`.
@@ -405,8 +499,10 @@ impl BlockCipher for GostCrypto {
         // low bit. `wrapping_add` then `% 0xffffffff` loses that carry and
         // comes out one too low whenever the sum exceeds 2^32.
         let n2_old = u32::from_le_bytes(counter[4..8].try_into().unwrap());
+        // The carry is added rather than branched on: the counter starts
+        // at the IV enciphered, so it is a bit of a secret.
         let (sum, carry) = n2_old.overflowing_add(C1);
-        let n2 = if carry { sum.wrapping_add(1) } else { sum };
+        let n2 = sum.wrapping_add(u32::from(carry));
         counter[0..4].copy_from_slice(&n1.to_le_bytes());
         counter[4..8].copy_from_slice(&n2.to_le_bytes());
     }

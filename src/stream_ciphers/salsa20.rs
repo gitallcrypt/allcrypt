@@ -130,7 +130,7 @@ pub fn xsalsa20(key: &[u8], nonce: &[u8]) -> Result<Salsa20, String> {
         return Err(format!("XSalsa20 takes a 24 byte nonce, got {}.", nonce.len()));
     }
     let subkey = hsalsa20(key, nonce[..16].try_into().expect("sixteen"));
-    Salsa20::new(subkey.to_vec(), nonce[16..].to_vec())
+    Salsa20::new(&subkey, &nonce[16..])
 }
 
 /// Salsa's quarter-round: four ARX steps with rotations 7, 9, 13, 18.
@@ -177,13 +177,13 @@ pub struct Salsa20 {
 
 impl Salsa20 {
     /// 32 or 16 byte key, 8 byte nonce, 20 rounds.
-    pub fn new(key: Vec<u8>, nonce: Vec<u8>) -> Result<Salsa20, String> {
+    pub fn new(key: &[u8], nonce: &[u8]) -> Result<Salsa20, String> {
         Salsa20::with_rounds(key, nonce, 20)
     }
 
     /// The reduced-round variants, Salsa20/8 and Salsa20/12, which are
     /// real ciphers in the eSTREAM portfolio rather than test knobs.
-    pub fn with_rounds(key: Vec<u8>, nonce: Vec<u8>, rounds: usize)
+    pub fn with_rounds(key: &[u8], nonce: &[u8], rounds: usize)
                        -> Result<Salsa20, String> {
         if key.len() != 32 && key.len() != 16 {
             return Err(format!("A Salsa20 key is 16 or 32 bytes; this one is {}.",
@@ -411,10 +411,10 @@ mod tests {
     #[test]
     fn test_streaming_equals_one_shot() {
         let message: Vec<u8> = (0..500).map(|i| (i % 251) as u8).collect();
-        let one_shot = crypt(&mut Salsa20::new(vec![7; 32], vec![9; 8]).unwrap(),
+        let one_shot = crypt(&mut Salsa20::new(&[7; 32], &[9; 8]).unwrap(),
                              &message);
         for chunk_size in [1usize, 7, 13, 63, 64, 65, 100] {
-            let mut cipher = Salsa20::new(vec![7; 32], vec![9; 8]).unwrap();
+            let mut cipher = Salsa20::new(&[7; 32], &[9; 8]).unwrap();
             let mut streamed = Vec::new();
             for chunk in message.chunks(chunk_size) {
                 cipher.crypt(chunk, &mut streamed);
@@ -427,9 +427,9 @@ mod tests {
     #[test]
     fn test_round_trip() {
         let message = b"the quick brown fox jumps over the lazy dog, twice over";
-        let ciphertext = crypt(&mut Salsa20::new(vec![1; 32], vec![2; 8]).unwrap(),
+        let ciphertext = crypt(&mut Salsa20::new(&[1; 32], &[2; 8]).unwrap(),
                                message);
-        let plaintext = crypt(&mut Salsa20::new(vec![1; 32], vec![2; 8]).unwrap(),
+        let plaintext = crypt(&mut Salsa20::new(&[1; 32], &[2; 8]).unwrap(),
                               &ciphertext);
         assert_eq!(plaintext, message);
         assert_ne!(&ciphertext[..], &message[..]);
@@ -443,9 +443,9 @@ mod tests {
     /// nothing.
     #[test]
     fn test_a_128_bit_key_is_not_a_doubled_256_bit_key() {
-        let short = crypt(&mut Salsa20::new(vec![5; 16], vec![0; 8]).unwrap(),
+        let short = crypt(&mut Salsa20::new(&[5; 16], &[0; 8]).unwrap(),
                           &[0u8; 64]);
-        let doubled = crypt(&mut Salsa20::new(vec![5; 32], vec![0; 8]).unwrap(),
+        let doubled = crypt(&mut Salsa20::new(&[5; 32], &[0; 8]).unwrap(),
                             &[0u8; 64]);
         assert_ne!(hex(&short), hex(&doubled),
                    "a 16 byte key behaved as the same key repeated, \
@@ -455,10 +455,10 @@ mod tests {
     #[test]
     fn test_seeking_matches_running_through() {
         let message: Vec<u8> = (0..256).map(|i| i as u8).collect();
-        let whole = crypt(&mut Salsa20::new(vec![3; 32], vec![4; 8]).unwrap(),
+        let whole = crypt(&mut Salsa20::new(&[3; 32], &[4; 8]).unwrap(),
                           &message);
 
-        let mut seeked = Salsa20::new(vec![3; 32], vec![4; 8]).unwrap();
+        let mut seeked = Salsa20::new(&[3; 32], &[4; 8]).unwrap();
         seeked.seek_block(2);
         let from_third = crypt(&mut seeked, &message[128..192]);
         assert_eq!(hex(&from_third), hex(&whole[128..192]),
@@ -467,11 +467,11 @@ mod tests {
 
     #[test]
     fn test_wrong_sizes_are_errors() {
-        assert!(Salsa20::new(vec![0; 31], vec![0; 8]).is_err());
-        assert!(Salsa20::new(vec![0; 32], vec![0; 7]).is_err());
-        assert!(Salsa20::new(vec![0; 32], vec![0; 9]).is_err());
-        assert!(Salsa20::with_rounds(vec![0; 32], vec![0; 8], 7).is_err());
-        assert!(Salsa20::with_rounds(vec![0; 32], vec![0; 8], 0).is_err());
+        assert!(Salsa20::new(&[0; 31], &[0; 8]).is_err());
+        assert!(Salsa20::new(&[0; 32], &[0; 7]).is_err());
+        assert!(Salsa20::new(&[0; 32], &[0; 9]).is_err());
+        assert!(Salsa20::with_rounds(&[0; 32], &[0; 8], 7).is_err());
+        assert!(Salsa20::with_rounds(&[0; 32], &[0; 8], 0).is_err());
     }
 
     /// HSalsa20 is the core without the feed-forward, read at the diagonal
@@ -506,7 +506,7 @@ mod tests {
         let key = [9u8; 32];
         let nonce: [u8; 24] = core::array::from_fn(|i| i as u8);
         let subkey = hsalsa20(&key, nonce[..16].try_into().unwrap());
-        let want = crypt(&mut Salsa20::new(subkey.to_vec(), nonce[16..].to_vec()).unwrap(),
+        let want = crypt(&mut Salsa20::new(&subkey, &nonce[16..]).unwrap(),
                          &[0u8; 200]);
         assert_eq!(hex(&crypt(&mut xsalsa20(&key, &nonce).unwrap(), &[0u8; 200])), hex(&want));
         assert!(xsalsa20(&key, &nonce[..23]).is_err());
@@ -516,7 +516,7 @@ mod tests {
     /// The counter must not run into the nonce.
     #[test]
     fn test_an_exhausted_stream_is_an_error_not_repeated_keystream() {
-        let mut cipher = Salsa20::new(vec![0; 32], vec![0; 8]).unwrap();
+        let mut cipher = Salsa20::new(&[0; 32], &[0; 8]).unwrap();
         cipher.seek_block(u64::MAX);
         let mut out = Vec::new();
         // The last block is fine.

@@ -348,6 +348,10 @@ def compare(output: dict, keys: dict, version: str) -> list:
             problems.append(f"{label}: the reference refuses it ({error!r})")
     opens("rsa_oaep_ciphertext", padding.OAEP(padding.MGF1(h.SHA256()), h.SHA256(), msg[:4]))
     opens("rsa_pkcs1_ciphertext", padding.PKCS1v15())
+    # Unpadded RSA has no reference in python-cryptography; Python's own
+    # integers are one, and an independent one.
+    same("rsa_raw_ciphertext", pow(int.from_bytes(msg[9:59], "big"), numbers.e,
+                                   numbers.n).to_bytes(256, "big"))
 
     print(f"run: {len(checked)} values compared with hashlib and python-cryptography")
     return problems

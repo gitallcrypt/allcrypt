@@ -121,13 +121,13 @@ fn cipher(name: &str, key: &[u8]) -> Result<AnyBlockCipher, String> {
 
 fn cbc_encrypt(c: &mut AnyBlockCipher, iv: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(data.len());
-    c.cbc_encrypt(data, &mut out, iv.to_vec())?;
+    c.cbc_encrypt(data, &mut out, iv)?;
     Ok(out)
 }
 
 fn cbc_decrypt(c: &mut AnyBlockCipher, iv: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(data.len());
-    c.cbc_decrypt(data, &mut out, iv.to_vec())?;
+    c.cbc_decrypt(data, &mut out, iv)?;
     Ok(out)
 }
 
@@ -387,7 +387,7 @@ impl Enctype {
                 let checksum = hmac("md5", &k2, &data);
                 let k3 = hmac("md5", &k1, &checksum);
                 let mut out = checksum.clone();
-                RC4::new(k3)?.crypt(&data, &mut out);
+                RC4::new(&k3)?.crypt(&data, &mut out);
                 Ok(out)
             }
         }
@@ -470,7 +470,7 @@ impl Enctype {
                 let (k1, k2) = rc4_keys(key, usage, export);
                 let k3 = hmac("md5", &k1, checksum);
                 let mut data = Vec::with_capacity(body.len());
-                RC4::new(k3)?.crypt(body, &mut data);
+                RC4::new(&k3)?.crypt(body, &mut data);
                 if !constant_eq(&hmac("md5", &k2, &data), checksum) {
                     return Err(failed());
                 }

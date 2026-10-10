@@ -215,7 +215,7 @@ fn aes_decrypt(props: &[u8], password: &[u8], data: &[u8]) -> Result<Vec<u8>, St
     }
     let key = derive_key(params.cycles, &params.salt, password)?;
     let mut out = Vec::with_capacity(data.len());
-    AesCrypto::new(key.to_vec())?.cbc_decrypt(data, &mut out, params.iv.to_vec())?;
+    AesCrypto::new(&key)?.cbc_decrypt(data, &mut out, &params.iv)?;
     Ok(out)
 }
 
@@ -231,7 +231,7 @@ pub fn aes_encrypt(data: &[u8], password: &[u8], cycles: u8) -> Result<(Vec<u8>,
     let mut padded = data.to_vec();
     padded.resize(data.len().next_multiple_of(16), 0);
     let mut out = Vec::with_capacity(padded.len());
-    AesCrypto::new(key.to_vec())?.cbc_encrypt(&padded, &mut out, iv.clone())?;
+    AesCrypto::new(&key)?.cbc_encrypt(&padded, &mut out, &iv)?;
     let mut props = vec![cycles | 0x40, 0x0f];
     props.extend_from_slice(&iv);
     Ok((props, out))

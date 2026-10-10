@@ -296,7 +296,7 @@ mod tests {
         ] {
             let input = unhex(input);
             let (aad, plaintext) = input.split_at(aad_len);
-            let mut cipher = AesCrypto::new(key.clone()).unwrap();
+            let mut cipher = AesCrypto::new(&key).unwrap();
 
             let (ciphertext, tag) =
                 encrypt(&mut cipher, &unhex(nonce), aad, plaintext, tag_len).unwrap();
@@ -319,7 +319,7 @@ mod tests {
         let aad = unhex("0001020304050607");
         let plaintext = unhex("20212223");
 
-        let mut cipher = AesCrypto::new(key).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let (ciphertext, tag) = encrypt(&mut cipher, &nonce, &aad, &plaintext, 4).unwrap();
         assert_eq!(hex(&ciphertext), "7162015b");
         assert_eq!(hex(&tag), "4dac255d");
@@ -334,7 +334,7 @@ mod tests {
         let aad = b"header".to_vec();
         let plaintext = b"the quick brown fox jumps over the lazy dog".to_vec();
 
-        let mut cipher = AesCrypto::new(key).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let (ciphertext, tag) =
             encrypt(&mut cipher, &nonce, &aad, &plaintext, 16).unwrap();
         assert_eq!(decrypt(&mut cipher, &nonce, &aad, &ciphertext, &tag).unwrap(),
@@ -363,7 +363,7 @@ mod tests {
     /// silently rounded.
     #[test]
     fn test_tag_lengths() {
-        let mut cipher = AesCrypto::new(vec![1u8; 16]).unwrap();
+        let mut cipher = AesCrypto::new(&[1u8; 16]).unwrap();
         let nonce = vec![2u8; 12];
         for tag_len in [4usize, 6, 8, 10, 12, 14, 16] {
             let (ciphertext, tag) =
@@ -384,7 +384,7 @@ mod tests {
     /// the MAC would cover the wrong length.
     #[test]
     fn test_the_nonce_length_bounds_the_message() {
-        let mut cipher = AesCrypto::new(vec![3u8; 16]).unwrap();
+        let mut cipher = AesCrypto::new(&[3u8; 16]).unwrap();
         for bad in [0usize, 6, 14, 16] {
             assert!(encrypt(&mut cipher, &vec![0; bad], b"", b"x", 16).is_err(),
                     "a {} byte nonce was accepted", bad);
@@ -402,7 +402,7 @@ mod tests {
     /// what says both are implemented.
     #[test]
     fn test_the_additional_data_length_boundary() {
-        let mut cipher = AesCrypto::new(vec![5u8; 16]).unwrap();
+        let mut cipher = AesCrypto::new(&[5u8; 16]).unwrap();
         let nonce = vec![6u8; 12];
         for aad_len in [0usize, 1, 15, 16, 0xfeff, 0xff00, 0xff01] {
             let aad = vec![0xa5; aad_len];
@@ -417,7 +417,7 @@ mod tests {
     /// are where an off-by-one in the padding shows up.
     #[test]
     fn test_empty_inputs() {
-        let mut cipher = AesCrypto::new(vec![7u8; 16]).unwrap();
+        let mut cipher = AesCrypto::new(&[7u8; 16]).unwrap();
         let nonce = vec![8u8; 12];
         for (aad, plaintext) in [(&b""[..], &b""[..]), (b"a", b""), (b"", b"b")] {
             let (ciphertext, tag) =

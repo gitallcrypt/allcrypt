@@ -8,6 +8,8 @@
 use allcrypt::asn1::{self, tag, Reader, Tag, Writer};
 use allcrypt::x509::Certificate;
 
+pub use crate::cli::hex;
+
 // Content types, RFC 5652 and RFC 5083.
 pub const DATA: &str = "1.2.840.113549.1.7.1";
 pub const SIGNED_DATA: &str = "1.2.840.113549.1.7.2";
@@ -338,10 +340,6 @@ impl CertId {
             CertId::KeyId(id) => format!("key id {}", hex(id)),
         }
     }
-}
-
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// One attribute: its type and its values' DER, in order.

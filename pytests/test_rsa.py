@@ -431,3 +431,46 @@ def test_oaep_message_too_long_is_refused(key):
     assert len(key.public_key().encrypt_oaep(bytes(limit))) == key.size
     with pytest.raises(allcrypt.CryptoError):
         key.public_key().encrypt_oaep(bytes(limit + 1))
+
+
+# ------------------------------------------------------------- unpadded ---
+#
+# Neither python-cryptography nor OpenSSL's Python surface does RSA without
+# padding, so the reference is Python's own integers: pow(m, e, n) and
+# pow(c, d, n), with d from the reference key OpenSSL validated above.
+
+@pytest.mark.parametrize("length", [0, 1, 2, 31, 64, 127])
+def test_unpadded_rsa_is_pow(key, reference, length):
+    public = key.public_key()
+    n, e = number(public.n), number(public.e)
+    d = reference.private_numbers().d
+    message = bytes([0x5a] * length)
+    ciphertext = public.encrypt_raw(message)
+    assert ciphertext == pow(number(message), e, n).to_bytes(key.size, "big")
+    assert key.decrypt_raw(ciphertext) == number(message).to_bytes(key.size, "big")
+    assert key.decrypt_raw(message) == pow(number(message), d, n).to_bytes(key.size, "big")
+
+
+def test_unpadded_rsa_takes_any_value_below_the_modulus(key):
+    public = key.public_key()
+    n = number(public.n)
+    for value in (0, 1, 2, n // 2, n - 2, n - 1):
+        block = value.to_bytes(key.size, "big")
+        assert key.decrypt_raw(public.encrypt_raw(block)) == block
+    for refused in (n.to_bytes(key.size, "big"), b"\xff" * key.size,
+                    bytes(key.size + 1)):
+        with pytest.raises(allcrypt.CryptoError):
+            public.encrypt_raw(refused)
+        with pytest.raises(allcrypt.CryptoError):
+            key.decrypt_raw(refused)
+
+
+def test_unpadded_rsa_is_deterministic_and_opens_the_padded_forms(key, reference):
+    public = key.public_key()
+    assert public.encrypt_raw(b"same") == public.encrypt_raw(b"same")
+    # OpenSSL's PKCS#1 v1.5 and OAEP ciphertexts open to their encoded blocks.
+    block = key.decrypt_raw(reference.public_key().encrypt(b"inside", padding.PKCS1v15()))
+    assert block[:2] == b"\x00\x02" and block.endswith(b"\x00inside")
+    oaep_block = key.decrypt_raw(reference.public_key().encrypt(
+        b"inside", padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None)))
+    assert oaep_block[0] == 0 and len(oaep_block) == key.size

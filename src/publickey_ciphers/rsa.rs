@@ -485,6 +485,57 @@ fn generate_prime(bits: usize, e: &BigUint) -> Result<BigUint, String> {
     Err(format!("Failed to find a {} bit prime; the random source looks broken.", bits))
 }
 
+// ---------------------------------------------------------------- raw ---
+
+/// RSA with no padding at all: RSAEP of RFC 8017 section 5.1.1,
+/// `c = m^e mod n`, with the message read as a big-endian integer and the
+/// ciphertext written at the key's size.
+///
+/// What it is for: reading and writing formats that pad for themselves
+/// (ISO 9796, the old protocols that did), building or testing a padding
+/// scheme, and demonstrating what the paddings exist to prevent. What it
+/// is not: encryption in any useful sense on its own. It is deterministic,
+/// so equal messages give equal ciphertexts and a small message space can
+/// be enumerated; it is multiplicative, so `c1 * c2` decrypts to `m1 * m2`;
+/// and with a small `e` a message whose `e`-th power is below `n` comes back
+/// out by an ordinary integer root of the ciphertext. Nothing here refuses
+/// such a message - 0 and 1 included, which encrypt to themselves.
+///
+/// The message may be shorter than the key, which is the same integer as
+/// the same bytes with leading zeros; it may not be longer, and its value
+/// must be below the modulus.
+pub fn encrypt_raw(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, String> {
+    let size = key.size();
+    if message.len() > size {
+        return Err(format!("Message of {} bytes is longer than the {} byte \
+                            modulus.", message.len(), size));
+    }
+    key.raw(&BigUint::from_bytes_be(message))
+        .map_err(|_| "The message is not smaller than the modulus.".to_string())?
+        .to_bytes_be_padded(size)
+}
+
+/// RSADP with no padding: `m = c^d mod n`, through the same blinded,
+/// fault-checked private operation every padded decryption uses. The
+/// plaintext comes back at the key's size, because nothing in an unpadded
+/// block says where the message started: a message shorter than the
+/// modulus arrives with leading zero bytes, and stripping them is the
+/// caller's decision.
+///
+/// It is also RSASP1, the raw signature primitive: "decrypting" a value
+/// with the private key is signing it, which is what makes an unpadded
+/// decryption service a signing oracle.
+pub fn decrypt_raw(key: &RsaPrivateKey, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    let size = key.size();
+    if ciphertext.len() > size {
+        return Err(format!("Ciphertext of {} bytes is longer than the {} byte \
+                            modulus.", ciphertext.len(), size));
+    }
+    key.raw(&BigUint::from_bytes_be(ciphertext))
+        .map_err(|_| "The ciphertext is not smaller than the modulus.".to_string())?
+        .to_bytes_be_padded(size)
+}
+
 // ------------------------------------------------------- PKCS#1 v1.5, enc ---
 
 /// PKCS#1 v1.5 encryption (RFC 8017 section 7.2.1).
@@ -1126,6 +1177,73 @@ pub fn verify_pss(key: &RsaPublicKey, hash_name: &str, digest: &[u8],
 
 #[cfg(test)]
 mod tests {
+
+    // --------------------------------------------------------------- raw ---
+
+    /// The edges of unpadded RSA, none of which is refused except a value
+    /// that is not below the modulus. The values themselves are checked
+    /// against Python's integers and Wycheproof's ciphertexts elsewhere
+    /// (`pytests/test_rsa.py`, `tests/test_rsa_oaep.rs`); what is here is
+    /// the shape.
+    #[test]
+    fn test_unpadded_rsa_edges() {
+        let key = RsaPrivateKey::generate(1024).unwrap();
+        let public = key.public_key();
+        let size = public.size();
+        let n = public.n.to_bytes_be_padded(size).unwrap();
+
+        // 0 and 1 are their own ciphertexts, and an empty message is 0.
+        let mut one = vec![0u8; size];
+        one[size - 1] = 1;
+        assert_eq!(encrypt_raw(&public, &[]).unwrap(), vec![0u8; size]);
+        assert_eq!(encrypt_raw(&public, &[0]).unwrap(), vec![0u8; size]);
+        assert_eq!(encrypt_raw(&public, &[1]).unwrap(), one);
+        assert_eq!(decrypt_raw(&key, &[1]).unwrap(), one);
+
+        // n - 1 is the largest message and is -1, so it is its own
+        // ciphertext under an odd exponent.
+        let mut largest = n.clone();
+        *largest.last_mut().unwrap() -= 1;
+        assert_eq!(encrypt_raw(&public, &largest).unwrap(), largest);
+        assert_eq!(decrypt_raw(&key, &largest).unwrap(), largest);
+
+        // n itself, and anything longer than the modulus, are refused.
+        assert!(encrypt_raw(&public, &n).is_err());
+        assert!(decrypt_raw(&key, &n).is_err());
+        let mut longer = vec![0u8];
+        longer.extend_from_slice(&one);
+        assert!(encrypt_raw(&public, &longer).is_err());
+        assert!(decrypt_raw(&key, &longer).is_err());
+
+        // A short message is the integer it spells, and comes back at the
+        // key's size with its leading zeros.
+        let sealed = encrypt_raw(&public, b"short").unwrap();
+        assert_eq!(sealed.len(), size);
+        let opened = decrypt_raw(&key, &sealed).unwrap();
+        assert_eq!(&opened[size - 5..], b"short");
+        assert!(opened[..size - 5].iter().all(|&b| b == 0));
+
+        // Deterministic and multiplicative: the properties the paddings
+        // exist to remove, so the raw operation must have them.
+        assert_eq!(encrypt_raw(&public, b"short").unwrap(), sealed);
+        let product = BigUint::from_bytes_be(&sealed)
+            .mod_mul(&BigUint::from_bytes_be(&encrypt_raw(&public, &[3]).unwrap()), &public.n)
+            .unwrap();
+        let tripled = BigUint::from_bytes_be(b"short")
+            .mod_mul(&BigUint::from_u64(3), &public.n).unwrap();
+        assert_eq!(decrypt_raw(&key, &product.to_bytes_be_padded(size).unwrap()).unwrap(),
+                   tripled.to_bytes_be_padded(size).unwrap());
+
+        // The raw private operation is the one the paddings use: it opens
+        // a PKCS#1 v1.5 ciphertext to its 00 02 block, and is a signature
+        // the raw public operation undoes.
+        let padded = encrypt_pkcs1v15(&public, b"inside").unwrap();
+        let block = decrypt_raw(&key, &padded).unwrap();
+        assert_eq!(&block[..2], &[0, 2]);
+        assert_eq!(&block[size - 7..], b"\0inside");
+        let signature = decrypt_raw(&key, b"any value").unwrap();
+        assert_eq!(&encrypt_raw(&public, &signature).unwrap()[size - 9..], b"any value");
+    }
 
     // --------------------------------------------------------------- PSS ---
 

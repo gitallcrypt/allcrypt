@@ -11,7 +11,7 @@ fn test_gost_ecb() {
     let crypt: [u8; 8] = [0x07, 0xF9, 0x02, 0x7D, 0xF7, 0xF7, 0xDF, 0x89];
  
     let mut result = vec![]; 
-    let mut crypto = gost::GostCrypto::new(key, String::from("id-GostR3411-94-TestParamSet")).unwrap();
+    let mut crypto = gost::GostCrypto::new(&key, "id-GostR3411-94-TestParamSet").unwrap();
     crypto.ecb_encrypt(&plain, &mut result).unwrap();
 
     assert_eq!(result, crypt);
@@ -28,16 +28,16 @@ fn test_gost_cbc() {
                             0x52, 0x35, 0x49, 0x59, 0xF1, 0xFF, 0x0C, 0xBF,
                             0xE9, 0x50, 0x61, 0xB5, 0xA6, 0x48, 0xC1, 0x03,
                             0x87, 0x06, 0x9C, 0x25, 0x99, 0x7C, 0x06, 0x72];
-    let mut crypto = gost::GostCrypto::new(key, String::from(gost::GostCrypto::DEFAULT_PARAM_SET)).unwrap();
+    let mut crypto = gost::GostCrypto::new(&key, gost::GostCrypto::DEFAULT_PARAM_SET).unwrap();
     let plain: Vec<u8> = vec![0;16];
     let crypt = vec![0x0b, 0x28, 0xfa, 0xb3, 0x4d, 0xd1, 0xfe, 0x56, 
                                0x36, 0xe1, 0xd9, 0x72, 0xe9, 0xa0, 0xd0, 0x81];
     let iv = vec![1,2,3,4,5,6,7,8];
     let mut result = vec![];
-    crypto.cbc_encrypt(&plain, &mut result, iv.to_owned()).unwrap();
+    crypto.cbc_encrypt(&plain, &mut result, &iv.to_owned()).unwrap();
     assert_eq!(result, crypt);
     let mut result_dec = vec![]; 
-    crypto.cbc_decrypt(&result, &mut result_dec, iv).unwrap();
+    crypto.cbc_decrypt(&result, &mut result_dec, &iv).unwrap();
 
     assert_eq!(result_dec, plain);
 }
@@ -48,16 +48,16 @@ fn test_gost_cfb() {
                             0x52, 0x35, 0x49, 0x59, 0xF1, 0xFF, 0x0C, 0xBF,
                             0xE9, 0x50, 0x61, 0xB5, 0xA6, 0x48, 0xC1, 0x03,
                             0x87, 0x06, 0x9C, 0x25, 0x99, 0x7C, 0x06, 0x72];
-    let mut crypto = gost::GostCrypto::new(key, String::from(gost::GostCrypto::DEFAULT_PARAM_SET)).unwrap();
+    let mut crypto = gost::GostCrypto::new(&key, gost::GostCrypto::DEFAULT_PARAM_SET).unwrap();
     let plain: Vec<u8> = vec![0;15];
     let crypt = vec![0x0b, 0x28, 0xfa, 0xb3, 0x4d, 0xd1, 0xfe, 0x56,
                                 0x36, 0xe1, 0xd9, 0x72, 0xe9, 0xa0, 0xd0];
     let iv = vec![1,2,3,4,5,6,7,8];
     let mut result = vec![];
-    crypto.cfb_encrypt(&plain, &mut result, iv.to_owned()).unwrap();
+    crypto.cfb_encrypt(&plain, &mut result, &iv.to_owned()).unwrap();
     assert_eq!(result, crypt);
     let mut result_dec = vec![]; 
-    crypto.cfb_decrypt(&result, &mut result_dec, iv).unwrap();
+    crypto.cfb_decrypt(&result, &mut result_dec, &iv).unwrap();
 
     assert_eq!(result_dec, plain);
 }
@@ -67,7 +67,7 @@ fn test_gost_ctr() {
                             0x52, 0x35, 0x49, 0x59, 0xF1, 0xFF, 0x0C, 0xBF,
                             0xE9, 0x50, 0x61, 0xB5, 0xA6, 0x48, 0xC1, 0x03,
                             0x87, 0x06, 0x9C, 0x25, 0x99, 0x7C, 0x06, 0x72];
-    let mut crypto = gost::GostCrypto::new(key, String::from(gost::GostCrypto::DEFAULT_PARAM_SET)).unwrap();
+    let mut crypto = gost::GostCrypto::new(&key, gost::GostCrypto::DEFAULT_PARAM_SET).unwrap();
     let plain: Vec<u8> = vec![0;15];
     let crypt = vec![0x3b, 0x23, 0x45, 0x15, 0xad, 0x4f, 0xa0, 0x40,
                               0x5d, 0x2f, 0x3c, 0xf1, 0x67, 0x76, 0x97];
@@ -87,7 +87,7 @@ fn test_mac() {
                             0x52, 0x35, 0x49, 0x59, 0xF1, 0xFF, 0x0C, 0xBF,
                             0xE9, 0x50, 0x61, 0xB5, 0xA6, 0x48, 0xC1, 0x03,
                             0x87, 0x06, 0x9C, 0x25, 0x99, 0x7C, 0x06, 0x72];
-    let mut crypto = gost::GostCrypto::new(key, String::from(gost::GostCrypto::DEFAULT_PARAM_SET)).unwrap();
+    let mut crypto = gost::GostCrypto::new(&key, gost::GostCrypto::DEFAULT_PARAM_SET).unwrap();
     let input: Vec<u8> = vec![0;14];
     let iv = vec![1,2,3,4,5,6,7,8];
     crypto.set_mac_iv(&iv); 
@@ -102,7 +102,7 @@ fn test_mac() {
 #[test]
 fn test_gost_counter_modulus() {
     let key: Vec<u8> = vec![0; 32];
-    let crypto = gost::GostCrypto::new(key, String::from(gost::GostCrypto::DEFAULT_PARAM_SET)).unwrap();
+    let crypto = gost::GostCrypto::new(&key, gost::GostCrypto::DEFAULT_PARAM_SET).unwrap();
 
     const C1: u64 = 0x01010104;
     const C2: u64 = 0x01010101;
@@ -126,4 +126,38 @@ fn test_gost_counter_modulus() {
         assert_eq!(got_n3, want_n3, "N3 for start {:08x}", n4_start);
         assert_eq!(got_n4, want_n4, "N4 for start {:08x}", n4_start);
     }
+}
+
+/// A table handed straight to `new_with_sbox` is checked: eight rows,
+/// each a permutation of 0..16. The key schedule's expansion indexes
+/// every entry, so a short row or a seven-row table used to panic
+/// there - the same way a short key once did in `new` - and a byte of
+/// 16 or more overflowed the nibble shift. A row that repeats a value
+/// has the right shape and is refused too, as the registry refuses it:
+/// no published table has one, so it is taken for a typing mistake.
+#[test]
+fn test_a_custom_sbox_is_checked() {
+    let good: Vec<Vec<u8>> = (0..8).map(|_| (0..16).collect()).collect();
+    let key = [0x5au8; 32];
+    assert!(gost::GostCrypto::new_with_sbox(&key, &good).is_ok());
+
+    let mut seven = good.clone();
+    seven.pop();
+    let mut short = good.clone();
+    short[3].pop();
+    let mut wide = good.clone();
+    wide[5][9] = 16;
+    let mut repeated = good.clone();
+    repeated[2][7] = repeated[2][8];
+    for (what, table) in [("seven rows", &seven), ("a short row", &short),
+                          ("an entry of 16", &wide),
+                          ("a repeated entry", &repeated)] {
+        let outcome = std::panic::catch_unwind(
+            || gost::GostCrypto::new_with_sbox(&key, table).err());
+        let reason = outcome.unwrap_or_else(|_| panic!("{what}: panicked"))
+            .unwrap_or_else(|| panic!("{what}: accepted"));
+        assert!(!reason.is_empty(), "{what}");
+    }
+    let reason = gost::GostCrypto::new_with_sbox(&key, &repeated).err().unwrap();
+    assert!(reason.contains("row 3 uses 8 twice"), "{reason}");
 }

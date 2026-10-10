@@ -381,7 +381,7 @@ pub fn hex_upper(bytes: &[u8]) -> String {
 }
 
 /// The secret part of a key, by algorithm, as numbers or native bytes.
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq)]
 pub enum Secret {
     /// d and u are read and checked for form, and recomputed when needed.
     Rsa { p: Vec<u8>, q: Vec<u8> },
@@ -391,6 +391,18 @@ pub enum Secret {
     /// EdDSA legacy's 32 byte seed, and the native secrets of X25519,
     /// X448, Ed25519 and Ed448.
     Native(Vec<u8>),
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::hidden::HiddenBytes;
+        match self {
+            Secret::Rsa { p, q } => f.debug_struct("Rsa")
+                .field("p", &HiddenBytes(p)).field("q", &HiddenBytes(q)).finish(),
+            Secret::Scalar(x) => f.debug_tuple("Scalar").field(&HiddenBytes(x)).finish(),
+            Secret::Native(x) => f.debug_tuple("Native").field(&HiddenBytes(x)).finish(),
+        }
+    }
 }
 
 /// How a secret key packet protects its secret part.
@@ -404,7 +416,7 @@ pub enum Protection {
     Aead { cipher: Cipher, aead: algo::Aead, s2k: S2k, iv: Vec<u8> },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SecretKey {
     pub public: PublicKey,
     /// The packet tag (5 or 7), which AEAD protection authenticates.
@@ -412,6 +424,16 @@ pub struct SecretKey {
     pub protection: Protection,
     /// The secret part as stored: encrypted unless `Protection::None`.
     pub stored: Vec<u8>,
+}
+
+/// `stored` is the key itself when the key is unprotected, so it is not
+/// printed either way.
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretKey").field("public", &self.public).field("tag", &self.tag)
+            .field("protection", &self.protection)
+            .field("stored", &crate::hidden::HiddenBytes(&self.stored)).finish()
+    }
 }
 
 fn read_secret_material(public: &PublicKey, data: &[u8]) -> Result<Secret, String> {

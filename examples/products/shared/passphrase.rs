@@ -12,6 +12,22 @@
 
 use std::io::{BufRead, IsTerminal, Read, Write};
 
+/// The password a command line gives: `--password-stdin` (a line of
+/// standard input, prompting on a terminal) or `--password <text>`, or
+/// `None` when it gives neither.
+pub fn from_args(args: &[String]) -> Result<Option<Vec<u8>>, String> {
+    if args.iter().any(|a| a == "--password-stdin") {
+        return read_line("Password: ").map(Some);
+    }
+    Ok(args.iter().position(|a| a == "--password").and_then(|i| args.get(i + 1))
+        .map(|p| p.as_bytes().to_vec()))
+}
+
+/// As `from_args`, for a command that cannot go on without one.
+pub fn required_from_args(args: &[String]) -> Result<Vec<u8>, String> {
+    from_args(args)?.ok_or_else(|| "Give --password or --password-stdin.".to_string())
+}
+
 /// One line of standard input, prompting with `prompt` if it is a
 /// terminal.
 pub fn read_line(prompt: &str) -> Result<Vec<u8>, String> {

@@ -16,7 +16,7 @@ use crate::block_ciphers::BlockCipher;
 pub struct MyCipher { /* round keys, tables */ }
 
 impl MyCipher {
-    pub fn new(key: Vec<u8>) -> Result<MyCipher, String> {
+    pub fn new(key: &[u8]) -> Result<MyCipher, String> {
         if key.len() != 16 {
             return Err(format!("Wrong key length {}. Must be 16.", key.len()));
         }
@@ -34,7 +34,10 @@ impl BlockCipher for MyCipher {
 Two rules the mode code relies on: `block_encrypt` and `block_decrypt` must
 **append exactly one block** to `result` (the modes check this and error if
 not), and the constructor must reject bad key lengths rather than panicking
-later.
+later. Every constructor here borrows its key and keeps only the schedule
+it builds from it, so a new one takes `&[u8]` too: a caller holding the key
+in an array, a slice of a larger buffer or a `Vec` passes it the same way,
+and nothing is copied that the cipher does not need.
 
 That is the whole obligation. ECB, CBC, CFB, OFB and CTR, one-shot and
 streaming, in place and appending, all work now.

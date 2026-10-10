@@ -26,17 +26,18 @@ mod kdbx;
 mod inflate;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/xml.rs"]
 mod xml;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
+pub use cli::hex;
 use kdbx::{Cipher, Credentials, Kdf, Plan};
-
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
 
 /// `YYYY-MM-DDTHH:MM:SSZ`, how KDBX 3.1 writes a time.
 pub fn iso8601(unix: u64) -> String {

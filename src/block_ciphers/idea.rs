@@ -117,7 +117,7 @@ pub struct Idea {
 }
 
 impl Idea {
-    pub fn new(key: Vec<u8>) -> Result<Idea, String> {
+    pub fn new(key: &[u8]) -> Result<Idea, String> {
         if key.len() != 16 {
             return Err(format!("An IDEA key is 16 bytes; this one is {}.", key.len()));
         }
@@ -334,7 +334,7 @@ mod tests {
         ];
         for key in keys {
             for block in blocks {
-                let mut cipher = Idea::new(key.to_vec()).unwrap();
+                let mut cipher = Idea::new(&key).unwrap();
                 let mut encrypted = Vec::new();
                 cipher.block_encrypt(&block, &mut encrypted);
                 let mut decrypted = Vec::new();
@@ -348,7 +348,7 @@ mod tests {
     /// Encrypting is not decrypting.
     #[test]
     fn test_encryption_is_not_symmetric() {
-        let mut cipher = Idea::new((1..=16).collect()).unwrap();
+        let mut cipher = Idea::new(&(1..=16).collect::<Vec<u8>>()).unwrap();
         let block = [1u8, 2, 3, 4, 5, 6, 7, 8];
         let mut encrypted = Vec::new();
         let mut decrypted = Vec::new();
@@ -359,8 +359,8 @@ mod tests {
 
     #[test]
     fn test_a_wrong_key_length_is_an_error() {
-        assert!(Idea::new(vec![0; 15]).is_err());
-        assert!(Idea::new(vec![0; 17]).is_err());
-        assert!(Idea::new(vec![]).is_err());
+        assert!(Idea::new(&[0; 15]).is_err());
+        assert!(Idea::new(&[0; 17]).is_err());
+        assert!(Idea::new(&[]).is_err());
     }
 }

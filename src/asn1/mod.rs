@@ -15,7 +15,17 @@ historically the one that gets exploited. The rules it follows come from that:
     all errors, not warnings.
 
   * **No recursion without a bound.** Nested SEQUENCEs are free to write and
-    a stack overflow is a crash. `MAX_DEPTH` caps it.
+    a stack overflow is a crash. `MAX_DEPTH` caps how deep one reader
+    descends through `read_constructed`. A `Reader::new` over bytes found
+    inside another value - an extension's OCTET STRING, a key's
+    parameters - starts again at zero, so the cap is per reader and not
+    per document. That is a bound because nothing here parses
+    recursively on data: every `Reader::new` is reached by a fixed path
+    through the code, so a document's total depth is at most `MAX_DEPTH`
+    times the number of those layers in its deepest structure. A parser
+    that did recurse on data - a PKCS#12 SafeContents inside a
+    SafeContents, say - has to descend with `read_constructed` from the
+    reader it already has, so the count carries.
 
   * **No panics.** Every index is checked. A parser that panics on malformed
     input is a denial of service, and in this library it is also a broken

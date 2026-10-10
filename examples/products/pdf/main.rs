@@ -28,12 +28,17 @@ mod security;
 mod inflate;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
 use std::collections::BTreeMap;
 
+use cli::value;
 use file::{transform, Direction, Document};
 use object::{get, Dict, Object};
 use security::{Security, Which};
@@ -138,31 +143,12 @@ pub fn encrypt(data: Vec<u8>, password: Option<&[u8]>, scheme: &str, user: &[u8]
 
 // ------------------------------------------------------------------ CLI --
 
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-}
-
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if arg == "--password-stdin" || arg == "--passwords-stdin" {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
+    cli::positional(args, &["--password-stdin", "--passwords-stdin"], &[])
 }
 
 fn password(args: &[String]) -> Result<Option<Vec<u8>>, String> {
-    if args.iter().any(|a| a == "--password-stdin") {
-        return passphrase::read_line("Password: ").map(Some);
-    }
-    Ok(value(args, "--password").map(|p| p.as_bytes().to_vec()))
+    passphrase::from_args(args)
 }
 
 fn permissions_text(p: i32) -> String {

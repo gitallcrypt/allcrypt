@@ -82,6 +82,21 @@ impl Session {
         self.fields.iter().find(|(key, _)| key == name).map(|(_, v)| v.as_str())
             .unwrap_or_else(|| panic!("{}: no {name}", self.name))
     }
+
+    /// The identification line this side sent when the session was
+    /// recorded, without its CRLF. The replay sends the same one: the
+    /// line carries the crate version, so a replay under the current
+    /// version would differ from the recording at its first byte, and
+    /// every byte after it through the exchange hash, on every release.
+    fn recorded_version(&self, ours: bool) -> String {
+        let first = self.flow.iter().find(|(from_server, _)| *from_server != ours)
+            .unwrap_or_else(|| panic!("{}: nothing sent", self.name));
+        let end = first.1.windows(2).position(|w| w == b"\r\n")
+            .unwrap_or_else(|| panic!("{}: no identification line", self.name));
+        let line = String::from_utf8(first.1[..end].to_vec()).unwrap();
+        assert!(line.starts_with("SSH-2.0-allcrypt_"), "{}: {line}", self.name);
+        line
+    }
 }
 
 fn sessions() -> Vec<Session> {
@@ -124,6 +139,7 @@ fn test_every_recorded_session_replays_byte_for_byte() {
         let mut config = ClientConfig::new(
             "root", HostKeyCheck::Fingerprint(session.field("host_key").to_string()));
         config.auth.push(Auth::PublicKey(key));
+        config.version = session.recorded_version(true);
         for option in session.field("options").split_whitespace() {
             let (option, value) = option.split_once('=').unwrap();
             match option {
@@ -179,6 +195,7 @@ fn test_a_flipped_byte_in_a_server_packet_is_refused() {
         let (key, _) = private_key::read(&key_text, None).unwrap();
         let mut config = ClientConfig::new("root", HostKeyCheck::AcceptAny);
         config.auth.push(Auth::PublicKey(key));
+        config.version = session.recorded_version(true);
         for option in session.field("options").split_whitespace() {
             let (option, value) = option.split_once('=').unwrap();
             match option {

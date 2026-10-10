@@ -165,6 +165,133 @@ impl TicketKey {
     }
 }
 
+/// How many tickets one key seals before it refuses: 2^32.
+///
+/// Every ticket's nonce is 96 random bits under the same key, and two
+/// equal nonces under one AES-GCM key give away the authentication key
+/// and the XOR of the two plaintexts. SP 800-38D 8.3 keeps that chance
+/// below 2^-32 by allowing at most 2^32 random nonces per key. The count
+/// is this process's; instances sharing a configured key each count
+/// their own, so a fleet has to rotate before *their sum* gets there.
+pub const MAX_SEALS_PER_KEY: u64 = 1 << 32;
+
+/// The keys a server seals and opens tickets with: the newest seals,
+/// every one opens.
+///
+/// **Rotation without dropping anybody.** Replacing a lone key ends every
+/// session sealed under it - each of those clients falls back to a full
+/// handshake at once. `rotate` makes a new key the one that seals and
+/// keeps the old ones for opening, and `retire` removes a key once the
+/// tickets it sealed have expired (`DEFAULT_LIFETIME` after the rotation,
+/// or whatever lifetime the server was configured with). Every ticket
+/// starts with its key's name, so opening goes straight to the right
+/// key, and a retired or unknown name is the same full handshake as any
+/// other ticket that does not open.
+///
+/// Shared between connections, like the single key it replaces: an
+/// `Arc<TicketKeys>` in `ServerConfig::ticket_keys`, with the rotation
+/// done through that `Arc` while connections are using it.
+pub struct TicketKeys {
+    /// Newest first, each with how many tickets it has sealed here.
+    ring: std::sync::Mutex<Vec<(TicketKey, u64)>>,
+}
+
+impl TicketKeys {
+    /// A ring holding one key.
+    pub fn new(key: TicketKey) -> TicketKeys {
+        TicketKeys { ring: std::sync::Mutex::new(vec![(key, 0)]) }
+    }
+
+    /// A ring of configured keys, newest first: the first seals, all open.
+    /// Duplicate names are refused, since only the name picks the key.
+    pub fn from_keys(keys: Vec<TicketKey>) -> Result<TicketKeys, String> {
+        if keys.is_empty() {
+            return Err("A ticket key ring needs at least one key.".to_string());
+        }
+        for (i, key) in keys.iter().enumerate() {
+            if keys[..i].iter().any(|other| other.name == key.name) {
+                return Err("Two ticket keys share a name, so a ticket could not say \
+                            which one sealed it.".to_string());
+            }
+        }
+        Ok(TicketKeys { ring: std::sync::Mutex::new(keys.into_iter().map(|k| (k, 0)).collect()) })
+    }
+
+    /// A ring holding one freshly generated key.
+    pub fn generate() -> Result<TicketKeys, String> {
+        Ok(TicketKeys::new(TicketKey::generate()?))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(TicketKey, u64)>> {
+        // A poisoned lock means a panic while sealing; the ring itself is
+        // still consistent, since nothing is left half-written.
+        self.ring.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Make `key` the one that seals. The others go on opening.
+    pub fn rotate(&self, key: TicketKey) -> Result<(), String> {
+        let mut ring = self.lock();
+        if ring.iter().any(|(other, _)| other.name == key.name) {
+            return Err("That key name is already in the ring.".to_string());
+        }
+        ring.insert(0, (key, 0));
+        Ok(())
+    }
+
+    /// Stop opening tickets sealed under the key named `name`. The key
+    /// that seals cannot be retired - rotate first - so the ring is never
+    /// empty. Returns whether a key was removed.
+    pub fn retire(&self, name: &[u8]) -> Result<bool, String> {
+        let mut ring = self.lock();
+        match ring.iter().position(|(key, _)| key.name[..] == *name) {
+            Some(0) => Err("That is the key tickets are sealed with; rotate to \
+                            another before retiring it.".to_string()),
+            Some(at) => {
+                ring.remove(at);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// The keys' names, newest first.
+    pub fn names(&self) -> Vec<Vec<u8>> {
+        self.lock().iter().map(|(key, _)| key.name.to_vec()).collect()
+    }
+
+    /// How many more tickets the sealing key will seal here.
+    pub fn seals_left(&self) -> u64 {
+        MAX_SEALS_PER_KEY - self.lock()[0].1
+    }
+
+    /// Seal under the newest key, counting against its limit.
+    pub fn seal(&self, session: &Session) -> Result<Vec<u8>, String> {
+        let mut ring = self.lock();
+        let (key, sealed) = &mut ring[0];
+        if *sealed >= MAX_SEALS_PER_KEY {
+            return Err("This ticket key has sealed 2^32 tickets; rotate to a new \
+                        one.".to_string());
+        }
+        let ticket = key.seal(session)?;
+        *sealed += 1;
+        Ok(ticket)
+    }
+
+    /// Open with whichever key the ticket names, with the same single
+    /// failure as `TicketKey::open`.
+    pub fn open(&self, ticket: &[u8], now: i64) -> Option<Session> {
+        let name = ticket.get(..KEY_NAME_LEN)?;
+        let ring = self.lock();
+        let (key, _) = ring.iter().find(|(key, _)| key.name[..] == *name)?;
+        key.open(ticket, now)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_sealed(&self, count: u64) {
+        self.lock()[0].1 = count;
+    }
+}
+
 /// What a ticket carries, once opened.
 ///
 /// No `Debug`: `psk` is key material.
@@ -249,7 +376,7 @@ impl Session {
 /// The nonce is fresh per ticket, so two tickets from one handshake carry
 /// different PSKs and one being stolen does not give up the other.
 #[allow(clippy::too_many_arguments)]
-pub fn issue(key: &TicketKey, prf: MacAlgorithm, suite: u16,
+pub fn issue(keys: &TicketKeys, prf: MacAlgorithm, suite: u16,
              resumption_master: &[u8], now: i64, lifetime: u32,
              max_early_data: u32, server_name: &[u8])
              -> Result<NewSessionTicket13, String> {
@@ -265,7 +392,7 @@ pub fn issue(key: &TicketKey, prf: MacAlgorithm, suite: u16,
         lifetime,
         age_add,
         nonce,
-        ticket: key.seal(&session)?,
+        ticket: keys.seal(&session)?,
         // **Absent, not zero, when early data is off.** The extension not
         // being there is what tells the client not to send any; a zero
         // would be a server that offers the feature and allows nothing,
@@ -295,7 +422,7 @@ pub struct Accepted {
 ///
 /// Returns `None` for every failure, with nothing said about which: a
 /// rejected offer is a full handshake and the client learns nothing else.
-pub fn accept(key: &TicketKey, offer: &crate::tls::handshake13::OfferedPsks,
+pub fn accept(keys: &TicketKeys, offer: &crate::tls::handshake13::OfferedPsks,
               suite: u16, prf: MacAlgorithm,
               truncated_transcript: &[u8], now: i64) -> Option<Accepted> {
     let hash = prf.hash_name()?;
@@ -303,7 +430,7 @@ pub fn accept(key: &TicketKey, offer: &crate::tls::handshake13::OfferedPsks,
         return None;
     }
     for (index, identity) in offer.identities.iter().enumerate() {
-        let session = match key.open(&identity.identity, now) {
+        let session = match keys.open(&identity.identity, now) {
             Some(session) => session,
             None => continue,
         };
@@ -544,11 +671,66 @@ mod tests {
         assert!(key.open(&sealed[1..], 1_700_000_000).is_none());
     }
 
+    fn named(byte: u8) -> TicketKey {
+        TicketKey::from_bytes(&[byte; TicketKey::byte_length()]).unwrap()
+    }
+
+    /// Rotation changes which key seals and keeps the old one opening, so
+    /// no session ends at the moment of rotation; retiring the old key
+    /// then ends exactly the tickets it sealed.
+    #[test]
+    fn test_rotation_keeps_old_tickets_until_their_key_is_retired() {
+        let now = 1_700_000_000;
+        let keys = TicketKeys::new(named(1));
+        let old = keys.seal(&session(now)).unwrap();
+        keys.rotate(named(2)).unwrap();
+        let new = keys.seal(&session(now)).unwrap();
+        assert_eq!(&new[..KEY_NAME_LEN], &[2; KEY_NAME_LEN], "the newest key seals");
+        assert!(keys.open(&old, now).is_some(), "rotation ended a session");
+        assert!(keys.open(&new, now).is_some());
+        assert_eq!(keys.names(), vec![vec![2; KEY_NAME_LEN], vec![1; KEY_NAME_LEN]]);
+
+        assert!(keys.retire(&[2; KEY_NAME_LEN]).is_err(), "retired the sealing key");
+        assert!(keys.rotate(named(1)).is_err(), "a name twice in the ring");
+        assert_eq!(keys.retire(&[1; KEY_NAME_LEN]), Ok(true));
+        assert!(keys.open(&old, now).is_none());
+        assert!(keys.open(&new, now).is_some());
+        assert_eq!(keys.retire(&[1; KEY_NAME_LEN]), Ok(false));
+    }
+
+    /// A ticket naming one key and sealed under another opens under
+    /// neither: the name picks the key and the AEAD has the last word.
+    #[test]
+    fn test_a_ticket_is_opened_only_by_the_key_it_names() {
+        let now = 1_700_000_000;
+        let keys = TicketKeys::from_keys(vec![named(1), named(2)]).unwrap();
+        let mut ticket = keys.seal(&session(now)).unwrap();
+        ticket[..KEY_NAME_LEN].copy_from_slice(&[2; KEY_NAME_LEN]);
+        assert!(keys.open(&ticket, now).is_none());
+        assert!(TicketKeys::from_keys(vec![named(1), named(1)]).is_err());
+        assert!(TicketKeys::from_keys(Vec::new()).is_err());
+    }
+
+    /// A key that has sealed its share of random nonces refuses, and the
+    /// server then issues no tickets rather than failing the connection.
+    #[test]
+    fn test_a_key_stops_sealing_at_its_nonce_limit() {
+        let keys = TicketKeys::new(named(1));
+        keys.set_sealed(MAX_SEALS_PER_KEY - 1);
+        assert_eq!(keys.seals_left(), 1);
+        assert!(keys.seal(&session(1_700_000_000)).is_ok());
+        assert_eq!(keys.seals_left(), 0);
+        assert!(keys.seal(&session(1_700_000_000)).is_err());
+        keys.rotate(named(2)).unwrap();
+        assert_eq!(keys.seals_left(), MAX_SEALS_PER_KEY);
+        assert!(keys.seal(&session(1_700_000_000)).is_ok());
+    }
+
     /// Two tickets from one handshake must carry different PSKs, so that one
     /// being stolen does not give up the other.
     #[test]
     fn test_two_tickets_differ() {
-        let key = TicketKey::generate().unwrap();
+        let key = TicketKeys::generate().unwrap();
         let master = vec![0x11; 32];
         let first = issue(&key, MacAlgorithm::Sha256, 0x1301, &master,
                           1_700_000_000, DEFAULT_LIFETIME, 0, b"localhost").unwrap();
@@ -562,7 +744,7 @@ mod tests {
     }
 
     /// Build a genuine offer for a ticket, with a correct binder.
-    fn offer_for(key: &TicketKey, ticket: &[u8], psk: &[u8], prf: MacAlgorithm,
+    fn offer_for(key: &TicketKeys, ticket: &[u8], psk: &[u8], prf: MacAlgorithm,
                  transcript: &[u8])
                  -> crate::tls::handshake13::OfferedPsks {
         let _ = key;
@@ -590,7 +772,7 @@ mod tests {
     /// client holds the PSK sealed inside it, over this ClientHello.
     #[test]
     fn test_a_wrong_binder_is_refused() {
-        let key = TicketKey::generate().unwrap();
+        let key = TicketKeys::generate().unwrap();
         let now = 1_700_000_000;
         let prf = MacAlgorithm::Sha256;
         let suite = 0x1301;
@@ -636,7 +818,7 @@ mod tests {
     /// PSK's length and the whole schedule come from the hash.
     #[test]
     fn test_a_ticket_from_another_suite_is_refused() {
-        let key = TicketKey::generate().unwrap();
+        let key = TicketKeys::generate().unwrap();
         let now = 1_700_000_000;
         let issued = issue(&key, MacAlgorithm::Sha256, 0x1301, &[0x11; 32], now,
                            DEFAULT_LIFETIME, 0, b"localhost").unwrap();
@@ -655,7 +837,7 @@ mod tests {
     /// not something to index into.
     #[test]
     fn test_a_lopsided_offer_is_refused() {
-        let key = TicketKey::generate().unwrap();
+        let key = TicketKeys::generate().unwrap();
         let now = 1_700_000_000;
         let issued = issue(&key, MacAlgorithm::Sha256, 0x1301, &[0x11; 32], now,
                            DEFAULT_LIFETIME, 0, b"localhost").unwrap();
@@ -672,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_no_early_data_is_offered() {
-        let key = TicketKey::generate().unwrap();
+        let key = TicketKeys::generate().unwrap();
         let ticket = issue(&key, MacAlgorithm::Sha256, 0x1301, &[0x11; 32],
                            1_700_000_000, DEFAULT_LIFETIME, 0, b"localhost").unwrap();
         // Absent, not zero: the extension's absence is what says "no early
@@ -682,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_early_data_is_offered_when_configured() {
-        let key = TicketKey::generate().unwrap();
+        let key = TicketKeys::generate().unwrap();
         let ticket = issue(&key, MacAlgorithm::Sha256, 0x1301, &[0x11; 32],
                            1_700_000_000, DEFAULT_LIFETIME, 16_384,
                            b"example.test").unwrap();
@@ -703,7 +885,7 @@ mod tests {
     /// early data into another.
     #[test]
     fn test_the_server_name_survives_the_round_trip() {
-        let key = TicketKey::generate().unwrap();
+        let key = TicketKeys::generate().unwrap();
         let mut original = session(1_700_000_000);
         original.server_name = b"one.example".to_vec();
         original.max_early_data = 99;

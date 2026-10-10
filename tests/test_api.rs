@@ -2,7 +2,7 @@
 //! API it wraps. The Python bindings are a thin layer over this, so anything
 //! verified here is verified for Python too.
 
-use allcrypt::api::{AnyBlockCipher, AnyHash, AnyStreamCipher, CipherStream, Mode,
+use allcrypt::api::{self, AnyBlockCipher, AnyHash, AnyStreamCipher, CipherStream, Mode,
                     BLOCK_CIPHERS, HASHES, MODES, STREAM_CIPHERS};
 use allcrypt::block_ciphers::aes::AesCrypto;
 use allcrypt::block_ciphers::gost::GostCrypto;
@@ -45,10 +45,10 @@ fn test_facade_matches_static_api() {
                 let mut c = AnyBlockCipher::new(name, &key(keylen), None).unwrap();
                 match mode {
                     Mode::Ecb => c.ecb_encrypt(&pt, &mut want).unwrap(),
-                    Mode::Cbc => c.cbc_encrypt(&pt, &mut want, v.clone()).unwrap(),
-                    Mode::Pcbc => c.pcbc_encrypt(&pt, &mut want, v.clone()).unwrap(),
-                    Mode::Cfb => c.cfb_encrypt(&pt, &mut want, v.clone()).unwrap(),
-                    Mode::Ofb => c.ofb_encrypt(&pt, &mut want, v.clone()).unwrap(),
+                    Mode::Cbc => c.cbc_encrypt(&pt, &mut want, &v).unwrap(),
+                    Mode::Pcbc => c.pcbc_encrypt(&pt, &mut want, &v).unwrap(),
+                    Mode::Cfb => c.cfb_encrypt(&pt, &mut want, &v).unwrap(),
+                    Mode::Ofb => c.ofb_encrypt(&pt, &mut want, &v).unwrap(),
                     Mode::Ctr => c.ctr_encrypt(&pt, &mut want, &v).unwrap(),
                     Mode::CtrLe => c.ctr_le_encrypt(&pt, &mut want, &v).unwrap(),
                     Mode::CbcCs1 | Mode::CbcCs2 | Mode::CbcCs3 => c.cbc_cs_encrypt(
@@ -85,7 +85,7 @@ fn test_facade_preserves_gost_counter() {
 
     // Sanity: the generic counter would give something else entirely.
     let mut generic = vec![];
-    GostCrypto::new(k, GostCrypto::DEFAULT_PARAM_SET.to_string()).unwrap()
+    GostCrypto::new(&k, GostCrypto::DEFAULT_PARAM_SET).unwrap()
         .ctr_encrypt(&[0u8; 15], &mut generic, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
     assert_eq!(generic, expected);
 }
@@ -309,7 +309,7 @@ fn test_stream_cipher_facade() {
 
     // Matches the concrete type.
     let mut viaapi = AnyStreamCipher::new("chacha12", &key(32), &iv(12)).unwrap();
-    let mut direct = Chacha::new(key(32), iv(12), 12).unwrap();
+    let mut direct = Chacha::new(&key(32), &iv(12), 12).unwrap();
     let mut want = vec![];
     direct.crypt(&data(300), &mut want);
     assert_eq!(viaapi.update(&data(300)).unwrap(), want);
@@ -337,7 +337,7 @@ fn test_catalogue_is_accurate() {
     // the one length that works, so `GostCrypto::new` **panicking** on
     // every other length went unnoticed until this loop replaced it.
     for name in BLOCK_CIPHERS {
-        let usable: Vec<usize> = [5usize, 8, 16, 24, 32, 56].into_iter()
+        let usable: Vec<usize> = [5usize, 8, 16, 24, 32, 56, 64].into_iter()
             .filter(|&n| AnyBlockCipher::new(name, &key(n), None).is_ok())
             .collect();
         assert!(!usable.is_empty(), "{} constructs at no key length", name);
@@ -370,10 +370,106 @@ fn test_catalogue_is_accurate() {
     }
     // And the AES facade really is AES.
     let mut want = vec![];
-    AesCrypto::new(key(16)).unwrap().ecb_encrypt(&data(32), &mut want).unwrap();
+    AesCrypto::new(&key(16)).unwrap().ecb_encrypt(&data(32), &mut want).unwrap();
     let mut s = CipherStream::new(AnyBlockCipher::new("aes", &key(16), None).unwrap(),
                                   Mode::Ecb, &[], false).unwrap();
     assert_eq!(s.update(&data(32)).unwrap(), want);
+}
+
+/// `block_cipher_name` is the constructor's own list of spellings: every
+/// catalogue name is its own canonical form and builds a cipher that
+/// reports it, every alias builds the same cipher as the name it stands
+/// for, and a name it refuses the constructor refuses too.
+#[test]
+fn test_cipher_names_have_one_list_of_aliases() {
+    for name in BLOCK_CIPHERS {
+        assert_eq!(api::block_cipher_name(name), Some(*name));
+        assert_eq!(api::block_cipher_name(&name.to_ascii_uppercase()), Some(*name));
+        let n = [5usize, 8, 16, 24, 32, 56, 64].into_iter()
+            .find(|&n| AnyBlockCipher::new(name, &key(n), None).is_ok()).unwrap();
+        assert_eq!(AnyBlockCipher::new(name, &key(n), None).unwrap().name(), *name);
+    }
+    let aliases = [("blowfish_le", "blowfish-le", 16), ("cast6", "cast256", 16),
+                   ("cast128", "cast5", 16), ("kuznechik", "kuznyechik", 32),
+                   ("Grasshopper", "kuznyechik", 32), ("des3", "3des", 24),
+                   ("des-ede", "3des", 24), ("DES-EDE3", "3des", 24),
+                   ("tripledes", "3des", 24)];
+    for (alias, canonical, n) in aliases {
+        assert_eq!(api::block_cipher_name(alias), Some(canonical));
+        let encrypt = |name: &str| {
+            let c = AnyBlockCipher::new(name, &key(n), None).unwrap();
+            let mut s = CipherStream::new(c, Mode::Ecb, &[], false).unwrap();
+            s.update(&data(16)).unwrap()
+        };
+        assert_eq!(encrypt(alias), encrypt(canonical), "{alias}");
+    }
+    for unknown in ["", "nosuch", "aes-128", "kalyna-64", "rijndael-512", "3-des"] {
+        assert_eq!(api::block_cipher_name(unknown), None, "{unknown}");
+        let err = AnyBlockCipher::new(unknown, &key(16), None).err().unwrap();
+        assert!(err.starts_with("Unknown block cipher"), "{err}");
+    }
+}
+
+/// `curve_parameters_from_hex` reads what `curve_parameters` writes, and
+/// the hex a specification prints; a missing, unknown or non-hex field is
+/// refused by name. It is what `register_oid(curve_parameters=)` goes
+/// through, so the bindings hold none of this.
+#[test]
+fn test_curve_parameters_from_hex() {
+    let written = api::curve_parameters("P-256").unwrap();
+    let pairs: Vec<(&str, &str)> = written.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let read = api::curve_parameters_from_hex(&pairs).unwrap();
+    assert_eq!(read.name, "P-256");
+    assert_eq!(read.p.to_hex(), written[1].1.trim_start_matches('0'));
+    assert_eq!(read.h.to_hex(), "1");
+
+    // Spaced, prefixed and odd-length hex, as a document prints it.
+    let p = format!("0x{}", written[1].1.as_bytes().chunks(8)
+        .map(|c| std::str::from_utf8(c).unwrap()).collect::<Vec<_>>().join(" "));
+    let mut loose = pairs.clone();
+    loose[1].1 = &p;
+    loose[7].1 = "1";
+    let again = api::curve_parameters_from_hex(&loose).unwrap();
+    assert_eq!(again.p, read.p);
+    assert_eq!(again.h, read.h);
+
+    let without: Vec<_> = pairs.iter().copied().filter(|(k, _)| *k != "cofactor").collect();
+    assert!(api::curve_parameters_from_hex(&without).unwrap_err().contains("\"cofactor\""));
+    let mut misspelt = without.clone();
+    misspelt.push(("cofator", "1"));
+    assert!(api::curve_parameters_from_hex(&misspelt).unwrap_err().contains("\"cofator\""));
+    let mut bad = pairs.clone();
+    bad[3].1 = "12g4";
+    assert!(api::curve_parameters_from_hex(&bad).unwrap_err().contains("not hex"));
+    bad[3].1 = "0x";
+    assert!(api::curve_parameters_from_hex(&bad).unwrap_err().contains("not hex"));
+}
+
+/// A hash's name is the name it was made from, whatever case or alias
+/// that was, and any name it reports makes the same function again -
+/// including the lengths the catalogue does not list.
+#[test]
+fn test_a_hash_names_itself_as_new_reads_it() {
+    for name in HASHES {
+        assert_eq!(AnyHash::new(name).unwrap().name(), *name);
+        assert_eq!(AnyHash::new(&name.to_ascii_uppercase()).unwrap().name(), *name);
+    }
+    assert_eq!(AnyHash::new("streebog").unwrap().name(), "streebog256");
+    assert_eq!(AnyHash::new("RMD160").unwrap().name(), "ripemd160");
+    assert_eq!(AnyHash::new("whirlpool1").unwrap().name(), "whirlpool_t");
+    assert_eq!(AnyHash::new("keccak").unwrap().name(), "keccak_256");
+    for odd in ["blake2b_256", "blake2s_128", "md6_200", "kupyna128", "sha512_128",
+                "keccak_160", "shake_128_512", "shake_256_80"] {
+        let mut first = AnyHash::new(odd).unwrap();
+        assert_eq!(first.name(), odd);
+        let mut again = AnyHash::new(&first.name()).unwrap();
+        first.update(b"abc");
+        again.update(b"abc");
+        assert_eq!(first.digest(), again.digest(), "{odd}");
+    }
+    assert!(AnyHash::new("kupyna100").is_err());
+    assert!(AnyHash::new("sha512_384").is_err());
+    assert!(AnyHash::new("keccak_7").is_err());
 }
 
 /// The free padding functions must agree with the in-place trait methods.
@@ -1106,7 +1202,7 @@ fn test_hardware_aes_reports_the_build() {
 fn test_the_wrapper_forwards_the_one_block_path() {
     let key = [0x2Bu8; 16];
     let mut wrapped = AnyBlockCipher::new("aes", &key, None).unwrap();
-    let mut direct = AesCrypto::new(key.to_vec()).unwrap();
+    let mut direct = AesCrypto::new(&key).unwrap();
     let mut scratch = Vec::new();
     let mut block = *b"sixteen bytes!!!";
     wrapped.encrypt_block_in_place(&mut block, &mut scratch).unwrap();
@@ -1198,12 +1294,12 @@ fn test_aead_stream_refuses_use_after_finish() {
 fn test_an_exhausted_stream_cipher_is_an_error() {
     use allcrypt::stream_ciphers::salsa20::Salsa20;
     let near_the_end = || {
-        let mut chacha = Chacha::new(key(32), iv(12), 20).unwrap();
+        let mut chacha = Chacha::new(&key(32), &iv(12), 20).unwrap();
         chacha.set_counter(u32::MAX).unwrap();
         AnyStreamCipher::Chacha(chacha)
     };
     let salsa_near_the_end = || {
-        let mut salsa = Salsa20::new(key(32), iv(8)).unwrap();
+        let mut salsa = Salsa20::new(&key(32), &iv(8)).unwrap();
         salsa.seek_block(u64::MAX);
         AnyStreamCipher::Salsa20(salsa)
     };

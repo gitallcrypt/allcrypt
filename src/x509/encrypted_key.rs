@@ -522,7 +522,7 @@ fn decipher(recipe: &Recipe, key: &[u8], iv: &[u8], ciphertext: &[u8])
     let plain = match recipe.cipher {
         CipherKind::Rc4 => {
             use crate::stream_ciphers::StreamCipher;
-            let mut rc4 = crate::stream_ciphers::rc4::RC4::new(key.to_vec())?;
+            let mut rc4 = crate::stream_ciphers::rc4::RC4::new(key)?;
             let mut out = Vec::new();
             rc4.crypt(ciphertext, &mut out);
             // A stream cipher has no padding to strip, and nothing to
@@ -530,11 +530,11 @@ fn decipher(recipe: &Recipe, key: &[u8], iv: &[u8], ciphertext: &[u8])
             return Ok(out);
         }
         CipherKind::Aes => cbc_decrypt(
-            crate::block_ciphers::aes::AesCrypto::new(key.to_vec())?, iv, ciphertext)?,
+            crate::block_ciphers::aes::AesCrypto::new(key)?, iv, ciphertext)?,
         CipherKind::TripleDes => cbc_decrypt(
-            crate::block_ciphers::des::TripleDes::new(key.to_vec())?, iv, ciphertext)?,
+            crate::block_ciphers::des::TripleDes::new(key)?, iv, ciphertext)?,
         CipherKind::Des => cbc_decrypt(
-            crate::block_ciphers::des::Des::new(key.to_vec())?, iv, ciphertext)?,
+            crate::block_ciphers::des::Des::new(key)?, iv, ciphertext)?,
         CipherKind::Rc2 { effective_bits } => cbc_decrypt(
             crate::block_ciphers::rc2::RC2::with_effective_bits(
                 key, effective_bits as usize)?, iv, ciphertext)?,
@@ -813,20 +813,20 @@ fn encipher(recipe: &Recipe, key: &[u8], iv: &[u8], plain: &[u8]) -> Result<Vec<
     if let CipherKind::Rc4 = recipe.cipher {
         use crate::stream_ciphers::StreamCipher;
         let mut out = Vec::with_capacity(plain.len());
-        crate::stream_ciphers::rc4::RC4::new(key.to_vec())?.crypt(plain, &mut out);
+        crate::stream_ciphers::rc4::RC4::new(key)?.crypt(plain, &mut out);
         return Ok(out);
     }
     let padded = crate::api::pad_pkcs7(plain, recipe_block_size(recipe))?;
     let mut out = Vec::with_capacity(padded.len());
     match recipe.cipher {
-        CipherKind::Aes => AesCrypto::new(key.to_vec())?.cbc_encrypt(&padded, &mut out,
-                                                                      iv.to_vec())?,
-        CipherKind::TripleDes => TripleDes::new(key.to_vec())?.cbc_encrypt(&padded, &mut out,
-                                                                            iv.to_vec())?,
-        CipherKind::Des => Des::new(key.to_vec())?.cbc_encrypt(&padded, &mut out, iv.to_vec())?,
+        CipherKind::Aes => AesCrypto::new(key)?.cbc_encrypt(&padded, &mut out,
+                                                                      iv)?,
+        CipherKind::TripleDes => TripleDes::new(key)?.cbc_encrypt(&padded, &mut out,
+                                                                            iv)?,
+        CipherKind::Des => Des::new(key)?.cbc_encrypt(&padded, &mut out, iv)?,
         CipherKind::Rc2 { effective_bits } =>
             RC2::with_effective_bits(key, effective_bits as usize)?
-                .cbc_encrypt(&padded, &mut out, iv.to_vec())?,
+                .cbc_encrypt(&padded, &mut out, iv)?,
         CipherKind::Rc4 => unreachable!("handled above"),
     }
     Ok(out)
@@ -974,7 +974,7 @@ pub fn jdk_pbe_md5_3des_encrypt(password: &[u8], salt: &[u8], iterations: u32, p
                                 -> Result<Vec<u8>, String> {
     let (key, iv) = crate::kdf::password::jdk_pbe_md5_3des_key(
         jdk_ascii(password)?, salt, iterations)?;
-    let mut cipher = crate::block_ciphers::des::TripleDes::new(key)?;
+    let mut cipher = crate::block_ciphers::des::TripleDes::new(&key)?;
     let mut state = CbcState::new(&mut cipher, &iv, false)?;
     let mut out = Vec::with_capacity(plain.len() + 8);
     state.update(&mut cipher, &crate::api::pad_pkcs7(plain, 8)?, &mut out)?;

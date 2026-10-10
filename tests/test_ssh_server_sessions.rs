@@ -74,6 +74,21 @@ impl Session {
             .unwrap_or_else(|| panic!("{}: no {name}", self.name))
     }
 
+    /// The identification line this side sent when the session was
+    /// recorded, without its CRLF. The replay sends the same one: the
+    /// line carries the crate version, so a replay under the current
+    /// version would differ from the recording at its first byte, and
+    /// every byte after it through the exchange hash, on every release.
+    fn recorded_version(&self, ours: bool) -> String {
+        let first = self.flow.iter().find(|(from_client, _)| *from_client != ours)
+            .unwrap_or_else(|| panic!("{}: nothing sent", self.name));
+        let end = first.1.windows(2).position(|w| w == b"\r\n")
+            .unwrap_or_else(|| panic!("{}: no identification line", self.name));
+        let line = String::from_utf8(first.1[..end].to_vec()).unwrap();
+        assert!(line.starts_with("SSH-2.0-allcrypt_"), "{}: {line}", self.name);
+        line
+    }
+
     /// The server as the recording ran it: this host key, every
     /// algorithm in every table, the user's key and the password.
     fn server(&self) -> Server {
@@ -89,6 +104,7 @@ impl Session {
             "rsa-sha2-512", "rsa-sha2-256", "ssh-rsa", "ssh-dss"];
         config.authorize_key("allcrypt", keys::parse_line(self.field("authorized")).unwrap().key);
         config.authorize_password("allcrypt", self.field("password"));
+        config.version = self.recorded_version(true);
         let seed: u64 = self.field("seed").parse().unwrap();
         Server::with_random(config, counter_stream(seed)).unwrap()
     }

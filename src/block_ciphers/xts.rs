@@ -316,8 +316,8 @@ mod tests {
     /// Run a whole data unit with a key that is `key1 || key2`.
     fn run(key: &[u8], sector: u128, input: &[u8], encrypting: bool) -> Vec<u8> {
         let half = key.len() / 2;
-        let mut data = AesCrypto::new(key[..half].to_vec()).unwrap();
-        let mut tweak = AesCrypto::new(key[half..].to_vec()).unwrap();
+        let mut data = AesCrypto::new(&key[..half]).unwrap();
+        let mut tweak = AesCrypto::new(&key[half..]).unwrap();
         let number = sector_tweak(sector);
         if encrypting {
             encrypt(&mut data, &mut tweak, &number, input).unwrap()
@@ -359,9 +359,9 @@ mod tests {
         let input: Vec<u8> = (0..40 * 16).map(|i| (i * 11 + i / 7) as u8).collect();
         for sector in [0u128, 1, 1 << 127, u128::MAX] {
             for length in 16..=input.len() {
-                let mut tweak_cipher = AesCrypto::new(key[32..].to_vec()).unwrap();
-                let mut fast = AesCrypto::new(key[..32].to_vec()).unwrap();
-                let mut slow = BlocksOnly(AesCrypto::new(key[..32].to_vec()).unwrap());
+                let mut tweak_cipher = AesCrypto::new(&key[32..]).unwrap();
+                let mut fast = AesCrypto::new(&key[..32]).unwrap();
+                let mut slow = BlocksOnly(AesCrypto::new(&key[..32]).unwrap());
                 let number = sector_tweak(sector);
                 let a = encrypt(&mut fast, &mut tweak_cipher, &number, &input[..length]).unwrap();
                 let b = encrypt(&mut slow, &mut tweak_cipher, &number, &input[..length]).unwrap();
@@ -523,8 +523,8 @@ mod tests {
     #[test]
     fn test_a_short_data_unit_is_refused() {
         let key = [0u8; 32];
-        let mut data = AesCrypto::new(key[..16].to_vec()).unwrap();
-        let mut tweak = AesCrypto::new(key[16..].to_vec()).unwrap();
+        let mut data = AesCrypto::new(&key[..16]).unwrap();
+        let mut tweak = AesCrypto::new(&key[16..]).unwrap();
         let number = sector_tweak(0);
         for length in 0..BLOCK {
             assert!(encrypt(&mut data, &mut tweak, &number, &vec![0u8; length]).is_err(),
@@ -538,8 +538,8 @@ mod tests {
     /// A 64 bit block cipher is refused on either side of the key.
     #[test]
     fn test_a_64_bit_block_cipher_is_refused() {
-        let mut des = crate::block_ciphers::des::Des::new([1u8; 8].to_vec()).unwrap();
-        let mut aes = AesCrypto::new([0u8; 16].to_vec()).unwrap();
+        let mut des = crate::block_ciphers::des::Des::new(&[1u8; 8]).unwrap();
+        let mut aes = AesCrypto::new(&[0u8; 16]).unwrap();
         let number = sector_tweak(0);
         assert!(encrypt(&mut des, &mut aes, &number, &[0u8; 32]).is_err());
         assert!(encrypt(&mut aes, &mut des, &number, &[0u8; 32]).is_err());
@@ -555,16 +555,16 @@ mod tests {
     /// the error is pinned, on both sides of the key.
     #[test]
     fn test_the_block_size_error_says_which_cipher() {
-        let mut des = crate::block_ciphers::des::Des::new([1u8; 8].to_vec()).unwrap();
-        let mut aes = AesCrypto::new([0u8; 16].to_vec()).unwrap();
+        let mut des = crate::block_ciphers::des::Des::new(&[1u8; 8]).unwrap();
+        let mut aes = AesCrypto::new(&[0u8; 16]).unwrap();
         let number = sector_tweak(0);
 
         let error = encrypt(&mut des, &mut aes, &number, &[0u8; 32]).unwrap_err();
         assert!(error.contains("128 bit block"), "{}", error);
         assert!(error.contains("data cipher"), "{}", error);
 
-        let mut des = crate::block_ciphers::des::Des::new([1u8; 8].to_vec()).unwrap();
-        let mut aes = AesCrypto::new([0u8; 16].to_vec()).unwrap();
+        let mut des = crate::block_ciphers::des::Des::new(&[1u8; 8]).unwrap();
+        let mut aes = AesCrypto::new(&[0u8; 16]).unwrap();
         let error = encrypt(&mut aes, &mut des, &number, &[0u8; 32]).unwrap_err();
         assert!(error.contains("tweak cipher"), "{}", error);
     }
@@ -622,8 +622,8 @@ mod tests {
     fn test_the_length_limit_is_one_sided() {
         assert_eq!(MAX_BLOCKS, 1 << 20);
         let key = [0u8; 32];
-        let mut data = AesCrypto::new(key[..16].to_vec()).unwrap();
-        let mut tweak = AesCrypto::new(key[16..].to_vec()).unwrap();
+        let mut data = AesCrypto::new(&key[..16]).unwrap();
+        let mut tweak = AesCrypto::new(&key[16..]).unwrap();
         let number = sector_tweak(0);
 
         let mut unit = vec![0u8; BLOCK * MAX_BLOCKS];

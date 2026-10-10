@@ -257,7 +257,7 @@ pub struct Twofish {
 }
 
 impl Twofish {
-    pub fn new(key: Vec<u8>) -> Result<Twofish, String> {
+    pub fn new(key: &[u8]) -> Result<Twofish, String> {
         if !matches!(key.len(), 16 | 24 | 32) {
             return Err(format!(
                 "A Twofish key is 16, 24 or 32 bytes; this one is {}.", key.len()));
@@ -416,7 +416,7 @@ mod tests {
         let mut sizes = std::collections::HashSet::new();
         for (index, (key, input, expected)) in vector_file(VECTORS, "Twofish").iter().enumerate() {
             sizes.insert(key.len());
-            let mut cipher = Twofish::new(key.clone()).unwrap();
+            let mut cipher = Twofish::new(key).unwrap();
             let mut out = Vec::new();
             cipher.ecb_encrypt(input, &mut out).unwrap();
             assert_eq!(&out, expected, "vector {} ({} byte key)", index, key.len());
@@ -444,7 +444,7 @@ mod tests {
         }
         for key_len in [16usize, 24, 32] {
             let key: Vec<u8> = (0..key_len as u8).map(|b| b.wrapping_mul(37)).collect();
-            let cipher = Twofish::new(key.clone()).unwrap();
+            let cipher = Twofish::new(&key).unwrap();
             let k = key_len / 8;
             let mut s = [0u32; 4];
             for i in 0..k {
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn test_a_wrong_key_length_is_an_error() {
         for length in [0usize, 1, 8, 15, 17, 23, 25, 31, 33, 64] {
-            let error = match Twofish::new(vec![0; length]) { Err(e) => e, Ok(_) => panic!("accepted a {length} byte key") };
+            let error = match Twofish::new(&vec![0; length]) { Err(e) => e, Ok(_) => panic!("accepted a {length} byte key") };
             assert!(error.contains("16, 24 or 32"), "{error}");
         }
     }
@@ -496,7 +496,7 @@ mod tests {
     /// property directly as well.
     #[test]
     fn test_encryption_is_not_its_own_inverse() {
-        let mut cipher = Twofish::new(vec![0x2b; 16]).unwrap();
+        let mut cipher = Twofish::new(&[0x2b; 16]).unwrap();
         let plain = [0x11u8; 16];
         let mut once = Vec::new();
         cipher.block_encrypt(&plain, &mut once);
@@ -507,13 +507,13 @@ mod tests {
 
     #[test]
     fn test_a_one_bit_key_change_changes_everything() {
-        let mut base = Twofish::new(vec![0u8; 32]).unwrap();
+        let mut base = Twofish::new(&[0u8; 32]).unwrap();
         let mut first = Vec::new();
         base.block_encrypt(&[0u8; 16], &mut first);
         for bit in 0..256 {
             let mut key = vec![0u8; 32];
             key[bit / 8] ^= 1 << (bit % 8);
-            let mut other = Twofish::new(key).unwrap();
+            let mut other = Twofish::new(&key).unwrap();
             let mut out = Vec::new();
             other.block_encrypt(&[0u8; 16], &mut out);
             assert_ne!(out, first, "bit {bit} of the key changed nothing");

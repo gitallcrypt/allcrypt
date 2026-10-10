@@ -34,10 +34,17 @@ pub type Random<'a> = &'a mut dyn FnMut(&mut [u8]) -> Result<(), String>;
 /// A session key: the cipher it is for when the session key packet says
 /// (SKESK and PKESK version 3 and 4 do; version 5 and 6 and SEIPD version
 /// 2 take it from the container), and the key.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SessionKey {
     pub cipher: Option<Cipher>,
     pub key: Vec<u8>,
+}
+
+impl std::fmt::Debug for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionKey").field("cipher", &self.cipher)
+            .field("key", &crate::hidden::HiddenBytes(&self.key)).finish()
+    }
 }
 
 /// A source of session keys for the session key packets of a message;

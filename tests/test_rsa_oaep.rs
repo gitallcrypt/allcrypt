@@ -163,3 +163,46 @@ fn test_the_whole_decryption_agrees_with_wycheproof() {
     assert_eq!(chosen, 1);
     assert!(whole > 100, "{whole}");
 }
+
+/// Unpadded RSA against the same data. `em` is what the script got from
+/// the private key with Python's integers, so RSAEP of `em` must give the
+/// Wycheproof ciphertext back byte for byte - every group, since the
+/// public operation is cheap - and RSADP of that ciphertext must give
+/// `em`, through the blinded CRT path, on the 2048-bit SHA-256 group.
+/// Both directions keep the leading zero a valid encoded message starts
+/// with.
+#[test]
+fn test_unpadded_rsa_agrees_with_wycheproof() {
+    let mut encrypted = 0;
+    let mut stripped = 0;
+    let mut decrypted = 0;
+    for group in groups() {
+        let with_em: Vec<_> = group.tests.iter().filter(|t| t.contains_key("em")).collect();
+        if with_em.is_empty() {
+            continue;
+        }
+        let key = key(&group);
+        let public = key.public_key();
+        let everything = group.file == "rsa_oaep_2048_sha256_mgf1sha256_test";
+        for test in with_em {
+            let (em, ct) = (bytes(test["em"]), bytes(test["ct"]));
+            assert_eq!(rsa::encrypt_raw(&public, &em).unwrap(), ct,
+                       "{}", describe(&group, test));
+            // The same integer without its leading zero byte, where it has
+            // one - an invalid test's block may start with anything.
+            if em[0] == 0 {
+                assert_eq!(rsa::encrypt_raw(&public, &em[1..]).unwrap(), ct);
+                stripped += 1;
+            }
+            encrypted += 1;
+            if everything {
+                assert_eq!(rsa::decrypt_raw(&key, &ct).unwrap(), em,
+                           "{}", describe(&group, test));
+                decrypted += 1;
+            }
+        }
+    }
+    assert_eq!(encrypted, 782);
+    assert!(stripped > 500, "{stripped}");
+    assert!(decrypted > 10, "{decrypted}");
+}

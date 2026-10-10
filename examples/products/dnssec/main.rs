@@ -31,12 +31,15 @@ mod zone;
 
 #[path = "../shared/base64.rs"]
 mod base64;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
 use std::path::{Path, PathBuf};
 
+use cli::value;
 use keys::Key;
 use name::Name;
 use rr::{Dnskey, Nsec3Param, Record};
@@ -44,25 +47,7 @@ use rr::{Dnskey, Nsec3Param, Record};
 const SWITCHES: [&str; 1] = ["--ksk"];
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = 0;
-    for arg in args {
-        if skip > 0 {
-            skip -= 1;
-        } else if SWITCHES.contains(&arg.as_str()) {
-        } else if arg == "--nsec3" {
-            skip = 2;
-        } else if arg.starts_with("--") {
-            skip = 1;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
-}
-
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    cli::positional(args, &SWITCHES, &[("--nsec3", 2)])
 }
 
 fn values<'a>(args: &'a [String], name: &str) -> Vec<&'a str> {

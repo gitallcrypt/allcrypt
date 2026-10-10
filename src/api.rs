@@ -27,9 +27,33 @@ use crate::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 
 pub const BLOCK_CIPHERS: &[&str] =
     &["aes", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des", "gost",
-      "idea", "kuznyechik", "magma", "rc2", "rc5", "rc6",
+      "idea", "kalyna-128", "kalyna-256", "kalyna-512", "kuznyechik", "magma", "rc2", "rc5", "rc6",
       "rijndael-128", "rijndael-160", "rijndael-192", "rijndael-224", "rijndael-256",
       "seed", "serpent", "sm4", "tea", "twofish", "xtea"];
+
+/// The catalogue name (`BLOCK_CIPHERS`) for any spelling
+/// `AnyBlockCipher::new` accepts, or `None` for a name it would refuse.
+/// Case is ignored. This is the one list of aliases: the constructor and
+/// anything that checks a cipher name before it has a key both go
+/// through it, so the two cannot disagree about what a name means.
+pub fn block_cipher_name(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    let canonical = match lower.as_str() {
+        // cryptsetup's spelling.
+        "blowfish_le" => "blowfish-le",
+        // RFC 2612 3 names it CAST6 as well.
+        "cast6" => "cast256",
+        "cast128" => "cast5",
+        // "grasshopper" is what the gost-engine calls Kuznyechik and
+        // what a caller coming from OpenSSL will have typed.
+        "kuznechik" | "grasshopper" => "kuznyechik",
+        // "3des" is what OpenSSL and everyone else calls it; "des-ede3"
+        // is the formal name and all of these reach the same place.
+        "des3" | "des-ede" | "des-ede3" | "tripledes" => "3des",
+        other => other,
+    };
+    BLOCK_CIPHERS.iter().copied().find(|known| *known == canonical)
+}
 pub const STREAM_CIPHERS: &[&str] =
     &["chacha20", "chacha12", "chacha8", "xchacha20", "rc4", "salsa20", "salsa12", "salsa8",
       "xsalsa20", "zipcrypto"];
@@ -91,10 +115,14 @@ pub const HASHES: &[&str] = &[
     // suite hashes with. The name without a suffix is the CryptoPro
     // parameter set, which is the one every certificate carries; the
     // standard's own test parameter set is a separate name because it
-    // is a different hash of the same message.
-    "gost94", "gost94_test",
+    // is a different hash of the same message. GOST 34.311-95 is
+    // Ukraine's: the same construction under the DSTU 4145 default DKE.
+    "gost94", "gost94_test", "gost34311",
     "blake2b", "blake2s", "ripemd128", "ripemd160", "ripemd256", "ripemd320",
     "sm3", "whirlpool", "whirlpool_0", "whirlpool_t", "has160",
+    // Kupyna, DSTU 7564:2014, Ukraine's hash after GOST 34.311-95, at
+    // the three sizes the standard names.
+    "kupyna256", "kupyna384", "kupyna512",
     "md6_128", "md6_224", "md6_256", "md6_384", "md6_512",
     "sha3_224", "sha3_256", "sha3_384", "sha3_512",
     "shake_128", "shake_256",
@@ -218,6 +246,9 @@ pub enum AnyBlockCipher {
     /// Rijndael at any of its five block sizes, 16 to 32 bytes, with a
     /// key of 16, 20, 24, 28 or 32 bytes. The 16 byte block is AES.
     Rijndael(crate::block_ciphers::rijndael::Rijndael),
+    /// Kalyna, DSTU 7624:2014: a block of 16, 32 or 64 bytes and a key
+    /// the block's length or twice it.
+    Kalyna(crate::block_ciphers::kalyna::Kalyna),
     /// ARIA, RFC 5794 - the Korean national block cipher, and the one
     /// RFC 6209's TLS suites use. AES's block and key sizes, AES's
     /// S-box as one of its four, and neither AES's diffusion nor AES's
@@ -233,14 +264,16 @@ impl AnyBlockCipher {
     /// which is a different cipher from the same 16 bytes unweakened.
     /// Ignored by everything else.
     pub fn new(name: &str, key: &[u8], param: Option<&str>) -> Result<Self, String> {
-        match name.to_ascii_lowercase().as_str() {
-            "aes" => Ok(AnyBlockCipher::Aes(AesCrypto::new(key.to_vec())?)),
+        let canonical = block_cipher_name(name).ok_or_else(|| format!(
+            "Unknown block cipher {:?}. Known: {}.",
+            name.to_ascii_lowercase(), BLOCK_CIPHERS.join(", ")))?;
+        match canonical {
+            "aes" => Ok(AnyBlockCipher::Aes(AesCrypto::new(key)?)),
             "aria" => Ok(AnyBlockCipher::Aria(
                 crate::block_ciphers::aria::Aria::new(key)?)),
-            "blowfish" => Ok(AnyBlockCipher::Blowfish(Blowfish::new(key.to_vec())?)),
-            // "blowfish_le" is cryptsetup's spelling.
-            "blowfish-le" | "blowfish_le" => Ok(AnyBlockCipher::BlowfishLe(
-                crate::block_ciphers::blowfish::BlowfishLe::new(key.to_vec())?)),
+            "blowfish" => Ok(AnyBlockCipher::Blowfish(Blowfish::new(key)?)),
+            "blowfish-le" => Ok(AnyBlockCipher::BlowfishLe(
+                crate::block_ciphers::blowfish::BlowfishLe::new(key)?)),
             // **`param` names the S-box, and the S-box is the cipher.**
             // The string here used to be "Default", which matched no
             // parameter set and was silently turned into CryptoPro-A
@@ -248,34 +281,39 @@ impl AnyBlockCipher {
             // gone - an unknown name is an error now - so the default
             // is named, once, where it can be read.
             "gost" => Ok(AnyBlockCipher::Gost(
-                GostCrypto::new(key.to_vec(),
-                                param.unwrap_or(GostCrypto::DEFAULT_PARAM_SET)
-                                     .to_string())?)),
-            // RFC 2612 3 names it CAST6 as well.
-            "cast256" | "cast6" => Ok(AnyBlockCipher::Cast256(
-                crate::block_ciphers::cast256::Cast256::new(key.to_vec())?)),
+                GostCrypto::new(key,
+                                param.unwrap_or(GostCrypto::DEFAULT_PARAM_SET))?)),
+            "cast256" => Ok(AnyBlockCipher::Cast256(
+                crate::block_ciphers::cast256::Cast256::new(key)?)),
             "rc6" => Ok(AnyBlockCipher::Rc6(
-                crate::block_ciphers::rc6::Rc6::new(key.to_vec())?)),
+                crate::block_ciphers::rc6::Rc6::new(key)?)),
+            // Named by block size in bits; the key's length picks the
+            // variant within it.
+            "kalyna-128" | "kalyna-256" | "kalyna-512" => {
+                let bits: usize = canonical["kalyna-".len()..].parse().expect("one of the three");
+                Ok(AnyBlockCipher::Kalyna(
+                    crate::block_ciphers::kalyna::Kalyna::new(bits / 8, key)?))
+            }
             // Named by block size in bits, as mcrypt named them.
             "rijndael-128" | "rijndael-160" | "rijndael-192" | "rijndael-224"
             | "rijndael-256" => {
-                let bits: usize = name["rijndael-".len()..].parse().expect("one of the five");
+                let bits: usize = canonical["rijndael-".len()..].parse().expect("one of the five");
                 Ok(AnyBlockCipher::Rijndael(
-                    crate::block_ciphers::rijndael::Rijndael::new(bits / 8, key.to_vec())?))
+                    crate::block_ciphers::rijndael::Rijndael::new(bits / 8, key)?))
             }
             "idea" => Ok(AnyBlockCipher::Idea(
-                crate::block_ciphers::idea::Idea::new(key.to_vec())?)),
+                crate::block_ciphers::idea::Idea::new(key)?)),
             "sm4" => Ok(AnyBlockCipher::Sm4(
-                crate::block_ciphers::sm4::Sm4::new(key.to_vec())?)),
+                crate::block_ciphers::sm4::Sm4::new(key)?)),
             "seed" => Ok(AnyBlockCipher::Seed(
-                crate::block_ciphers::seed::Seed::new(key.to_vec())?)),
+                crate::block_ciphers::seed::Seed::new(key)?)),
             "twofish" => Ok(AnyBlockCipher::Twofish(
-                crate::block_ciphers::twofish::Twofish::new(key.to_vec())?)),
+                crate::block_ciphers::twofish::Twofish::new(key)?)),
             "serpent" => Ok(AnyBlockCipher::Serpent(
-                crate::block_ciphers::serpent::Serpent::new(key.to_vec())?)),
+                crate::block_ciphers::serpent::Serpent::new(key)?)),
             "camellia" => Ok(AnyBlockCipher::Camellia(
-                crate::block_ciphers::camellia::Camellia::new(key.to_vec())?)),
-            "cast5" | "cast128" => Ok(AnyBlockCipher::Cast5(
+                crate::block_ciphers::camellia::Camellia::new(key)?)),
+            "cast5" => Ok(AnyBlockCipher::Cast5(
                 crate::block_ciphers::cast5::Cast5::new(key)?)),
             // TEA and XTEA take their round count as the parameter,
             // the way RC2 takes its effective key length - published
@@ -302,7 +340,7 @@ impl AnyBlockCipher {
                         "TEA's parameter is its round count, as a number; \
                          {:?} is not one.", text))?,
                 };
-                if name.eq_ignore_ascii_case("tea") {
+                if canonical == "tea" {
                     Ok(AnyBlockCipher::Tea(
                         crate::block_ciphers::tea::Tea::with_rounds(key, rounds)?))
                 } else {
@@ -319,20 +357,17 @@ impl AnyBlockCipher {
                 };
                 Ok(AnyBlockCipher::Rc2(RC2::with_effective_bits(key, bits)?))
             }
-            // GOST R 34.12-2015's two. "grasshopper" is what the
-            // gost-engine calls Kuznyechik and what a caller coming from
-            // OpenSSL will have typed.
-            "kuznyechik" | "kuznechik" | "grasshopper" => Ok(AnyBlockCipher::Kuznyechik(
+            // GOST R 34.12-2015's two.
+            "kuznyechik" => Ok(AnyBlockCipher::Kuznyechik(
                 crate::block_ciphers::kuznyechik::Kuznyechik::new(key)?)),
             "magma" => Ok(AnyBlockCipher::Magma(
                 crate::block_ciphers::magma::Magma::new(key)?)),
-            "des" => Ok(AnyBlockCipher::Des(Des::new(key.to_vec())?)),
-            // "3des" is what OpenSSL and everyone else calls it; "des-ede3"
-            // is the formal name and both reach the same place.
-            "3des" | "des3" | "des-ede" | "des-ede3" | "tripledes" =>
-                Ok(AnyBlockCipher::TripleDes(TripleDes::new(key.to_vec())?)),
-            other => Err(format!("Unknown block cipher {:?}. Known: {}.",
-                                 other, BLOCK_CIPHERS.join(", "))),
+            "des" => Ok(AnyBlockCipher::Des(Des::new(key)?)),
+            "3des" =>
+                Ok(AnyBlockCipher::TripleDes(TripleDes::new(key)?)),
+            // A catalogue entry with no arm above, which the catalogue
+            // loop in tests/test_api.rs reports.
+            other => Err(format!("{other:?} is in the catalogue and has no constructor.")),
         }
     }
 
@@ -359,6 +394,11 @@ impl AnyBlockCipher {
             AnyBlockCipher::Rc5(_) => "rc5",
             AnyBlockCipher::Rc6(_) => "rc6",
             AnyBlockCipher::Cast256(_) => "cast256",
+            AnyBlockCipher::Kalyna(k) => match k.block_bytes() {
+                16 => "kalyna-128",
+                32 => "kalyna-256",
+                _ => "kalyna-512",
+            },
             AnyBlockCipher::Rijndael(r) => match r.block_bytes() {
                 16 => "rijndael-128",
                 20 => "rijndael-160",
@@ -396,6 +436,7 @@ macro_rules! dispatch {
             AnyBlockCipher::Rc6($inner) => $body,
             AnyBlockCipher::Cast256($inner) => $body,
             AnyBlockCipher::Rijndael($inner) => $body,
+            AnyBlockCipher::Kalyna($inner) => $body,
             AnyBlockCipher::Aria($inner) => $body,
         }
     };
@@ -1037,7 +1078,7 @@ impl AnyStreamCipher {
             _ => None,
         };
         if let Some(r) = rounds {
-            return Ok(AnyStreamCipher::Chacha(Chacha::new(key.to_vec(), nonce.to_vec(), r)?));
+            return Ok(AnyStreamCipher::Chacha(Chacha::new(key, nonce, r)?));
         }
         if lower == "xchacha20" {
             return Ok(AnyStreamCipher::Chacha(
@@ -1058,14 +1099,14 @@ impl AnyStreamCipher {
         if let Some(r) = salsa_rounds {
             return Ok(AnyStreamCipher::Salsa20(
                 crate::stream_ciphers::salsa20::Salsa20::with_rounds(
-                    key.to_vec(), nonce.to_vec(), r)?));
+                    key, nonce, r)?));
         }
         match lower.as_str() {
             "rc4" => {
                 if !nonce.is_empty() {
                     return Err("RC4 takes no nonce.".to_string());
                 }
-                Ok(AnyStreamCipher::Rc4(RC4::new(key.to_vec())?))
+                Ok(AnyStreamCipher::Rc4(RC4::new(key)?))
             }
             // The key is the password, of any length, the empty one
             // included.
@@ -1306,6 +1347,9 @@ pub enum AnyHash {
     /// SM3, GB/T 32905-2016. The hash SM2 is defined against and the
     /// one RFC 8998's TLS 1.3 suites use.
     Sm3(crate::hash_functions::sm3::Sm3),
+    /// Kupyna, DSTU 7564:2014: 256, 384 or 512 bits here, any multiple
+    /// of 8 up to 512 through `hash_functions::kupyna`.
+    Kupyna(crate::hash_functions::kupyna::Kupyna),
     /// MD2, RFC 1319. Byte-oriented throughout and unlike everything
     /// else here - a 16-byte block, a checksum appended to the message,
     /// and no length field at all.
@@ -1375,6 +1419,10 @@ impl AnyHash {
                 Ok(AnyHash::Gost94(
                     crate::hash_functions::gost94::Gost94::with_param_set(
                         &[], crate::hash_functions::gost94::TEST_PARAM_SET)?)),
+            "gost34311" | "gost34.311" | "gost34.311_95" =>
+                Ok(AnyHash::Gost94(
+                    crate::hash_functions::gost94::Gost94::with_param_set(
+                        &[], crate::hash_functions::gost94::DSTU_PARAM_SET)?)),
             "streebog512" | "gostr341112_512" | "gost34.11_512" =>
                 Ok(AnyHash::Streebog(
                     crate::hash_functions::streebog::Streebog::new(&[]))),
@@ -1436,6 +1484,12 @@ impl AnyHash {
                     crate::hash_functions::whirlpool::Version::Tweaked, &[]))),
             "sm3" => Ok(AnyHash::Sm3(
                 crate::hash_functions::sm3::Sm3::new(&[]))),
+            "kupyna256" | "kupyna-256" => Ok(AnyHash::Kupyna(
+                crate::hash_functions::kupyna::Kupyna::new(256)?)),
+            "kupyna384" | "kupyna-384" => Ok(AnyHash::Kupyna(
+                crate::hash_functions::kupyna::Kupyna::new(384)?)),
+            "kupyna512" | "kupyna-512" => Ok(AnyHash::Kupyna(
+                crate::hash_functions::kupyna::Kupyna::new(512)?)),
             "blake2b" => Ok(AnyHash::Blake2b(
                 crate::hash_functions::blake2::Blake2b::new(&[]))),
             "blake2s" => Ok(AnyHash::Blake2s(
@@ -1456,10 +1510,38 @@ impl AnyHash {
                         crate::hash_functions::blake2::Blake2s::with_length(bits / 8)?))
                 }
             }
+            // The families with a length in the name, at lengths the
+            // catalogue does not list: what `name()` writes for them, so
+            // every name it gives is one this reads back.
+            other if other.starts_with("kupyna") && other[6..].parse::<usize>().is_ok() =>
+                Ok(AnyHash::Kupyna(crate::hash_functions::kupyna::Kupyna::new(
+                    other[6..].parse().expect("checked above"))?)),
+            other if other.starts_with("sha512_") => Ok(AnyHash::Sha512(
+                sha2::SHA512::try_new(&[], bits_after(other, "sha512_")?)?)),
+            other if other.starts_with("keccak_") => {
+                let bits = bits_after(other, "keccak_")?;
+                Ok(AnyHash::Keccak(crate::hash_functions::keccak::Keccak::keccak(bits / 8)?))
+            }
+            other if other.starts_with("shake_128_") || other.starts_with("shake_256_") => {
+                let bits = bits_after(other, &other[..10])?;
+                let security = if other.starts_with("shake_128_") { 128 } else { 256 };
+                Ok(AnyHash::Keccak(
+                    crate::hash_functions::keccak::Keccak::shake(security, bits / 8)?))
+            }
             other => Err(format!("Unknown hash {:?}. Known: {}.", other, HASHES.join(", "))),
         }
     }
 
+}
+
+/// The whole number of bytes, in bits, after `prefix` in a hash name.
+fn bits_after(name: &str, prefix: &str) -> Result<usize, String> {
+    let bits: usize = name[prefix.len()..].parse()
+        .map_err(|_| format!("{name:?} does not name a bit length."))?;
+    if bits == 0 || !bits.is_multiple_of(8) {
+        return Err(format!("{name:?}: a digest is a whole number of bytes."));
+    }
+    Ok(bits)
 }
 
 macro_rules! dispatch_hash {
@@ -1479,6 +1561,7 @@ macro_rules! dispatch_hash {
             AnyHash::Has160($inner) => $body,
             AnyHash::Md6($inner) => $body,
             AnyHash::Sm3($inner) => $body,
+            AnyHash::Kupyna($inner) => $body,
             AnyHash::Md2($inner) => $body,
             AnyHash::Md4($inner) => $body,
             AnyHash::Gost94($inner) => $body,
@@ -2422,6 +2505,12 @@ impl RsaKey {
         rsa::decrypt_pkcs1v15(&self.inner, ciphertext)
     }
 
+    /// Decryption with no padding: `c^d mod n`, returned at the key's
+    /// size with any leading zeros kept. See `rsa::decrypt_raw`.
+    pub fn decrypt_raw(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+        rsa::decrypt_raw(&self.inner, ciphertext)
+    }
+
     /// RSAES-OAEP decryption. `mgf_hash` defaults to `hash_name`; the
     /// label defaults to empty, and must be the one encrypted under.
     /// Every failure of the ciphertext returns the same error, on purpose
@@ -2469,6 +2558,13 @@ impl RsaPublicKey {
     /// different bytes every time — which is the point.
     pub fn encrypt(&self, message: &[u8]) -> Result<Vec<u8>, String> {
         rsa::encrypt_pkcs1v15(&self.inner, message)
+    }
+
+    /// Encryption with no padding: `m^e mod n`, the message read as a
+    /// big-endian integer below the modulus. Deterministic and malleable;
+    /// see `rsa::encrypt_raw` for what it is and is not for.
+    pub fn encrypt_raw(&self, message: &[u8]) -> Result<Vec<u8>, String> {
+        rsa::encrypt_raw(&self.inner, message)
     }
 
     /// RSAES-OAEP encryption (RFC 8017 section 7.1). `hash_name` hashes
@@ -2720,6 +2816,53 @@ pub fn cms_3des_key_unwrap(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, String
     crate::block_ciphers::cms_wrap::unwrap_3des(kek, wrapped)
 }
 
+/// Ukraine's GOST key wrap (DSTU): a 32-byte key wraps to 44 bytes under
+/// GOST 28147-89 with the DSTU 4145 default DKE. `iv` is drawn at random
+/// when absent.
+pub fn dstu_gost_key_wrap(kek: &[u8], cek: &[u8], iv: Option<&[u8]>)
+                          -> Result<Vec<u8>, String> {
+    crate::block_ciphers::cms_wrap::wrap_gost_dstu(kek, cek, &or_random(iv, 8)?)
+}
+
+pub fn dstu_gost_key_unwrap(kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, String> {
+    crate::block_ciphers::cms_wrap::unwrap_gost_dstu(kek, wrapped)
+}
+
+/// A Kalyna cipher by its catalogue name, for DSTU 7624's own modes.
+fn kalyna_named(cipher: &str, key: &[u8]) -> Result<crate::block_ciphers::kalyna::Kalyna, String> {
+    match AnyBlockCipher::new(cipher, key, None)? {
+        AnyBlockCipher::Kalyna(k) => Ok(k),
+        other => Err(format!("DSTU 7624's modes are Kalyna's: kalyna-128, kalyna-256 or \
+                              kalyna-512, not {}.", other.name())),
+    }
+}
+
+/// DSTU 7624's MAC over Kalyna: a tag of `tag_len` bytes, 1 to the block.
+pub fn kalyna_mac(cipher: &str, key: &[u8], data: &[u8], tag_len: usize)
+                  -> Result<Vec<u8>, String> {
+    let mut mac = crate::block_ciphers::kalyna_modes::KalynaMac::new(
+        kalyna_named(cipher, key)?, tag_len)?;
+    mac.update(data);
+    Ok(mac.tag())
+}
+
+/// DSTU 7624's key wrap over Kalyna. Data that is not a whole number of
+/// blocks is padded first; unwrap that with `kalyna_key_unwrap_padded`.
+pub fn kalyna_key_wrap(cipher: &str, kek: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_modes::wrap(&mut kalyna_named(cipher, kek)?, data)
+}
+
+/// The inverse of `kalyna_key_wrap` for data of whole blocks.
+pub fn kalyna_key_unwrap(cipher: &str, kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_modes::unwrap(&mut kalyna_named(cipher, kek)?, wrapped)
+}
+
+/// The inverse of `kalyna_key_wrap` for data that was padded.
+pub fn kalyna_key_unwrap_padded(cipher: &str, kek: &[u8], wrapped: &[u8])
+                                -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_modes::unwrap_padded(&mut kalyna_named(cipher, kek)?, wrapped)
+}
+
 /// RFC 3217's RC2 key wrap, the key-encryption key at `effective_bits`.
 /// The padding and `iv` are drawn at random when absent.
 pub fn cms_rc2_key_wrap(kek: &[u8], effective_bits: usize, cek: &[u8], pad: Option<&[u8]>,
@@ -2910,6 +3053,8 @@ pub fn dual_ec_drbg(curve: &str, hash: &str, entropy: &[u8], nonce: &[u8],
 // ------------------------------------------------------------------ LCGs ---
 
 pub use crate::prng::lcg;
+/// The generators' common interface: `name`, `get_bytes`, `set_seed`.
+pub use crate::prng::Prng;
 
 /// The named linear congruential generators, in `lcg::NAMED`'s order:
 /// parameter sets real software shipped (`minstd_rand0`, `msvc`, `java`,
@@ -3540,6 +3685,14 @@ impl Certificate {
                 x509::GeneralName::Uri(text) => Some(("URI".to_string(), text.to_string())),
                 x509::GeneralName::IpAddress(bytes) =>
                     Some(("IP Address".to_string(), format_ip(bytes))),
+                // Shown rather than dropped, as hex: what it says cannot be
+                // printed as what it claims to be, and leaving it out would
+                // hide that the certificate has it.
+                x509::GeneralName::Malformed(form, raw) => {
+                    let kind = match form { 1 => "email", 2 => "DNS", 6 => "URI",
+                                            7 => "IP Address", _ => "other" };
+                    Some((format!("{kind} (malformed)"), crate::to_hex(raw).to_lowercase()))
+                }
                 _ => None,
             })
             .collect();
@@ -3664,6 +3817,9 @@ pub struct VerifyOptions {
     /// is still checked.
     pub allow_expired: bool,
     pub min_rsa_bits: usize,
+    /// The largest key, in bits, that any arithmetic is done on:
+    /// `x509::verify::Policy::max_key_bits`.
+    pub max_key_bits: usize,
     pub max_chain_length: usize,
     /// "server", "client" or "any".
     pub purpose: String,
@@ -3694,6 +3850,7 @@ impl Default for VerifyOptions {
             allow_md5: false,
             allow_expired: false,
             min_rsa_bits: 2048,
+            max_key_bits: x509::verify::Policy::MAX_KEY_BITS,
             max_chain_length: 10,
             purpose: "server".to_string(),
             hostname: None,
@@ -3855,6 +4012,7 @@ pub fn verify_chain(chain: &[impl AsRef<[u8]>], roots: &[impl AsRef<[u8]>],
         allow_md5: options.allow_md5,
         allow_expired: options.allow_expired,
         min_rsa_bits: options.min_rsa_bits,
+        max_key_bits: options.max_key_bits,
         max_chain_length: options.max_chain_length,
         require_revocation: options.require_revocation,
     };
@@ -4019,6 +4177,9 @@ pub struct TlsOptions {
     /// not checking" is a much narrower request than "check nothing".
     pub verify_hostname: bool,
     pub min_rsa_bits: usize,
+    /// The largest RSA modulus, DSA group or Diffie-Hellman group the
+    /// server may present, in bits: `x509::verify::Policy::max_key_bits`.
+    pub max_key_bits: usize,
     /// The smallest finite-field Diffie-Hellman group to accept, in bits.
     /// A DHE server picks the group on its own, so this is the client's
     /// only say in it. Logjam is the reason the default is 2048.
@@ -4150,6 +4311,7 @@ impl Default for TlsOptions {
             allow_expired: false,
             verify_hostname: true,
             min_rsa_bits: 2048,
+            max_key_bits: x509::verify::Policy::MAX_KEY_BITS,
             min_dh_bits: 2048,
             check_dh_prime: false,
             request_encrypt_then_mac: true,
@@ -4255,6 +4417,7 @@ impl TlsClient {
         config.policy.allow_sha1 = options.allow_sha1;
         config.policy.allow_md5 = options.allow_md5;
         config.policy.min_rsa_bits = options.min_rsa_bits;
+        config.policy.max_key_bits = options.max_key_bits;
         config.policy.allow_expired = options.allow_expired;
         config.verify_hostname = options.verify_hostname;
         config.min_dh_bits = options.min_dh_bits;
@@ -4403,6 +4566,11 @@ impl TlsClient {
 use crate::tls::server as tls_server;
 use crate::tls::tickets as tls_tickets;
 
+/// The strike register a TLS server's 0-RTT flights are checked
+/// against, shared by every connection it makes: `TlsServerOptions::
+/// replay_guard`.
+pub use crate::tls::tickets::ReplayGuard;
+
 /// Options for a TLS **server** connection.
 ///
 /// Deliberately not `TlsOptions` with a flag. A client's options are
@@ -4421,11 +4589,13 @@ pub struct TlsServerOptions {
     pub ciphers: String,
     pub min_version: String,
     pub max_version: String,
-    /// The key session tickets are sealed under, as
-    /// `TicketKey::byte_length()` bytes. Empty means "generate one for this
-    /// connection", which cannot be resumed against - see
-    /// `ServerConfig::ticket_key`.
-    pub ticket_key: Vec<u8>,
+    /// The keys session tickets are sealed and opened with, each
+    /// `TicketKey::byte_length()` bytes, **newest first**: the first seals
+    /// and every one opens, which is how a key is rotated without ending
+    /// the sessions the previous one sealed. Empty means "generate one for
+    /// this connection", which cannot be resumed against - see
+    /// `ServerConfig::ticket_keys`.
+    pub ticket_keys: Vec<Vec<u8>>,
     /// The current time, seconds since the epoch. Only session tickets
     /// need it - see `ServerConfig::now`.
     pub now: i64,
@@ -4463,6 +4633,11 @@ pub struct TlsServerOptions {
     /// the caller. That is a real deployment shape, where the
     /// application looks the key up in its own list.
     pub client_roots: Option<TrustStore>,
+    /// The largest RSA key a client certificate may carry, in bits:
+    /// `x509::verify::Policy::max_key_bits` for the client's side. It
+    /// matters before `client_roots` does, since the client's signature
+    /// is checked first, with `client_roots` or without.
+    pub client_max_key_bits: usize,
     /// How much early data (0-RTT) a ticket allows, in bytes. Zero - the
     /// default - offers none. See `tls::server::ServerConfig::
     /// max_early_data`: it is not forward secret and it is replayable.
@@ -4494,7 +4669,7 @@ impl Default for TlsServerOptions {
             ciphers: "modern".to_string(),
             min_version: "TLSv1.2".to_string(),
             max_version: "TLSv1.3".to_string(),
-            ticket_key: Vec::new(),
+            ticket_keys: Vec::new(),
             now: 0,
             session_tickets: 0,
             allow_encrypt_then_mac: true,
@@ -4502,6 +4677,7 @@ impl Default for TlsServerOptions {
             request_client_certificate: false,
             require_client_certificate: false,
             client_roots: None,
+            client_max_key_bits: x509::verify::Policy::MAX_KEY_BITS,
             max_early_data: 0,
             replay_guard: None,
             ocsp_response: Vec::new(),
@@ -4594,9 +4770,12 @@ impl TlsServer {
         config.suites = tls_selection(&options.ciphers)?;
         config.min_version = parse_version(&options.min_version)?;
         config.max_version = parse_version(&options.max_version)?;
-        if !options.ticket_key.is_empty() {
-            config.ticket_key = Some(std::sync::Arc::new(
-                tls_tickets::TicketKey::from_bytes(&options.ticket_key)?));
+        if !options.ticket_keys.is_empty() {
+            let keys = options.ticket_keys.iter()
+                .map(|bytes| tls_tickets::TicketKey::from_bytes(bytes))
+                .collect::<Result<Vec<_>, String>>()?;
+            config.ticket_keys = Some(std::sync::Arc::new(
+                tls_tickets::TicketKeys::from_keys(keys)?));
         }
         config.now = options.now;
         config.session_tickets = options.session_tickets;
@@ -4615,7 +4794,10 @@ impl TlsServer {
         if options.client_roots.is_some() && options.now == 0 {
             return Err("Verifying a client's chain needs `now`.".to_string());
         }
-        config.client_policy = x509::verify::Policy::at(options.now);
+        config.client_policy = x509::verify::Policy {
+            max_key_bits: options.client_max_key_bits,
+            ..x509::verify::Policy::at(options.now)
+        };
         config.alpn = options.alpn.clone();
         config.require_alpn = options.require_alpn;
         if !options.ocsp_response.is_empty() {
@@ -5705,6 +5887,69 @@ pub fn curve_parameters(name: &str) -> Result<Vec<(&'static str, String)>, Strin
         ("n", even(&curve.n)),
         ("cofactor", even(&curve.h)),
     ])
+}
+
+pub use crate::ec::curves::CurveParameters;
+
+/// The fields `curve_parameters_from_hex` takes, in the order
+/// `curve_parameters` gives them.
+pub const CURVE_PARAMETER_FIELDS: &[&str] =
+    &["name", "p", "a", "b", "gx", "gy", "n", "cofactor"];
+
+/// A curve's domain parameters from `(field, value)` pairs, the shape
+/// `curve_parameters` gives and `register_oid` takes: `name`, and the
+/// numbers as hex.
+///
+/// The hex is read the way a specification prints it: whitespace, `:`
+/// and `_` between digits are ignored and a `0x` is allowed, because
+/// copying a number in from a document is the likeliest way to get it
+/// right. **Every field is required** and an unknown one is an error,
+/// so a misspelling is refused rather than read as a missing field with
+/// a default: `cofator` for `cofactor` would otherwise register the
+/// curve with whatever cofactor the default was, and the cofactor is
+/// exactly the parameter a caller is most likely not to know.
+pub fn curve_parameters_from_hex(fields: &[(&str, &str)])
+                                 -> Result<CurveParameters, String> {
+    for (key, _) in fields {
+        if !CURVE_PARAMETER_FIELDS.contains(key) {
+            return Err(format!("curve_parameters has an unknown key {key:?}. It takes {}.",
+                               CURVE_PARAMETER_FIELDS.join(", ")));
+        }
+    }
+    let field = |name: &str| fields.iter().find(|(key, _)| *key == name).map(|(_, v)| *v)
+        .ok_or_else(|| if name == "name" {
+            "curve_parameters is missing \"name\": the curve needs one to be looked \
+             up by.".to_string()
+        } else {
+            format!("curve_parameters is missing {name:?}. All of name, p, a, b, gx, gy, \
+                     n and cofactor are required: a caller who does not know the \
+                     cofactor does not know the curve, and guessing 1 turns every \
+                     cofactor check into a check of the guess.")
+        });
+    let number = |name: &str| -> Result<BigUint, String> {
+        let text = field(name)?;
+        let cleaned: String = text.chars()
+            .filter(|c| !c.is_whitespace() && *c != ':' && *c != '_').collect();
+        let digits = cleaned.strip_prefix("0x").or_else(|| cleaned.strip_prefix("0X"))
+            .unwrap_or(&cleaned);
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("curve_parameters[{name:?}] is read as hex, and {text:?} \
+                                is not hex."));
+        }
+        let padded = if digits.len() % 2 == 1 { format!("0{digits}") }
+                     else { digits.to_string() };
+        BigUint::from_hex(&padded)
+    };
+    Ok(CurveParameters {
+        name: field("name")?.to_string(),
+        p: number("p")?,
+        a: number("a")?,
+        b: number("b")?,
+        gx: number("gx")?,
+        gy: number("gy")?,
+        n: number("n")?,
+        h: number("cofactor")?,
+    })
 }
 
 /// The scheme names `encrypt_private_key` takes.

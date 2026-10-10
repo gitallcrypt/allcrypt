@@ -146,7 +146,7 @@ fn des_checksum_key(key: Vec<u8>, padded: &[u8]) -> Result<Vec<u8>, String> {
         return Ok(key);
     }
     let mut out = Vec::with_capacity(padded.len());
-    Des::new(key.clone())?.cbc_encrypt(padded, &mut out, key)?;
+    Des::new(&key)?.cbc_encrypt(padded, &mut out, &key)?;
     let mut key = out[out.len() - 8..].to_vec();
     set_odd_parity(&mut key);
     correct_weak_des_key(&mut key);
@@ -249,11 +249,11 @@ mod tests {
                 ["key:", hex, ..] => key = unhex(hex),
                 ["usage:", hex, ..] => usage = unhex(hex),
                 ["DR:", hex, ..] => {
-                    let mut c = TripleDes::new(key.clone()).unwrap();
+                    let mut c = TripleDes::new(&key).unwrap();
                     assert_eq!(derive_random(&mut c, &usage, 21).unwrap(), unhex(hex));
                 }
                 ["DK:", hex, ..] => {
-                    let mut c = TripleDes::new(key.clone()).unwrap();
+                    let mut c = TripleDes::new(&key).unwrap();
                     let dr = derive_random(&mut c, &usage, 21).unwrap();
                     assert_eq!(des3_random_to_key(&dr).unwrap(), unhex(hex));
                     found += 1;
@@ -344,7 +344,7 @@ mod tests {
         let key = unhex("cbc22fae235298e3");
         let weak = unhex("0101010101010101");
         let mut cleared = Vec::new();
-        Des::new(key.clone()).unwrap().block_decrypt(&weak, &mut cleared);
+        Des::new(&key).unwrap().block_decrypt(&weak, &mut cleared);
         let block: Vec<u8> = cleared.iter().zip(&key).map(|(a, b)| a ^ b).collect();
         assert_eq!(des_checksum_key(key, &block).unwrap(), unhex("01010101010101f1"));
     }

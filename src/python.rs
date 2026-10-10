@@ -270,13 +270,15 @@ impl Hash {
         self.inner.block_size()
     }
 
+    /// The catalogue name, which `allcrypt.new` reads back as the same
+    /// hash: `new("SHA256").name` is `"sha256"`.
     #[getter]
     fn name(&self) -> String {
-        self.inner.name().to_lowercase()
+        self.inner.name()
     }
 
     fn __repr__(&self) -> String {
-        format!("<allcrypt.Hash '{}'>", self.inner.name().to_lowercase())
+        format!("<allcrypt.Hash '{}'>", self.inner.name())
     }
 }
 
@@ -1722,6 +1724,15 @@ impl PyRsaKey {
         Ok(PyBytes::new(py, &out))
     }
 
+    /// Decryption with no padding: `c^d mod n`. The plaintext comes back
+    /// at the key's size, leading zeros kept, since an unpadded block does
+    /// not say where the message started.
+    fn decrypt_raw<'py>(&self, py: Python<'py>, ciphertext: Bytes)
+                        -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.decrypt_raw(&ciphertext)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
     /// RSAES-OAEP decryption. `mgf_digestmod` defaults to `digestmod`;
     /// the label must be the one the message was encrypted under. Every
     /// failure of the ciphertext raises the same message, as for
@@ -1834,92 +1845,45 @@ fn register_oid(oid: &str, hash: Option<&str>, curve: Option<&str>,
     registry::register(oid, meaning).map_err(err)
 }
 
-/// One field of `curve_parameters=`, as a `BigUint`.
+/// `curve_parameters=` as the `(field, hex)` pairs
+/// `api::curve_parameters_from_hex` reads.
 ///
-/// **Accepts an `int` or a hex `str`**, because both are what a caller
-/// actually has. A specification prints these in hex, often in
-/// whitespace-separated groups, and copying that in is the likeliest way
-/// to get them right; a caller computing them has Python ints. Refusing
-/// either would mean the caller converting, which is one more place for a
-/// digit to go missing.
+/// **Each number may be an `int` or a hex `str`**, because both are what
+/// a caller actually has: a specification prints these in hex, often in
+/// groups, and a caller computing them has Python ints. An int is turned
+/// into hex here; the reading, and every check, is the facade's.
 ///
 /// A negative int is refused rather than wrapped: every value here is a
 /// field element or an order, and `-3` for `a` means the caller meant
 /// `p - 3` and this cannot know their `p` yet.
-fn curve_field(fields: &Bound<'_, PyDict>, name: &str)
-               -> PyResult<crate::bignum::BigUint> {
-    let value = fields.get_item(name)?.ok_or_else(|| PyValueError::new_err(
-        format!("curve_parameters is missing {:?}. All of name, p, a, b, gx, \
-                 gy, n and cofactor are required: a caller who does not know \
-                 the cofactor does not know the curve, and guessing 1 turns \
-                 every cofactor check into a check of the guess.", name)))?;
-
-    let hex = if let Ok(text) = value.extract::<String>() {
-        let cleaned: String = text.chars()
-            .filter(|c| !c.is_whitespace() && *c != ':' && *c != '_')
-            .collect();
-        let cleaned = cleaned.strip_prefix("0x")
-            .or_else(|| cleaned.strip_prefix("0X"))
-            .unwrap_or(&cleaned).to_string();
-        if cleaned.is_empty() || !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(PyValueError::new_err(format!(
-                "curve_parameters[{:?}] is a string, so it is read as hex, \
-                 and {:?} is not hex.", name, text)));
-        }
-        cleaned
-    } else {
-        // `format(value, "x")` rather than `str`: `str` of an int is
-        // decimal, and reading a decimal string as hex is the sort of
-        // mistake that produces a number of the right length.
-        let negative = value.lt(0i64).unwrap_or(false);
-        if negative {
-            return Err(PyValueError::new_err(format!(
-                "curve_parameters[{:?}] is negative. These are field \
-                 elements and orders; write `a` as p-3 rather than -3.",
-                name)));
-        }
-        value.call_method1("__format__", ("x",))
-            .map_err(|_| PyValueError::new_err(format!(
-                "curve_parameters[{:?}] must be an int or a hex string.",
-                name)))?
-            .extract::<String>()?
-    };
-
-    let padded = if hex.len() % 2 == 1 { format!("0{}", hex) } else { hex };
-    crate::bignum::BigUint::from_hex(&padded).map_err(err)
-}
-
 fn read_curve_parameters(fields: &Bound<'_, PyDict>)
-                         -> PyResult<crate::ec::curves::CurveParameters> {
-    // Every key is checked against the set below, so a misspelling is an
-    // error rather than a silently missing field with a default. `cofator`
-    // for `cofactor` would otherwise read as "not given".
-    const KNOWN: &[&str] = &["name", "p", "a", "b", "gx", "gy", "n",
-                             "cofactor"];
-    for key in fields.keys() {
+                         -> PyResult<api::CurveParameters> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (key, value) in fields.iter() {
         let key: String = key.extract()?;
-        if !KNOWN.contains(&key.as_str()) {
-            return Err(PyValueError::new_err(format!(
-                "curve_parameters has an unknown key {:?}. It takes {}.",
-                key, KNOWN.join(", "))));
-        }
+        let text = if let Ok(text) = value.extract::<String>() {
+            text
+        } else if key == "name" {
+            return Err(PyValueError::new_err("curve_parameters[\"name\"] must be a string."));
+        } else {
+            // `format(value, "x")` rather than `str`: `str` of an int is
+            // decimal, and reading a decimal string as hex is the sort of
+            // mistake that produces a number of the right length.
+            if value.lt(0i64).unwrap_or(false) {
+                return Err(PyValueError::new_err(format!(
+                    "curve_parameters[{:?}] is negative. These are field \
+                     elements and orders; write `a` as p-3 rather than -3.",
+                    key)));
+            }
+            value.call_method1("__format__", ("x",))
+                .map_err(|_| PyValueError::new_err(format!(
+                    "curve_parameters[{:?}] must be an int or a hex string.", key)))?
+                .extract::<String>()?
+        };
+        pairs.push((key, text));
     }
-    let name: String = fields.get_item("name")?
-        .ok_or_else(|| PyValueError::new_err(
-            "curve_parameters is missing \"name\": the curve needs one to be \
-             looked up by."))?
-        .extract()?;
-
-    Ok(crate::ec::curves::CurveParameters {
-        name,
-        p: curve_field(fields, "p")?,
-        a: curve_field(fields, "a")?,
-        b: curve_field(fields, "b")?,
-        gx: curve_field(fields, "gx")?,
-        gy: curve_field(fields, "gy")?,
-        n: curve_field(fields, "n")?,
-        h: curve_field(fields, "cofactor")?,
-    })
+    let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    api::curve_parameters_from_hex(&pairs).map_err(|e| PyValueError::new_err(e))
 }
 
 /// Every registered OID, as `(oid, kind, meaning)` triples.
@@ -2308,6 +2272,57 @@ fn cms_3des_key_unwrap<'py>(py: Python<'py>, kek: Bytes, wrapped: Bytes)
     Ok(PyBytes::new(py, &out))
 }
 
+/// Ukraine's GOST key wrap (DSTU): a 32-byte key under a 32-byte
+/// key-encryption key gives 44 bytes. `iv` is random unless given.
+#[pyfunction]
+#[pyo3(signature = (kek, cek, iv = None))]
+fn dstu_gost_key_wrap<'py>(py: Python<'py>, kek: Bytes, cek: Bytes, iv: Option<Bytes>)
+                           -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::dstu_gost_key_wrap(&kek, &cek, iv.as_deref()))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+#[pyfunction]
+fn dstu_gost_key_unwrap<'py>(py: Python<'py>, kek: Bytes, wrapped: Bytes)
+                             -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::dstu_gost_key_unwrap(&kek, &wrapped)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// DSTU 7624's MAC over Kalyna (`cipher` is `kalyna-128`, `-256` or
+/// `-512`): a tag of `tag_len` bytes.
+#[pyfunction]
+fn kalyna_mac<'py>(py: Python<'py>, cipher: &str, key: Bytes, data: Bytes, tag_len: usize)
+                   -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_mac(cipher, &key, &data, tag_len)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// DSTU 7624's key wrap over Kalyna; data that is not whole blocks is
+/// padded first.
+#[pyfunction]
+fn kalyna_key_wrap<'py>(py: Python<'py>, cipher: &str, kek: Bytes, data: Bytes)
+                        -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_key_wrap(cipher, &kek, &data)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+#[pyfunction]
+fn kalyna_key_unwrap<'py>(py: Python<'py>, cipher: &str, kek: Bytes, wrapped: Bytes)
+                          -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_key_unwrap(cipher, &kek, &wrapped)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+#[pyfunction]
+fn kalyna_key_unwrap_padded<'py>(py: Python<'py>, cipher: &str, kek: Bytes, wrapped: Bytes)
+                                 -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_key_unwrap_padded(cipher, &kek, &wrapped))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 /// RFC 3217's RC2 key wrap. `effective_bits` is the key-encryption
 /// key's effective length; padding and `iv` are random unless given.
 #[pyfunction]
@@ -2481,7 +2496,7 @@ impl PyLcg {
 
     /// ``n`` bytes, the low byte of each output.
     fn get_bytes<'py>(&mut self, py: Python<'py>, n: usize) -> Bound<'py, PyBytes> {
-        use crate::prng::Prng;
+        use api::Prng;
         let mut out = Vec::with_capacity(n);
         self.inner.get_bytes(&mut out, n);
         PyBytes::new(py, &out)
@@ -2489,7 +2504,7 @@ impl PyLcg {
 
     /// Reseed, by the named generator's own rule.
     fn seed(&mut self, seed: u64) {
-        use crate::prng::Prng;
+        use api::Prng;
         self.inner.set_seed(seed);
     }
 
@@ -2500,7 +2515,7 @@ impl PyLcg {
 
     #[getter]
     fn name(&self) -> String {
-        use crate::prng::Prng;
+        use api::Prng;
         self.inner.name()
     }
 
@@ -2920,6 +2935,15 @@ impl PyRsaPublicKey {
     /// different bytes each time.
     fn encrypt<'py>(&self, py: Python<'py>, message: Bytes) -> PyResult<Bound<'py, PyBytes>> {
         let out = py.allow_threads(|| self.inner.encrypt(&message)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// Encryption with no padding: `m^e mod n`, the message read as a
+    /// big-endian integer below the modulus. Deterministic, so the same
+    /// message always gives the same bytes.
+    fn encrypt_raw<'py>(&self, py: Python<'py>, message: Bytes)
+                        -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.encrypt_raw(&message)).map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -4026,21 +4050,22 @@ impl PyCertificate {
                     allow_sha1 = false, allow_md5 = false, allow_expired = false,
                     min_rsa_bits = 2048, max_chain_length = 10,
                     crls = vec![], ocsp = vec![], ocsp_nonce = None,
-                    require_revocation = false))]
+                    require_revocation = false,
+                    max_key_bits = api::VerifyOptions::default().max_key_bits))]
 #[allow(clippy::too_many_arguments)]
 fn verify_chain(py: Python<'_>, chain: Vec<Bytes>, roots: Vec<Bytes>, now: i64,
                 hostname: Option<String>, purpose: &str, allow_sha1: bool,
                 allow_md5: bool, allow_expired: bool, min_rsa_bits: usize,
                 max_chain_length: usize, crls: Vec<Bytes>,
                 ocsp: Vec<Bytes>, ocsp_nonce: Option<Bytes>,
-                require_revocation: bool) -> PyResult<()> {
+                require_revocation: bool, max_key_bits: usize) -> PyResult<()> {
     // `VerifyOptions` owns its CRLs and OCSP responses, so these three
     // are copied where `chain` and `roots` are not. They are optional,
     // usually empty, and small; owning them is what lets the options be
     // built once and reused across chains.
     let options = api::VerifyOptions {
-        now, allow_sha1, allow_md5, allow_expired, min_rsa_bits, max_chain_length,
-        purpose: purpose.to_string(), hostname,
+        now, allow_sha1, allow_md5, allow_expired, min_rsa_bits, max_key_bits,
+        max_chain_length, purpose: purpose.to_string(), hostname,
         crls: crls.iter().map(|c| c.to_vec()).collect(),
         ocsp: ocsp.iter().map(|o| o.to_vec()).collect(),
         ocsp_nonce: ocsp_nonce.map(|n| n.to_vec()),
@@ -4468,8 +4493,7 @@ fn client_key_material(key: &Bound<'_, PyAny>)
 /// may happen twice.
 #[pyclass(name = "ReplayGuard", module = "allcrypt")]
 pub struct PyReplayGuard {
-    inner: std::sync::Arc<std::sync::Mutex<
-        crate::tls::tickets::ReplayGuard>>,
+    inner: std::sync::Arc<std::sync::Mutex<api::ReplayGuard>>,
 }
 
 #[pymethods]
@@ -4485,7 +4509,7 @@ impl PyReplayGuard {
     fn py_new(capacity: usize) -> PyReplayGuard {
         PyReplayGuard {
             inner: std::sync::Arc::new(std::sync::Mutex::new(
-                crate::tls::tickets::ReplayGuard::with_capacity(capacity))),
+                api::ReplayGuard::with_capacity(capacity))),
         }
     }
 
@@ -4529,7 +4553,8 @@ impl PyTlsClient {
                         tickets = vec![], client_certificate = None,
                         client_key = None, early_data = Bytes::empty(),
                         alpn = vec![], request_stapled_ocsp = true,
-                        require_stapled_ocsp = false))]
+                        require_stapled_ocsp = false,
+                        max_key_bits = api::TlsOptions::default().max_key_bits))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(hostname: &str, roots: &PyTrustStore, now: i64, ciphers: &str,
               verify: bool, min_version: &str, max_version: &str,
@@ -4540,7 +4565,8 @@ impl PyTlsClient {
               client_certificate: Option<Vec<Bytes>>,
               client_key: Option<&Bound<'_, PyAny>>,
               early_data: Bytes, alpn: Vec<String>,
-              request_stapled_ocsp: bool, require_stapled_ocsp: bool)
+              request_stapled_ocsp: bool, require_stapled_ocsp: bool,
+              max_key_bits: usize)
               -> PyResult<PyTlsClient> {
         // Two arguments rather than one pair, because that is how a
         // caller has them - and either one alone is a mistake worth
@@ -4565,6 +4591,7 @@ impl PyTlsClient {
             allow_expired,
             verify_hostname,
             min_rsa_bits,
+            max_key_bits,
             min_dh_bits,
             check_dh_prime,
             request_encrypt_then_mac,
@@ -4881,11 +4908,13 @@ impl PyTlsServer {
                         client_roots = None,
                         max_early_data = 0, replay_guard = None,
                         alpn = vec![], require_alpn = false,
-                        ocsp_response = None))]
+                        ocsp_response = None,
+                        client_max_key_bits =
+                            api::TlsServerOptions::default().client_max_key_bits))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(certificate_chain: Vec<Bytes>, key: &Bound<'_, PyAny>,
               ciphers: &str, min_version: &str, max_version: &str,
-              now: i64, session_tickets: u8, ticket_key: Option<Bytes>,
+              now: i64, session_tickets: u8, ticket_key: Option<&Bound<'_, PyAny>>,
               allow_encrypt_then_mac: bool,
               allow_extended_master_secret: bool,
               request_client_certificate: bool,
@@ -4893,7 +4922,7 @@ impl PyTlsServer {
               client_roots: Option<&PyTrustStore>,
               max_early_data: u32, replay_guard: Option<&PyReplayGuard>,
               alpn: Vec<String>, require_alpn: bool,
-              ocsp_response: Option<Bytes>)
+              ocsp_response: Option<Bytes>, client_max_key_bits: usize)
               -> PyResult<PyTlsServer> {
         // The chain is copied once, here, because every
         // `TlsServer::with_*_key` owns it: a server outlives the call
@@ -4931,12 +4960,24 @@ impl PyTlsServer {
             max_version: max_version.to_string(),
             now,
             session_tickets,
-            ticket_key: ticket_key.map(|k| k.to_vec()).unwrap_or_default(),
+            ticket_keys: match ticket_key {
+                None => Vec::new(),
+                // One key, or several newest first: the first seals and
+                // every one opens.
+                Some(value) => match value.extract::<Bytes>() {
+                    Ok(one) => vec![one.to_vec()],
+                    Err(_) => value.extract::<Vec<Bytes>>().map_err(|_| PyTypeError::new_err(
+                        "ticket_key is one key as bytes, or a sequence of them \
+                         newest first."))?
+                        .iter().map(|k| k.to_vec()).collect(),
+                },
+            },
             allow_encrypt_then_mac,
             allow_extended_master_secret,
             request_client_certificate,
             require_client_certificate,
             client_roots: client_roots.map(|store| store.store().clone()),
+            client_max_key_bits,
             max_early_data,
             replay_guard: replay_guard.map(|guard| guard.inner.clone()),
             alpn,
@@ -5247,6 +5288,12 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(key_unwrap, m)?)?;
     m.add_function(wrap_pyfunction!(key_wrap_with_padding, m)?)?;
     m.add_function(wrap_pyfunction!(cms_3des_key_wrap, m)?)?;
+    m.add_function(wrap_pyfunction!(dstu_gost_key_wrap, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_mac, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_key_wrap, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_key_unwrap, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_key_unwrap_padded, m)?)?;
+    m.add_function(wrap_pyfunction!(dstu_gost_key_unwrap, m)?)?;
     m.add_function(wrap_pyfunction!(cms_3des_key_unwrap, m)?)?;
     m.add_function(wrap_pyfunction!(cms_rc2_key_wrap, m)?)?;
     m.add_function(wrap_pyfunction!(cms_rc2_key_unwrap, m)?)?;

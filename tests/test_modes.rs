@@ -28,7 +28,7 @@ const PT: &str = "6bc1bee22e409f96e93d7e117393172a\
                   f69f2445df4f9b17ad2b417be66c3710";
 
 fn aes(key: &str) -> AesCrypto {
-    AesCrypto::new(hex(key)).unwrap()
+    AesCrypto::new(&hex(key)).unwrap()
 }
 
 fn check_all_modes(key: &str, ecb: &str, cbc: &str, cfb: &str, ofb: &str, ctr: &str) {
@@ -44,24 +44,24 @@ fn check_all_modes(key: &str, ecb: &str, cbc: &str, cfb: &str, ofb: &str, ctr: &
     assert_eq!(back, pt, "ECB decrypt");
 
     let mut out = vec![];
-    aes(key).cbc_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    aes(key).cbc_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), cbc, "CBC encrypt");
     let mut back = vec![];
-    aes(key).cbc_decrypt(&out, &mut back, iv.clone()).unwrap();
+    aes(key).cbc_decrypt(&out, &mut back, &iv).unwrap();
     assert_eq!(back, pt, "CBC decrypt");
 
     let mut out = vec![];
-    aes(key).cfb_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    aes(key).cfb_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), cfb, "CFB encrypt");
     let mut back = vec![];
-    aes(key).cfb_decrypt(&out, &mut back, iv.clone()).unwrap();
+    aes(key).cfb_decrypt(&out, &mut back, &iv).unwrap();
     assert_eq!(back, pt, "CFB decrypt");
 
     let mut out = vec![];
-    aes(key).ofb_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    aes(key).ofb_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), ofb, "OFB encrypt");
     let mut back = vec![];
-    aes(key).ofb_decrypt(&out, &mut back, iv).unwrap();
+    aes(key).ofb_decrypt(&out, &mut back, &iv).unwrap();
     assert_eq!(back, pt, "OFB decrypt");
 
     let mut out = vec![];
@@ -111,11 +111,11 @@ fn test_aes128_partial_final_block() {
     let ctrblk = hex(CTRBLK);
 
     let mut out = vec![];
-    aes(KEY128).cfb_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    aes(KEY128).cfb_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), "3b3fd92eb72dad20333449f8e83cfb4ac8a64537a0b3a93fcde3cdad9f1ce58b26751f67a3");
 
     let mut out = vec![];
-    aes(KEY128).ofb_encrypt(&pt, &mut out, iv).unwrap();
+    aes(KEY128).ofb_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), "3b3fd92eb72dad20333449f8e83cfb4a7789508d16918f03f53c52dac54ed8259740051e9c");
 
     let mut out = vec![];
@@ -127,7 +127,7 @@ fn test_aes128_partial_final_block() {
 #[test]
 fn test_cbc_rejects_partial_input() {
     let mut out = vec![];
-    assert!(aes(KEY128).cbc_encrypt(&hex(PT)[..37], &mut out, hex(IV)).is_err());
+    assert!(aes(KEY128).cbc_encrypt(&hex(PT)[..37], &mut out, &hex(IV)).is_err());
     assert!(out.is_empty());
 }
 
@@ -138,19 +138,19 @@ fn test_blowfish_modes() {
     let pt = hex("37363534333231204e6f77206973207468652074696d6520666f722000000000");
 
     let mut out = vec![];
-    Blowfish::new(key.clone()).unwrap().ecb_encrypt(&pt, &mut out).unwrap();
+    Blowfish::new(&key).unwrap().ecb_encrypt(&pt, &mut out).unwrap();
     assert_eq!(to_hex(&out), "2afd7daa60626ba38616468cc29cf6e1291e817cc740982d6f87ac5f171aabea");
 
     let mut out = vec![];
-    Blowfish::new(key.clone()).unwrap().cbc_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    Blowfish::new(&key).unwrap().cbc_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), "6b77b4d63006dee605b156e27403979358deb9e7154616d959f1652bd5ff92cc");
 
     let mut out = vec![];
-    Blowfish::new(key.clone()).unwrap().cfb_encrypt(&pt, &mut out, iv.clone()).unwrap();
+    Blowfish::new(&key).unwrap().cfb_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), "e73214a2822139caf26ecf6d2eb9e76e3da3de04d1517200519d57a6c3384ece");
 
     let mut out = vec![];
-    Blowfish::new(key).unwrap().ofb_encrypt(&pt, &mut out, iv).unwrap();
+    Blowfish::new(&key).unwrap().ofb_encrypt(&pt, &mut out, &iv).unwrap();
     assert_eq!(to_hex(&out), "e73214a2822139ca62b343cc5b65587310dd908d0c241b2263c2cf80da46fbb8");
 }
 
@@ -185,7 +185,7 @@ fn test_streaming_matches_one_shot() {
         assert_eq!(one, streamed, "CTR streaming, first chunk {}", first);
 
         let mut one = vec![];
-        aes(KEY128).cfb_encrypt(&pt, &mut one, iv.clone()).unwrap();
+        aes(KEY128).cfb_encrypt(&pt, &mut one, &iv).unwrap();
         let mut c = aes(KEY128);
         let mut streamed = vec![];
         {
@@ -203,7 +203,7 @@ fn test_streaming_matches_one_shot() {
         assert_eq!(back, pt, "CFB streaming decrypt, chunk {}", first);
 
         let mut one = vec![];
-        aes(KEY128).ofb_encrypt(&pt, &mut one, iv.clone()).unwrap();
+        aes(KEY128).ofb_encrypt(&pt, &mut one, &iv).unwrap();
         let mut c = aes(KEY128);
         let mut streamed = vec![];
         {
@@ -214,7 +214,7 @@ fn test_streaming_matches_one_shot() {
 
         // CBC buffers a partial block between calls.
         let mut one = vec![];
-        aes(KEY128).cbc_encrypt(&pt, &mut one, iv.clone()).unwrap();
+        aes(KEY128).cbc_encrypt(&pt, &mut one, &iv).unwrap();
         let mut c = aes(KEY128);
         let mut streamed = vec![];
         {
@@ -262,14 +262,14 @@ fn test_apply_in_place_matches_update() {
     assert_eq!(appended, buf);
 
     let mut appended = vec![];
-    aes(KEY128).ofb_encrypt(&pt, &mut appended, iv.clone()).unwrap();
+    aes(KEY128).ofb_encrypt(&pt, &mut appended, &iv).unwrap();
     let mut buf = pt.clone();
     let mut c = aes(KEY128);
     Ofb::new(&mut c, &iv).unwrap().apply(&mut buf).unwrap();
     assert_eq!(appended, buf);
 
     let mut appended = vec![];
-    aes(KEY128).cfb_encrypt(&pt, &mut appended, iv.clone()).unwrap();
+    aes(KEY128).cfb_encrypt(&pt, &mut appended, &iv).unwrap();
     let mut buf = pt.clone();
     let mut c = aes(KEY128);
     Cfb::encryptor(&mut c, &iv).unwrap().apply(&mut buf).unwrap();
@@ -312,12 +312,12 @@ fn test_modes_append_to_non_empty_output() {
                 aes(KEY128).ctr_encrypt(&pt, &mut prefixed, &iv).unwrap();
             }
             "cfb" => {
-                aes(KEY128).cfb_encrypt(&pt, &mut fresh, iv.clone()).unwrap();
-                aes(KEY128).cfb_encrypt(&pt, &mut prefixed, iv.clone()).unwrap();
+                aes(KEY128).cfb_encrypt(&pt, &mut fresh, &iv).unwrap();
+                aes(KEY128).cfb_encrypt(&pt, &mut prefixed, &iv).unwrap();
             }
             _ => {
-                aes(KEY128).ofb_encrypt(&pt, &mut fresh, iv.clone()).unwrap();
-                aes(KEY128).ofb_encrypt(&pt, &mut prefixed, iv.clone()).unwrap();
+                aes(KEY128).ofb_encrypt(&pt, &mut fresh, &iv).unwrap();
+                aes(KEY128).ofb_encrypt(&pt, &mut prefixed, &iv).unwrap();
             }
         }
         assert_eq!(&prefixed[..4], &prefix[..], "{} clobbered the prefix", mode);

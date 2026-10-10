@@ -199,12 +199,12 @@ let key = vec![0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
 let iv = vec![0u8; 16];
 let plaintext = b"sixteen byte blk";
 
-let mut cipher = AesCrypto::new(key.clone())?;
+let mut cipher = AesCrypto::new(&key)?;
 let mut ciphertext = vec![];
-cipher.cbc_encrypt(plaintext, &mut ciphertext, iv.clone())?;
+cipher.cbc_encrypt(plaintext, &mut ciphertext, &iv)?;
 
 let mut recovered = vec![];
-AesCrypto::new(key)?.cbc_decrypt(&ciphertext, &mut recovered, iv)?;
+AesCrypto::new(&key)?.cbc_decrypt(&ciphertext, &mut recovered, &iv)?;
 assert_eq!(recovered, plaintext);
 ```
 
@@ -226,7 +226,7 @@ S-box parameter set name). Available modes: `ecb`, `cbc`, `pcbc`, `cfb`, `ofb`,
 use allcrypt::block_ciphers::aes::AesCrypto;
 use allcrypt::block_ciphers::{BlockCipher, CtsVariant};
 
-let mut aes = AesCrypto::new(vec![0u8; 16])?;
+let mut aes = AesCrypto::new(&[0u8; 16])?;
 let mut ct = vec![];
 aes.cbc_cs_encrypt(b"seventeen bytes!!", &mut ct, &[0u8; 16], CtsVariant::Cs3)?;
 assert_eq!(ct.len(), 17);
@@ -248,13 +248,13 @@ all five modes, plus XTS and key wrap:
 use allcrypt::block_ciphers::serpent::Serpent;
 use allcrypt::block_ciphers::BlockCipher;
 
-let mut cipher = Serpent::new(vec![0x42; 32])?;
+let mut cipher = Serpent::new(&[0x42; 32])?;
 let mut ciphertext = vec![];
-cipher.cbc_encrypt(b"sixteen byte blk", &mut ciphertext, vec![0u8; 16])?;
+cipher.cbc_encrypt(b"sixteen byte blk", &mut ciphertext, &[0u8; 16])?;
 assert_eq!(ciphertext.len(), 16);
 
 let mut back = vec![];
-cipher.cbc_decrypt(&ciphertext, &mut back, vec![0u8; 16])?;
+cipher.cbc_decrypt(&ciphertext, &mut back, &[0u8; 16])?;
 assert_eq!(&back, b"sixteen byte blk");
 ```
 
@@ -432,8 +432,8 @@ sixteen zero bytes are one key.
 use allcrypt::block_ciphers::cast256::Cast256;
 use allcrypt::block_ciphers::BlockCipher;
 
-let mut short = Cast256::new(vec![7u8; 16])?;
-let mut long = Cast256::new([vec![7u8; 16], vec![0u8; 16]].concat())?;
+let mut short = Cast256::new(&[7u8; 16])?;
+let mut long = Cast256::new(&[vec![7u8; 16], vec![0u8; 16]].concat())?;
 let (mut a, mut b) = (Vec::new(), Vec::new());
 short.block_encrypt(&[1u8; 16], &mut a);
 long.block_encrypt(&[1u8; 16], &mut b);
@@ -456,12 +456,12 @@ key, and ShiftRows' offsets change at 224 and 256 bits.
 use allcrypt::block_ciphers::rijndael::Rijndael;
 use allcrypt::block_ciphers::BlockCipher;
 
-let mut wide = Rijndael::new(32, vec![0u8; 32])?;
+let mut wide = Rijndael::new(32, &[0u8; 32])?;
 let mut out = Vec::new();
 wide.block_encrypt(&[0u8; 32], &mut out);
 assert_eq!(out.len(), 32);
 assert_eq!(out[..4], [0xc6, 0x22, 0x7e, 0x77]);
-assert!(Rijndael::new(36, vec![0u8; 16]).is_err());
+assert!(Rijndael::new(36, &[0u8; 16]).is_err());
 ```
 
 In the catalogue they are `rijndael-128` to `rijndael-256`, named by
@@ -469,6 +469,79 @@ block size as mcrypt named them; the chaining modes take them with a
 one-block IV. It is not constant time; for the 128 bit block use `aes`.
 Bouncy Castle and phpseclib agree on every row of
 `vectors/rijndael.vec`.
+
+### Kalyna
+
+Kalyna, DSTU 7624:2014, is Ukraine's block cipher: blocks of 128, 256
+or 512 bits, each with a key of the block's length or twice it (512 at
+most), so five variants with 10, 14 or 18 rounds. Everything is little
+endian, and the first and last round keys are **added modulo 2^64 per
+64-bit column** rather than XORed. In the catalogue it is `kalyna-128`,
+`kalyna-256` and `kalyna-512`, by block size; the key's length picks
+the variant.
+
+```rust
+use allcrypt::block_ciphers::kalyna::Kalyna;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The standard's first example, Kalyna-128/128.
+let mut k = Kalyna::new(16, &(0u8..16).collect::<Vec<u8>>())?;
+let mut out = Vec::new();
+k.block_encrypt(&(16u8..32).collect::<Vec<u8>>(), &mut out);
+assert_eq!(out[..4], [0x81, 0xbf, 0x1c, 0x7d]);
+assert!(Kalyna::new(64, &[0u8; 128]).is_err());
+```
+
+CBC, CFB and OFB are the generic modes, which DSTU 7624 shares. **`ctr`
+on a Kalyna name is DSTU 7624's counter mode**: the counter starts as the
+encrypted IV and counts little endian, as `ctr` on `gost` is GOST's.
+The standard's MAC and key wrap are in `block_ciphers::kalyna_modes`
+and, by catalogue name, in `api`:
+
+```rust
+use allcrypt::api;
+
+let key = [7u8; 32];
+let tag = api::kalyna_mac("kalyna-256", &key, b"a message", 32)?;
+assert_eq!(tag.len(), 32);
+let wrapped = api::kalyna_key_wrap("kalyna-256", &key, &[1u8; 64])?;
+assert_eq!(api::kalyna_key_unwrap("kalyna-256", &key, &wrapped)?, vec![1u8; 64]);
+// Data that is not whole blocks is padded, and unwrapped through it.
+let odd = api::kalyna_key_wrap("kalyna-256", &key, b"a key")?;
+assert_eq!(api::kalyna_key_unwrap_padded("kalyna-256", &key, &odd)?, b"a key");
+```
+
+The MAC pads a short last block with `80 00...` and masks the last
+block with `E(01 00...)` instead of `E(0)`. Unwrapping refuses unless
+the check block comes back zero, and `unwrap` and `unwrap_padded` are
+two functions so that a key is never stripped of bytes that only look
+like padding. The standard's examples, and rows from Bouncy Castle and
+PrivatBank's cryptonite, are in `vectors/kalyna.vec` and
+`vectors/kalyna_modes.vec`. It is not constant time; its CCM, GMAC and
+XTS are not here yet.
+
+### Kupyna
+
+Kupyna, DSTU 7564:2014, is the hash that goes with Kalyna: the same
+S-boxes and MDS matrix, used through `kalyna`'s own functions, in two
+permutations over a 512-bit state (up to 256-bit hashes, 10 rounds) or
+a 1024-bit one (above, 14 rounds). Any multiple of 8 bits from 8 to 512;
+the catalogue has the three the standard names, `kupyna256`,
+`kupyna384` and `kupyna512`.
+
+```rust
+use allcrypt::hash_functions::kupyna::Kupyna;
+use allcrypt::hash_functions::HashFunction;
+
+let mut h = Kupyna::new(48)?;
+h.update(b"abc");
+assert_eq!(h.digest().len(), 6);
+assert!(Kupyna::new(520).is_err());
+```
+
+The hash is the **last** bytes of the final state, and the length field
+is 96 bits of the message's length in bits. Its MAC from the standard is
+not here yet.
 
 ### RC6
 
@@ -484,11 +557,11 @@ use allcrypt::block_ciphers::rc6::Rc6;
 use allcrypt::block_ciphers::BlockCipher;
 
 // The submission's first vector: zero key, zero block.
-let mut rc6 = Rc6::new(vec![0u8; 16])?;
+let mut rc6 = Rc6::new(&[0u8; 16])?;
 let mut out = Vec::new();
 rc6.block_encrypt(&[0u8; 16], &mut out);
 assert_eq!(out[..4], [0x8f, 0xc3, 0xa5, 0x36]);
-assert!(Rc6::new(vec![]).is_err());
+assert!(Rc6::new(&[]).is_err());
 ```
 
 It is checked against Bouncy Castle over every key length from 1 to 64
@@ -537,7 +610,7 @@ use allcrypt::block_ciphers::{BlockCipher, Ctr};
 let key = vec![0u8; 16];
 let nonce = vec![0u8; 16];
 
-let mut cipher = AesCrypto::new(key)?;
+let mut cipher = AesCrypto::new(&key)?;
 let mut stream = Ctr::new(&mut cipher, &nonce)?;
 
 let mut out = vec![];
@@ -556,7 +629,7 @@ let key = vec![0u8; 16];
 let nonce = vec![0u8; 16];
 let mut buffer = b"transformed in place".to_vec();
 
-let mut cipher = AesCrypto::new(key)?;
+let mut cipher = AesCrypto::new(&key)?;
 Ctr::new(&mut cipher, &nonce)?.apply(&mut buffer)?;
 ```
 
@@ -571,7 +644,7 @@ use allcrypt::block_ciphers::blowfish::Blowfish;
 use allcrypt::block_ciphers::{BlockCipher, Cbc};
 
 let iv = vec![0u8; 8];
-let mut cipher = Blowfish::new(vec![1, 2, 3, 4, 5, 6, 7, 8])?;
+let mut cipher = Blowfish::new(&[1, 2, 3, 4, 5, 6, 7, 8])?;
 let mut out = vec![];
 {
     let mut stream = Cbc::encryptor(&mut cipher, &iv)?;
@@ -601,13 +674,13 @@ let key = vec![0x2b; 16];
 let nonce = [0x11u8; 12];
 let aad = b"headers in the clear";
 
-let mut cipher = AesCrypto::new(key.clone())?;
+let mut cipher = AesCrypto::new(&key)?;
 let mut gcm = Gcm::encryptor(&mut cipher, &nonce, aad)?;
 let mut sealed = Vec::new();
 gcm.update(b"the payload", &mut sealed)?;
 let tag = gcm.tag()?;
 
-let mut cipher = AesCrypto::new(key)?;
+let mut cipher = AesCrypto::new(&key)?;
 let mut gcm = Gcm::decryptor(&mut cipher, &nonce, aad)?;
 let mut opened = Vec::new();
 gcm.update(&sealed, &mut opened)?;
@@ -621,12 +694,12 @@ Or in one call, through the trait:
 use allcrypt::block_ciphers::aes::AesCrypto;
 use allcrypt::block_ciphers::BlockCipher;
 
-let mut cipher = AesCrypto::new(vec![0x2b; 32])?;
+let mut cipher = AesCrypto::new(&[0x2b; 32])?;
 let (mut sealed, mut tag) = (Vec::new(), Vec::new());
 cipher.gcm_encrypt(b"payload", &mut sealed, &[0x11; 12], &mut tag, b"aad")?;
 
 let mut opened = Vec::new();
-let mut cipher = AesCrypto::new(vec![0x2b; 32])?;
+let mut cipher = AesCrypto::new(&[0x2b; 32])?;
 cipher.gcm_decrypt(&sealed, &mut opened, &[0x11; 12], &tag, b"aad")?;
 assert_eq!(opened, b"payload");
 
@@ -635,7 +708,7 @@ assert_eq!(opened, b"payload");
 let mut forged = sealed.clone();
 forged[0] ^= 1;
 let mut out = Vec::new();
-let mut cipher = AesCrypto::new(vec![0x2b; 32])?;
+let mut cipher = AesCrypto::new(&[0x2b; 32])?;
 assert!(cipher.gcm_decrypt(&forged, &mut out, &[0x11; 12], &tag, b"aad").is_err());
 assert!(out.is_empty());
 ```
@@ -650,7 +723,7 @@ arithmetic and no tables beyond AES itself.
 use allcrypt::block_ciphers::aes::AesCrypto;
 use allcrypt::block_ciphers::ccm;
 
-let mut cipher = AesCrypto::new(vec![0x2b; 16])?;
+let mut cipher = AesCrypto::new(&[0x2b; 16])?;
 let nonce = [0x11u8; 12];
 
 let (sealed, tag) = ccm::encrypt(&mut cipher, &nonce, b"headers",
@@ -682,7 +755,7 @@ Two things about CCM that GCM does not have:
 use allcrypt::block_ciphers::aes::AesCrypto;
 use allcrypt::block_ciphers::ccm;
 
-let mut cipher = AesCrypto::new(vec![3u8; 16])?;
+let mut cipher = AesCrypto::new(&[3u8; 16])?;
 let long_nonce = [4u8; 13];                    // leaves 2 bytes for the length
 assert!(ccm::encrypt(&mut cipher, &long_nonce, b"", &vec![0; 65535], 16).is_ok());
 assert!(ccm::encrypt(&mut cipher, &long_nonce, b"", &vec![0; 65536], 16).is_err());
@@ -973,8 +1046,9 @@ by the Wi-Fi product example.
 ## Key wrap
 
 RFC 3394, and the padded form from RFC 5649 (`block_ciphers::keywrap`);
-CMS's older RFC 3217 Triple-DES and RC2 wraps and RFC 3211's password
-recipient wrap are in `block_ciphers::cms_wrap`. Encrypting a key with a
+CMS's older RFC 3217 Triple-DES and RC2 wraps, Ukraine's GOST wrap in
+the same shape and RFC 3211's password recipient wrap are in
+`block_ciphers::cms_wrap`. Encrypting a key with a
 key — which looks like a mode and is not one, because there is no IV
 and nothing random anywhere.
 
@@ -1052,11 +1126,11 @@ aligned gets a whole extra block, which is what makes unpadding unambiguous.
 ```rust
 use allcrypt::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 
-let mut cipher = Chacha::new(vec![0u8; 32], vec![0u8; 12], 20)?;
+let mut cipher = Chacha::new(&[0u8; 32], &[0u8; 12], 20)?;
 let mut out = vec![];
 cipher.crypt(b"abc", &mut out);
 
-let mut rc4 = RC4::new(vec![1, 2, 3, 4, 5])?;
+let mut rc4 = RC4::new(&[1, 2, 3, 4, 5])?;
 let mut keystream = vec![];
 rc4.crypt(&[0u8; 16], &mut keystream);
 assert_eq!(allcrypt::to_hex(&keystream).to_lowercase(),
@@ -1206,7 +1280,7 @@ let key = vec![0xBE, 0x5E, 0xC2, 0x00, 0x6C, 0xFF, 0x9D, 0xCF,
 // There is no default: an unknown name is an error rather than a
 // quiet substitution, since two parameter sets are two different
 // ciphers that both work.
-let mut mac = GostCrypto::new(key, GostCrypto::DEFAULT_PARAM_SET.to_string())?;
+let mut mac = GostCrypto::new(&key, GostCrypto::DEFAULT_PARAM_SET)?;
 mac.set_mac_iv(&[1, 2, 3, 4, 5, 6, 7, 8]);
 mac.update(&[0u8; 14]);
 assert_eq!(mac.digest(), vec![0xd8, 0xb5, 0xa9, 0x78, 0xdf, 0x19, 0x17, 0xcb]);
@@ -1280,7 +1354,9 @@ uses them independently.
 `kdf::nist` has SP 800-108's KBKDF in counter and feedback modes over a
 named PRF, and the two hash KDFs used by ECDH key agreement - SP
 800-56C's one-step "Concat KDF" and ANSI X9.63's, which differ only in
-where the counter goes. `kdf::kerberos` has RFC 3961's n-fold, DR,
+where the counter goes. The PRF is `hmac-<hash>` or `cmac-<block
+cipher>`, and an unknown hash or cipher is refused when it is named.
+`kdf::kerberos` has RFC 3961's n-fold, DR,
 random-to-key and DES string-to-key:
 
 ```rust
@@ -2136,7 +2212,8 @@ traditional `DSA PRIVATE KEY`. The group is held to `min_rsa_bits`.
 ## RSA
 
 `publickey_ciphers::rsa` has the primitives, key generation, PKCS#1 v1.5
-for both encryption and signatures, PSS signatures and OAEP encryption.
+for both encryption and signatures, PSS signatures and OAEP encryption,
+and `encrypt_raw` / `decrypt_raw` for RSA with no padding at all.
 
 ```rust,ignore
 use allcrypt::hash_functions::{sha2::SHA256, HashFunction};
@@ -2157,6 +2234,10 @@ assert!(rsa::verify_pkcs1v15(&key.public, "sha256", &digest, &signature)?);
 let sealed = rsa::encrypt_oaep(&key.public, "sha256", "sha256", b"context", b"a short message")?;
 assert_eq!(rsa::decrypt_oaep(&key, "sha256", "sha256", b"context", &sealed)?,
            b"a short message");
+
+// No padding: m^e mod n, deterministic, and back at the key's size.
+let raw = rsa::encrypt_raw(&key.public, b"hi")?;
+assert_eq!(&rsa::decrypt_raw(&key, &raw)?[key.size() - 2..], b"hi");
 ```
 
 That example is `,ignore` for one reason: it generates a key, and the
@@ -2273,6 +2354,42 @@ let mut old_hash = AnyHash::new("gost94")?;
 old_hash.update(b"This is message, length=32 bytes");
 assert_eq!(old_hash.digest().len(), 32);
 ```
+
+### Ukraine's GOST
+
+Ukraine adopted GOST 28147-89 and GOST R 34.11-94 as DSTU GOST
+28147:2009 and GOST 34.311-95, with its own S-box: the default
+long-term key element (DKE) of DSTU 4145-2002, the national signature
+standard. It is the parameter set `dstu4145-default-dke`, so the cipher
+in every mode is `AnyBlockCipher::new("gost", key, Some(...))` and the
+hash is `gost34311`. A public key or key container that carries a
+different DKE gives it as 64 packed bytes, which `sbox_from_dke`
+unpacks - row by row, not in RFC 4357's column order.
+
+```rust
+use allcrypt::api::{self, AnyHash};
+use allcrypt::block_ciphers::gost::{GostCrypto, DSTU4145_DEFAULT_DKE, DSTU_PARAM_SET};
+use allcrypt::hash_functions::HashFunction;
+
+assert_eq!(GostCrypto::sbox_named(DSTU_PARAM_SET)?,
+           GostCrypto::sbox_from_dke(&DSTU4145_DEFAULT_DKE)?);
+
+let mut hash = AnyHash::new("gost34311")?;
+hash.update(b"abc");
+assert_eq!(hash.digest().len(), 32);
+
+// The DSTU key wrap: a 32-byte key in 44 bytes.
+let (kek, cek) = ([7u8; 32], [9u8; 32]);
+let wrapped = api::dstu_gost_key_wrap(&kek, &cek, None)?;
+assert_eq!(wrapped.len(), 44);
+assert_eq!(api::dstu_gost_key_unwrap(&kek, &wrapped)?, cek);
+```
+
+The key wrap is RFC 3217's shape - a check value, a pass under a random
+IV, the IV and result reversed, a pass under the fixed IV - with GOST
+CFB for both passes and a 4-byte GOST MAC of the key as the check
+value. Bouncy Castle and gost89 agree on every row of
+`vectors/dstu_gost.vec` that both implement.
 
 `magma` is there too. It is GOST 28147-89 with a fixed S-box read **big
 endian**, so the same key and plaintext give a different answer under the
@@ -3501,15 +3618,26 @@ between machines except the key.
 
 ```rust,ignore
 use allcrypt::tls::server::{ServerConfig, ServerKey};
-use allcrypt::tls::tickets::TicketKey;
+use allcrypt::tls::tickets::{TicketKey, TicketKeys};
 use std::sync::Arc;
 
 // Forty bytes, generated out of band and the same on every instance.
-let key = Arc::new(TicketKey::from_bytes(&configured)?);
+let keys = Arc::new(TicketKeys::new(TicketKey::from_bytes(&configured)?));
 
 let mut config = ServerConfig::with_clock(chain, server_key, now);
-config.ticket_key = Some(Arc::clone(&key));
+config.ticket_keys = Some(Arc::clone(&keys));
+
+// Later, while connections are using it: the new key seals, the old one
+// still opens what it sealed, and is retired once those tickets expire.
+keys.rotate(TicketKey::from_bytes(&next)?)?;
+keys.retire(&configured[..8])?;
 ```
+
+`TicketKeys` is a ring: the newest key seals and every key opens,
+picked by the eight-byte name each ticket starts with. A key stops
+sealing after 2^32 tickets - the nonces are random, and that is
+SP 800-38D's limit for random nonces under one key - and the server then
+issues none until it is rotated, rather than failing handshakes.
 
 `ServerConfig::with_clock` is the constructor that turns tickets on,
 because they need a clock and nothing else here does. `session_tickets`
@@ -3571,7 +3699,7 @@ use std::sync::{Arc, Mutex};
 let guard = Arc::new(Mutex::new(ReplayGuard::default()));
 
 let mut config = ServerConfig::with_clock(chain, server_key, now);
-config.ticket_key = Some(Arc::clone(&ticket_key));
+config.ticket_keys = Some(Arc::clone(&ticket_keys));
 config.max_early_data = 16_384;
 config.replay_guard = Some(Arc::clone(&guard));
 ```
@@ -4006,7 +4134,18 @@ assert!(public.verify("sha256", &digest, &key.sign("sha256", &digest)?)?);
 ```
 
 `api::BLOCK_CIPHERS`, `api::STREAM_CIPHERS`, `api::HASHES`, `api::MODES` and
-`api::CURVES` list what the names can be. `AnyHash` and `AnyStreamCipher` are the same idea
+`api::CURVES` list what the names can be. A block cipher also answers to
+a few other spellings (`3des` is `des-ede3` and `tripledes` too,
+`kuznyechik` is `grasshopper`); `api::block_cipher_name` turns any of them
+into the catalogue name, or `None`, without needing a key:
+
+```rust
+assert_eq!(allcrypt::api::block_cipher_name("Grasshopper"), Some("kuznyechik"));
+assert_eq!(allcrypt::api::block_cipher_name("des-ede3"), Some("3des"));
+assert_eq!(allcrypt::api::block_cipher_name("nosuch"), None);
+```
+
+`AnyHash` and `AnyStreamCipher` are the same idea
 for the other two families; `AnyHash` is `Clone`, so forking a hash's state is
 just a clone.
 

@@ -143,7 +143,7 @@ impl Sealed {
 
     /// AES-256-CCM, no associated data.
     pub fn open(&self, key: &[u8]) -> Result<Vec<u8>, String> {
-        let mut aes = AesCrypto::new(key.to_vec())?;
+        let mut aes = AesCrypto::new(key)?;
         ccm::decrypt(&mut aes, &self.nonce, &[], &self.ciphertext, &self.tag)
             .map_err(|_| "The key does not open this (its AES-CCM tag does not verify).".to_string())
     }
@@ -201,7 +201,7 @@ impl Protection {
 }
 
 /// One protector of the volume master key.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Vmk {
     pub guid: [u8; 16],
     pub protection: Protection,
@@ -210,6 +210,16 @@ pub struct Vmk {
     pub sealed: Option<Sealed>,
     /// A clear key protector's key, which opens `sealed` with no secret.
     pub clear_key: Option<Vec<u8>>,
+}
+
+/// A clear key opens the volume, so it is not printed.
+impl std::fmt::Debug for Vmk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vmk").field("guid", &self.guid).field("protection", &self.protection)
+            .field("name", &self.name).field("salt", &self.salt).field("sealed", &self.sealed)
+            .field("clear_key", &self.clear_key.as_deref().map(crate::hidden::HiddenBytes))
+            .finish()
+    }
 }
 
 impl Vmk {

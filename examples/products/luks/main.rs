@@ -36,13 +36,18 @@ use allcrypt::kdf::argon2::{Argon2, Variant};
 use allcrypt::kdf::password::pbkdf2;
 
 mod json;
+#[path = "../shared/json.rs"]
+mod shared_json;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
-use json::{n, obj, s, Value};
+use cli::hex;
+use json::{n, obj, s, Header, Value};
 
 const SECTOR: usize = 512;
 const STRIPES: usize = 4000;
@@ -308,9 +313,9 @@ impl SectorCipher {
             Chain::Cbc => {
                 let mut out = Vec::with_capacity(data.len());
                 if encrypt {
-                    self.data.cbc_encrypt(data, &mut out, iv)?;
+                    self.data.cbc_encrypt(data, &mut out, &iv)?;
                 } else {
-                    self.data.cbc_decrypt(data, &mut out, iv)?;
+                    self.data.cbc_decrypt(data, &mut out, &iv)?;
                 }
                 data.copy_from_slice(&out);
             }
@@ -583,48 +588,48 @@ impl Luks2 {
         let keyslots = self.json.field("keyslots")?.entries()?;
         let digests = self.json.field("digests")?.entries()?;
         for (id, slot) in keyslots {
-            if slot.field("type")?.as_str()? != "luks2" {
+            if slot.field("type")?.string()? != "luks2" {
                 continue;
             }
-            let key_len = slot.field("key_size")?.as_u64()? as usize;
+            let key_len = slot.field("key_size")?.uint()? as usize;
             let area = slot.field("area")?;
             let af = slot.field("af")?;
             let kdf = slot.field("kdf")?;
-            let area_spec = CipherSpec::parse_joined(area.field("encryption")?.as_str()?)?;
-            let area_key_len = area.field("key_size")?.as_u64()? as usize;
-            let salt = allcrypt::pem::decode(kdf.field("salt")?.as_str()?)?;
-            let area_key = match kdf.field("type")?.as_str()? {
-                "pbkdf2" => pbkdf2_any(kdf.field("hash")?.as_str()?, passphrase, &salt,
-                                       kdf.field("iterations")?.as_u64()? as u32, area_key_len)?,
+            let area_spec = CipherSpec::parse_joined(area.field("encryption")?.string()?)?;
+            let area_key_len = area.field("key_size")?.uint()? as usize;
+            let salt = allcrypt::pem::decode(kdf.field("salt")?.string()?)?;
+            let area_key = match kdf.field("type")?.string()? {
+                "pbkdf2" => pbkdf2_any(kdf.field("hash")?.string()?, passphrase, &salt,
+                                       kdf.field("iterations")?.uint()? as u32, area_key_len)?,
                 variant @ ("argon2i" | "argon2id") => {
                     let mut argon = Argon2::new(if variant == "argon2i" { Variant::I }
                                                 else { Variant::Id });
-                    argon.passes = kdf.field("time")?.as_u64()? as u32;
-                    argon.memory_kib = kdf.field("memory")?.as_u64()? as u32;
-                    argon.lanes = kdf.field("cpus")?.as_u64()? as u32;
+                    argon.passes = kdf.field("time")?.uint()? as u32;
+                    argon.memory_kib = kdf.field("memory")?.uint()? as u32;
+                    argon.lanes = kdf.field("cpus")?.uint()? as u32;
                     argon.derive(passphrase, &salt, area_key_len)?
                 }
                 other => return Err(format!("LUKS2: keyslot {id} uses the KDF {other}.")),
             };
-            let candidate = unlock_area(image, area.field("offset")?.as_u64()? as usize,
+            let candidate = unlock_area(image, area.field("offset")?.uint()? as usize,
                                         &area_spec, &area_key, key_len,
-                                        af.field("stripes")?.as_u64()? as usize,
-                                        af.field("hash")?.as_str()?)?;
+                                        af.field("stripes")?.uint()? as usize,
+                                        af.field("hash")?.string()?)?;
             // The digest bound to this keyslot decides.
             for (_, digest) in digests {
                 let bound = digest.field("keyslots")?.items()?.iter()
-                    .any(|k| k.as_str().ok() == Some(id.as_str()));
-                if !bound || digest.field("type")?.as_str()? != "pbkdf2" {
+                    .any(|k| k.as_str() == Some(id.as_str()));
+                if !bound || digest.field("type")?.string()? != "pbkdf2" {
                     continue;
                 }
-                let expected = allcrypt::pem::decode(digest.field("digest")?.as_str()?)?;
-                let got = pbkdf2_any(digest.field("hash")?.as_str()?, &candidate,
-                                     &allcrypt::pem::decode(digest.field("salt")?.as_str()?)?,
-                                     digest.field("iterations")?.as_u64()? as u32,
+                let expected = allcrypt::pem::decode(digest.field("digest")?.string()?)?;
+                let got = pbkdf2_any(digest.field("hash")?.string()?, &candidate,
+                                     &allcrypt::pem::decode(digest.field("salt")?.string()?)?,
+                                     digest.field("iterations")?.uint()? as u32,
                                      expected.len())?;
                 if got == expected {
                     let segment_id = digest.field("segments")?.items()?.first()
-                        .ok_or("LUKS2: the digest is bound to no segment.")?.as_str()?;
+                        .ok_or("LUKS2: the digest is bound to no segment.")?.string()?;
                     return self.unlocked(id, segment_id, candidate);
                 }
             }
@@ -635,22 +640,22 @@ impl Luks2 {
     fn unlocked(&self, keyslot: &str, segment_id: &str, volume_key: Vec<u8>)
                 -> Result<Unlocked, String> {
         let segment = self.json.field("segments")?.field(segment_id)?;
-        if segment.field("type")?.as_str()? != "crypt" {
+        if segment.field("type")?.string()? != "crypt" {
             return Err("LUKS2: the segment is not a crypt segment.".to_string());
         }
         let size = segment.field("size")?;
-        let sector_size = segment.field("sector_size")?.as_u64()?;
+        let sector_size = segment.field("sector_size")?.uint()?;
         check_sector_size(usize::try_from(sector_size).unwrap_or(0))?;
         Ok(Unlocked {
             version: 2,
             keyslot: keyslot.parse().unwrap_or(0),
             volume_key,
-            spec: CipherSpec::parse_joined(segment.field("encryption")?.as_str()?)?,
-            data_offset: segment.field("offset")?.as_u64()? as usize,
-            data_length: if size.as_str().ok() == Some("dynamic") { None }
-                         else { Some(size.as_u64()? as usize) },
+            spec: CipherSpec::parse_joined(segment.field("encryption")?.string()?)?,
+            data_offset: segment.field("offset")?.uint()? as usize,
+            data_length: if size.as_str() == Some("dynamic") { None }
+                         else { Some(size.uint()? as usize) },
             sector_size: sector_size as usize,
-            iv_tweak: segment.field("iv_tweak")?.as_u64()?,
+            iv_tweak: segment.field("iv_tweak")?.uint()?,
         })
     }
 
@@ -899,10 +904,6 @@ fn counter_stream(seed: u64) -> impl FnMut(&mut [u8]) -> Result<(), String> {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// The third argument; or with `--passphrase-stdin`, a line of standard
 /// input; or with `--key-file FILE`, the file's bytes (`-` for all of
 /// standard input, which may hold any bytes).
@@ -1086,7 +1087,7 @@ mod tests {
             let mut expected = Vec::new();
             let mut cipher = AnyBlockCipher::new(&spec.cipher, &key, None).unwrap();
             if spec.chain == Chain::Cbc {
-                cipher.cbc_encrypt(&sector, &mut expected, iv).unwrap();
+                cipher.cbc_encrypt(&sector, &mut expected, &iv).unwrap();
             } else {
                 cipher.ecb_encrypt(&sector, &mut expected).unwrap();
             }

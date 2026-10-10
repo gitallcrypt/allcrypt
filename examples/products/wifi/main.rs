@@ -33,6 +33,8 @@ use allcrypt::stream_ciphers::{tkip, wep};
 mod pcap;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
@@ -40,13 +42,7 @@ mod fixtures;
 type Mac = [u8; 6];
 
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let text: String = text.split([':', '-']).collect::<String>()
-        .split_whitespace().collect();
-    if !text.len().is_multiple_of(2) {
-        return Err("An odd number of hex digits.".to_string());
-    }
-    (0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|e| e.to_string())).collect()
+    cli::unhex(text, &[' ', '\t', '\r', '\n', ':', '-'])
 }
 
 /// Where the data begins after an 802.11 header: 24 bytes, 30 with a
@@ -222,7 +218,7 @@ fn decrypt(frame: &[u8], station: &Station, wep_key: Option<&[u8]>) -> Option<Ve
         2 => {
             let (nonce, aad) = ccmp_nonce_aad(frame, z);
             let body = &frame[z + 8..];
-            let mut aes = AesCrypto::new(tk.to_vec()).ok()?;
+            let mut aes = AesCrypto::new(tk).ok()?;
             ccm::decrypt(&mut aes, &nonce, &aad, &body[..body.len() - 8],
                          &body[body.len() - 8..]).ok()
         }
@@ -410,6 +406,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::hex;
 
     /// A helper that mirrors `run`'s decryption, returning the decrypted
     /// Ethernet payloads and the tally, so the fixtures can be checked
@@ -471,10 +468,6 @@ mod tests {
         let mut h = allcrypt::hash_functions::sha2::SHA256::new(&[]);
         h.update(data);
         hex(&h.digest())
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// Every recorded capture decrypts to the Ethernet payloads whose

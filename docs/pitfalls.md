@@ -104,6 +104,9 @@ to be someone's CVE.**
 - [7zzl. CAST-256](#7zzl-cast-256)
 - [7zzm. Database and forum password hashes](#7zzm-database-and-forum-password-hashes)
 - [7zzn. Rijndael's wider blocks](#7zzn-rijndaels-wider-blocks)
+- [7zzo. Ukraine's GOST](#7zzo-ukraines-gost)
+- [7zzp. Kalyna](#7zzp-kalyna)
+- [7zzq. Kupyna](#7zzq-kupyna)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -316,7 +319,8 @@ the route only where the mode has the blocks to fill it.
 | AES key schedule | nothing | `SubWord` through the bitsliced S-box; the decryption keys' InvMixColumns in branch-free arithmetic |
 | ECB, CTR, CBC decryption, XTS, GCM, CCM's keystream | nothing | `encrypt_blocks`/`decrypt_blocks` throughout, including GCM's `H` and tag mask, XTS's tweak key and stolen blocks |
 | CBC encryption, CFB, OFB, CMAC, CCM's CBC-MAC, a lone `block_encrypt` | **key material through cache timing** | each block depends on the previous one's output, so there is only ever one block to encrypt, and it takes the table route |
-| OCB | **key material through cache timing** | its blocks are independent, but `ocb.rs` enciphers them one at a time through `block_encrypt`, so it takes the table route |
+| OCB, MGM, LRW, CTR-ACPKM | nothing | batches through `encrypt_blocks`, and so are the single blocks among them - OCB's `L_*`, `Ktop`, a partial block's pad and its tag; MGM's `Y_1`, `Z_1`, last `H` and tag; ACPKM's re-keying. Those took the table route until `ct_check.py` had rows for these modes |
+| MGM's counters and field | nothing | both counters start at a block enciphered under the key, so they are incremented through every byte rather than stopping where the carry does; the multiplier's bits and the reduction go through `bignum::ct::opaque`, because LLVM compiled the masks back into jumps |
 | GHASH | nothing | 64x64 carry-less products by integer multiplication with masked operands (BearSSL's `ghash_ctmul64`); see `ghash.rs` |
 | XTS tweak doubling | nothing | the reduction is folded in with a mask; it branched on the tweak's top bit, which is secret, before `ct_check.py` reported it |
 | XTS key-halves check | only whether they are equal | every byte is compared before the verdict; `==` on the slices stopped at the first difference |
@@ -325,7 +329,8 @@ the route only where the mode has the blocks to fill it.
 Apart from the tag comparison (tested functionally, below), ECB and
 CCM's keystream, the rows marked "nothing" are live rows in
 `scripts/ct_check.py` (`aes_blocks`, `aes_gcm_seal`, `aes_xts`,
-`aes_ctr_cbc_decrypt`, `ghash`), which run them under valgrind with the
+`aes_ctr_cbc_decrypt`, `ghash`, `aes_ocb_open`, `aes_mgm_open`,
+`aes_lrw`, `aes_ctr_acpkm`), which run them under valgrind with the
 key and the data marked secret, and `aes_block_table` is the control
 that must report: the same key and data through the table route.
 
@@ -1385,9 +1390,10 @@ connection, which is the only independent opinion available: Python's
 
 ## 3. RSA pitfalls
 
-Implemented in `src/publickey_ciphers/rsa.rs`: the primitives, key
-generation, PKCS#1 v1.5 for both encryption and signatures, OAEP (RFC
-8017 section 7.1) and PSS (RFC 8017 section 8.1).
+Implemented in `src/publickey_ciphers/rsa.rs`: the primitives, unpadded
+encryption and decryption, key generation, PKCS#1 v1.5 for both
+encryption and signatures, OAEP (RFC 8017 section 7.1) and PSS (RFC 8017
+section 8.1).
 
 ### Bleichenbacher's attack on PKCS#1 v1.5
 
@@ -1480,13 +1486,30 @@ bits, so under 2%.
 `e = 3` with no padding, or the same message to several recipients, breaks by
 Coppersmith or CRT. Textbook RSA is deterministic and malleable.
 
-**Status: mitigated**, by naming and by padding. The unpadded primitives are
-`RsaPublicKey::raw` and `RsaPrivateKey::raw` — nothing else in the API
-reaches them, and neither is exposed to Python. Everything a caller can
-reach through `api` or the bindings goes through PKCS#1 v1.5, OAEP or
-PSS, and the encryption padding is randomised, so the same message never
-encrypts to the same bytes twice. A test asserts that, because a padding
-that quietly lost its randomness would still round trip.
+**Status: accepted.** Unpadded RSA is reachable on purpose, under a name
+that says what it is: `rsa::encrypt_raw` and `rsa::decrypt_raw`, the
+facade's `RsaPublicKey::encrypt_raw` and `RsaKey::decrypt_raw`, the same
+names in Python, and `allcrypt_rsa_encrypt_raw` / `allcrypt_rsa_decrypt_raw`
+in C. They exist for formats that pad for themselves, for building and
+testing a padding, and for demonstrating these attacks, and nothing
+refuses a weak input: 0 and 1 encrypt to themselves, `n - 1` too under
+an odd exponent, and a message whose `e`-th power is below `n` comes
+back out by an integer root. Only a value not below the modulus is an
+error, because it has no ciphertext.
+
+`decrypt_raw` is also RSASP1: decrypting a chosen value is signing it.
+A service that offers unpadded decryption to anyone is a signing oracle
+for its key, whatever padding its signatures normally use.
+
+What is mitigated is the default. `encrypt`, `encrypt_oaep` and the
+signature functions pad, and the encryption padding is randomised, so
+the same message never encrypts to the same bytes twice through them; a
+test asserts that, because a padding that quietly lost its randomness
+would still round trip. The unpadded pair is deterministic and
+multiplicative, and `test_unpadded_rsa_edges` asserts both, since they
+are what the name promises. `pytests/test_rsa.py` checks it against
+Python's `pow`, and `tests/test_rsa_oaep.rs` against Wycheproof's
+ciphertexts.
 
 ### Signature forgery by parsing instead of comparing
 
@@ -1565,6 +1588,28 @@ since they are what a Fermat test mislabelled as Miller-Rabin would accept.
 Nothing stops a caller *importing* a 512 bit key, and nothing should —
 talking to old things is the point of this library. The refusal is on
 generating one.
+
+### Large keys from a peer
+
+The cost of an RSA verification is set by whoever chose the key. A
+two-million-bit modulus with `e` close to `n` makes one signature check
+millions of two-megabit squarings, and the key arrives before anything
+has authenticated it: in an intermediate certificate, in a TLS server's
+own certificate (which signs the ServerKeyExchange or CertificateVerify,
+or encrypts the premaster, whether or not the chain is verified), in a
+client certificate whose CertificateVerify a server checks *before* the
+chain, in a DHE server's group, and in an SSH host-key blob.
+
+**Status: mitigated.** `x509::verify::Policy::max_key_bits` (16384 by
+default, OpenSSL's limit) is checked before any arithmetic on every
+one of those paths except SSH's, whose blob parser has the same number
+as a constant (`ssh::keys::PublicKey::MAX_KEY_BITS`) and whose group
+exchange is bounded by the size the client asked for. It is a field
+rather than a constant so that a key above it can still be reached on
+purpose. Tests: `test_an_oversized_key_is_refused_before_any_arithmetic`
+in `src/x509/verify.rs`, and in `pytests/test_tls_handshake.py`
+`test_a_server_key_above_the_ceiling_is_refused_before_use` and
+`test_a_dh_group_above_the_ceiling_is_refused`.
 
 ---
 
@@ -1736,6 +1781,22 @@ Two structural rules that are silent when broken:
   secret is over "ClientHello … client Finished"; adding the ticket moves
   the transcript past that point and the second ticket is derived from
   something the client does not share.
+
+**One key for ever is a nonce budget and a rotation problem.** Every
+ticket is sealed under a fresh random 96-bit nonce, and SP 800-38D 8.3
+allows 2^32 of those per key before the chance of two colliding - which
+gives away GCM's authentication key - stops being negligible. And a
+server with one key could only change it by ending every outstanding
+session at once. `tickets::TicketKeys` is a ring: the newest key seals,
+every key opens (picked by the name the ticket starts with), a key that
+has sealed 2^32 refuses, and the server then issues no tickets rather
+than failing the handshake. `rotate` and `retire` change the ring while
+connections use it. The count is per process: instances sharing a
+configured key each count their own, so a fleet rotates before their
+sum gets there. `test_rotation_keeps_old_tickets_until_their_key_is_retired`,
+`test_a_key_stops_sealing_at_its_nonce_limit`,
+`test_tickets_survive_rotation_and_stop_at_the_limit`, and
+`test_a_rotated_key_still_opens_what_it_sealed` against OpenSSL.
 
 **Not offered:** PSK-only resumption. Every resumed handshake here also does
 a fresh key exchange, so the session keeps forward secrecy — a PSK-only one
@@ -2244,10 +2305,19 @@ as a name under `evil.test` will sign it; a client that hands it to
 something which stops at a NUL sees `www.good.test`. Moxie Marlinspike,
 2009.
 
-**Status: mitigated.** DNS, email and URI general names containing a
-zero byte are a parse error, not a comparison-time check - by then the
-string may already have been handed to something that stops at NUL. A
-name attribute whose *decoded* text contains one is withheld instead:
+**Status: mitigated.** A DNS, email or URI general name containing a
+zero byte - or that is not UTF-8 - never becomes a `GeneralName::Dns`,
+`Email` or `Uri`, so no string with a NUL in it is ever handed to
+anything. Where a name is required (a name constraint, a distribution
+point) it is a parse error. In a subjectAltName it is kept as
+`GeneralName::Malformed` with its raw bytes, and judged by `verify`: it
+matches no host; a malformed dNSName or URI still stops the fallback to
+the common name, so the odd entry cannot make the CN the name that is
+checked; and under a name constraint of its form the certificate is
+refused, since nobody can say the entry is outside an excluded subtree.
+It used to refuse the whole certificate, which made it unreadable for
+an entry nothing would ever match. `test_a_malformed_san_entry_is_kept_and_judged`.
+A name attribute whose *decoded* text contains one is withheld instead:
 the certificate parses, `Attribute::text` never returns that attribute,
 and neither half can be matched against. The check is on the decoded
 text because a BMPString holds a zero byte in every ASCII character.
@@ -4078,6 +4148,20 @@ The same shape, one layer down: `Integerify` reads the **last** 64 byte
 block, little endian. Reading the first block, or reading big endian,
 gives a different walk through `V` that is every bit as deterministic -
 stable, reproducible, and matching nobody.
+
+### scrypt's N past RFC 7914's bound
+
+**Status: accepted.** RFC 7914 asks for `N < 2^(128 * r / 8)`, which at
+`r = 1` is `2^16`. OpenSSL enforces it (`hashlib.scrypt` refuses `N =
+2^16, r = 1`, saying "memory limit exceeded"); golang.org/x/crypto does
+not, and geth's keystore test
+vector is `N = 2^18, r = 1`. The function past the bound is well defined
+and computed the same way everywhere: `Integerify` reads 64 bits and
+`j = Integerify(X) mod N` is exact for every power of two up to `2^63`.
+So `kdf::scrypt` follows Go and accepts it, and the only bound on `N` is
+the memory cap - which is what protects the caller. It refused it for a
+while, from a review fix, and that turned away geth's own vector; the
+wallet example's `geth_heavy_vectors` is the test.
 
 ### Argon2's address counter is only used above 2 MiB
 
@@ -9580,6 +9664,140 @@ constant SP 800-38B gives for 64 and 128 bit blocks only, and EAX, OCB,
 GCM and MGM inherit the same restriction. `Cmac::new` refuses a wider
 cipher rather than guessing a polynomial no other implementation uses,
 and the AEAD catalogue has no `rijndael-` names.
+
+---
+
+## 7zzo. Ukraine's GOST
+
+`src/block_ciphers/gost.rs` (the `dstu4145-default-dke` table),
+`src/hash_functions/gost94.rs` (GOST 34.311-95) and
+`src/block_ciphers/cms_wrap.rs` (the DSTU key wrap). Checked against
+Bouncy Castle 1.77 and gost89, `vectors/dstu_gost.vec`.
+
+### A DKE is packed row by row, not as RFC 4357 prints a table
+
+**Status: mitigated.** DSTU 4145 carries an S-box as a 64-byte DKE: the
+128 entries in order, two to a byte, high nibble first, `K1` first.
+RFC 4357 prints its tables column by column, `K[2j]` and `K[2j+1]` of
+one input in a byte. Either unpacking of either format gives eight
+valid permutations and a cipher that encrypts and decrypts, so a mix-up
+shows only as disagreement with everyone else. `sbox_from_dke` is the
+one place a DKE is read, and the vectors pin it against both
+witnesses, which read the DKE their own ways.
+
+### The empty message to GOST R 34.11-94 has two answers
+
+**Status: accepted.** This library, its second reading in
+`scripts/diff_check.py` and today's gost-engine compress a zero block
+for the empty message, since RFC 5831's step 2 runs for any remainder
+of 256 bits or fewer and zero is one. Bouncy Castle, gost89 and the
+gost engine that shipped with OpenSSL 1.0 compress nothing when nothing
+is left; their CryptoPro digest of the empty message, `981e5f3c...`, is
+the one usually published, and `ce85b99c...` under the test table. All
+of them agree on every non-empty message. The same holds for GOST
+34.311-95, and the vectors leave the empty message out rather than
+record a disagreement as a pass. A protocol that hashes an empty input
+and talks to Bouncy Castle or a Ukrainian implementation built on these
+older readings would see a different digest.
+
+### The MAC of one block or less has three answers
+
+**Status: accepted.** GOST 28147-89 defines the imitovstavka for two
+blocks or more. For less, this library pads to two blocks, as
+gost-engine does; Bouncy Castle MACs the one block as it is; gost89
+adds a zero block to an exact 8-byte message and not to a shorter one.
+Longer messages agree everywhere, and the DSTU key wrap MACs 32 bytes.
+
+### The key wrap has one outside opinion
+
+**Status: accepted.** Bouncy Castle has no DSTU GOST key wrap, so
+gost89 is the only other implementation of it here. Its parts - GOST
+CFB under the DSTU table and the GOST MAC - are each checked against
+both witnesses, and its shape is RFC 3217's, whose structure the 3DES
+wrap in the same file already follows.
+
+---
+
+## 7zzp. Kalyna
+
+`src/block_ciphers/kalyna.rs`: DSTU 7624:2014, all five variants.
+Checked against the standard's examples, the authors' reference
+implementation and Bouncy Castle 1.77, `vectors/kalyna.vec`.
+
+### Not constant time
+
+**Status: accepted.** The four S-boxes are tables indexed by the data,
+as the standard writes them, so memory accesses depend on the key and
+the plaintext. It is not on `scripts/ct_check.py`'s list.
+
+### The first and last round keys are added, not XORed
+
+**Status: mitigated.** Kalyna adds the round key modulo 2^64 per column
+before the first round and after the last, and XORs it in between;
+decryption subtracts. A version that XORs everywhere, or adds
+everywhere, is a cipher that still inverts. The standard's examples and
+the witnesses' rows pin it, and the breakage sweep tried it.
+
+### `ctr` on Kalyna is DSTU 7624's counter mode, not NIST's
+
+**Status: mitigated.** DSTU 7624's counter starts as the **encrypted**
+IV and counts little endian, and that is what `ctr` does on a `kalyna-`
+name, as `ctr` on `gost` is GOST's gamma; a NIST counter over Kalyna
+would be a mode no Ukrainian implementation reads. `ctr-le` is still the
+plain little-endian counter. The standard's MAC and key wrap are in
+`kalyna_modes`; its CCM, GMAC and XTS are listed to be done.
+
+### On a short last block, CFB has two readings
+
+**Status: accepted.** For a message that does not end on a whole block,
+cryptonite's CFB uses the **last** bytes of the encrypted feedback and
+Bouncy Castle's the first. No CFB example in the standard ends short.
+Its counter-mode and OFB examples do, and both implementations take the
+first bytes there, so this library's generic CFB, which takes the first
+as everywhere else, is the reading consistent with the rest of the
+standard. Whole-block CFB agrees everywhere; the vectors use only that.
+
+### The key wrap: padding, and a counter one byte wide
+
+**Status: mitigated.** The standard pads data that is not whole blocks
+with its bit length as a half-block and `80 00...`; Bouncy Castle
+refuses such data and its tests pass the standard's example in already
+padded, while cryptonite pads it and reproduces the same wrapping, so
+the rule is the standard's. `unwrap` returns whole blocks as they are,
+and `unwrap_padded` requires the padding exactly - never a guess, since
+a whole-block key can end in bytes that look like padding. cryptonite
+XORs the step counter in as one byte and Bouncy Castle as 32 bits; they
+agree up to 20 blocks of data, which covers every key, and this library
+follows Bouncy Castle beyond. cryptonite's unwrap also never checks the
+zero block; this one refuses unless it is zero, compared in constant
+time.
+
+---
+
+## 7zzq. Kupyna
+
+`src/hash_functions/kupyna.rs`: DSTU 7564:2014. Checked against the
+standard's examples, the authors' reference implementation and Bouncy
+Castle 1.77, `vectors/kupyna.vec`.
+
+### Not constant time
+
+**Status: accepted.** Kalyna's table S-boxes, so the same as 7zzp: of
+consequence for a keyed use, such as HMAC over a secret key.
+
+### The sizes Bouncy Castle lacks have one outside opinion
+
+**Status: accepted.** Bouncy Castle offers 256, 384 and 512 bits; the
+standard allows every multiple of 8 to 512. The other sizes are checked
+against the reference implementation alone, plus the standard's 48 and
+304-bit examples. The truncation is the one code path they share with
+the named sizes, which both witnesses check.
+
+### Messages that are not whole bytes
+
+**Status: accepted.** The standard hashes bit strings, and four of its
+examples are 1, 33, 510 and 655 bits long. This library hashes bytes,
+like every hash here, so those examples are not in the vectors.
 
 ---
 

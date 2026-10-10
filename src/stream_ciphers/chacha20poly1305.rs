@@ -114,13 +114,13 @@ impl ChaCha20Poly1305 {
         // Poly1305 key. The rest of the block is discarded - it is not
         // keystream for anything, and reusing it would be exactly the
         // overlap this construction exists to avoid.
-        let mut key_stream = Chacha::new(key.to_vec(), nonce.to_vec(), 20)?;
+        let mut key_stream = Chacha::new(key, nonce, 20)?;
         let mut block = Vec::with_capacity(64);
         key_stream.crypt(&[0u8; 64], &mut block);
         let mac = Poly1305::new(&block[..32])?;
 
         // The payload starts at block one.
-        let mut cipher = Chacha::new(key.to_vec(), nonce.to_vec(), 20)?;
+        let mut cipher = Chacha::new(key, nonce, 20)?;
         cipher.set_counter(1)?;
 
         let mut state = ChaCha20Poly1305 {
@@ -386,7 +386,7 @@ offer you only one tip for the future, sunscreen would be it.";
         let key = unhex(&"5a".repeat(32));
         let nonce = unhex("000102030405060708090a0b");
 
-        let mut block_zero = Chacha::new(key.clone(), nonce.clone(), 20).unwrap();
+        let mut block_zero = Chacha::new(&key, &nonce, 20).unwrap();
         let mut zero_stream = Vec::new();
         block_zero.crypt(&[0u8; 64], &mut zero_stream);
 
@@ -395,7 +395,7 @@ offer you only one tip for the future, sunscreen would be it.";
         assert_ne!(&ciphertext[..], &zero_stream[..],
                    "the payload was encrypted with the Poly1305 key's own block");
         // Specifically, it should equal block one.
-        let mut from_one = Chacha::new(key, nonce, 20).unwrap();
+        let mut from_one = Chacha::new(&key, &nonce, 20).unwrap();
         from_one.set_counter(1).unwrap();
         let mut expected = Vec::new();
         from_one.crypt(&[0u8; 64], &mut expected);
@@ -545,7 +545,7 @@ offer you only one tip for the future, sunscreen would be it.";
     /// that would skip or repeat keystream in the middle of a message.
     #[test]
     fn test_the_counter_is_fixed_before_the_stream_starts() {
-        let mut cipher = Chacha::new(vec![0; 32], vec![0; 12], 20).unwrap();
+        let mut cipher = Chacha::new(&[0; 32], &[0; 12], 20).unwrap();
         assert!(cipher.set_counter(1).is_ok());
         let mut out = Vec::new();
         cipher.crypt(b"some data", &mut out);

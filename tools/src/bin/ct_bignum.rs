@@ -597,7 +597,7 @@ fn run(case: &str) {
         "aes_blocks" => {
             let key = secret_bytes32(AES_KEY);
             let mut data = secret_bytes32(AES_DATA);
-            let mut aes = AesCrypto::new(key).unwrap();
+            let mut aes = AesCrypto::new(&key).unwrap();
             // 21 blocks: one sixteen-block batch, one of four, and a
             // padded tail of one.
             aes.encrypt_blocks(&mut data[..21 * 16]).unwrap();
@@ -608,7 +608,7 @@ fn run(case: &str) {
         "aes_block_table" => {
             let key = secret_bytes32(AES_KEY);
             let data = secret_bytes32(AES_DATA);
-            let mut aes = AesCrypto::new(key).unwrap();
+            let mut aes = AesCrypto::new(&key).unwrap();
             let mut out = Vec::new();
             aes.block_encrypt(&data[..16], &mut out);
             publish_bytes(&out);
@@ -705,6 +705,80 @@ fn run(case: &str) {
                                  nacl::Construction::XChaCha20Poly1305] {
                 publish_bytes(&nacl::box_beforenm(construction, &peer, &private).unwrap());
             }
+        }
+
+        // -- the modes the review moved onto the batch path -------------
+
+        "aes_ocb_open" => {
+            // Sealed under the key as public, opened with it marked secret:
+            // the offsets, the batched blocks, the checksum and the tag
+            // comparison, up to the verdict.
+            let (ciphertext, tag) = api::aead_encrypt("aes-ocb", &public_bytes(AES_KEY)[..16],
+                                                      &[7u8; 12], b"header",
+                                                      &public_bytes(AES_DATA)[..333]).unwrap();
+            let key = secret_bytes32(AES_KEY);
+            let opened = api::aead_decrypt("aes-ocb", &key[..16], &[7u8; 12], b"header",
+                                           &ciphertext, &tag).unwrap();
+            publish_bytes(&opened);
+        }
+
+        "aes_mgm_open" => {
+            let (ciphertext, tag) = api::aead_encrypt("aes-mgm", &public_bytes(AES_KEY),
+                                                      &[7u8; 16], b"header",
+                                                      &public_bytes(AES_DATA)[..333]).unwrap();
+            let key = secret_bytes32(AES_KEY);
+            let opened = api::aead_decrypt("aes-mgm", &key, &[7u8; 16], b"header",
+                                           &ciphertext, &tag).unwrap();
+            publish_bytes(&opened);
+        }
+
+        "aes_lrw" => {
+            // A secret cipher key and a secret tweak key: the tweak
+            // multiplication and the batched blocks, both directions.
+            let key = secret_bytes32(AES_KEY);
+            let tweak: [u8; 16] = secret_bytes32(AES_XTS_KEY)[..16].try_into().unwrap();
+            let data = secret_bytes32(AES_DATA);
+            let mut aes = AesCrypto::new(&key[..16]).unwrap();
+            let index = [0u8; 16];
+            let sealed = allcrypt::block_ciphers::lrw::encrypt(&mut aes, &tweak, &index,
+                                                               &data[..21 * 16]).unwrap();
+            let opened = allcrypt::block_ciphers::lrw::decrypt(&mut aes, &tweak, &index,
+                                                               &sealed).unwrap();
+            publish_bytes(&opened);
+        }
+
+        "aes_ctr_acpkm" => {
+            // Sections of two blocks, so the key changes several times.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let out = allcrypt::block_ciphers::acpkm::ctr_acpkm("aes", &key, &[3u8; 8], 32,
+                                                                &data[..333]).unwrap();
+            publish_bytes(&out);
+        }
+
+        "tls_mte_open" => {
+            // A TLS 1.2 AES-CBC-HMAC-SHA256 record, MAC-then-encrypt,
+            // written under keys taken as public and read under the same
+            // keys marked secret - so everything decrypted from it is
+            // secret too: the padding, its length, and the MAC position
+            // the padding implies, which is Lucky 13's whole subject.
+            use allcrypt::tls::record::{CbcHmac, Protection, RecordReader, RecordWriter};
+            use allcrypt::tls::{ContentType, Version};
+            let protection = |key: &[u8], mac_key: &[u8]| Protection::CbcHmac(
+                CbcHmac::new("aes", "sha256", &key[..16], &mac_key[..32], &[0u8; 16],
+                             Version::TLS12).unwrap());
+            let mut writer = RecordWriter::new(Version::TLS12);
+            writer.change_cipher_spec(protection(&public_bytes(AES_KEY),
+                                                 &public_bytes(AES_XTS_KEY)));
+            let wire = writer.write(ContentType::ApplicationData,
+                                    &public_bytes(AES_DATA)[..333]).unwrap();
+            let mut reader = RecordReader::new();
+            reader.expect_version(Version::TLS12);
+            reader.change_cipher_spec(protection(&secret_bytes32(AES_KEY),
+                                                 &secret_bytes32(AES_XTS_KEY)));
+            reader.push_incoming(&wire);
+            let record = reader.read().unwrap().expect("one record");
+            publish_bytes(&record.payload);
         }
 
         other => {
@@ -889,4 +963,9 @@ const CASES: &[&str] = &[
     "secretbox_seal",
     "secretbox_open",
     "box_beforenm",
+    "aes_ocb_open",
+    "aes_mgm_open",
+    "aes_lrw",
+    "aes_ctr_acpkm",
+    "tls_mte_open",
 ];

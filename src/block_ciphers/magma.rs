@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn test_the_sbox_matches_the_one_in_gost_rs() {
         let cipher = crate::block_ciphers::gost::GostCrypto::new(
-            vec![0u8; 32], "id-tc26-gost-28147-param-Z".to_string()).unwrap();
+            &[0u8; 32], "id-tc26-gost-28147-param-Z").unwrap();
         let theirs = cipher.sbox_rows();
         assert_eq!(theirs.len(), 8);
         for (index, row) in SBOX.iter().enumerate() {
@@ -291,7 +291,7 @@ mod tests {
         magma.block_encrypt(&plaintext, &mut ours);
 
         let mut old = crate::block_ciphers::gost::GostCrypto::new(
-            key, "id-tc26-gost-28147-param-Z".to_string()).unwrap();
+            &key, "id-tc26-gost-28147-param-Z").unwrap();
         let mut theirs = Vec::new();
         old.block_encrypt(&plaintext, &mut theirs);
 
@@ -315,9 +315,9 @@ mod tests {
         let iv = vec![0x3cu8; BLOCK_SIZE];
 
         let mut ciphertext = Vec::new();
-        cipher.cbc_encrypt(&plaintext, &mut ciphertext, iv.clone()).unwrap();
+        cipher.cbc_encrypt(&plaintext, &mut ciphertext, &iv).unwrap();
         let mut back = Vec::new();
-        cipher.cbc_decrypt(&ciphertext, &mut back, iv).unwrap();
+        cipher.cbc_decrypt(&ciphertext, &mut back, &iv).unwrap();
         assert_eq!(back, plaintext);
     }
 

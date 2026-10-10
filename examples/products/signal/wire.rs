@@ -385,13 +385,23 @@ impl SenderKeyMessage {
 /// What a group member sends each other member, over their pairwise
 /// sessions, before its first group message: the chain key at an
 /// iteration and the public half of the signing key.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SenderKeyDistributionMessage {
     pub key_id: u32,
     pub iteration: u32,
     pub chain_key: Vec<u8>,
     pub signing_key: PublicKey,
     pub serialized: Vec<u8>,
+}
+
+/// Without `serialized`, which carries the chain key too.
+impl std::fmt::Debug for SenderKeyDistributionMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SenderKeyDistributionMessage").field("key_id", &self.key_id)
+            .field("iteration", &self.iteration)
+            .field("chain_key", &crate::hidden::HiddenBytes(&self.chain_key))
+            .field("signing_key", &self.signing_key).finish_non_exhaustive()
+    }
 }
 
 impl SenderKeyDistributionMessage {

@@ -8,7 +8,7 @@ pub struct RC4 {
 }
 
 impl RC4 {
-    pub fn new(key: Vec<u8>) -> Result<RC4, String> {
+    pub fn new(key: &[u8]) -> Result<RC4, String> {
         // An empty key divides by zero in the KSA; past 256 bytes the extra
         // key material is never read, so reject rather than silently ignore it.
         if key.is_empty() || key.len() > 256 {
@@ -16,7 +16,7 @@ impl RC4 {
         }
         let key_mapping: Vec<u8> = vec![0; 256];
         let mut rc4 = RC4{
-            key,
+            key: key.to_vec(),
             key_mapping,
             i: 0,
             j: 0,

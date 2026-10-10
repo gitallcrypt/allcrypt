@@ -28,15 +28,18 @@ mod pkcs12;
 
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
 use pkcs12::{Bag, Kind};
+use cli::value;
 
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use cli::hex;
 
 /// One store's entries, whichever format it came from.
 #[derive(Clone, Debug, PartialEq)]
@@ -254,24 +257,8 @@ fn to_java(store: &Store) -> Result<Vec<jks::Named>, String> {
     }
 }
 
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-}
-
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if arg == "--password-stdin" || arg == "--canonical" {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
+    cli::positional(args, &["--password-stdin", "--canonical"], &[])
 }
 
 fn run(args: &[String]) -> Result<(), String> {

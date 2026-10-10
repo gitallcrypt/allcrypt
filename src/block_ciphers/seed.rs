@@ -176,7 +176,7 @@ pub struct Seed {
 }
 
 impl Seed {
-    pub fn new(key: Vec<u8>) -> Result<Seed, String> {
+    pub fn new(key: &[u8]) -> Result<Seed, String> {
         if key.len() != 16 {
             return Err(format!("A SEED key is 16 bytes; this one is {}.", key.len()));
         }
@@ -290,7 +290,7 @@ mod tests {
              "9b9b7bfcd1813cb95d0b3618f40f5122"),
         ];
         for (key, plaintext, expected) in cases {
-            let mut cipher = Seed::new(unhex(key)).unwrap();
+            let mut cipher = Seed::new(&unhex(key)).unwrap();
             let mut out = Vec::new();
             cipher.block_encrypt(&unhex(plaintext), &mut out);
             assert_eq!(hex(&out), expected, "key {} plaintext {}", key, plaintext);
@@ -311,7 +311,7 @@ mod tests {
     /// a single-pair rotation would make it.
     #[test]
     fn test_the_two_key_halves_rotate_differently() {
-        let cipher = Seed::new((0..16).collect()).unwrap();
+        let cipher = Seed::new(&(0..16).collect::<Vec<u8>>()).unwrap();
         let keys = cipher.round_keys;
         // Sixteen rounds, each rotating one half by 8 bits: the left
         // pair turns through 64 bits after eight odd rounds and would
@@ -332,7 +332,7 @@ mod tests {
         // With Key0 == Key1 and Key2 == Key3, a symmetric schedule
         // would make the two halves equal; the real one does not.
         let key: Vec<u8> = vec![1, 2, 3, 4, 1, 2, 3, 4, 9, 9, 9, 9, 9, 9, 9, 9];
-        let cipher = Seed::new(key).unwrap();
+        let cipher = Seed::new(&key).unwrap();
         let (k0, k1) = cipher.round_keys[0];
         assert_ne!(k0, k1,
                    "the two subkey halves agree, so the signs are symmetric");
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_encryption_is_not_symmetric() {
-        let mut cipher = Seed::new((0..16).collect()).unwrap();
+        let mut cipher = Seed::new(&(0..16).collect::<Vec<u8>>()).unwrap();
         let block: Vec<u8> = (0..16).collect();
         let mut encrypted = Vec::new();
         let mut decrypted = Vec::new();
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_a_wrong_key_length_is_an_error() {
-        assert!(Seed::new(vec![0; 15]).is_err());
-        assert!(Seed::new(vec![0; 17]).is_err());
+        assert!(Seed::new(&[0; 15]).is_err());
+        assert!(Seed::new(&[0; 17]).is_err());
     }
 }

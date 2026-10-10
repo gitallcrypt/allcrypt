@@ -113,7 +113,7 @@ pub struct Sm4 {
 }
 
 impl Sm4 {
-    pub fn new(key: Vec<u8>) -> Result<Sm4, String> {
+    pub fn new(key: &[u8]) -> Result<Sm4, String> {
         if key.len() != 16 {
             return Err(format!("An SM4 key is 16 bytes; this one is {}.", key.len()));
         }
@@ -197,7 +197,7 @@ mod tests {
     fn test_the_specification_example() {
         let key = unhex("0123456789abcdeffedcba9876543210");
         let plaintext = unhex("0123456789abcdeffedcba9876543210");
-        let mut cipher = Sm4::new(key).unwrap();
+        let mut cipher = Sm4::new(&key).unwrap();
         let mut out = Vec::new();
         cipher.block_encrypt(&plaintext, &mut out);
         assert_eq!(hex(&out), "681edf34d206965e86b3e94f536e4246");
@@ -214,7 +214,7 @@ mod tests {
     fn test_the_specification_million_round_example() {
         let key = unhex("0123456789abcdeffedcba9876543210");
         let mut block = unhex("0123456789abcdeffedcba9876543210");
-        let mut cipher = Sm4::new(key).unwrap();
+        let mut cipher = Sm4::new(&key).unwrap();
         for _ in 0..1_000_000 {
             let mut out = Vec::with_capacity(16);
             cipher.block_encrypt(&block, &mut out);
@@ -233,7 +233,7 @@ mod tests {
     fn test_encryption_is_not_symmetric() {
         let key = unhex("0123456789abcdeffedcba9876543210");
         let plaintext = unhex("0123456789abcdeffedcba9876543210");
-        let mut cipher = Sm4::new(key).unwrap();
+        let mut cipher = Sm4::new(&key).unwrap();
         let mut encrypted = Vec::new();
         let mut decrypted = Vec::new();
         cipher.block_encrypt(&plaintext, &mut encrypted);
@@ -306,8 +306,8 @@ mod tests {
 
     #[test]
     fn test_a_wrong_key_length_is_an_error() {
-        assert!(Sm4::new(vec![0; 15]).is_err());
-        assert!(Sm4::new(vec![0; 17]).is_err());
-        assert!(Sm4::new(vec![]).is_err());
+        assert!(Sm4::new(&[0; 15]).is_err());
+        assert!(Sm4::new(&[0; 17]).is_err());
+        assert!(Sm4::new(&[]).is_err());
     }
 }

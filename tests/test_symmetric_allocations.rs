@@ -160,7 +160,7 @@ fn test_ctr_acpkm_allocates_per_section() {
 #[test]
 fn test_the_gost_mac_allocates_per_stream() {
     let _held = serialised();
-    let mut mac = GostCrypto::new(vec![7; 32], GostCrypto::DEFAULT_PARAM_SET.to_string()).unwrap();
+    let mut mac = GostCrypto::new(&[7; 32], GostCrypto::DEFAULT_PARAM_SET).unwrap();
     let input = message(8);
     let (count, ()) = allocations(|| {
         // Ragged pieces, so the partial-block path runs as well.
@@ -176,7 +176,7 @@ fn test_the_gost_mac_allocates_per_stream() {
 fn test_rijndael_allocates_nothing_per_block() {
     let _held = serialised();
     for block in [16usize, 24, 32] {
-        let mut cipher = Rijndael::new(block, vec![8; 32]).unwrap();
+        let mut cipher = Rijndael::new(block, &[8; 32]).unwrap();
         let input = message(block);
         let mut out = Vec::with_capacity(input.len());
         let (count, ()) = allocations(|| {

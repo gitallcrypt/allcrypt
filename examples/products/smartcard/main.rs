@@ -93,6 +93,8 @@ mod base64;
 mod inflate;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[cfg(test)]
 #[path = "../shared/fixtures.rs"]
 mod fixtures;
@@ -115,17 +117,10 @@ use card::Card;
 
 // ------------------------------------------------------------- helpers --
 
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use cli::hex;
 
 pub fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let text: String = text.chars().filter(|c| !c.is_whitespace() && *c != ':').collect();
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("{text}: not hex."));
-    }
-    Ok((0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex")).collect())
+    cli::unhex(text, &[' ', '\t', '\r', '\n', ':'])
 }
 
 /// A gzip member's contents (RFC 1952): the header skipped and the

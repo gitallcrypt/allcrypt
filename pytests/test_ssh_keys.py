@@ -72,6 +72,18 @@ def test_their_keys_read_here(label, make):
         md5[i:i + 2] for i in range(0, 32, 2))
 
 
+def test_a_whole_block_of_padding_is_read():
+    """python-cryptography pads an already aligned private section with a
+    whole block, which OpenSSH reads; about half of its P-256 keys end up
+    so. A bound of one block refused them, and the test above caught it
+    only when the one key it drew was among them. Forty keys make a run
+    with none of them a one in 2^40 chance."""
+    for _ in range(40):
+        key = ec.generate_private_key(ec.SECP256R1())
+        text = key.private_bytes(PEM, OPENSSH_PRIVATE, NOTHING).decode()
+        allcrypt.SshKey.from_openssh(text)
+
+
 @pytest.mark.parametrize("kind,bits", OURS, ids=[f"{k}{b or ''}" for k, b in OURS])
 def test_our_keys_read_there(kind, bits):
     key = allcrypt.SshKey.generate(kind, bits, comment="test@allcrypt")

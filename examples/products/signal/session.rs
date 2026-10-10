@@ -70,10 +70,10 @@ pub fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8], length: usize) -> Vec<u8> {
 
 /// AES-256-CBC with PKCS#7 padding.
 pub fn encrypt(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-    let mut cipher = AesCrypto::new(key.to_vec()).map_err(|_| Error::UNKNOWN)?;
+    let mut cipher = AesCrypto::new(key).map_err(|_| Error::UNKNOWN)?;
     let padded = allcrypt::api::pad_pkcs7(plaintext, 16).map_err(|_| Error::UNKNOWN)?;
     let mut out = Vec::with_capacity(padded.len());
-    cipher.cbc_encrypt(&padded, &mut out, iv.to_vec()).map_err(|_| Error::UNKNOWN)?;
+    cipher.cbc_encrypt(&padded, &mut out, iv).map_err(|_| Error::UNKNOWN)?;
     Ok(out)
 }
 
@@ -83,9 +83,9 @@ pub fn decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Erro
     if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
         return Err(Error::UNKNOWN);
     }
-    let mut cipher = AesCrypto::new(key.to_vec()).map_err(|_| Error::UNKNOWN)?;
+    let mut cipher = AesCrypto::new(key).map_err(|_| Error::UNKNOWN)?;
     let mut out = Vec::with_capacity(ciphertext.len());
-    cipher.cbc_decrypt(ciphertext, &mut out, iv.to_vec()).map_err(|_| Error::UNKNOWN)?;
+    cipher.cbc_decrypt(ciphertext, &mut out, iv).map_err(|_| Error::UNKNOWN)?;
     allcrypt::api::unpad_pkcs7(&out, 16).map_err(|_| Error::UNKNOWN)
 }
 

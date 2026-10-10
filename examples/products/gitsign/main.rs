@@ -69,35 +69,20 @@ mod inflate;
 mod bunzip2;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
 use std::io::{Read, Write};
 
-const SWITCHES: [&str; 3] = ["--passphrase-stdin", "--sha256", "-"];
+use cli::value;
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if SWITCHES.contains(&arg.as_str()) {
-            if arg == "-" {
-                out.push(arg);
-            }
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
-}
-
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    cli::positional(args, &["--passphrase-stdin", "--sha256"], &[])
 }
 
 fn values(args: &[String], name: &str) -> Vec<String> {

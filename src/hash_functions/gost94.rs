@@ -57,6 +57,17 @@ same compression. Streebog kept the last two ideas.
     nobody. The default here is CryptoPro, because that is what the
     wire carries; the tests use both and say which.
 
+  * **The empty message has two answers in the wild.** This file, the
+    second reading in `scripts/diff_check.py` and today's gost-engine
+    compress a zero block for it, since the standard's step 2 runs for
+    any remainder of 256 bits or fewer and zero is one. Bouncy Castle,
+    gost89 and the gost engine that shipped with OpenSSL 1.0 compress
+    nothing when nothing is left, and their `981e5f3c...` (CryptoPro)
+    is the value usually published. Every non-empty message gets the
+    same digest from all of them. GOST 34.311-95 here follows the same
+    rule as the other two parameter sets, and `docs/pitfalls.md` says
+    so.
+
   * **`A` and `psi` shift in opposite directions.** `A` moves the low
     64 bit word out and a fresh one in at the top; `psi` moves the low
     16 bit word out and a fresh one in at the top. They look alike and
@@ -89,6 +100,9 @@ const BLOCK: usize = 32;
 pub const CRYPTOPRO_PARAM_SET: &str = "id-GostR3411-94-CryptoProParamSet";
 /// The one the standard's own examples use, and nothing else.
 pub const TEST_PARAM_SET: &str = "id-GostR3411-94-TestParamSet";
+/// Ukraine's: GOST 34.311-95 is this hash under the DSTU 4145 default
+/// DKE, and is what Ukrainian signatures and key containers hash with.
+pub const DSTU_PARAM_SET: &str = crate::block_ciphers::gost::DSTU_PARAM_SET;
 
 #[derive(Clone)]
 pub struct Gost94 {
@@ -144,9 +158,12 @@ impl Gost94 {
                                     CRYPTOPRO_PARAM_SET),
             TEST_PARAM_SET => (GostCrypto::sbox_named(TEST_PARAM_SET)?,
                                TEST_PARAM_SET),
+            DSTU_PARAM_SET => (GostCrypto::sbox_named(DSTU_PARAM_SET)?,
+                               DSTU_PARAM_SET),
             other => return Err(format!(
-                "GOST R 34.11-94 has two parameter sets here, {:?} and {:?}; \
-                 {:?} is neither.", CRYPTOPRO_PARAM_SET, TEST_PARAM_SET, other)),
+                "GOST R 34.11-94 has three parameter sets here, {:?}, {:?} \
+                 and {:?} (GOST 34.311-95); {:?} is none of them.",
+                CRYPTOPRO_PARAM_SET, TEST_PARAM_SET, DSTU_PARAM_SET, other)),
         };
         let mut hash = Gost94 {
             h: [0; BLOCK],
@@ -154,7 +171,7 @@ impl Gost94 {
             length: [0; BLOCK],
             pending: [0; BLOCK],
             pending_len: 0,
-            cipher: GostCrypto::new_with_sbox(vec![0; 32], sbox)?,
+            cipher: GostCrypto::new_with_sbox(&[0; 32], &sbox)?,
             name: canonical,
         };
         hash.update(data);
@@ -208,9 +225,13 @@ impl Gost94 {
 impl HashFunction for Gost94 {
     fn name(&self) -> String {
         if self.name == TEST_PARAM_SET {
-            "GOST R 34.11-94 (test S-box)".to_string()
+            "gost94_test".to_string()
+        } else if self.name == DSTU_PARAM_SET {
+            "gost34311".to_string()
         } else {
-            "GOST R 34.11-94".to_string()
+            // CRYPTOPRO_PARAM_SET, the only other one `with_param_set`
+            // accepts.
+            "gost94".to_string()
         }
     }
 
@@ -830,8 +851,8 @@ mod tests {
         let keys = keys_for(&m, &h);
         let mut s = [0u8; BLOCK];
         for (i, key) in keys.iter().enumerate() {
-            let mut cipher = GostCrypto::new_with_sbox(key.to_vec(),
-                                                       sbox.clone()).unwrap();
+            let mut cipher = GostCrypto::new_with_sbox(key,
+                                                       &sbox).unwrap();
             let mut out = Vec::new();
             cipher.block_encrypt(&h[i * 8..(i + 1) * 8], &mut out);
             s[i * 8..(i + 1) * 8].copy_from_slice(&out);
@@ -852,7 +873,7 @@ mod tests {
         let values = assignments("7.3.1.  Hash", "\n7.3.2.");
         let m = named(&values, "M", 0);
         let sbox = GostCrypto::sbox_named(TEST_PARAM_SET).unwrap();
-        let mut cipher = GostCrypto::new_with_sbox(vec![0; 32], sbox).unwrap();
+        let mut cipher = GostCrypto::new_with_sbox(&[0; 32], &sbox).unwrap();
         let result = chi(&m, &[0u8; BLOCK], &mut cipher);
         assert_eq!(result, named(&values, "KSI", 0),
                    "chi(M, 0) of the first example");

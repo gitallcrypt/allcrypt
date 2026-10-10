@@ -263,14 +263,14 @@ fn test_a_scheme_bound_to_another_curve_is_refused() {
     // The right scheme verifies, so the refusal below is about the
     // binding and not about the signature being broken.
     let right = scheme::gost_13_for_curve("gost256-a").unwrap();
-    server13::verify_signature(&pki.leaf_der, right, content, &bytes)
+    server13::verify_signature(&pki.leaf_der, right, content, &bytes, &allcrypt::x509::verify::Policy::default())
         .expect("the correct scheme should verify");
 
     // `256c` is bound to gost256-b. The signature is valid, the key is a
     // GOST key, and the pairing is wrong.
     let wrong = scheme::GOSTR34102012_256C;
     assert_ne!(right, wrong);
-    let error = server13::verify_signature(&pki.leaf_der, wrong, content, &bytes)
+    let error = server13::verify_signature(&pki.leaf_der, wrong, content, &bytes, &allcrypt::x509::verify::Policy::default())
         .expect_err("a scheme bound to another curve must be refused");
     assert!(error.detail.contains("gost256-b"), "{}", error.detail);
 }

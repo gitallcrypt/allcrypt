@@ -302,6 +302,10 @@ int allcrypt_rsa_sign_pss(const allcrypt_rsa_key *key, const char *hash_name,
 int allcrypt_rsa_decrypt(const allcrypt_rsa_key *key, const uint8_t *ciphertext,
                          size_t ciphertext_len, allcrypt_buffer *plaintext);
 
+/* No padding: c^d mod n, written at the key's size with leading zeros. */
+int allcrypt_rsa_decrypt_raw(const allcrypt_rsa_key *key, const uint8_t *ciphertext,
+                             size_t ciphertext_len, allcrypt_buffer *plaintext);
+
 /* OAEP with MGF1 over the same hash. The label is usually empty. */
 int allcrypt_rsa_decrypt_oaep(const allcrypt_rsa_key *key, const char *hash_name,
                               const uint8_t *label, size_t label_len,
@@ -327,6 +331,10 @@ int allcrypt_rsa_encrypt(const allcrypt_rsa_public_key *key, const uint8_t *mess
 int allcrypt_rsa_encrypt_oaep(const allcrypt_rsa_public_key *key, const char *hash_name,
                               const uint8_t *label, size_t label_len, const uint8_t *message,
                               size_t message_len, allcrypt_buffer *ciphertext);
+/* No padding: m^e mod n, the message a big-endian integer below the modulus.
+   Deterministic, unlike the two above. */
+int allcrypt_rsa_encrypt_raw(const allcrypt_rsa_public_key *key, const uint8_t *message,
+                             size_t message_len, allcrypt_buffer *ciphertext);
 void allcrypt_rsa_public_key_free(allcrypt_rsa_public_key *key);
 
 #ifdef __cplusplus

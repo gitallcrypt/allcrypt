@@ -336,7 +336,7 @@ impl Streebog {
 
 impl HashFunction for Streebog {
     fn name(&self) -> String {
-        format!("Streebog-{}", self.digest_bits)
+        format!("streebog{}", self.digest_bits)
     }
 
     fn digest_len(&self) -> usize {
@@ -542,8 +542,8 @@ mod tests {
 
     #[test]
     fn test_the_name_and_sizes() {
-        assert_eq!(Streebog::new(b"").name(), "Streebog-512");
-        assert_eq!(Streebog::new_256(b"").name(), "Streebog-256");
+        assert_eq!(Streebog::new(b"").name(), "streebog512");
+        assert_eq!(Streebog::new_256(b"").name(), "streebog256");
         assert_eq!(Streebog::new(b"").digest_len(), 64);
         assert_eq!(Streebog::new_256(b"").digest_len(), 32);
         assert_eq!(Streebog::new(b"").block_size(), 64);

@@ -291,8 +291,13 @@ macro_rules! blake2 {
             fn name(&self) -> String {
                 // The output length is part of the name because it is
                 // part of the function: two lengths are different
-                // hashes, not a truncation.
-                format!("{}-{}", $label, self.digest_len * 8)
+                // hashes, not a truncation. The full length is the bare
+                // name, as `AnyHash::new` reads it.
+                if self.digest_len == $max_out {
+                    $label.to_string()
+                } else {
+                    format!("{}_{}", $label, self.digest_len * 8)
+                }
             }
 
             fn digest_len(&self) -> usize { self.digest_len }

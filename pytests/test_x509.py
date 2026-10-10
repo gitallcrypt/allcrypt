@@ -396,6 +396,13 @@ def test_rsa_chain():
         chain.verify(min_rsa_bits=4096)
     assert "bits" in str(info.value)
 
+    # And the ceiling, which is a bound on cost rather than strength:
+    # lowered below the issuers' keys, the chain is refused before any
+    # of their signatures is checked.
+    with pytest.raises(allcrypt.CryptoError) as info:
+        chain.verify(max_key_bits=1024, min_rsa_bits=512)
+    assert "max_key_bits" in str(info.value)
+
 
 def test_a_small_rsa_key_is_refused_by_default():
     chain = Chain(key_factory=lambda: rsa.generate_private_key(
@@ -989,3 +996,29 @@ def test_an_unsigned_error_status_is_never_an_answer():
                                               der, NOW)
         assert answer == "unknown", status
         assert "no signed statement" in detail
+
+
+def test_a_malformed_subject_alt_name_is_listed_not_fatal():
+    """A NUL inside a dNSName used to make the whole certificate
+    unparseable. It is listed now, as malformed and in hex, and matches
+    nothing - neither half of the null-prefix name."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    # python-cryptography refuses to write such a name, so the extension
+    # is written by hand: SEQUENCE { [2] "evil.test\0.good.test", [2] "good.test" }.
+    odd = b"evil.test\x00.good.test"
+    names = bytes([0x82, len(odd)]) + odd + b"\x82\x09good.test"
+    value = bytes([0x30, len(names)]) + names
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "evil.test")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+                   .public_key(key.public_key()).serial_number(1)
+                   .not_valid_before(now - datetime.timedelta(days=1))
+                   .not_valid_after(now + datetime.timedelta(days=1))
+                   .add_extension(x509.UnrecognizedExtension(
+                       x509.ObjectIdentifier("2.5.29.17"), value), critical=False)
+                   .sign(key, hashes.SHA256()))
+    parsed = allcrypt.Certificate(certificate.public_bytes(serialization.Encoding.DER))
+    assert parsed.to_dict()["subjectAltName"] == [("DNS (malformed)", odd.hex()),
+                                                  ("DNS", "good.test")]
+    assert parsed.matches_hostname("good.test")
+    assert not parsed.matches_hostname("evil.test")

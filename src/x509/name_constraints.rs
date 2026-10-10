@@ -196,7 +196,7 @@ fn read_subtrees<'a>(reader: &mut Reader<'a>, number: u32)
 /// against names of its own kind.
 fn form(name: &GeneralName<'_>) -> u32 {
     match name {
-        GeneralName::Other(number, _) => *number,
+        GeneralName::Other(number, _) | GeneralName::Malformed(number, _) => *number,
         GeneralName::Email(_) => 1,
         GeneralName::Dns(_) => 2,
         GeneralName::DirectoryName(_) => 4,
@@ -486,6 +486,18 @@ fn check_one(certificate: &Certificate<'_>, constraints: &NameConstraints<'_>)
     for name in &names {
         let this_form = form(name);
 
+        // A malformed name of a constrained form cannot be checked: it is
+        // not inside a permitted subtree, and nobody can say it is not
+        // inside an excluded one. Refused, since passing it would make
+        // an unreadable name the way round an excluded subtree.
+        if let GeneralName::Malformed(number, _) = name {
+            if constrained.contains(number) {
+                return Err(format!("{} cannot be checked against the issuer's \
+                                    name constraints.", describe(name)));
+            }
+            continue;
+        }
+
         // Excluded first and unconditionally: "Any name matching a
         // restriction in the excludedSubtrees field is invalid regardless
         // of information appearing in the permittedSubtrees."
@@ -530,6 +542,7 @@ fn describe(name: &GeneralName<'_>) -> String {
                                                  bytes.len()),
         GeneralName::DirectoryName(_) => "the subject name".to_string(),
         GeneralName::Other(number, _) => format!("a name of form [{}]", number),
+        GeneralName::Malformed(number, _) => format!("a malformed name of form [{}]", number),
     }
 }
 

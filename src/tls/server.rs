@@ -310,15 +310,17 @@ pub struct ServerConfig {
     /// keys wants and is not what "verified" usually means. Say so at the
     /// call site if that is the intent.
     pub client_roots: Option<crate::trust::TrustStore>,
-    /// The key session tickets are sealed under.
+    /// The keys session tickets are sealed and opened with.
     ///
     /// `None` makes each connection generate its own, which seals tickets
     /// nothing else can open - useful for a single connection and useless
     /// for resumption, which is between *two* of them. A server that wants
-    /// clients to resume shares one key across every connection it serves,
-    /// and `TicketKey::from_bytes` is how a deployment configures one that
-    /// also survives a restart.
-    pub ticket_key: Option<Arc<crate::tls::tickets::TicketKey>>,
+    /// clients to resume shares one ring across every connection it
+    /// serves; `TicketKey::from_bytes` is how a deployment configures keys
+    /// that also survive a restart, and `TicketKeys::rotate` changes the
+    /// sealing key on the shared ring without ending the sessions the old
+    /// one sealed.
+    pub ticket_keys: Option<Arc<crate::tls::tickets::TicketKeys>>,
     /// The current time, seconds since the epoch.
     ///
     /// Supplied rather than read, the same way `ClientConfig` takes it:
@@ -363,7 +365,7 @@ pub struct ServerConfig {
     /// The strike register that refuses a 0-RTT flight already seen.
     ///
     /// Shared across connections - a register per connection has seen
-    /// nothing - so it is an `Arc<Mutex<..>>` the way `ticket_key` is an
+    /// nothing - so it is an `Arc<Mutex<..>>` the way `ticket_keys` is an
     /// `Arc`. `None` with `max_early_data` set means early data is
     /// accepted with no replay check at all, which is a decision the
     /// caller has to make rather than a default: it is right behind a
@@ -435,7 +437,7 @@ impl ServerConfig {
             require_client_certificate: false,
             client_roots: None,
             client_policy: crate::x509::verify::Policy::default(),
-            ticket_key: None,
+            ticket_keys: None,
             now: 0,
             session_tickets: 0,
             ticket_lifetime: crate::tls::tickets::DEFAULT_LIFETIME,
@@ -634,11 +636,10 @@ pub struct ServerConnection {
     /// arrived. RFC 8446 appendix D.4 has each side send exactly one,
     /// so a second is a peer - or a middlebox - injecting records.
     saw_compat_ccs: bool,
-    /// The key this server seals its session tickets under, generated once
-    /// per connection object. A server that wants tickets to survive a
-    /// restart, or to work across a fleet, passes the same key in - see
-    /// `ServerConnection::with_ticket_key`.
-    ticket_key: Arc<crate::tls::tickets::TicketKey>,
+    /// The keys this server seals and opens its session tickets with:
+    /// `ServerConfig::ticket_keys`, or a ring of one generated for this
+    /// connection.
+    ticket_keys: Arc<crate::tls::tickets::TicketKeys>,
     /// The chain the client presented, leaf first. Empty when none was
     /// asked for, or when the client answered the request with nothing.
     client_certificates: Vec<Vec<u8>>,
@@ -678,9 +679,9 @@ impl ServerConnection {
             curves::by_name(curve).map_err(Error::local)?;
         }
         // Resolved before `config` is moved into the connection.
-        let ticket_key = match &config.ticket_key {
-            Some(key) => Arc::clone(key),
-            None => Arc::new(crate::tls::tickets::TicketKey::generate()
+        let ticket_keys = match &config.ticket_keys {
+            Some(keys) => Arc::clone(keys),
+            None => Arc::new(crate::tls::tickets::TicketKeys::generate()
                 .map_err(Error::local)?),
         };
         let mut server_random = [0u8; 32];
@@ -725,7 +726,7 @@ impl ServerConnection {
             sent_retry_request: false,
             retry_group: None,
             saw_compat_ccs: false,
-            ticket_key,
+            ticket_keys,
             transcript_prefix: Vec::new(),
             client_certificates: Vec::new(),
             client_certificate_verified: false,
@@ -1740,7 +1741,8 @@ impl ServerConnection {
         let leaf = self.client_certificates.first()
             .ok_or_else(|| Error::local("No client certificate to verify."))?;
         crate::tls::server13::verify_signature_12(leaf, verify.scheme, &signed,
-                                                  &verify.signature)?;
+                                                  &verify.signature,
+                                                  &self.config.client_policy)?;
 
         // Only now is the chain worth judging: a chain that verifies
         // against a root but did not sign this handshake is somebody
@@ -1783,6 +1785,8 @@ impl ServerConnection {
 
         let ok = match &certificate.public_key {
             PublicKey::Rsa { n, e } => {
+                crate::tls::client::key_ceiling(&self.config.client_policy,
+                                                "The client's RSA key", n.bit_len())?;
                 let key = rsa::RsaPublicKey::new(n.clone(), e.clone())
                     .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
                 rsa::verify_pkcs1v15_raw(&key, &digest, &verify.signature)
@@ -1987,7 +1991,7 @@ impl ServerConnection {
         // to go in. After a HelloRetryRequest the prefix is the synthetic
         // `message_hash` and the retry itself.
         let resumption = server13::Resumption {
-            key: &self.ticket_key,
+            keys: &self.ticket_keys,
             prefix: &self.transcript_prefix,
             hello_bytes: &message.raw,
             now: self.config.now,
@@ -2203,7 +2207,8 @@ impl ServerConnection {
         let leaf = self.client_certificates.first()
             .ok_or_else(|| Error::local("No client certificate to verify against."))?;
         crate::tls::server13::verify_signature(leaf, verify.scheme,
-                                               &content, &verify.signature)?;
+                                               &content, &verify.signature,
+                                               &self.config.client_policy)?;
 
         // Only now is the chain worth judging: a chain that verifies against
         // a root but did not sign this transcript is somebody else's
@@ -2373,7 +2378,11 @@ impl ServerConnection {
     /// one handshake do not give each other up. They go out under the
     /// application keys, which are already installed on the writer.
     fn issue_session_tickets(&mut self) -> Result<(), Error> {
-        let count = self.config.session_tickets;
+        // A key that has sealed its share of random nonces issues no more
+        // until it is rotated: no ticket is a full handshake next time,
+        // where a failure here would end this connection.
+        let count = u64::from(self.config.session_tickets)
+            .min(self.ticket_keys.seals_left());
         if count == 0 {
             return Ok(());
         }
@@ -2393,7 +2402,7 @@ impl ServerConnection {
 
         for _ in 0..count {
             let ticket = crate::tls::tickets::issue(
-                &self.ticket_key, prf, suite, &master,
+                &self.ticket_keys, prf, suite, &master,
                 self.config.now, self.config.ticket_lifetime,
                 self.config.max_early_data,
                 // The name this connection was for, sealed into the
@@ -2764,10 +2773,10 @@ mod tests {
         let mut config = server_config(pki);
         config.now = now;
         config.session_tickets = 2;
-        config.ticket_key = Some(Arc::new(
+        config.ticket_keys = Some(Arc::new(crate::tls::tickets::TicketKeys::new(
             crate::tls::tickets::TicketKey::from_bytes(
                 &(0..crate::tls::tickets::TicketKey::byte_length() as u8)
-                    .collect::<Vec<u8>>()).unwrap()));
+                    .collect::<Vec<u8>>()).unwrap())));
         config
     }
 
@@ -2777,6 +2786,48 @@ mod tests {
         config.min_version = Version::TLS13;
         config.policy.now = now;
         config
+    }
+
+    /// Tickets are issued from a shared ring; one sealed before a rotation
+    /// still resumes after it; and a ring whose sealing key is at its
+    /// nonce limit completes the handshake and issues nothing, rather
+    /// than failing the connection over a ticket.
+    #[test]
+    fn test_tickets_survive_rotation_and_stop_at_the_limit() {
+        use crate::tls::tickets::{TicketKey, TicketKeys};
+        let now = 1_700_000_000;
+        let pki = pki();
+        let keys = Arc::new(TicketKeys::new(
+            TicketKey::from_bytes(&[1; TicketKey::byte_length()]).unwrap()));
+        let config = || {
+            let mut config = resuming_config(&pki, now);
+            config.ticket_keys = Some(Arc::clone(&keys));
+            config
+        };
+
+        let mut server = ServerConnection::new(config()).unwrap();
+        let mut client = ClientConnection::new(resuming_client(&pki, now), "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        let tickets = client.take_tickets();
+        assert_eq!(tickets.len(), 2);
+
+        keys.rotate(TicketKey::from_bytes(&[2; TicketKey::byte_length()]).unwrap()).unwrap();
+        let mut resuming = resuming_client(&pki, now);
+        resuming.tickets = tickets;
+        let mut server = ServerConnection::new(config()).unwrap();
+        let mut client = ClientConnection::new(resuming, "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        assert!(client.is_established());
+        assert!(client.resumed(), "a ticket sealed before the rotation did not resume");
+        let fresh = client.take_tickets();
+        assert_eq!(&fresh[0].identity[..8], &[2; 8], "the new key did not seal");
+
+        keys.set_sealed(crate::tls::tickets::MAX_SEALS_PER_KEY);
+        let mut server = ServerConnection::new(config()).unwrap();
+        let mut client = ClientConnection::new(resuming_client(&pki, now), "leaf.test").unwrap();
+        pump(&mut client, &mut server);
+        assert!(client.is_established() && server.is_established());
+        assert!(client.take_tickets().is_empty());
     }
 
     /// One connection that collects tickets, then one that offers them
@@ -3820,7 +3871,8 @@ mod tests {
         // The signature is genuine, so the refusal below is about the
         // transcript being empty and not about the signature.
         crate::tls::server13::verify_signature_12(
-            &pki.leaf_der, SignatureScheme::ECDSA_SHA256, &[], &signature)
+            &pki.leaf_der, SignatureScheme::ECDSA_SHA256, &[], &signature,
+            &crate::x509::verify::Policy::default())
             .expect("a signature over the empty concatenation verifies");
 
         let body = crate::tls::handshake::CertificateVerify12 {

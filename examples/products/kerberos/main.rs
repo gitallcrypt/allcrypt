@@ -33,11 +33,17 @@ mod files;
 
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
 use std::io::{Read, Write};
+
+use cli::{has, hex, value};
 
 use crypto::Enctype;
 use files::{Ccache, KeytabEntry, Principal};
@@ -53,23 +59,7 @@ const DEFAULT_ENCTYPES: [&str; 4] = ["aes256-cts-hmac-sha1-96", "aes128-cts-hmac
 const SWITCHES: [&str; 2] = ["--password-stdin", "--keys"];
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if SWITCHES.contains(&arg.as_str()) {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
-}
-
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    cli::positional(args, &SWITCHES, &[])
 }
 
 fn values<'a>(args: &'a [String], name: &str) -> Vec<&'a str> {
@@ -81,29 +71,12 @@ fn required<'a>(args: &'a [String], name: &str) -> Result<&'a str, String> {
     value(args, name).ok_or_else(|| format!("{name} is required."))
 }
 
-fn has(args: &[String], name: &str) -> bool {
-    args.iter().any(|a| a == name)
-}
-
 fn password(args: &[String]) -> Result<Vec<u8>, String> {
-    if has(args, "--password-stdin") {
-        return passphrase::read_line("Password: ");
-    }
-    value(args, "--password").map(|p| p.as_bytes().to_vec())
-        .ok_or_else(|| "Give --password or --password-stdin.".to_string())
+    passphrase::required_from_args(args)
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let text: String = text.chars().filter(|c| !c.is_whitespace() && *c != ':').collect();
-    if !text.len().is_multiple_of(2) || !text.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("Not hex: {text}"));
-    }
-    Ok((0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap_or(0)).collect())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    cli::unhex(text, &[' ', '\t', '\r', '\n', ':'])
 }
 
 fn number<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<T>, String> {

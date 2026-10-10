@@ -460,7 +460,7 @@ pub fn keepass_aes_kdf(key: &[u8], seed: &[u8], rounds: u64) -> Result<[u8; 32],
                             and {}.", key.len(), seed.len()));
     }
     use crate::block_ciphers::BlockCipher;
-    let mut cipher = crate::block_ciphers::aes::AesCrypto::new(seed.to_vec())?;
+    let mut cipher = crate::block_ciphers::aes::AesCrypto::new(seed)?;
     let mut block = key.to_vec();
     let mut out = Vec::with_capacity(32);
     for _ in 0..rounds {
@@ -904,7 +904,7 @@ mod tests {
         use crate::block_ciphers::aes::AesCrypto;
         use crate::block_ciphers::BlockCipher;
         let (key, seed): (Vec<u8>, Vec<u8>) = ((0..32).collect(), (100..132).collect());
-        let mut aes = AesCrypto::new(seed.clone()).unwrap();
+        let mut aes = AesCrypto::new(&seed).unwrap();
         let mut halves = Vec::new();
         for half in key.chunks(16) {
             let mut block = half.to_vec();

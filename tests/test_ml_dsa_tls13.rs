@@ -147,9 +147,11 @@ fn test_a_scheme_naming_another_parameter_set_is_refused() {
     let content = b"the CertificateVerify content";
     let signature = pki.leaf_key.sign(content, &[], None).unwrap();
 
-    server13::verify_signature(&pki.leaf_der, scheme::MLDSA65, content, &signature)
+    let policy = allcrypt::x509::verify::Policy::default();
+    server13::verify_signature(&pki.leaf_der, scheme::MLDSA65, content, &signature, &policy)
         .expect("the right scheme verifies");
-    let error = server13::verify_signature(&pki.leaf_der, scheme::MLDSA44, content, &signature)
+    let error = server13::verify_signature(&pki.leaf_der, scheme::MLDSA44, content, &signature,
+                                           &policy)
         .expect_err("ML-DSA-44's scheme with an ML-DSA-65 key");
     assert!(error.detail.contains("mldsa44") && error.detail.contains("ML-DSA-65"),
             "{}", error.detail);
@@ -159,7 +161,7 @@ fn test_a_scheme_naming_another_parameter_set_is_refused() {
     let with_context = pki.leaf_key.sign(content, b"TLS 1.3, server CertificateVerify", None)
         .unwrap();
     assert!(server13::verify_signature(&pki.leaf_der, scheme::MLDSA65, content,
-                                       &with_context).is_err());
+                                       &with_context, &policy).is_err());
 }
 
 /// Below TLS 1.3 an ML-DSA key signs nothing: draft-ietf-tls-mldsa

@@ -70,7 +70,7 @@ fn key_datum(method: u32, key: &[u8]) -> Vec<u8> {
 
 /// AES-256-CCM, no associated data, laid out nonce, tag, ciphertext.
 fn seal(key: &[u8], nonce: &[u8], plain: &[u8]) -> Result<Vec<u8>, String> {
-    let (ciphertext, tag) = ccm::encrypt(&mut AesCrypto::new(key.to_vec())?, nonce, &[], plain,
+    let (ciphertext, tag) = ccm::encrypt(&mut AesCrypto::new(key)?, nonce, &[], plain,
                                          16)?;
     Ok([nonce, &tag, &ciphertext].concat())
 }

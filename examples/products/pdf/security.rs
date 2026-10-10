@@ -54,7 +54,7 @@ fn md5(parts: &[&[u8]]) -> Vec<u8> {
 /// then read as a wrong password.
 fn rc4(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(data.len());
-    RC4::new(key.to_vec())?.crypt(data, &mut out);
+    RC4::new(key)?.crypt(data, &mut out);
     Ok(out)
 }
 
@@ -91,7 +91,7 @@ pub enum Which {
     Owner,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Security {
     pub v: i64,
     pub r: i64,
@@ -109,6 +109,19 @@ pub struct Security {
     /// mismatch means the permissions were edited; qpdf warns and
     /// carries on, and so does this, saying so in `info`.
     pub perms_match: Option<bool>,
+}
+
+/// `key` is the file key, which opens every object in the file.
+impl std::fmt::Debug for Security {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Security").field("v", &self.v).field("r", &self.r)
+            .field("key", &crate::hidden::HiddenBytes(&self.key))
+            .field("streams", &self.streams).field("strings", &self.strings)
+            .field("files", &self.files).field("filters", &self.filters)
+            .field("encrypt_metadata", &self.encrypt_metadata)
+            .field("permissions", &self.permissions)
+            .field("perms_match", &self.perms_match).finish()
+    }
 }
 
 fn bytes<'a>(dict: &'a Dict, key: &str) -> Result<&'a [u8], String> {
@@ -254,12 +267,12 @@ impl Legacy<'_> {
 
 fn aes_cbc_no_padding(key: &[u8], iv: &[u8], data: &[u8], decrypt: bool)
                       -> Result<Vec<u8>, String> {
-    let mut cipher = AesCrypto::new(key.to_vec())?;
+    let mut cipher = AesCrypto::new(key)?;
     let mut out = Vec::with_capacity(data.len());
     if decrypt {
-        cipher.cbc_decrypt(data, &mut out, iv.to_vec())?;
+        cipher.cbc_decrypt(data, &mut out, iv)?;
     } else {
-        cipher.cbc_encrypt(data, &mut out, iv.to_vec())?;
+        cipher.cbc_encrypt(data, &mut out, iv)?;
     }
     Ok(out)
 }
@@ -415,7 +428,7 @@ impl Security {
         if perms.len() < 16 {
             return Err("/Perms is shorter than 16 bytes.".to_string());
         }
-        let mut cipher = AesCrypto::new(self.key.clone())?;
+        let mut cipher = AesCrypto::new(&self.key)?;
         let mut plain = Vec::new();
         cipher.ecb_decrypt(&perms[..16], &mut plain)?;
         if &plain[9..12] != b"adb" {
@@ -532,7 +545,7 @@ impl Security {
             perms.push(b'T');
             perms.extend_from_slice(b"adb");
             perms.extend_from_slice(&allcrypt::api::random_bytes(4)?);
-            let mut cipher = AesCrypto::new(key.clone())?;
+            let mut cipher = AesCrypto::new(&key)?;
             let mut sealed = Vec::new();
             cipher.ecb_encrypt(&perms, &mut sealed)?;
             dict.push((b"CF".to_vec(), crypt_filter("AESV3", 32)));

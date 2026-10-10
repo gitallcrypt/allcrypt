@@ -105,7 +105,7 @@ pub fn gost28147imit(iv: &[u8], key: &[u8], message: &[u8], sbox: &str)
         return Err(format!("gostIMIT28147's IV is {} bytes; got {}.",
                            BLOCK, iv.len()));
     }
-    let mut mac = GostCrypto::new(key.to_vec(), sbox.to_string())?;
+    let mut mac = GostCrypto::new(key, sbox)?;
     mac.set_mac_iv(iv);
     mac.update(message);
     let mut tag = mac.digest();
@@ -146,7 +146,7 @@ impl Stream {
         if iv.len() != BLOCK {
             return Err(format!("CNT's IV is {} bytes; got {}.", BLOCK, iv.len()));
         }
-        let mut cipher = GostCrypto::new(key.to_vec(), sbox.to_string())?;
+        let mut cipher = GostCrypto::new(key, sbox)?;
         // RFC 5830 section 6: the IV is encrypted once to make the
         // starting counter, and the counter is stepped before the first
         // gamma block. `ctr_init` on the cipher does both.
@@ -186,8 +186,8 @@ impl Stream {
                 let (key, iv) = meshing::mesh(&self.sbox, &self.key,
                                               &self.previous)?;
                 self.key = key;
-                self.cipher = GostCrypto::new(self.key.clone(),
-                                              self.sbox.clone())?;
+                self.cipher = GostCrypto::new(&self.key,
+                                              &self.sbox)?;
                 self.counter = iv.as_slice().try_into().map_err(|_| format!(
                     "The meshed IV is {} bytes, not {}.", iv.len(), BLOCK))?;
                 self.cipher.ctr_next(&mut self.counter);
@@ -224,7 +224,7 @@ struct Chain {
 
 impl Chain {
     fn new(key: &[u8], sbox: &str) -> Result<Chain, String> {
-        let mut mac = GostCrypto::new(key.to_vec(), sbox.to_string())?;
+        let mut mac = GostCrypto::new(key, sbox)?;
         // RFC 9189 section 4.3.2: IV = IV0, a string of zeros. It is
         // XORed into the first block only, which is what `set_mac_iv`
         // means - and after that the chaining state *is* the IV, so
@@ -263,8 +263,8 @@ impl Chain {
                 let state = self.mac.mac_state().to_vec();
                 let buffered = self.mac.mac_buffered().to_vec();
                 let done = self.mac.mac_blocks_done();
-                self.mac = GostCrypto::new(self.key.clone(),
-                                           self.sbox.clone())?;
+                self.mac = GostCrypto::new(&self.key,
+                                           &self.sbox)?;
                 self.mac.set_mac_iv(&state);
                 self.mac.restore_buffered(&buffered, done);
                 self.since_mesh = 0;

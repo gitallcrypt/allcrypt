@@ -33,9 +33,13 @@ use allcrypt::kdf::password::pbkdf2;
 
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
+
+use cli::hex;
 
 const SALT: usize = 64;
 const HEADER: usize = 512;
@@ -728,10 +732,6 @@ fn format(params: &Format, password: &[u8], keyfiles: &[Vec<u8>], size: usize, d
 }
 
 // -------------------------------------------------------------- CLI ---
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
 
 fn counter_stream(seed: u64) -> impl FnMut(&mut [u8]) -> Result<(), String> {
     let mut counter = 0u64;

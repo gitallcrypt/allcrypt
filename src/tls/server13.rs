@@ -297,7 +297,7 @@ pub fn prepare(config: &ServerConfig, hello: &ClientHello,
 
 /// What `prepare` needs to consider a client's PSK offer.
 pub struct Resumption<'a> {
-    pub key: &'a crate::tls::tickets::TicketKey,
+    pub keys: &'a crate::tls::tickets::TicketKeys,
     /// What the 1.3 transcript starts with before this ClientHello: empty
     /// normally, and `message_hash || HelloRetryRequest` after a retry. The
     /// binder covers all of it.
@@ -369,7 +369,7 @@ fn accept_psk(hello: &ClientHello, suite: &'static CipherSuite,
     let truncated = crate::tls::tickets::truncated_hash(
         hash, resumption.prefix, resumption.hello_bytes, offer.binders_length())
         .map_err(Error::local)?;
-    Ok(crate::tls::tickets::accept(resumption.key, &offer, suite.code, suite.prf,
+    Ok(crate::tls::tickets::accept(resumption.keys, &offer, suite.code, suite.prf,
                                    &truncated, resumption.now)
         .map(|accepted| AcceptedPsk {
             binder: offer.binders[accepted.index as usize].clone(),
@@ -1109,7 +1109,8 @@ fn sign(key: &ServerKey, chosen: u16, content: &[u8]) -> Result<Vec<u8>, Error> 
 /// arithmetic is the same and only the context string differs - which the
 /// caller has already folded into `content`.
 pub fn verify_signature(certificate_der: &[u8], chosen: u16,
-                        content: &[u8], signature: &[u8]) -> Result<(), Error> {
+                        content: &[u8], signature: &[u8],
+                        policy: &crate::x509::verify::Policy) -> Result<(), Error> {
     use crate::x509::{verify, Certificate, PublicKey};
 
     let certificate = Certificate::parse(certificate_der)
@@ -1139,6 +1140,8 @@ pub fn verify_signature(certificate_der: &[u8], chosen: u16,
                 return Err(Error::new(AlertDescription::ILLEGAL_PARAMETER,
                     "An RSA CertificateVerify must use PSS at TLS 1.3."));
             }
+            // Before the chain is judged, so the only bound there is.
+            crate::tls::client::key_ceiling(policy, "The client's RSA key", n.bit_len())?;
             let key = crate::publickey_ciphers::rsa::RsaPublicKey::new(
                 n.clone(), e.clone())
                 .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
@@ -1260,7 +1263,8 @@ pub const VERIFIABLE_12: &[u16] = &[
 /// section 5.10's rule for both 1.2 signatures. It is checked before the
 /// hash is looked up, because there is none to look up.
 pub fn verify_signature_12(certificate_der: &[u8], scheme: SignatureScheme,
-                           signed: &[u8], signature: &[u8])
+                           signed: &[u8], signature: &[u8],
+                           policy: &crate::x509::verify::Policy)
                            -> Result<(), Error> {
     use crate::x509::{verify, Certificate, PublicKey};
 
@@ -1285,6 +1289,7 @@ pub fn verify_signature_12(certificate_der: &[u8], scheme: SignatureScheme,
                     format!("The client's certificate holds an RSA key and it \
                              signed with {}.", scheme.signature_name())));
             }
+            crate::tls::client::key_ceiling(policy, "The client's RSA key", n.bit_len())?;
             let key = crate::publickey_ciphers::rsa::RsaPublicKey::new(
                 n.clone(), e.clone())
                 .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;

@@ -139,9 +139,9 @@ impl HashFunction for SHA1 {
     fn block_size(&self) -> usize { 64 }
     fn name(&self) -> String {
         if self.is_sha0 {
-            return "SHA0".to_string();
+            return "sha0".to_string();
         }
-        "SHA1".to_string()
+        "sha1".to_string()
     }
     fn digest_len(&self) -> usize {
         20

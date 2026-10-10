@@ -22,11 +22,18 @@ mod bunzip2;
 mod inflate;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/extract.rs"]
+mod extract;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
+
+use cli::value;
+use extract::destination;
 
 const LOCAL: u32 = 0x0403_4b50;
 const CENTRAL: u32 = 0x0201_4b50;
@@ -246,21 +253,6 @@ pub fn read(archive: &[u8], entry: &Entry, password: Option<&[u8]>) -> Result<Ve
     Ok(plain)
 }
 
-/// Where an entry may be written under `root`, or an error for a name
-/// that is absolute or climbs out with `..` ("zip slip").
-fn destination(root: &Path, name: &str) -> Result<PathBuf, String> {
-    let relative = Path::new(name);
-    let mut out = root.to_path_buf();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => out.push(part),
-            Component::CurDir => {}
-            _ => return Err(format!("{name}: a name that leaves the destination.")),
-        }
-    }
-    Ok(out)
-}
-
 // ---------------------------------------------------------------- write --
 
 pub enum Sealing {
@@ -362,31 +354,11 @@ pub fn write(files: &[(String, Vec<u8>)], sealing: &Sealing, password: &[u8])
 // ------------------------------------------------------------------ CLI --
 
 fn password(args: &[String]) -> Result<Option<Vec<u8>>, String> {
-    if args.iter().any(|a| a == "--password-stdin") {
-        return passphrase::read_line("Password: ").map(Some);
-    }
-    Ok(args.iter().position(|a| a == "--password")
-        .and_then(|i| args.get(i + 1)).map(|p| p.as_bytes().to_vec()))
-}
-
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    passphrase::from_args(args)
 }
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if arg == "--password-stdin" {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
+    cli::positional(args, &["--password-stdin"], &[])
 }
 
 fn describe(entry: &Entry) -> String {
@@ -609,14 +581,5 @@ mod tests {
         let entry = &entries(&archive).unwrap()[0];
         assert!((0..200u32)
             .all(|i| read(&archive, entry, Some(format!("wrong {i}").as_bytes())).is_err()));
-    }
-
-    #[test]
-    fn test_a_name_that_leaves_the_destination_is_refused() {
-        let root = Path::new("/tmp/out");
-        assert_eq!(destination(root, "a/b.txt").unwrap(), Path::new("/tmp/out/a/b.txt"));
-        for bad in ["../x", "a/../../x", "/etc/passwd"] {
-            assert!(destination(root, bad).is_err(), "{bad}");
-        }
     }
 }

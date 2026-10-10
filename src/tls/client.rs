@@ -2571,6 +2571,7 @@ impl ClientConnection {
 
         let valid = match &leaf.public_key {
             PublicKey::Rsa { n, e } if scheme::is_pss(verify.scheme) => {
+                key_ceiling(&self.config.policy, "The server's RSA key", n.bit_len())?;
                 let key = rsa::RsaPublicKey::new(n.clone(), e.clone())
                     .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
                 if key.bits() < self.config.policy.min_rsa_bits {
@@ -3263,6 +3264,11 @@ impl ClientConnection {
             .map_err(|e| Error::new(AlertDescription::ILLEGAL_PARAMETER, e))?;
         group.check_size(self.config.min_dh_bits)
             .map_err(|e| Error::new(AlertDescription::INSUFFICIENT_SECURITY, e))?;
+        // And one that is too large to compute with, before the primality
+        // test or the exchange exponentiates over it.
+        self.config.policy.check_key_ceiling("The server's Diffie-Hellman group",
+                                             group.bits())
+            .map_err(|e| Error::new(AlertDescription::ILLEGAL_PARAMETER, e))?;
         if self.config.check_dh_prime {
             group.check_prime(24)
                 .map_err(|e| Error::new(AlertDescription::ILLEGAL_PARAMETER, e))?;
@@ -3386,6 +3392,7 @@ impl ClientConnection {
                                  requires {}.", n.bit_len(),
                                 self.config.policy.min_rsa_bits)));
                 }
+                key_ceiling(&self.config.policy, "The server's RSA key", n.bit_len())?;
                 let key = rsa::RsaPublicKey::new(n.clone(), e.clone())
                     .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
                 // And the encoding differs too: before TLS 1.2 the 36 byte
@@ -3811,6 +3818,7 @@ impl ClientConnection {
                                 _ => "an unsupported key".to_string(),
                             }))),
             };
+            key_ceiling(&self.config.policy, "The server's RSA key", n.bit_len())?;
             let key = rsa::RsaPublicKey::new(n, e)
                 .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
             if key.bits() < self.config.policy.min_rsa_bits {
@@ -4752,6 +4760,15 @@ fn signature_algorithms_extension(with_gost: bool, with_dss: bool)
     let mut writer = Writer::new();
     writer.u16_list(&schemes)?;
     Ok(writer.finish())
+}
+
+/// `Policy::check_key_ceiling` as an alert, for a key taken from a peer's
+/// certificate. Shared by both ends: the server's key here, a client's in
+/// `server13`. A key that size is not weak but unusable, so the alert is
+/// `unsupported_certificate` rather than `insufficient_security`.
+pub(crate) fn key_ceiling(policy: &Policy, what: &str, bits: usize) -> Result<(), Error> {
+    policy.check_key_ceiling(what, bits)
+        .map_err(|e| Error::new(AlertDescription::UNSUPPORTED_CERTIFICATE, e))
 }
 
 #[cfg(test)]

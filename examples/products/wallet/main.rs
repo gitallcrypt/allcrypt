@@ -62,6 +62,10 @@ mod base64;
 mod json;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/inflate.rs"]
 #[cfg(test)]
 mod inflate;
@@ -73,6 +77,7 @@ use allcrypt::api;
 
 use bip32::ExtendedKey;
 use bitcoin::{AddressKind, Network};
+use cli::{has, hex, value};
 
 // ----------------------------------------------------------------- arguments --
 
@@ -80,27 +85,7 @@ const SWITCHES: [&str; 6] = ["--password-stdin", "--passphrase-stdin",
                              "--testnet", "--compressed", "--uncompressed", "--unchecked"];
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if SWITCHES.contains(&arg.as_str()) {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
-}
-
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-}
-
-fn has(args: &[String], name: &str) -> bool {
-    args.iter().any(|a| a == name)
+    cli::positional(args, &SWITCHES, &[])
 }
 
 fn number<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<T>, String> {
@@ -108,17 +93,9 @@ fn number<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<T>
         .transpose()
 }
 
+/// Hex, with or without Ethereum's `0x`.
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let text = text.strip_prefix("0x").unwrap_or(text);
-    if !text.len().is_multiple_of(2) || !text.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("Not hex: {text}"));
-    }
-    Ok((0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap_or(0)).collect())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    cli::unhex(text.strip_prefix("0x").unwrap_or(text), &[])
 }
 
 /// A password or passphrase: `--NAME P`, `--NAME-stdin`, or (when

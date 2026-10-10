@@ -227,13 +227,13 @@ impl Blowfish {
     /// it the rest of the key would be ignored, so it is refused, and
     /// so is an empty key, which `stream_word` would read as zeros and
     /// quietly key the cipher with.
-    pub fn new(key: Vec<u8>) -> Result<Blowfish, String> {
+    pub fn new(key: &[u8]) -> Result<Blowfish, String> {
         if key.is_empty() || key.len() > MAX_KEY_LEN {
             return Err(format!("Wrong key length {}. Blowfish takes 1..={} bytes.",
                                key.len(), MAX_KEY_LEN));
         }
         let mut cipher = Blowfish::initial();
-        cipher.expand0_state(&key);
+        cipher.expand0_state(key);
         Ok(cipher)
     }
 
@@ -390,7 +390,7 @@ impl BlockCipher for Blowfish {
 pub struct BlowfishLe(Blowfish);
 
 impl BlowfishLe {
-    pub fn new(key: Vec<u8>) -> Result<BlowfishLe, String> {
+    pub fn new(key: &[u8]) -> Result<BlowfishLe, String> {
         Ok(BlowfishLe(Blowfish::new(key)?))
     }
 }
@@ -433,18 +433,18 @@ mod tests {
         let swap = |b: &[u8]| [b[3], b[2], b[1], b[0], b[7], b[6], b[5], b[4]];
         for block in [[0u8; 8], [1, 2, 3, 4, 5, 6, 7, 8], [0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10]] {
             let mut le = Vec::new();
-            BlowfishLe::new(key.clone()).unwrap().block_encrypt(&block, &mut le);
+            BlowfishLe::new(&key).unwrap().block_encrypt(&block, &mut le);
             let mut be = Vec::new();
-            Blowfish::new(key.clone()).unwrap().block_encrypt(&swap(&block), &mut be);
+            Blowfish::new(&key).unwrap().block_encrypt(&swap(&block), &mut be);
             assert_eq!(le, swap(&be));
             let mut back = Vec::new();
-            BlowfishLe::new(key.clone()).unwrap().block_decrypt(&le, &mut back);
+            BlowfishLe::new(&key).unwrap().block_decrypt(&le, &mut back);
             assert_eq!(back, block);
         }
         let mut le = Vec::new();
-        BlowfishLe::new(key.clone()).unwrap().block_encrypt(&[1, 2, 3, 4, 5, 6, 7, 8], &mut le);
+        BlowfishLe::new(&key).unwrap().block_encrypt(&[1, 2, 3, 4, 5, 6, 7, 8], &mut le);
         let mut be = Vec::new();
-        Blowfish::new(key).unwrap().block_encrypt(&[1, 2, 3, 4, 5, 6, 7, 8], &mut be);
+        Blowfish::new(&key).unwrap().block_encrypt(&[1, 2, 3, 4, 5, 6, 7, 8], &mut be);
         assert_ne!(le, be);
     }
 
@@ -481,16 +481,16 @@ mod tests {
     /// accepts the 57 to 72 byte range the module documents as lenient.
     #[test]
     fn test_the_constructor_refuses_what_the_schedule_cannot_use() {
-        assert!(Blowfish::new(vec![]).is_err());
-        assert!(BlowfishLe::new(vec![]).is_err());
-        assert!(Blowfish::new(vec![1; 73]).is_err());
-        assert!(BlowfishLe::new(vec![1; 73]).is_err());
-        assert!(Blowfish::new(vec![1; 1]).is_ok());
-        assert!(Blowfish::new(vec![1; 56]).is_ok());
-        assert!(Blowfish::new(vec![1; 72]).is_ok());
+        assert!(Blowfish::new(&[]).is_err());
+        assert!(BlowfishLe::new(&[]).is_err());
+        assert!(Blowfish::new(&[1; 73]).is_err());
+        assert!(BlowfishLe::new(&[1; 73]).is_err());
+        assert!(Blowfish::new(&[1; 1]).is_ok());
+        assert!(Blowfish::new(&[1; 56]).is_ok());
+        assert!(Blowfish::new(&[1; 72]).is_ok());
         // A key that is refused is not the zero-keyed cipher in disguise:
         // one zero byte keys the same schedule an empty key would have.
-        let mut cipher = Blowfish::new(vec![0]).unwrap();
+        let mut cipher = Blowfish::new(&[0]).unwrap();
         let mut zero_keyed = Vec::new();
         cipher.block_encrypt(&[0; 8], &mut zero_keyed);
         let mut unkeyed = Blowfish::initial();
@@ -508,7 +508,7 @@ mod tests {
         let key = b"abcdefghijklmnopqrstuvwxyz";
         let mut salted = Blowfish::initial();
         salted.expand_state(&[0; 16], key);
-        let plain = Blowfish::new(key.to_vec()).unwrap();
+        let plain = Blowfish::new(key).unwrap();
         assert_eq!(salted.P, plain.P);
         assert_eq!(salted.S, plain.S);
         let mut salted = Blowfish::initial();

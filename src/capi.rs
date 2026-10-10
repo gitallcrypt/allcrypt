@@ -907,6 +907,18 @@ pub unsafe extern "C" fn allcrypt_rsa_decrypt(key: *const allcrypt_rsa_key,
     })
 }
 
+/// No padding: `c^d mod n`, written at the key's size with leading zeros.
+#[no_mangle]
+pub unsafe extern "C" fn allcrypt_rsa_decrypt_raw(key: *const allcrypt_rsa_key,
+                                                  ciphertext: *const u8, ciphertext_len: usize,
+                                                  plaintext: *mut allcrypt_buffer) -> c_int {
+    guard(|| {
+        let plaintext = buffer(plaintext, "plaintext")?;
+        Ok(give(plaintext, object(key, "RSA key")?.decrypt_raw(
+            bytes(ciphertext, ciphertext_len, "ciphertext")?)?))
+    })
+}
+
 /// OAEP with MGF1 over the same hash.
 #[no_mangle]
 pub unsafe extern "C" fn allcrypt_rsa_decrypt_oaep(key: *const allcrypt_rsa_key,
@@ -981,6 +993,19 @@ pub unsafe extern "C" fn allcrypt_rsa_encrypt(key: *const allcrypt_rsa_public_ke
     guard(|| {
         let ciphertext = buffer(ciphertext, "ciphertext")?;
         Ok(give(ciphertext, object(key, "RSA public key")?.encrypt(
+            bytes(message, message_len, "message")?)?))
+    })
+}
+
+/// No padding: `m^e mod n`, the message a big-endian integer below the
+/// modulus. Deterministic.
+#[no_mangle]
+pub unsafe extern "C" fn allcrypt_rsa_encrypt_raw(key: *const allcrypt_rsa_public_key,
+                                                  message: *const u8, message_len: usize,
+                                                  ciphertext: *mut allcrypt_buffer) -> c_int {
+    guard(|| {
+        let ciphertext = buffer(ciphertext, "ciphertext")?;
+        Ok(give(ciphertext, object(key, "RSA public key")?.encrypt_raw(
             bytes(message, message_len, "message")?)?))
     })
 }

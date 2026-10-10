@@ -9,6 +9,7 @@
 use std::fmt::Write as _;
 
 use crate::base64;
+pub use crate::cli::hex;
 use crate::name::Name;
 
 pub const A: u16 = 1;
@@ -349,16 +350,8 @@ fn generic(rdata: &[u8]) -> String {
     format!("\\# {} {}", rdata.len(), hex(rdata))
 }
 
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 pub fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("{text}: not hex."));
-    }
-    Ok((0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex")).collect())
+    crate::cli::unhex(text, &[])
 }
 
 const BASE32HEX: &[u8; 32] = b"0123456789ABCDEFGHIJKLMNOPQRSTUV";

@@ -93,7 +93,10 @@ class Hash:
     @property
     def block_size(self) -> int: ...
     @property
-    def name(self) -> str: ...
+    def name(self) -> str:
+        """The catalogue name, which ``new`` reads back as this same hash:
+        ``new("SHA256").name`` is ``"sha256"``."""
+        ...
 
 def new(name: str, data: Optional[BytesLike] = None) -> Hash: ...
 def md5(data: Optional[BytesLike] = None) -> Hash: ...
@@ -409,6 +412,11 @@ class RsaKey:
         and report which check failed: that is Bleichenbacher's attack.
         """
 
+    def decrypt_raw(self, ciphertext: BytesLike) -> bytes:
+        """No padding: ``c^d mod n``, the ciphertext a big-endian integer
+        below the modulus. The plaintext comes back at the key's size,
+        leading zeros kept. Also the raw signature operation."""
+
     def decrypt_oaep(self, ciphertext: BytesLike, digestmod: str = "sha256",
                      mgf_digestmod: Optional[str] = None,
                      label: BytesLike = b"") -> bytes:
@@ -442,6 +450,11 @@ class RsaPublicKey:
 
     def encrypt(self, message: BytesLike) -> bytes:
         """PKCS#1 v1.5. Randomised, so the bytes differ every time."""
+
+    def encrypt_raw(self, message: BytesLike) -> bytes:
+        """No padding: ``m^e mod n``, the message a big-endian integer below
+        the modulus, written at the key's size. Deterministic and
+        malleable - textbook RSA, on purpose."""
 
     def encrypt_oaep(self, message: BytesLike, digestmod: str = "sha256",
                      mgf_digestmod: Optional[str] = None,
@@ -640,7 +653,8 @@ def verify_chain(chain: Sequence[BytesLike], roots: Sequence[BytesLike], now: in
                  crls: Sequence[BytesLike] = [],
                  ocsp: Sequence[BytesLike] = [],
                  ocsp_nonce: Optional[BytesLike] = None,
-                 require_revocation: bool = False) -> None:
+                 require_revocation: bool = False,
+                 max_key_bits: int = 16384) -> None:
     """Verify a certificate chain, leaf first, against trusted roots.
 
     Returns None if every check passed and raises :class:`CryptoError` with
@@ -666,6 +680,11 @@ def verify_chain(chain: Sequence[BytesLike], roots: Sequence[BytesLike], now: in
     failure. It is off by default, which is soft fail; with it on and no
     CRLs supplied, every chain fails. A *revoked* certificate is refused
     either way.
+
+    ``max_key_bits`` is the largest RSA modulus or DSA group any
+    arithmetic is done on, 16384 (OpenSSL's limit) by default. It is a
+    bound on cost rather than on strength: a key far above it can make a
+    single signature check take as long as its author likes.
 
     Name constraints on any CA in the chain are enforced always, with no
     flag to turn them off.
@@ -857,7 +876,8 @@ class TlsClient:
                  early_data: BytesLike = b"",
                  alpn: List[str] = [],
                  request_stapled_ocsp: bool = True,
-                 require_stapled_ocsp: bool = False) -> None:
+                 require_stapled_ocsp: bool = False,
+                 max_key_bits: int = 16384) -> None:
         """Start a connection and produce the ClientHello.
 
         ``roots`` must hold the certificates to verify against; there is no
@@ -889,6 +909,10 @@ class TlsClient:
         ``check_dh_prime`` adds a primality test of the server's modulus,
         which costs more than the key exchange and catches the one attack
         nothing else would notice.
+
+        ``max_key_bits`` bounds the server's RSA key, DSA group and
+        Diffie-Hellman group from above, 16384 by default. It applies with
+        ``verify=False`` too, since the key is used either way.
 
         ``tickets`` are session tickets from an earlier connection, as
         ``take_tickets`` handed them out. Offer each one once.
@@ -1180,7 +1204,7 @@ class TlsServer:
                  max_version: str = "TLSv1.3",
                  now: int = 0,
                  session_tickets: int = 0,
-                 ticket_key: Optional[BytesLike] = None,
+                 ticket_key: Optional[Union[BytesLike, Sequence[BytesLike]]] = None,
                  allow_encrypt_then_mac: bool = True,
                  allow_extended_master_secret: bool = True,
                  request_client_certificate: bool = False,
@@ -1190,7 +1214,8 @@ class TlsServer:
                  replay_guard: Optional["ReplayGuard"] = None,
                  alpn: List[str] = [],
                  require_alpn: bool = False,
-                 ocsp_response: Optional[BytesLike] = None) -> None:
+                 ocsp_response: Optional[BytesLike] = None,
+                 client_max_key_bits: int = 16384) -> None:
         """A server presenting ``certificate_chain`` (leaf first, DER).
 
         ``key`` is an ``EcKey`` or an ``RsaKey``. At TLS 1.2 it decides
@@ -1215,7 +1240,10 @@ class TlsServer:
         key - and is what makes resumption work at all: without it each
         connection generates its own, sealing tickets nothing else can
         open. Share one across every connection, and configure the same
-        one on every instance if tickets should survive a restart.
+        one on every instance if tickets should survive a restart. To
+        rotate, pass a list newest first: the first key seals and every
+        one opens, so tickets sealed under the previous key still resume
+        until it is dropped from the list.
 
         ``ciphers`` takes the same strings ``TlsClient`` does, **in the
         server's own order of preference**: the first suite in it that
@@ -1247,6 +1275,12 @@ class TlsServer:
         does hold the key, and recognising it is left to the caller.
         Setting it needs ``now``, since every certificate is outside
         its validity window at zero.
+
+        ``client_max_key_bits`` bounds a client's RSA key from above,
+        16384 by default. The client's signature is checked before its
+        chain, with ``client_roots`` or without, so this is what stops a
+        client that has authenticated nothing from choosing how long
+        that check takes.
 
         ``max_early_data`` is how much 0-RTT data a ticket from this
         server allows, in bytes. Zero - the default - offers none, and
@@ -1749,6 +1783,21 @@ def cms_3des_key_wrap(kek: BytesLike, cek: BytesLike, iv: Optional[BytesLike] = 
     """RFC 3217's Triple-DES key wrap: SHA-1 checksum, CBC, reverse, CBC.
     A 24-byte key gives 40 bytes; ``iv`` is random unless given."""
 def cms_3des_key_unwrap(kek: BytesLike, wrapped: BytesLike) -> bytes: ...
+def dstu_gost_key_wrap(kek: BytesLike, cek: BytesLike, iv: Optional[BytesLike] = None) -> bytes:
+    """Ukraine's GOST key wrap: RFC 3217's shape with GOST 28147-89 CFB
+    and a 4-byte GOST MAC under the DSTU 4145 default DKE. A 32-byte key
+    gives 44 bytes; ``iv`` is random unless given."""
+def dstu_gost_key_unwrap(kek: BytesLike, wrapped: BytesLike) -> bytes: ...
+def kalyna_mac(cipher: str, key: BytesLike, data: BytesLike, tag_len: int) -> bytes:
+    """DSTU 7624's MAC over Kalyna (``kalyna-128``, ``-256`` or ``-512``):
+    a tag of ``tag_len`` bytes, 1 to the block size."""
+def kalyna_key_wrap(cipher: str, kek: BytesLike, data: BytesLike) -> bytes:
+    """DSTU 7624's key wrap over Kalyna. Data that is not a whole number of
+    blocks is padded first; unwrap that with ``kalyna_key_unwrap_padded``."""
+def kalyna_key_unwrap(cipher: str, kek: BytesLike, wrapped: BytesLike) -> bytes:
+    """The inverse of ``kalyna_key_wrap`` for data of whole blocks."""
+def kalyna_key_unwrap_padded(cipher: str, kek: BytesLike, wrapped: BytesLike) -> bytes:
+    """The inverse of ``kalyna_key_wrap`` for data that was padded."""
 def cms_rc2_key_wrap(kek: BytesLike, effective_bits: int, cek: BytesLike,
                      pad: Optional[BytesLike] = None, iv: Optional[BytesLike] = None) -> bytes:
     """RFC 3217's RC2 key wrap, the key-encryption key at ``effective_bits``."""

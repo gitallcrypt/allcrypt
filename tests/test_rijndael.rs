@@ -29,7 +29,7 @@ fn test_rijndael_vectors() {
         let (key, pt, ct) = (unhex(f["key"]), unhex(f["pt"]), unhex(f["ct"]));
         assert_eq!((pt.len(), ct.len()), (block, block), "{line}");
 
-        let mut c = Rijndael::new(block, key.clone()).unwrap();
+        let mut c = Rijndael::new(block, &key).unwrap();
         let mut out = Vec::new();
         c.block_encrypt(&pt, &mut out);
         assert_eq!(out, ct, "encrypt: {line}");
@@ -120,5 +120,5 @@ fn test_rijndael_refuses_other_key_lengths() {
         assert!(AnyBlockCipher::new("rijndael-256", &vec![0u8; length], None).is_err(),
                 "{length}");
     }
-    assert!(Rijndael::new(36, vec![0; 16]).is_err());
+    assert!(Rijndael::new(36, &[0; 16]).is_err());
 }

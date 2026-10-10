@@ -45,6 +45,8 @@ mod inflate;
 mod bunzip2;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/hidden.rs"]
+mod hidden;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
@@ -673,8 +675,8 @@ mod tests {
             let (kek, aad) = sk.aead_parameters(&derived, cipher, aead);
             assert_eq!(kek, value_from(&lines, "After HKDF"));
             assert_eq!(aad, value_from(&lines, "The additional data"));
-            let got = format!("{:?}", sk.unlock_derived(&derived).unwrap());
-            assert_eq!(got, format!("{:?}", unlocked.secret.as_ref().unwrap().unlock(b"").unwrap()));
+            assert!(sk.unlock_derived(&derived).unwrap()
+                    == unlocked.secret.as_ref().unwrap().unlock(b"").unwrap());
             assert!(sk.unlock_derived(&[0u8; 32]).is_err());
         }
     }
@@ -1205,6 +1207,57 @@ mod tests {
             assert!(!verify::verify_document(&packets, &back, Some(&verify::CLEARTEXT_METADATA),
                                              &certs, NOW)[0].good);
         }
+    }
+
+    /// A signature that names no issuer may be by any key given, so each
+    /// candidate is tried until one verifies.
+    ///
+    /// What was wrong: `verify_document` stopped at the first key of the
+    /// signature's algorithm and reported BAD when that one did not
+    /// verify, so with two certificates of one algorithm a good signature
+    /// by the second was refused. Every other test passes one certificate
+    /// at a time, so the first candidate was always the signer. The
+    /// signatures here drop the issuer subpackets and are checked against
+    /// every fixture's certificate, the signer's last.
+    #[test]
+    fn test_every_candidate_key_is_tried() {
+        let text = b"a document";
+        let records = fixtures::records("openpgp-keys.vec", "gnupg-keys");
+        let all: Vec<Vec<keys::Cert>> = records.iter().map(|record| {
+            let path = fixtures::dir().join(fixtures::field(record, "key"));
+            read_certs(&[path.to_str().unwrap()]).unwrap()
+        }).collect();
+        let mut contested = 0;
+        for (i, record) in records.iter().enumerate() {
+            let name = fixtures::field(record, "name");
+            let passphrase = fixtures::field(record, "passphrase").as_bytes().to_vec();
+            let Ok((key, secret)) = unlock_signer(&all[i], &[passphrase], NOW) else {
+                panic!("{name}: no signing key")
+            };
+            let hash = algo::hash(if key.version == 5 { 10 } else { 8 }).unwrap();
+            let (hashed, _) = sig::standard_subpackets(&key, NOW);
+            let hashed = hashed.into_iter()
+                .filter(|p| p.kind != sig::ISSUER_FINGERPRINT && p.kind != sig::ISSUER)
+                .collect();
+            let body = sig::make(&key, &secret, sig::BINARY, hash, hashed, Vec::new(), None,
+                                 &|h| h.update(text), &mut seeded()).unwrap();
+            let packets = packet::parse(&packet::write(packet::SIGNATURE, &body)).unwrap();
+
+            let mut certs: Vec<keys::Cert> = all.iter().enumerate()
+                .filter(|(j, _)| *j != i).flat_map(|(_, c)| c.iter().cloned()).collect();
+            if certs.iter().any(|c| c.keys().any(|k| k.public.algorithm == key.algorithm)) {
+                contested += 1;
+            }
+            certs.extend(all[i].iter().cloned());
+            let verdicts = verify::verify_document(&packets, text, None, &certs, NOW);
+            assert!(verdicts[0].good, "{name}: {verdicts:?}");
+            // And against the others alone it is still refused, so the
+            // search is not simply accepting the best of several failures.
+            let others = &certs[..certs.len() - all[i].len()];
+            assert!(!verify::verify_document(&packets, text, None, others, NOW)[0].good,
+                    "{name}");
+        }
+        assert!(contested >= 2, "{contested} keys share an algorithm with another fixture");
     }
 
     fn seeded() -> impl FnMut(&mut [u8]) -> Result<(), String> {

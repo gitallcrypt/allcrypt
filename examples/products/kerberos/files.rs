@@ -105,13 +105,22 @@ impl<'a> Cursor<'a> {
 
 // --------------------------------------------------------------------- keytab --
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct KeytabEntry {
     pub principal: Principal,
     pub timestamp: u32,
     pub kvno: u32,
     pub enctype: i32,
     pub key: Vec<u8>,
+}
+
+impl std::fmt::Debug for KeytabEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeytabEntry").field("principal", &self.principal)
+            .field("timestamp", &self.timestamp).field("kvno", &self.kvno)
+            .field("enctype", &self.enctype)
+            .field("key", &crate::hidden::HiddenBytes(&self.key)).finish()
+    }
 }
 
 /// A keytab of version 0x0502, big endian, as every current
@@ -198,7 +207,7 @@ pub fn write_keytab(entries: &[KeytabEntry]) -> Vec<u8> {
 
 // ---------------------------------------------------------------------- ccache --
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Credential {
     pub client: Principal,
     pub server: Principal,
@@ -210,6 +219,17 @@ pub struct Credential {
     pub renew_till: u32,
     pub flags: u32,
     pub ticket: Vec<u8>,
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credential").field("client", &self.client)
+            .field("server", &self.server).field("enctype", &self.enctype)
+            .field("session_key", &crate::hidden::HiddenBytes(&self.session_key))
+            .field("authtime", &self.authtime).field("starttime", &self.starttime)
+            .field("endtime", &self.endtime).field("renew_till", &self.renew_till)
+            .field("flags", &self.flags).field("ticket", &self.ticket).finish()
+    }
 }
 
 pub struct Ccache {

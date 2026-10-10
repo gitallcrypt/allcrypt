@@ -218,6 +218,37 @@ def test_a_different_ticket_key_refuses_the_ticket():
     assert pair.server_error is None
 
 
+def test_a_rotated_key_still_opens_what_it_sealed():
+    """Rotation by list, newest first: the new key seals, the old one
+    still opens, and dropping it ends exactly the sessions it sealed.
+
+    Against a real OpenSSL client, so the ticket really travelled: what
+    the server sealed under the old key came back from somebody else's
+    session cache.
+    """
+    newer = bytes(range(40, 80))
+    pair = Resumable()
+    before = pair.connect()
+
+    pair.server_options["ticket_key"] = [newer, TICKET_KEY]
+    after = pair.connect(before.session)
+    assert after.established and after.session_reused, \
+        "a ticket sealed before the rotation did not resume"
+
+    pair.server_options["ticket_key"] = [newer]
+    retired = pair.connect(before.session)
+    assert retired.established and not retired.session_reused
+    fresh = pair.connect(after.session)
+    assert fresh.session_reused, "a ticket the new key sealed did not resume"
+
+    with pytest.raises(ValueError):
+        pair.server_options["ticket_key"] = [newer, newer]
+        pair.connect()
+    with pytest.raises(TypeError):
+        pair.server_options["ticket_key"] = "forty characters is not forty bytes!!!!"
+        pair.connect()
+
+
 def test_an_expired_ticket_is_refused():
     """The lifetime the client was told is not the check.
 

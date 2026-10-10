@@ -193,7 +193,7 @@ impl ContentCipher {
                 let mut cipher = self.block(key)?;
                 let padded = api::pad_pkcs7(data, cipher.blocksize())?;
                 let mut out = Vec::with_capacity(padded.len());
-                cipher.cbc_encrypt(&padded, &mut out, iv.clone())?;
+                cipher.cbc_encrypt(&padded, &mut out, iv)?;
                 Ok((out, None))
             }
         }
@@ -220,7 +220,7 @@ impl ContentCipher {
                     return Err(failed());
                 }
                 let mut out = Vec::with_capacity(data.len());
-                cipher.cbc_decrypt(data, &mut out, iv.clone())?;
+                cipher.cbc_decrypt(data, &mut out, iv)?;
                 api::unpad_pkcs7(&out, block).map_err(|_| failed())
             }
         }
@@ -1137,9 +1137,9 @@ mod tests {
     fn double_cbc(cipher: &mut AnyBlockCipher, iv: &[u8], formatted: &[u8]) -> Vec<u8> {
         let block = cipher.blocksize();
         let mut first = Vec::new();
-        cipher.cbc_encrypt(formatted, &mut first, iv.to_vec()).unwrap();
+        cipher.cbc_encrypt(formatted, &mut first, iv).unwrap();
         let mut second = Vec::new();
-        cipher.cbc_encrypt(&first, &mut second, first[first.len() - block..].to_vec()).unwrap();
+        cipher.cbc_encrypt(&first, &mut second, &first[first.len() - block..]).unwrap();
         second
     }
 

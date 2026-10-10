@@ -47,7 +47,10 @@ against that software's own tools.
 |DES|✓|✓|
 |3DES (EDE2, EDE3)|✓|✓|
 |GOST 28147-89|✓|✓|
+|GOST 28147-89 under the DSTU 4145 default DKE (DSTU GOST 28147:2009, `dstu4145-default-dke`)|✓|Bouncy Castle 1.77 and gost89 agree on ECB, CFB and the MAC, and on the table itself; counter mode Bouncy Castle's alone; `vectors/dstu_gost.vec`|
 |IDEA|✓|✓|
+|Kalyna (DSTU 7624:2014), all five variants (`kalyna-128`, `kalyna-256`, `kalyna-512`)|✓|the standard's ten examples; the authors' reference implementation and Bouncy Castle 1.77 agree on 75 more inputs and on the S-boxes; `vectors/kalyna.vec`|
+|Kalyna's DSTU 7624 counter mode (`ctr` on a `kalyna-` name), MAC and key wrap|✓|the standard's examples, which Bouncy Castle 1.77 and cryptonite both reproduce; 165 rows on which they agree, and each alone where the other stops (short MACs, padded and long wraps); `vectors/kalyna_modes.vec`|
 |Kuznyechik (GOST R 34.12-2015)|✓|✓|
 |Magma (GOST R 34.12-2015)|✓|✓|
 |RC2 (RFC 2268)|✓|✓|
@@ -97,6 +100,7 @@ published and is listed under public key as not yet implemented.
 |AES Key Wrap (RFC 3394)|✓|✓|
 |Key Wrap with padding (RFC 5649)|✓|✓|
 |CMS Triple-DES and RC2 key wraps (RFC 3217)|✓|RFC 3217's examples; OpenSSL, by hand|
+|DSTU GOST key wrap (Ukraine; RFC 3217's shape with GOST CFB and MAC)|✓|gost89's wrap and unwrap of 11 keys; its CFB and MAC are also Bouncy Castle's; `vectors/dstu_gost.vec`|
 |CMS password recipient key wrap (RFC 3211)|✓|RFC 3211's example; OpenSSL, by hand|
 
 **The modes are generic.** A block cipher implements three methods and
@@ -199,9 +203,11 @@ for a tag. Key wrap authenticates without one. Both are in
 |BLAKE2b, BLAKE2s (RFC 7693)|✓|✓|
 |RIPEMD-160|✓|✓|
 |SM3 (GB/T 32905-2016)|✓|✓|
+|Kupyna (DSTU 7564:2014), any multiple of 8 bits to 512; `kupyna256`, `kupyna384`, `kupyna512`|✓|the standard's 15 byte-aligned examples; the authors' reference implementation and Bouncy Castle 1.77 agree on 19 messages at each of the three named sizes; the reference alone at ten other sizes; `vectors/kupyna.vec`|
 |Whirlpool (ISO/IEC 10118-3)|✓|✓|
 |Streebog-256 and -512 (GOST R 34.11-2012)|✓|✓|
 |GOST R 34.11-94 (RFC 5831, RFC 4357 parameters)|✓|✓|
+|GOST 34.311-95 (Ukraine; GOST R 34.11-94 under the DSTU 4145 default DKE)|✓|Bouncy Castle 1.77 and gost89 agree on 14 messages; the empty message is left out, see [pitfalls 7zzo](pitfalls.md#7zzo-ukraines-gost); `vectors/dstu_gost.vec`|
 |RIPEMD-128, RIPEMD-256, RIPEMD-320|✓|libtomcrypt, Bouncy Castle, Crypto++ and RustCrypto (and GNU Crypto for RIPEMD-128), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |HAS-160 (TTA.KO-12.0011/R2)|✓|RHash, Botan 1.10 and GNU Crypto, agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |Whirlpool-0, Whirlpool-T|✓|sphlib and GNU Crypto (and Crypto++ 5.2.1 for Whirlpool-T), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
@@ -227,6 +233,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |---|---|---|
 |RSA PKCS#1 v1.5, encryption and signatures|✓|✓|
 |RSA-OAEP and RSA-PSS (RFC 8017)|✓|✓|
+|RSA without padding (RSAEP/RSADP)|✓|Wycheproof's OAEP ciphertexts; Python's `pow`|
 |DSA (FIPS 186-4, RFC 6979 nonces)|✓|RFC 6979's vectors; OpenSSL, in TLS|
 |Diffie-Hellman (finite field)|✓|✓|
 |ElGamal encryption (OpenPGP algorithm 16) and signatures|✓|✓|

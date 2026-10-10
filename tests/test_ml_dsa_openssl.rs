@@ -286,7 +286,7 @@ fn test_openssls_certificate_verify_in_three_real_handshakes() {
         let hash = sha2::SHA256::new(&transcript).digest();
         let content = certificate_verify_content(Side13::Server, &hash);
         allcrypt::tls::server13::verify_signature(&chain[0], verify.scheme, &content,
-                                                  &verify.signature)
+                                                  &verify.signature, &allcrypt::x509::verify::Policy::default())
             .unwrap_or_else(|e| panic!("{}: {e:?}", capture.name));
 
         let mut wrong = transcript.clone();
@@ -295,7 +295,8 @@ fn test_openssls_certificate_verify_in_three_real_handshakes() {
         let content = certificate_verify_content(Side13::Server,
                                                  &sha2::SHA256::new(&wrong).digest());
         assert!(allcrypt::tls::server13::verify_signature(&chain[0], verify.scheme, &content,
-                                                          &verify.signature).is_err());
+                                                          &verify.signature, &allcrypt::x509::verify::Policy::default())
+                .is_err());
     }
     assert_eq!(schemes, [scheme::MLDSA44, scheme::MLDSA65, scheme::MLDSA87]);
 }

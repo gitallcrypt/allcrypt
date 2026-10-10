@@ -177,13 +177,13 @@ pub struct AesCrypto {
 }
 
 impl AesCrypto {
-    pub fn new(key: Vec<u8>) -> Result<AesCrypto, String> {
-        Ok(AesCrypto { schedule: Box::new(expand(&key)?) })
+    pub fn new(key: &[u8]) -> Result<AesCrypto, String> {
+        Ok(AesCrypto { schedule: Box::new(expand(key)?) })
     }
 
     /// Replace the key.
-    pub fn setup_key(&mut self, key: Vec<u8>) -> Result<(), String> {
-        *self.schedule = expand(&key)?;
+    pub fn setup_key(&mut self, key: &[u8]) -> Result<(), String> {
+        *self.schedule = expand(key)?;
         Ok(())
     }
 
@@ -452,7 +452,7 @@ mod tests {
     /// hardware `ctr_xor` declines, and the test says so.
     #[test]
     fn test_one_pass_counter_mode_agrees_with_three_passes() {
-        let mut aes = AesCrypto::new((0..16).collect()).unwrap();
+        let mut aes = AesCrypto::new(&(0..16).collect::<Vec<u8>>()).unwrap();
         let data: Vec<u8> = (0..20 * 16).map(|i| (i * 13 + 5) as u8).collect();
         let starts: [[u8; 16]; 4] = [
             [0xAA; 16],
@@ -529,7 +529,7 @@ mod tests {
             ("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
              "8ea2b7ca516745bfeafc49904b496089"),
         ] {
-            let mut aes = AesCrypto::new(unhex(key)).unwrap();
+            let mut aes = AesCrypto::new(&unhex(key)).unwrap();
             let mut out = Vec::new();
             aes.block_encrypt(&plaintext, &mut out);
             assert_eq!(out, unhex(ciphertext), "table encrypt, key {key}");
@@ -559,7 +559,7 @@ mod tests {
         };
         for key_len in [16, 24, 32] {
             let key: Vec<u8> = (0..key_len).map(|_| next()).collect();
-            let mut aes = AesCrypto::new(key).unwrap();
+            let mut aes = AesCrypto::new(&key).unwrap();
             for blocks in [1, 2, 3, 4, 5, 15, 16, 17, 20, 33, 64] {
                 let data: Vec<u8> = (0..16 * blocks).map(|_| next()).collect();
                 let mut want = Vec::new();
@@ -628,9 +628,9 @@ mod tests {
 
     #[test]
     fn test_bad_lengths_are_refused() {
-        assert!(AesCrypto::new(vec![0; 15]).is_err());
-        assert!(AesCrypto::new(vec![0; 20]).is_err());
-        let mut aes = AesCrypto::new(vec![0; 16]).unwrap();
+        assert!(AesCrypto::new(&[0; 15]).is_err());
+        assert!(AesCrypto::new(&[0; 20]).is_err());
+        let mut aes = AesCrypto::new(&[0; 16]).unwrap();
         assert!(aes.encrypt_blocks(&mut [0u8; 17]).is_err());
         assert!(aes.decrypt_blocks(&mut [0u8; 8]).is_err());
         assert!(aes.encrypt_blocks(&mut []).is_ok());

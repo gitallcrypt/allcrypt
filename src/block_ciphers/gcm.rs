@@ -401,7 +401,7 @@ mod tests {
     }
 
     fn seal(key: &str, nonce: &str, aad: &str, plaintext: &str) -> (String, String) {
-        let mut cipher = AesCrypto::new(unhex(key)).unwrap();
+        let mut cipher = AesCrypto::new(&unhex(key)).unwrap();
         let mut gcm = Gcm::encryptor(&mut cipher, &unhex(nonce), &unhex(aad)).unwrap();
         let mut out = Vec::new();
         gcm.update(&unhex(plaintext), &mut out).unwrap();
@@ -516,13 +516,13 @@ mod tests {
         let aad = b"headers that travel in the clear";
         let message = b"the payload, of an awkward length";
 
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let mut sealing = Gcm::encryptor(&mut cipher, &nonce, aad).unwrap();
         let mut sealed = Vec::new();
         sealing.update(message, &mut sealed).unwrap();
         let tag = sealing.tag().unwrap();
 
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let mut opening = Gcm::decryptor(&mut cipher, &nonce, aad).unwrap();
         let mut opened = Vec::new();
         opening.update(&sealed, &mut opened).unwrap();
@@ -539,14 +539,14 @@ mod tests {
         let aad = b"authenticated".to_vec();
         let message = b"a message worth protecting".to_vec();
 
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let mut sealing = Gcm::encryptor(&mut cipher, &nonce, &aad).unwrap();
         let mut sealed = Vec::new();
         sealing.update(&message, &mut sealed).unwrap();
         let tag = sealing.tag().unwrap();
 
         let open = |ciphertext: &[u8], tag: &[u8], aad: &[u8], nonce: &[u8]| {
-            let mut cipher = AesCrypto::new(key.clone()).unwrap();
+            let mut cipher = AesCrypto::new(&key).unwrap();
             let mut gcm = Gcm::decryptor(&mut cipher, nonce, aad)?;
             let mut out = Vec::new();
             gcm.update(ciphertext, &mut out)?;
@@ -596,14 +596,14 @@ mod tests {
         let key = unhex("feffe9928665731c6d6a8f9467308308");
         let nonce = unhex("cafebabefacedbaddecaf888");
 
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let mut sealing = Gcm::encryptor(&mut cipher, &nonce, b"").unwrap();
         let mut sealed = Vec::new();
         sealing.update(b"secret", &mut sealed).unwrap();
         let mut tag = sealing.tag().unwrap();
         tag[0] ^= 0xff;
 
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let mut gcm = Gcm::decryptor(&mut cipher, &nonce, b"").unwrap();
         let mut out = Vec::new();
         gcm.update(&sealed, &mut out).unwrap();
@@ -614,7 +614,7 @@ mod tests {
         // exists as a separate, mandatory step and why the one-shot
         // `gcm_decrypt` on the trait clears the buffer itself.
         let mut one_shot = Vec::new();
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         assert!(cipher.gcm_decrypt(&sealed, &mut one_shot, &nonce, &tag, b"").is_err());
         assert!(one_shot.is_empty(), "the one-shot API leaked unverified plaintext");
     }
@@ -626,14 +626,14 @@ mod tests {
         let nonce = unhex("cafebabefacedbaddecaf888");
         let message: Vec<u8> = (0..300u32).map(|i| (i * 11 + 5) as u8).collect();
 
-        let mut cipher = AesCrypto::new(key.clone()).unwrap();
+        let mut cipher = AesCrypto::new(&key).unwrap();
         let mut whole = Gcm::encryptor(&mut cipher, &nonce, b"aad").unwrap();
         let mut expected = Vec::new();
         whole.update(&message, &mut expected).unwrap();
         let expected_tag = whole.tag().unwrap();
 
         for size in [1usize, 5, 15, 16, 17, 33, 128] {
-            let mut cipher = AesCrypto::new(key.clone()).unwrap();
+            let mut cipher = AesCrypto::new(&key).unwrap();
             let mut gcm = Gcm::encryptor(&mut cipher, &nonce, b"aad").unwrap();
             let mut out = Vec::new();
             for piece in message.chunks(size) {
@@ -642,7 +642,7 @@ mod tests {
             assert_eq!(out, expected, "encrypting in {} byte pieces", size);
             assert_eq!(gcm.tag().unwrap(), expected_tag, "tag, {} byte pieces", size);
 
-            let mut cipher = AesCrypto::new(key.clone()).unwrap();
+            let mut cipher = AesCrypto::new(&key).unwrap();
             let mut gcm = Gcm::decryptor(&mut cipher, &nonce, b"aad").unwrap();
             let mut back = Vec::new();
             for piece in expected.chunks(size) {
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn test_a_64_bit_block_cipher_is_refused() {
         use crate::block_ciphers::blowfish::Blowfish;
-        let mut cipher = Blowfish::new(vec![0x2b; 16]).unwrap();
+        let mut cipher = Blowfish::new(&[0x2b; 16]).unwrap();
         match GcmState::encryptor(&mut cipher, &[0u8; 12], b"") {
             Ok(_) => panic!("GCM accepted a 64 bit block cipher"),
             Err(error) => assert!(error.contains("128 bit"), "{}", error),
@@ -667,13 +667,13 @@ mod tests {
 
     #[test]
     fn test_the_nonce_and_tag_lengths_are_checked() {
-        let mut cipher = AesCrypto::new(vec![0u8; 16]).unwrap();
+        let mut cipher = AesCrypto::new(&[0u8; 16]).unwrap();
         assert!(GcmState::encryptor(&mut cipher, &[], b"").is_err());
 
         // A tag short enough to be guessable is refused rather than
         // compared over its first few bytes.
         for length in [0usize, 1, 4, 8, 11, 17, 32] {
-            let mut cipher = AesCrypto::new(vec![0u8; 16]).unwrap();
+            let mut cipher = AesCrypto::new(&[0u8; 16]).unwrap();
             let mut gcm = Gcm::decryptor(&mut cipher, &[0u8; 12], b"").unwrap();
             assert!(gcm.verify(&vec![0u8; length]).is_err(), "tag length {}", length);
         }
@@ -689,7 +689,7 @@ mod tests {
     /// accept the altered one.
     #[test]
     fn test_a_truncated_tag_is_compared_over_its_own_length() {
-        let mut cipher = AesCrypto::new(vec![3u8; 16]).unwrap();
+        let mut cipher = AesCrypto::new(&[3u8; 16]).unwrap();
         let mut out = Vec::new();
         let mut tag = Vec::new();
         cipher.gcm_encrypt(b"message", &mut out, &[5u8; 12], &mut tag, b"aad").unwrap();
@@ -709,7 +709,7 @@ mod tests {
     /// than something with a defined answer.
     #[test]
     fn test_a_finished_stream_stays_finished() {
-        let mut cipher = AesCrypto::new(vec![0u8; 16]).unwrap();
+        let mut cipher = AesCrypto::new(&[0u8; 16]).unwrap();
         let mut gcm = Gcm::encryptor(&mut cipher, &[0u8; 12], b"").unwrap();
         let mut out = Vec::new();
         gcm.update(b"data", &mut out).unwrap();
@@ -727,7 +727,7 @@ mod tests {
         // test can choose puts GCM's counter there. With AES-NI the
         // keystream comes from `ctr_xor`, which must be told the counter
         // is GCM's; without it, from `inc32`.
-        let mut aes = crate::block_ciphers::aes::AesCrypto::new(vec![9; 16]).unwrap();
+        let mut aes = crate::block_ciphers::aes::AesCrypto::new(&[9; 16]).unwrap();
         let mut state = GcmState::encryptor(&mut aes, &[1; 12], b"").unwrap();
         let mut start = [0xAAu8; 16];
         start[12..].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFD]);

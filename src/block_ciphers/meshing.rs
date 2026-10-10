@@ -68,7 +68,7 @@ pub fn next_key(sbox: &str, key: &[u8]) -> Result<Vec<u8>, String> {
         return Err(format!("GOST 28147-89 takes a 32 byte key; got {}.",
                            key.len()));
     }
-    let mut cipher = GostCrypto::new(key.to_vec(), sbox.to_string())?;
+    let mut cipher = GostCrypto::new(key, sbox)?;
     let mut out = Vec::with_capacity(32);
     for block in C.chunks(8) {
         cipher.block_decrypt(block, &mut out);
@@ -90,7 +90,7 @@ pub fn next_iv(sbox: &str, new_key: &[u8], evolved_iv: &[u8])
         return Err(format!("GOST 28147-89's IV is 8 bytes; got {}.",
                            evolved_iv.len()));
     }
-    let mut cipher = GostCrypto::new(new_key.to_vec(), sbox.to_string())?;
+    let mut cipher = GostCrypto::new(new_key, sbox)?;
     let mut out = Vec::with_capacity(8);
     cipher.block_encrypt(evolved_iv, &mut out);
     if out.len() != 8 {
@@ -136,7 +136,7 @@ mod tests {
         // Encrypting the constant instead of decrypting it is the ACPKM
         // habit, and gives a key that is equally deterministic.
         let encrypted = {
-            let mut cipher = GostCrypto::new(key.to_vec(), Z.to_string()).unwrap();
+            let mut cipher = GostCrypto::new(&key, Z).unwrap();
             let mut out = Vec::new();
             for block in C.chunks(8) {
                 cipher.block_encrypt(block, &mut out);
@@ -210,7 +210,7 @@ mod tests {
     fn test_a_key_of_equal_words_is_its_own_inverse() {
         let block = [0x01u8, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
         for key in [[0x00u8; 32], [0x11u8; 32], [0xffu8; 32]] {
-            let mut cipher = GostCrypto::new(key.to_vec(), Z.to_string()).unwrap();
+            let mut cipher = GostCrypto::new(&key, Z).unwrap();
             let (mut up, mut down) = (Vec::new(), Vec::new());
             cipher.block_encrypt(&block, &mut up);
             cipher.block_decrypt(&block, &mut down);
@@ -221,7 +221,7 @@ mod tests {
         // A varied key does not have the property, which is what makes
         // it a usable test key.
         let key: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(37));
-        let mut cipher = GostCrypto::new(key.to_vec(), Z.to_string()).unwrap();
+        let mut cipher = GostCrypto::new(&key, Z).unwrap();
         let (mut up, mut down) = (Vec::new(), Vec::new());
         cipher.block_encrypt(&block, &mut up);
         cipher.block_decrypt(&block, &mut down);

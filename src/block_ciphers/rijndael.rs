@@ -86,7 +86,7 @@ impl Rijndael {
     ///
     /// # Errors
     /// Either length outside those five.
-    pub fn new(block_bytes: usize, key: Vec<u8>) -> Result<Rijndael, String> {
+    pub fn new(block_bytes: usize, key: &[u8]) -> Result<Rijndael, String> {
         if !matches!(block_bytes, 16 | 20 | 24 | 28 | 32) {
             return Err(format!("Rijndael's block is 16, 20, 24, 28 or 32 bytes, not {block_bytes}."));
         }
@@ -98,7 +98,7 @@ impl Rijndael {
         let nk = key.len() / 4;
         let rounds = nb.max(nk) + 6;
         let total = nb * (rounds + 1);
-        let mut w = key.clone();
+        let mut w = key.to_vec();
         w.resize(4 * total, 0);
         let mut rcon = 1u8;
         for i in nk..total {
@@ -210,8 +210,8 @@ mod tests {
     fn test_a_128_bit_block_is_aes() {
         for key_len in [16, 24, 32] {
             let key: Vec<u8> = (0..key_len as u8).map(|i| i.wrapping_mul(37) ^ 0x5a).collect();
-            let mut r = Rijndael::new(16, key.clone()).unwrap();
-            let mut a = AesCrypto::new(key).unwrap();
+            let mut r = Rijndael::new(16, &key).unwrap();
+            let mut a = AesCrypto::new(&key).unwrap();
             for n in 0..20u8 {
                 let block: Vec<u8> = (0..16u8).map(|i| i ^ n.wrapping_mul(29)).collect();
                 let (mut x, mut y) = (Vec::new(), Vec::new());
@@ -226,7 +226,7 @@ mod tests {
     fn test_sizes_and_round_trips() {
         for nb in [16, 20, 24, 28, 32] {
             for nk in [16, 20, 24, 28, 32] {
-                let mut r = Rijndael::new(nb, vec![3; nk]).unwrap();
+                let mut r = Rijndael::new(nb, &vec![3; nk]).unwrap();
                 assert_eq!(r.rounds, nb.max(nk) / 4 + 6);
                 let block: Vec<u8> = (0..nb as u8).collect();
                 let mut ct = vec![0xee];
@@ -237,7 +237,7 @@ mod tests {
                 assert_eq!(back, block);
             }
         }
-        assert!(Rijndael::new(12, vec![0; 16]).is_err());
-        assert!(Rijndael::new(16, vec![0; 12]).is_err());
+        assert!(Rijndael::new(12, &[0; 16]).is_err());
+        assert!(Rijndael::new(16, &[0; 12]).is_err());
     }
 }

@@ -45,10 +45,19 @@ pub fn version_named(name: &str) -> Result<Version, String> {
                                 yprv, zprv, tprv, uprv and vprv."))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum KeyPart {
     Private(BigUint),
     Public(Point),
+}
+
+impl std::fmt::Debug for KeyPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyPart::Private(_) => f.debug_tuple("Private").field(&crate::hidden::Hidden).finish(),
+            KeyPart::Public(point) => f.debug_tuple("Public").field(point).finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -181,7 +181,10 @@ pub fn register(oid: &str, meaning: Meaning) -> Result<(), String> {
             crate::ec::curves::by_name(name).map_err(|reason| format!(
                 "{} cannot be registered as curve {:?}: {}", oid, name, reason))?;
         }
-        Meaning::GostParamSet(rows) => check_sbox(rows)?,
+        // The same check `GostCrypto::new_with_sbox` makes, so a table
+        // refused here is not accepted there.
+        Meaning::GostParamSet(rows) =>
+            crate::block_ciphers::gost::GostCrypto::check_sbox(rows)?,
         Meaning::CurveParameters(parameters) => {
             // The whole of the validation lives in `from_parameters`, so
             // that a Rust caller building a curve directly gets the same
@@ -197,47 +200,6 @@ pub fn register(oid: &str, meaning: Meaning) -> Result<(), String> {
 
     let mut table = table().write().map_err(|_| "the registry is poisoned")?;
     table.insert(oid.to_string(), meaning);
-    Ok(())
-}
-
-/// Eight permutations of 0..16, and nothing else.
-///
-/// **Checked rather than trusted**, because the shape is the whole of
-/// what makes a GOST S-box one. A row that repeats a value is not a
-/// permutation: the round function stops being a bijection, the cipher
-/// stops being invertible for some inputs, and what comes out still
-/// looks like ciphertext. GOST 28147-89 says the tables are a
-/// parameter and says nothing about what they must be, so this is the
-/// one check there is.
-fn check_sbox(rows: &[Vec<u8>]) -> Result<(), String> {
-    if rows.len() != 8 {
-        return Err(format!(
-            "A GOST parameter set is eight substitution rows; got {}.",
-            rows.len()));
-    }
-    for (index, row) in rows.iter().enumerate() {
-        if row.len() != 16 {
-            return Err(format!(
-                "Substitution row {} has {} entries; each is a permutation of \
-                 0..16, so it has sixteen.", index + 1, row.len()));
-        }
-        let mut seen = [false; 16];
-        for value in row {
-            let value = *value as usize;
-            if value >= 16 {
-                return Err(format!(
-                    "Substitution row {} contains {}, and the entries are \
-                     nibbles.", index + 1, value));
-            }
-            if seen[value] {
-                return Err(format!(
-                    "Substitution row {} uses {} twice, so it is not a \
-                     permutation - a GOST S-box row must be one, or the \
-                     cipher is not invertible.", index + 1, value));
-            }
-            seen[value] = true;
-        }
-    }
     Ok(())
 }
 
@@ -503,7 +465,7 @@ mod tests {
 
         // A row that repeats a value, which is the mistake worth
         // naming: it is still sixteen entries and it is not a
-        // permutation, so the cipher stops being invertible.
+        // permutation, which no published table has.
         let mut repeated = good.clone();
         repeated[3][0] = repeated[3][1];
         let reason = register(OID, Meaning::gost_param_set(repeated))
@@ -588,10 +550,10 @@ mod tests {
 
         let key = vec![1u8; 32];
         let block = [2u8; 8];
-        let mut theirs = GostCrypto::new(key.clone(),
-                                         GostCrypto::DEFAULT_PARAM_SET.into())
+        let mut theirs = GostCrypto::new(&key,
+                                         GostCrypto::DEFAULT_PARAM_SET)
             .unwrap();
-        let mut ours = GostCrypto::new(key, OID.to_string()).unwrap();
+        let mut ours = GostCrypto::new(&key, OID).unwrap();
 
         let (mut a, mut b) = (Vec::new(), Vec::new());
         theirs.block_encrypt(&block, &mut a);

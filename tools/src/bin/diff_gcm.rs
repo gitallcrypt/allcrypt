@@ -55,7 +55,7 @@ fn main() {
                     }
                     let plaintext = filler(len, 4);
 
-                    let mut cipher = AesCrypto::new(key.clone()).unwrap();
+                    let mut cipher = AesCrypto::new(&key).unwrap();
                     let mut ciphertext = Vec::new();
                     let mut tag = Vec::new();
                     cipher.gcm_encrypt(&plaintext, &mut ciphertext, &nonce,
@@ -64,7 +64,7 @@ fn main() {
                     // And straight back, so the dump also records that our
                     // own decryption agrees with our own encryption. The
                     // checker still compares both against OpenSSL.
-                    let mut cipher = AesCrypto::new(key.clone()).unwrap();
+                    let mut cipher = AesCrypto::new(&key).unwrap();
                     let mut recovered = Vec::new();
                     cipher.gcm_decrypt(&ciphertext, &mut recovered, &nonce,
                                        &tag, &aad).unwrap();

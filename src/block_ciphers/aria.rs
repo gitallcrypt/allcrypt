@@ -640,7 +640,7 @@ mod tests {
         // AES's is built rather than tabulated here, so this compares a
         // *construction* with a *table* - the two cannot share a
         // mistake.
-        let mut aes = crate::block_ciphers::aes::AesCrypto::new(vec![0u8; 16])
+        let mut aes = crate::block_ciphers::aes::AesCrypto::new(&[0u8; 16])
             .unwrap();
         // AES's S-box is what ECB of a zero key applies first; rather
         // than reaching inside, use the algebraic definition the box
@@ -974,10 +974,10 @@ mod tests {
                 let mut out = Vec::new();
                 match mode {
                     "ecb" => cipher.ecb_encrypt(&plain, &mut out).unwrap(),
-                    "cbc" => cipher.cbc_encrypt(&plain, &mut out, iv.clone()).unwrap(),
-                    "pcbc" => cipher.pcbc_encrypt(&plain, &mut out, iv.clone()).unwrap(),
-                    "cfb" => cipher.cfb_encrypt(&plain, &mut out, iv.clone()).unwrap(),
-                    "ofb" => cipher.ofb_encrypt(&plain, &mut out, iv.clone()).unwrap(),
+                    "cbc" => cipher.cbc_encrypt(&plain, &mut out, &iv).unwrap(),
+                    "pcbc" => cipher.pcbc_encrypt(&plain, &mut out, &iv).unwrap(),
+                    "cfb" => cipher.cfb_encrypt(&plain, &mut out, &iv).unwrap(),
+                    "ofb" => cipher.ofb_encrypt(&plain, &mut out, &iv).unwrap(),
                     _ => cipher.ctr_encrypt(&plain, &mut out, &iv).unwrap(),
                 }
                 assert_ne!(out, plain, "{key_len} {mode}");
@@ -986,10 +986,10 @@ mod tests {
                 let mut back = Vec::new();
                 match mode {
                     "ecb" => cipher.ecb_decrypt(&out, &mut back).unwrap(),
-                    "cbc" => cipher.cbc_decrypt(&out, &mut back, iv.clone()).unwrap(),
-                    "pcbc" => cipher.pcbc_decrypt(&out, &mut back, iv.clone()).unwrap(),
-                    "cfb" => cipher.cfb_decrypt(&out, &mut back, iv.clone()).unwrap(),
-                    "ofb" => cipher.ofb_decrypt(&out, &mut back, iv.clone()).unwrap(),
+                    "cbc" => cipher.cbc_decrypt(&out, &mut back, &iv).unwrap(),
+                    "pcbc" => cipher.pcbc_decrypt(&out, &mut back, &iv).unwrap(),
+                    "cfb" => cipher.cfb_decrypt(&out, &mut back, &iv).unwrap(),
+                    "ofb" => cipher.ofb_decrypt(&out, &mut back, &iv).unwrap(),
                     _ => cipher.ctr_decrypt(&out, &mut back, &iv).unwrap(),
                 }
                 assert_eq!(back, plain, "{key_len} {mode}");

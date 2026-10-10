@@ -27,36 +27,19 @@ mod bunzip2;
 mod inflate;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
+#[path = "../shared/extract.rs"]
+mod extract;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use archive::{Archive, NewFile, WriteOptions};
-
-/// Where an entry may be written under `root`, or an error for a name
-/// that is absolute or climbs out with `..`. 7-Zip writes `/`
-/// between components, and a `\` is read as one too, since that is what
-/// an archive made elsewhere means by it.
-fn destination(root: &Path, name: &str) -> Result<PathBuf, String> {
-    let mut out = root.to_path_buf();
-    if name.is_empty() {
-        return Err("An entry with no name.".to_string());
-    }
-    if name.starts_with(['/', '\\']) {
-        return Err(format!("{name}: a name that leaves the destination."));
-    }
-    for part in name.split(['/', '\\']) {
-        match Path::new(part).components().next() {
-            None => {}
-            Some(Component::Normal(p)) if Path::new(part).components().count() == 1 => out.push(p),
-            Some(Component::CurDir) => {}
-            _ => return Err(format!("{name}: a name that leaves the destination.")),
-        }
-    }
-    Ok(out)
-}
+use cli::value;
+use extract::destination;
 
 /// Seconds since 1970 as a Windows FILETIME: 100 ns units since 1601.
 fn filetime(seconds: u64) -> u64 {
@@ -91,33 +74,13 @@ fn gather(path: &Path, name: String, out: &mut Vec<NewFile>) -> Result<(), Strin
 // ------------------------------------------------------------------ CLI --
 
 fn password(args: &[String]) -> Result<Option<Vec<u8>>, String> {
-    if args.iter().any(|a| a == "--password-stdin") {
-        return passphrase::read_line("Password: ").map(Some);
-    }
-    Ok(args.iter().position(|a| a == "--password")
-        .and_then(|i| args.get(i + 1)).map(|p| p.as_bytes().to_vec()))
-}
-
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    passphrase::from_args(args)
 }
 
 const SWITCHES: [&str; 2] = ["--password-stdin", "--encrypt-header"];
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if SWITCHES.contains(&arg.as_str()) {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
+    cli::positional(args, &SWITCHES, &[])
 }
 
 fn open(path: &str, password: Option<&[u8]>) -> Result<Archive, String> {
@@ -397,17 +360,6 @@ mod tests {
             let mut changed = plain.clone();
             changed[at] ^= 1;
             assert!(archive::open(changed, None).is_err(), "{at}");
-        }
-    }
-
-    #[test]
-    fn test_a_name_that_leaves_the_destination_is_refused() {
-        let root = Path::new("out");
-        assert_eq!(destination(root, "a/b").unwrap(), root.join("a").join("b"));
-        assert_eq!(destination(root, "a\\b").unwrap(), root.join("a").join("b"));
-        assert_eq!(destination(root, "./a").unwrap(), root.join("a"));
-        for bad in ["../x", "a/../../x", "/etc/passwd", "a\\..\\..\\x", ""] {
-            assert!(destination(root, bad).is_err(), "{bad}");
         }
     }
 }

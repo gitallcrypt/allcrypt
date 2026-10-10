@@ -241,7 +241,7 @@ pub struct Serpent {
 }
 
 impl Serpent {
-    pub fn new(key: Vec<u8>) -> Result<Serpent, String> {
+    pub fn new(key: &[u8]) -> Result<Serpent, String> {
         if !matches!(key.len(), 16 | 24 | 32) {
             return Err(format!(
                 "A Serpent key is 16, 24 or 32 bytes; this one is {}.", key.len()));
@@ -254,7 +254,7 @@ impl Serpent {
         // implementation that zero-pads produces a cipher that agrees
         // with itself and with nothing else. Only the multi-key-size
         // vectors catch it.
-        let mut padded = key.clone();
+        let mut padded = key.to_vec();
         if padded.len() < 32 {
             padded.push(0x01);
             padded.resize(32, 0);
@@ -402,7 +402,7 @@ mod tests {
         let mut sizes = std::collections::HashSet::new();
         for (index, (key, input, expected)) in vector_file(VECTORS, "Serpent").iter().enumerate() {
             sizes.insert(key.len());
-            let mut cipher = Serpent::new(key.clone()).unwrap();
+            let mut cipher = Serpent::new(key).unwrap();
             let mut out = Vec::new();
             cipher.ecb_encrypt(input, &mut out).unwrap();
             assert_eq!(&out, expected, "vector {} ({} byte key)", index, key.len());
@@ -454,8 +454,8 @@ mod tests {
     /// implementation that zero-pads makes them the same.
     #[test]
     fn test_a_short_key_is_not_the_same_as_a_zero_padded_long_one() {
-        let mut short = Serpent::new(vec![0u8; 16]).unwrap();
-        let mut long = Serpent::new(vec![0u8; 32]).unwrap();
+        let mut short = Serpent::new(&[0u8; 16]).unwrap();
+        let mut long = Serpent::new(&[0u8; 32]).unwrap();
         let (mut a, mut b) = (Vec::new(), Vec::new());
         short.block_encrypt(&[0u8; 16], &mut a);
         long.block_encrypt(&[0u8; 16], &mut b);
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn test_a_wrong_key_length_is_an_error() {
         for length in [0usize, 1, 15, 17, 23, 25, 31, 33, 64] {
-            match Serpent::new(vec![0; length]) {
+            match Serpent::new(&vec![0; length]) {
                 Err(error) => assert!(error.contains("16, 24 or 32"), "{error}"),
                 Ok(_) => panic!("accepted a {length} byte key"),
             }
@@ -474,13 +474,13 @@ mod tests {
 
     #[test]
     fn test_a_one_bit_key_change_changes_everything() {
-        let mut base = Serpent::new(vec![0u8; 32]).unwrap();
+        let mut base = Serpent::new(&[0u8; 32]).unwrap();
         let mut first = Vec::new();
         base.block_encrypt(&[0u8; 16], &mut first);
         for bit in 0..256 {
             let mut key = vec![0u8; 32];
             key[bit / 8] ^= 1 << (bit % 8);
-            let mut other = Serpent::new(key).unwrap();
+            let mut other = Serpent::new(&key).unwrap();
             let mut out = Vec::new();
             other.block_encrypt(&[0u8; 16], &mut out);
             assert_ne!(out, first, "bit {bit} of the key changed nothing");

@@ -33,6 +33,8 @@ mod inflate;
 mod json;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[path = "../shared/fixtures.rs"]
 #[cfg(test)]
 mod fixtures;
@@ -40,6 +42,7 @@ mod fixtures;
 mod rfc;
 
 use json::Json;
+use cli::value;
 use jwk::Jwk;
 use std::io::Write;
 
@@ -61,10 +64,6 @@ pub fn equal(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-}
-
 fn values<'a>(args: &'a [String], name: &str) -> Vec<&'a str> {
     args.iter().enumerate().filter(|(_, a)| *a == name)
         .filter_map(|(i, _)| args.get(i + 1).map(String::as_str)).collect()
@@ -73,19 +72,7 @@ fn values<'a>(args: &'a [String], name: &str) -> Vec<&'a str> {
 const FLAGS: [&str; 5] = ["--password-stdin", "--unencoded", "--allow-none", "--zip", "--help"];
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if FLAGS.contains(&arg.as_str()) {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
+    cli::positional(args, &FLAGS, &[])
 }
 
 fn read(path: &str) -> Result<Vec<u8>, String> {

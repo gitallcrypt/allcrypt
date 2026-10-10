@@ -751,18 +751,18 @@ mod tests {
     use crate::block_ciphers::aes::AesCrypto;
 
     fn cipher() -> AesCrypto {
-        AesCrypto::new(vec![0x2b; 16]).unwrap()
+        AesCrypto::new(&[0x2b; 16]).unwrap()
     }
 
     fn encrypt(plain: &[u8], iv: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
-        cipher().pcbc_encrypt(plain, &mut out, iv.to_vec()).unwrap();
+        cipher().pcbc_encrypt(plain, &mut out, iv).unwrap();
         out
     }
 
     fn decrypt(ciphertext: &[u8], iv: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
-        cipher().pcbc_decrypt(ciphertext, &mut out, iv.to_vec()).unwrap();
+        cipher().pcbc_decrypt(ciphertext, &mut out, iv).unwrap();
         out
     }
 
@@ -785,7 +785,7 @@ mod tests {
         let iv = [0x11u8; 16];
         let pcbc = encrypt(&plain, &iv);
         let mut cbc = Vec::new();
-        cipher().cbc_encrypt(&plain, &mut cbc, iv.to_vec()).unwrap();
+        cipher().cbc_encrypt(&plain, &mut cbc, &iv).unwrap();
 
         assert_eq!(&pcbc[..16], &cbc[..16], "the first block is the same in both");
         assert_ne!(&pcbc[16..32], &cbc[16..32]);
@@ -811,10 +811,10 @@ mod tests {
 
         // CBC, for contrast: the third block onwards is intact.
         let mut cbc = Vec::new();
-        cipher().cbc_encrypt(&plain, &mut cbc, iv.to_vec()).unwrap();
+        cipher().cbc_encrypt(&plain, &mut cbc, &iv).unwrap();
         cbc[0] ^= 0x01;
         let mut recovered = Vec::new();
-        cipher().cbc_decrypt(&cbc, &mut recovered, iv.to_vec()).unwrap();
+        cipher().cbc_decrypt(&cbc, &mut recovered, &iv).unwrap();
         assert_eq!(&recovered[32..], &plain[32..],
                    "CBC's damage should stop after two blocks");
     }
@@ -855,7 +855,7 @@ mod tests {
         for length in [1usize, 15, 17, 31] {
             let mut out = Vec::new();
             let error = cipher()
-                .pcbc_encrypt(&vec![0u8; length], &mut out, iv.to_vec())
+                .pcbc_encrypt(&vec![0u8; length], &mut out, &iv)
                 .unwrap_err();
             assert!(error.contains("multiple of block size"), "{error}");
             assert!(out.is_empty(), "output was written before the refusal");
@@ -866,7 +866,7 @@ mod tests {
     fn test_a_wrong_iv_length_is_refused() {
         for length in [0usize, 8, 15, 17, 32] {
             let mut out = Vec::new();
-            assert!(cipher().pcbc_encrypt(&[0u8; 16], &mut out, vec![0; length]).is_err(),
+            assert!(cipher().pcbc_encrypt(&[0u8; 16], &mut out, &vec![0; length]).is_err(),
                     "accepted a {length} byte IV");
         }
     }
@@ -897,12 +897,12 @@ mod tests {
         let plain: Vec<u8> = (0..32u8).collect();
         let iv = [0x22u8; 8];
         let mut out = Vec::new();
-        Des::new(vec![0x13; 8]).unwrap()
-            .pcbc_encrypt(&plain, &mut out, iv.to_vec()).unwrap();
+        Des::new(&[0x13; 8]).unwrap()
+            .pcbc_encrypt(&plain, &mut out, &iv).unwrap();
         assert_eq!(out.len(), 32);
         let mut back = Vec::new();
-        Des::new(vec![0x13; 8]).unwrap()
-            .pcbc_decrypt(&out, &mut back, iv.to_vec()).unwrap();
+        Des::new(&[0x13; 8]).unwrap()
+            .pcbc_decrypt(&out, &mut back, &iv).unwrap();
         assert_eq!(back, plain);
     }
 
@@ -936,11 +936,11 @@ mod tests {
             let (iv, input, output) = (&group[0].1, &group[1].1, &group[2].1);
             assert_eq!((group[0].0.as_str(), group[1].0.as_str()), ("IV", "Input"));
             let mut out = Vec::new();
-            AesCrypto::new(key.clone()).unwrap()
+            AesCrypto::new(&key).unwrap()
                 .cbc_cs_encrypt(input, &mut out, iv, CtsVariant::Cs3).unwrap();
             assert_eq!(&out, output);
             let mut back = Vec::new();
-            AesCrypto::new(key.clone()).unwrap()
+            AesCrypto::new(&key).unwrap()
                 .cbc_cs_decrypt(output, &mut back, iv, CtsVariant::Cs3).unwrap();
             assert_eq!(&back, input);
             count += 1;
@@ -959,7 +959,7 @@ mod tests {
             let data: Vec<u8> = (0..n).map(|i| (i * 7 + 1) as u8).collect();
             let encrypt = |variant| {
                 let mut out = Vec::new();
-                AesCrypto::new((0..16).collect()).unwrap()
+                AesCrypto::new(&(0..16).collect::<Vec<u8>>()).unwrap()
                     .cbc_cs_encrypt(&data, &mut out, &iv, variant).unwrap();
                 out
             };
@@ -981,7 +981,7 @@ mod tests {
     #[test]
     fn test_ciphertext_stealing_needs_a_block_and_ctr_le_a_whole_iv() {
         use crate::block_ciphers::aes::AesCrypto;
-        let mut aes = AesCrypto::new(vec![0; 16]).unwrap();
+        let mut aes = AesCrypto::new(&[0; 16]).unwrap();
         for n in 0..16 {
             for variant in [CtsVariant::Cs1, CtsVariant::Cs2, CtsVariant::Cs3] {
                 let mut out = Vec::new();

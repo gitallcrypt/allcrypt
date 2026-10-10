@@ -45,7 +45,7 @@ fn digest(hash: &str, parts: &[&[u8]]) -> Vec<u8> {
 /// then read as a wrong password.
 fn rc4(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(data.len());
-    RC4::new(key.to_vec())?.crypt(data, &mut out);
+    RC4::new(key)?.crypt(data, &mut out);
     Ok(out)
 }
 

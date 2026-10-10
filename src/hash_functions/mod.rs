@@ -4,6 +4,7 @@ pub mod blake2;
 pub mod buffer;
 pub mod gost94;
 pub mod keccak;
+pub mod kupyna;
 pub mod md2;
 pub mod md4;
 pub mod md5;
@@ -25,6 +26,10 @@ This might be fixed for these implementations later.
 */
 
 pub trait HashFunction {
+    /// The name `api::AnyHash::new` reads back as this same function: the
+    /// catalogue's spelling (`api::HASHES`), lowercase, with the length in
+    /// the name for a family that takes one at a length the catalogue does
+    /// not list (`blake2b_256`, `md6_200`, `kupyna128`, `shake_128_512`).
     fn name(&self) -> String;
     fn digest_len(&self) -> usize;
     /// The compression function's input block size in bytes: 64 for the

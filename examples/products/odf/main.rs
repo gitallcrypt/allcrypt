@@ -24,6 +24,8 @@ mod base64;
 mod inflate;
 #[path = "../shared/passphrase.rs"]
 mod passphrase;
+#[path = "../shared/cli.rs"]
+mod cli;
 #[path = "../shared/xml.rs"]
 mod xml;
 #[path = "../shared/ziparchive.rs"]
@@ -32,32 +34,14 @@ mod ziparchive;
 #[cfg(test)]
 mod fixtures;
 
-fn value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-}
+use cli::value;
 
 fn positional(args: &[String]) -> Vec<&String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for arg in args {
-        if skip {
-            skip = false;
-        } else if arg == "--password-stdin" {
-        } else if arg.starts_with("--") {
-            skip = true;
-        } else {
-            out.push(arg);
-        }
-    }
-    out
+    cli::positional(args, &["--password-stdin"], &[])
 }
 
 fn password(args: &[String]) -> Result<Vec<u8>, String> {
-    if args.iter().any(|a| a == "--password-stdin") {
-        return passphrase::read_line("Password: ");
-    }
-    value(args, "--password").map(|p| p.as_bytes().to_vec())
-        .ok_or_else(|| "Give --password or --password-stdin.".to_string())
+    passphrase::required_from_args(args)
 }
 
 fn run(args: &[String]) -> Result<(), String> {

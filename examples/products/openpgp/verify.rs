@@ -234,8 +234,12 @@ pub fn verify_document(signatures: &[Packet], data: &[u8], literal: Option<&[u8]
         let mut h = s.hasher();
         h.update(signed);
         let digest = s.finish(h, literal);
-        let mut verdict = None;
-        for cert in certs {
+        // Every key the signature may be by is tried, and the best answer
+        // kept: a signature naming no issuer may be by any key given, and a
+        // key ID is eight bytes anybody can collide, so the first candidate
+        // that fails says nothing about the others.
+        let mut verdict: Option<(u8, Verdict)> = None;
+        'search: for cert in certs {
             let checked = check(cert, now);
             let keys_and_checks = std::iter::once((&cert.primary, &checked.primary))
                 .chain(cert.subkeys.iter().map(|s| &s.key).zip(&checked.subkeys));
@@ -250,22 +254,26 @@ pub fn verify_document(signatures: &[Packet], data: &[u8], literal: Option<&[u8]
                 let made = format!("v{} {} signature, {}, made {}", s.version,
                                    sig::type_name(s.sig_type), s.hash.display,
                                    s.created().unwrap_or(0));
-                verdict = Some(match s.verify_digest(&key.public, &digest) {
+                // 2 good, 1 verifies but is refused anyway, 0 does not verify.
+                let found = match s.verify_digest(&key.public, &digest) {
                     Ok(()) if !key_check.may(sig::FLAG_SIGN, keys::can_sign(key.public.algorithm)) =>
-                        Verdict { good: false, text: format!(
+                        (1, Verdict { good: false, text: format!(
                             "the signature verifies, but by {who}, which may not sign: {}",
-                            key_check.problems.join("; ")) },
+                            key_check.problems.join("; ")) }),
                     Ok(()) if s.created().unwrap_or(0) > now =>
-                        Verdict { good: false, text: format!("{made} by {who} is from the future") },
-                    Ok(()) => Verdict { good: true, text: format!("good {made} by {who}") },
-                    Err(why) => Verdict { good: false, text: format!("BAD {made} by {who}: {why}") },
-                });
-                break;
-            }
-            if verdict.is_some() {
-                break;
+                        (1, Verdict { good: false, text: format!("{made} by {who} is from the future") }),
+                    Ok(()) => (2, Verdict { good: true, text: format!("good {made} by {who}") }),
+                    Err(why) => (0, Verdict { good: false, text: format!("BAD {made} by {who}: {why}") }),
+                };
+                if verdict.as_ref().is_none_or(|(rank, _)| found.0 > *rank) {
+                    verdict = Some(found);
+                }
+                if verdict.as_ref().is_some_and(|(rank, _)| *rank == 2) {
+                    break 'search;
+                }
             }
         }
+        let verdict = verdict.map(|(_, v)| v);
         verdicts.push(verdict.unwrap_or_else(|| Verdict { good: false, text: format!(
             "a signature by {} with no key given to check it",
             s.issuer_fingerprints().first().map(|f| keys::hex_upper(f))

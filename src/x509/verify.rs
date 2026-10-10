@@ -86,6 +86,18 @@ pub struct Policy {
     /// Smallest RSA modulus, in bits. 1024 is factorable by a
     /// well-resourced attacker; 2048 is the modern floor.
     pub min_rsa_bits: usize,
+    /// Largest RSA modulus, DSA `p` or Diffie-Hellman `p`, in bits, that
+    /// any arithmetic is done on. `Policy::MAX_KEY_BITS` by default.
+    ///
+    /// The floor above is a strength question; this is a
+    /// denial-of-service one. A peer can send any key it likes, and
+    /// `verify_pkcs1v15` runs `mod_pow(e, n)` with the peer's `e` and
+    /// `n`: a two-million-bit modulus with `e = n - 2` costs millions of
+    /// two-megabit squarings before the signature is reported bad. So
+    /// the size is checked before anything is computed - in a chain, and
+    /// on the TLS paths that use a key before (or without) verifying its
+    /// chain. Raise it to reach a key above OpenSSL's limit on purpose.
+    pub max_key_bits: usize,
     /// How long a chain may be, counting the leaf and the root.
     pub max_chain_length: usize,
     /// Refuse a chain whose revocation status could not be established.
@@ -115,6 +127,7 @@ impl Default for Policy {
             allow_md5: false,
             allow_expired: false,
             min_rsa_bits: 2048,
+            max_key_bits: Policy::MAX_KEY_BITS,
             max_chain_length: 10,
             require_revocation: false,
         }
@@ -122,20 +135,22 @@ impl Default for Policy {
 }
 
 impl Policy {
-    /// The largest RSA modulus, and the largest DSA `p`, a verifier will
-    /// do arithmetic on: 16384 bits, which is OpenSSL's limit and far
-    /// above any key a CA has issued.
-    ///
-    /// The floor (`min_rsa_bits`) is a strength question and belongs in
-    /// the policy; the ceiling is a denial-of-service question and does
-    /// not vary by deployment. A peer-supplied certificate or CRL can
-    /// carry any key it likes, and `verify_pkcs1v15` runs `mod_pow(e, n)`
-    /// with the peer's `e` and `n`: a two-million-bit modulus with
-    /// `e = n - 2` costs millions of two-megabit squarings before the
-    /// signature is reported bad. The cheap checks are supposed to
-    /// precede the expensive one, and "the key is of a plausible size"
-    /// is one of them.
+    /// The default `max_key_bits`: 16384, which is OpenSSL's limit and
+    /// far above any key a CA has issued.
     pub const MAX_KEY_BITS: usize = 16384;
+
+    /// Refuse a key of `bits` above `max_key_bits`. `what` names it for
+    /// the message ("The issuer's RSA key"). Called before the key is
+    /// constructed or used, since the cost it guards against is the
+    /// first arithmetic on it.
+    pub fn check_key_ceiling(&self, what: &str, bits: usize) -> Result<(), String> {
+        if bits > self.max_key_bits {
+            return Err(format!("{what} is {bits} bits; nothing above {} (max_key_bits) \
+                                is used, since the arithmetic alone would take \
+                                longer than any handshake.", self.max_key_bits));
+        }
+        Ok(())
+    }
 
     /// A policy that accepts what an old server is likely to present.
     ///
@@ -154,6 +169,7 @@ impl Policy {
             // this constructor already accepts.
             allow_expired: true,
             min_rsa_bits: 512,
+            max_key_bits: Policy::MAX_KEY_BITS,
             max_chain_length: 10,
             // Soft fail, like the default. A box this constructor
             // exists for is one whose CRL distribution point has been
@@ -255,12 +271,7 @@ pub fn verify_signed(signed: &[u8], algorithm: SignatureAlgorithm,
             }
             // Before `RsaPublicKey::new` and the modular exponentiation,
             // which is the whole point of the cap.
-            if n.bit_len() > Policy::MAX_KEY_BITS {
-                return Err(format!("Issuer's RSA key is {} bits; nothing above {} \
-                                    is verified, since the exponentiation alone \
-                                    would take longer than any handshake.",
-                                   n.bit_len(), Policy::MAX_KEY_BITS));
-            }
+            policy.check_key_ceiling("Issuer's RSA key", n.bit_len())?;
             let key = rsa::RsaPublicKey::new(n.clone(), e.clone())?;
             if rsa::verify_pkcs1v15(&key, hash_name, &digest, signature)? {
                 Ok(())
@@ -319,10 +330,7 @@ pub(crate) fn dsa_public_key(parameters: &Option<(BigUint, BigUint, BigUint)>, y
     }
     // `DsaParameters::new` checks that `g` has order `q` with a modular
     // exponentiation over `p`, so the cap has to come first.
-    if p.bit_len() > Policy::MAX_KEY_BITS {
-        return Err(format!("The DSA key's group is {} bits; nothing above {} is \
-                            verified.", p.bit_len(), Policy::MAX_KEY_BITS));
-    }
+    policy.check_key_ceiling("The DSA key's group", p.bit_len())?;
     DsaPublicKey::new(DsaParameters::new(p.clone(), q.clone(), g.clone())?, y.clone())
 }
 
@@ -1005,9 +1013,15 @@ fn status_of(certificate: &Certificate<'_>, issuer: &Certificate<'_>,
 /// name the issuing CA's constraints were checked against, or a
 /// constrained CA can issue `SAN=[rfc822Name], CN=evil.test` and the
 /// dNSName constraint sees no DNS name at all.
+///
+/// A malformed dNSName or URI counts as one: a SAN that tried to name a
+/// host and failed is not a certificate without host names, and falling
+/// back to the common name there would let the odd entry decide which
+/// name is checked.
 pub(crate) fn common_name_is_honoured(certificate: &Certificate<'_>) -> bool {
     !certificate.extensions.subject_alt_names.iter().any(|name| {
-        matches!(name, GeneralName::Dns(_) | GeneralName::Uri(_))
+        matches!(name, GeneralName::Dns(_) | GeneralName::Uri(_)
+                       | GeneralName::Malformed(2 | 6, _))
     })
 }
 
@@ -1238,6 +1252,21 @@ mod tests {
         let error = dsa_public_key(&parameters, &BigUint::from_u64(2), &policy)
             .unwrap_err();
         assert!(error.contains("nothing above"), "{}", error);
+
+        // The ceiling is the policy's: raised, the same oversized key
+        // gets as far as its signature, and lowered, a key under the
+        // default is refused.
+        let raised = Policy { max_key_bits: Policy::MAX_KEY_BITS + 1, ..policy.clone() };
+        let key = PublicKey::Rsa { n: odd_number_of(Policy::MAX_KEY_BITS + 1),
+                                   e: BigUint::from_u64(3) };
+        let error = verify_signed(digest_input, SignatureAlgorithm::RsaPkcs1("sha256"),
+                                  &signature, &key, &raised).unwrap_err();
+        assert!(!error.contains("nothing above"), "{}", error);
+        let lowered = Policy { max_key_bits: 4096, ..policy.clone() };
+        let key = PublicKey::Rsa { n: odd_number_of(4097), e: BigUint::from_u64(3) };
+        let error = verify_signed(digest_input, SignatureAlgorithm::RsaPkcs1("sha256"),
+                                  &signature, &key, &lowered).unwrap_err();
+        assert!(error.contains("nothing above 4096 (max_key_bits)"), "{}", error);
     }
 
     #[test]
@@ -2058,6 +2087,79 @@ mod chain_tests {
     /// RFC 5280 does not require this. It requires the constraint to
     /// cover the names the *RFC* honours; this covers the names *we*
     /// honour, which is a superset because of the fallback.
+    /// One malformed subjectAltName entry no longer makes the certificate
+    /// unreadable (review item X.509/SSH L1), and it is judged instead:
+    /// it matches no host, a malformed dNSName still stops the fallback to
+    /// the common name, and under a constraint of its form it is refused,
+    /// since nobody can say it is outside an excluded subtree.
+    ///
+    /// What was wrong: a NUL or a non-UTF-8 byte in any dNSName, rfc822Name
+    /// or URI, or an address of the wrong length, failed
+    /// `Certificate::parse`, so such a certificate could not even be
+    /// inspected - against the rule that parsing reads and verifying
+    /// judges.
+    #[test]
+    fn test_a_malformed_san_entry_is_kept_and_judged() {
+        use crate::x509::builder::SanEntry;
+        let odd = || vec![SanEntry::Dns("evil.test\0.good.test".to_string()),
+                          SanEntry::Ip(vec![192, 0, 2])];
+
+        // Unconstrained: it parses, the chain verifies, and the odd
+        // entries match nothing while the good one still does.
+        let chain = tests_support::chain(|_| {}, |_| {}, |b| {
+            b.common_name = "evil.test".to_string();
+            b.dns_names = vec!["good.test".to_string()];
+            b.extra_sans = odd();
+        });
+        let leaf = Certificate::parse(&chain.leaf)
+            .expect("one odd entry made the certificate unreadable");
+        let names = &leaf.extensions.subject_alt_names;
+        assert!(names.contains(&GeneralName::Malformed(2, b"evil.test\0.good.test")));
+        assert!(names.contains(&GeneralName::Malformed(7, &[192, 0, 2])));
+        check(&chain, &policy()).unwrap();
+        assert!(matches_hostname(&leaf, "good.test"));
+        assert!(!matches_hostname(&leaf, "evil.test"));
+        assert!(!matches_hostname(&leaf, "192.0.2.0"));
+
+        // A malformed dNSName and nothing else: no fallback to a common
+        // name that would then be the only name checked.
+        let chain = tests_support::chain(|_| {}, |_| {}, |b| {
+            b.common_name = "evil.test".to_string();
+            b.dns_names = vec![];
+            b.extra_sans = odd();
+        });
+        let leaf = Certificate::parse(&chain.leaf).unwrap();
+        assert!(!common_name_is_honoured(&leaf));
+        assert!(!matches_hostname(&leaf, "evil.test"));
+
+        // Under a dNSName constraint, permitted or excluded, the malformed
+        // dNSName is refused...
+        for (permitted, excluded) in [(&[(2u32, &b"good.test"[..])][..], &[][..]),
+                                      (&[][..], &[(2u32, &b"evil.test"[..])][..])] {
+            let chain = tests_support::chain(
+                |_| {},
+                |b| b.extra_extensions = vec![constraints(permitted, excluded)],
+                |b| {
+                    b.common_name = "leaf".to_string();
+                    b.dns_names = vec!["good.test".to_string()];
+                    b.extra_sans = odd();
+                });
+            let error = check(&chain, &policy()).unwrap_err();
+            assert!(error.contains("cannot be checked"), "{}", error);
+        }
+        // ...and a malformed address under a DNS-only constraint is of an
+        // unconstrained form, which is not refused for being odd.
+        let chain = tests_support::chain(
+            |_| {},
+            |b| b.extra_extensions = vec![constraints(&[(2, b"good.test")], &[])],
+            |b| {
+                b.common_name = "leaf".to_string();
+                b.dns_names = vec!["good.test".to_string()];
+                b.extra_sans = vec![SanEntry::Ip(vec![192, 0, 2])];
+            });
+        check(&chain, &policy()).unwrap();
+    }
+
     #[test]
     fn test_a_constraint_covers_the_common_name_when_there_is_no_san() {
         let chain = tests_support::chain(

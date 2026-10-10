@@ -464,6 +464,51 @@ def test_a_small_rsa_key_is_refused_by_default(handshake):
     assert again.send(b"old key") == b"old key"
 
 
+@pytest.mark.parametrize("ciphers,server_max", [
+    ("AES128-SHA:@SECLEVEL=0", ssl.TLSVersion.TLSv1_2),     # RSA key transport
+    ("ECDHE-RSA-AES128-GCM-SHA256", ssl.TLSVersion.TLSv1_2),  # ServerKeyExchange
+    (None, ssl.TLSVersion.TLSv1_3),                         # CertificateVerify
+], ids=["rsa-transport", "server-key-exchange", "tls13"])
+def test_a_server_key_above_the_ceiling_is_refused_before_use(handshake, ciphers,
+                                                              server_max):
+    """The server's own RSA key is used on three paths - to encrypt the
+    premaster, to check a ServerKeyExchange, to check a TLS 1.3
+    CertificateVerify - and an RSA operation costs whatever the key's
+    author chose. `max_key_bits` used to bound only the keys that verify
+    a chain, which the leaf's own key never does, so the leaf's was
+    unbounded; with `verify=False` it was entirely the server's choice.
+    `verify=False` here so that nothing but these paths can refuse it,
+    and the ceiling is lowered to 1024 so that a real 2048 bit key can
+    stand in for an enormous one."""
+    refused = handshake(ciphers=ciphers, server_max=server_max, verify=False,
+                        max_key_bits=1024).pump()
+    assert not refused.client.established
+    assert "max_key_bits" in str(refused.client_error), refused.client_error
+
+    allowed = handshake(ciphers=ciphers, server_max=server_max, verify=False,
+                        max_key_bits=2048).pump()
+    assert allowed.client.established, f"{allowed.client_error}"
+
+
+def test_a_dh_group_above_the_ceiling_is_refused(handshake):
+    """A DHE server picks the group, and the client exponentiates over
+    it - so its size is bounded from above as well as from below. A 1024
+    bit RSA key and a 2048 bit group with the ceiling between them, so it
+    is the group and not the key that is refused."""
+    key, certificate = make_server_cert(key_size=1024)
+    cert_pem = certificate.public_bytes(serialization.Encoding.PEM).decode()
+    common = dict(key=key, certificate=certificate, roots_pem=cert_pem,
+                  ciphers="DHE-RSA-AES128-SHA:@SECLEVEL=0", server_dh_bits=2048,
+                  min_rsa_bits=1024)
+    refused = handshake(max_key_bits=1536, **common).pump()
+    assert not refused.client.established
+    error = str(refused.client_error)
+    assert "Diffie-Hellman group" in error and "max_key_bits" in error, error
+
+    allowed = handshake(max_key_bits=2048, **common).pump()
+    assert allowed.client.established, f"{allowed.client_error}"
+
+
 # ------------------------------------------------- reaching something old ---
 #
 # Four ways to accept a certificate the default policy refuses, from the

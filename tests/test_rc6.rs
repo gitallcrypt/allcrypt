@@ -24,7 +24,7 @@ fn test_rc6_vectors() {
         let f: HashMap<&str, &str> = line.split(' ').skip(1)
             .map(|w| w.split_once('=').unwrap()).collect();
         let (key, pt, ct) = (unhex(f["key"]), unhex(f["pt"]), unhex(f["ct"]));
-        let mut c = Rc6::new(key.clone()).unwrap();
+        let mut c = Rc6::new(&key).unwrap();
         let mut out = Vec::new();
         c.block_encrypt(&pt, &mut out);
         assert_eq!(out, ct, "encrypt: {line}");

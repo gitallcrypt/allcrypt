@@ -14,7 +14,7 @@ fn test_aes_block(){
                                   0xad, 0x48, 0xa2, 0x14, 0x92, 0x84, 0x20, 0x87];
     let mut result = vec![];
 
-    let mut crypto = aes::AesCrypto::new(key128).unwrap();
+    let mut crypto = aes::AesCrypto::new(&key128).unwrap();
 
     result.clear();
     crypto.block_encrypt(&plain, &mut result);
@@ -23,7 +23,7 @@ fn test_aes_block(){
     crypto.block_decrypt(&cipher128, &mut result);
     assert_eq!(result, plain);
 
-    crypto.setup_key(key192).unwrap();
+    crypto.setup_key(&key192).unwrap();
     result.clear();
     crypto.block_encrypt(&plain, &mut result);
     assert_eq!(result, cipher192);
@@ -31,7 +31,7 @@ fn test_aes_block(){
     crypto.block_decrypt(&cipher192, &mut result);
     assert_eq!(result, plain);
 
-    crypto.setup_key(key256).unwrap();
+    crypto.setup_key(&key256).unwrap();
     result.clear();
     crypto.block_encrypt(&plain, &mut result);
     assert_eq!(result, cipher256);
@@ -49,7 +49,7 @@ fn test_aes_block2(){
                                   0x9d, 0x16, 0x9f, 0x77, 0x35, 0xaa, 0x89, 0xe4];
     let mut result = vec![];
 
-    let mut crypto = aes::AesCrypto::new(key128).unwrap();
+    let mut crypto = aes::AesCrypto::new(&key128).unwrap();
 
     result.clear();
     crypto.block_encrypt(&plain, &mut result);
@@ -89,7 +89,7 @@ fn test_aes_ctr() {
 #[test]
 fn test_aes_ccm() {
     use allcrypt::block_ciphers::ccm;
-    let mut crypto = aes::AesCrypto::new(vec![0; 16]).unwrap();
+    let mut crypto = aes::AesCrypto::new(&[0; 16]).unwrap();
     let nonce = [0u8; 11];
     let aad = b"header";
     let plaintext = [0u8; 16];

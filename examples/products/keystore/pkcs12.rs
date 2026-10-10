@@ -97,7 +97,7 @@ fn octets(content: &[u8], constructed: bool) -> Result<Vec<u8>, String> {
 
 // ---------------------------------------------------------------- model --
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Kind {
     /// A PKCS#8 PrivateKeyInfo, decrypted if it was shrouded.
     Key { pkcs8: Vec<u8>, shrouded: bool },
@@ -106,6 +106,20 @@ pub enum Kind {
     /// A secret bag: its type OID, and the value - decrypted, when the
     /// type says it is a shrouded key bag, as Java writes secret keys.
     Secret { kind: String, value: Vec<u8> },
+}
+
+impl std::fmt::Debug for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::hidden::HiddenBytes;
+        match self {
+            Kind::Key { pkcs8, shrouded } => f.debug_struct("Key")
+                .field("pkcs8", &HiddenBytes(pkcs8)).field("shrouded", shrouded).finish(),
+            Kind::Certificate(der) => f.debug_tuple("Certificate").field(der).finish(),
+            Kind::Crl(der) => f.debug_tuple("Crl").field(der).finish(),
+            Kind::Secret { kind, value } => f.debug_struct("Secret")
+                .field("kind", kind).field("value", &HiddenBytes(value)).finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

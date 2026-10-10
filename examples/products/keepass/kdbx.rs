@@ -131,10 +131,7 @@ pub fn key_file(data: &[u8]) -> Result<[u8; 32], String> {
 }
 
 pub fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+    crate::cli::unhex(text, &[]).ok()
 }
 
 pub struct Credentials {
@@ -228,22 +225,22 @@ impl Cipher {
 
     fn block(self, key: &[u8; 32]) -> Result<Box<dyn BlockCipher>, String> {
         Ok(match self {
-            Cipher::Aes => Box::new(AesCrypto::new(key.to_vec())?),
-            Cipher::Twofish => Box::new(Twofish::new(key.to_vec())?),
+            Cipher::Aes => Box::new(AesCrypto::new(key)?),
+            Cipher::Twofish => Box::new(Twofish::new(key)?),
             Cipher::ChaCha20 => return Err("ChaCha20 is not a block cipher.".to_string()),
         })
     }
 
     fn encrypt(self, key: &[u8; 32], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
         if self == Cipher::ChaCha20 {
-            let mut stream = Chacha::new(key.to_vec(), iv.to_vec(), 20)?;
+            let mut stream = Chacha::new(key, iv, 20)?;
             let mut out = Vec::with_capacity(data.len());
             stream.crypt(data, &mut out);
             return Ok(out);
         }
         let padded = allcrypt::api::pad_pkcs7(data, 16)?;
         let mut out = Vec::with_capacity(padded.len());
-        self.block(key)?.cbc_encrypt(&padded, &mut out, iv.to_vec())?;
+        self.block(key)?.cbc_encrypt(&padded, &mut out, iv)?;
         Ok(out)
     }
 
@@ -255,7 +252,7 @@ impl Cipher {
             return Err("The payload is not a whole number of blocks.".to_string());
         }
         let mut out = Vec::with_capacity(data.len());
-        self.block(key)?.cbc_decrypt(data, &mut out, iv.to_vec())?;
+        self.block(key)?.cbc_decrypt(data, &mut out, iv)?;
         allcrypt::api::unpad_pkcs7(&out, 16)
             .map_err(|_| "The payload's padding is wrong: the key is wrong.".to_string())
     }
@@ -524,11 +521,11 @@ impl InnerStream {
     pub fn new(id: u32, key: &[u8]) -> Result<InnerStream, String> {
         match id {
             0 => Ok(InnerStream::None),
-            2 => Ok(InnerStream::Salsa20(Salsa20::new(sha256(&[key]).to_vec(),
-                                                      SALSA20_NONCE.to_vec())?)),
+            2 => Ok(InnerStream::Salsa20(Salsa20::new(&sha256(&[key]),
+                                                      &SALSA20_NONCE)?)),
             3 => {
                 let hash = sha512(&[key]);
-                Ok(InnerStream::ChaCha20(Chacha::new(hash[..32].to_vec(), hash[32..44].to_vec(),
+                Ok(InnerStream::ChaCha20(Chacha::new(&hash[..32], &hash[32..44],
                                                      20)?))
             }
             1 => Err("The ArcFourVariant inner stream (KeePass 2.0's) is not supported.".into()),

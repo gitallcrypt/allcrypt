@@ -52,7 +52,7 @@ pub fn lm_hash(password: &[u8]) -> Result<[u8; 16], String> {
     }
     let mut hash = [0u8; 16];
     for (half, out) in padded.chunks_exact(7).zip(hash.chunks_exact_mut(8)) {
-        let mut des = Des::new(seven_to_eight(half.try_into().expect("7 bytes")).to_vec())?;
+        let mut des = Des::new(seven_to_eight(half.try_into().expect("7 bytes")).as_ref())?;
         let mut block = Vec::with_capacity(8);
         des.block_encrypt(b"KGS!@#$%", &mut block);
         out.copy_from_slice(&block);
@@ -131,7 +131,7 @@ mod tests {
     /// none; it is two encryptions under the all-zero key.
     #[test]
     fn test_the_empty_password() {
-        let mut des = Des::new(vec![0u8; 8]).unwrap();
+        let mut des = Des::new(&[0u8; 8]).unwrap();
         let mut block = Vec::new();
         des.block_encrypt(b"KGS!@#$%", &mut block);
         let empty = lm_hash(b"").unwrap();

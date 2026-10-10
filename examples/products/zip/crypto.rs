@@ -94,7 +94,7 @@ fn derive(password: &[u8], salt: &[u8], key_len: usize) -> Result<AesKeys, Strin
 /// AES-CTR as `fileenc` does it: the library's little-endian counter
 /// mode, from a counter of 1.
 fn ctr(key: &[u8], data: &mut [u8]) -> Result<(), String> {
-    let mut cipher = AesCrypto::new(key.to_vec())?;
+    let mut cipher = AesCrypto::new(key)?;
     CtrState::new_little_endian(&mut cipher, &1u128.to_le_bytes())?.apply(&mut cipher, data)
 }
 

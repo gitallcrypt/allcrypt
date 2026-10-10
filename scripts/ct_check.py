@@ -436,6 +436,37 @@ CASES = [
     ("box_beforenm", {"allcrypt::ec::x25519::exchange"},
      "the box key from a secret X25519 private key, both H-functions; the "
      "only branch allowed is exchange's all-zero refusal, the verdict."),
+
+    # ---- the modes moved onto the batch path --------------------------
+    ("aes_ocb_open", {"allcrypt::block_ciphers::ocb::Ocb::decrypt"},
+     "OCB opened under a secret key: L_*, Ktop, the offsets, the batches, "
+     "the partial block's pad, the checksum and the tag. The one report is "
+     "the verdict. The single blocks (L_*, Ktop, the pad, the tag) went "
+     "through AES's one-block table path until this row measured them."),
+    ("aes_mgm_open", {"allcrypt::block_ciphers::mgm::Mgm::decrypt"},
+     "MGM opened under a secret key: Y_1 and Z_1, both counters, the H "
+     "batches, the field multiplications and the tag. The one report is "
+     "the verdict. Three leaks before it read this way: the single blocks "
+     "took the table path, both counters stopped at the first byte that "
+     "did not carry - and they start at blocks enciphered under the key - "
+     "and LLVM compiled the multiplier's bit masks back into jumps."),
+    ("aes_lrw", CLEAN,
+     "LRW both ways with a secret key and a secret tweak key: the tweak "
+     "multiplication and the batched blocks."),
+    ("aes_ctr_acpkm", CLEAN,
+     "CTR-ACPKM with sections of two blocks, so the key is re-derived "
+     "several times; the derivation enciphers D under the secret key and "
+     "took the table path until this row measured it."),
+    ("tls_mte_open", LEAKS,
+     "a TLS 1.2 AES-CBC-HMAC-SHA256 record read MAC-then-encrypt under "
+     "secret keys. Documented as not constant time (record.rs's module "
+     "comment, docs/pitfalls.md): the padding decides the content length, "
+     "and the HMAC input, the copy out and its allocation are all sized by "
+     "it. The dummy compressions make the number of compressions the same "
+     "whatever the padding said - the large difference Lucky 13 measured - "
+     "which is a property of counts, not of branches, and so not one "
+     "valgrind can confirm. The row measures the claim instead of leaving "
+     "it asserted: it reports, as documented."),
 ]
 
 REPORT = re.compile(r"^==\d+== [A-Z]")
@@ -697,7 +728,7 @@ CONSTANT_TIME_SOURCES = re.compile(
     r"(^|/)src/(bignum/(ct|montgomery|fixed)"
     r"|ec/(fixed|ct|field25519|field448|edwards|x25519|x448|eddsa|xeddsa|ecdsa)"
     r"|mac/poly1305|stream_ciphers/(chacha|chacha_simd|salsa20|chacha20poly1305)"
-    r"|block_ciphers/(aes|aes_ni|ghash|gcm)|nacl"
+    r"|block_ciphers/(aes|aes_ni|ghash|gcm|ocb|mgm|lrw|acpkm)|nacl"
     r"|pq/ml_(kem|dsa)(/[a-z_0-9]+)?"
     r"|publickey_ciphers/(rsa|dh))\.rs:\d+")
 
@@ -716,6 +747,21 @@ PUBLIC_DIVISIONS = [
     ("src/ec/eddsa.rs", "bytes.chunks(width)",
      "the hash's length over the group order's width in bytes: a "
      "64 or 114 byte digest split into fixed-width pieces."),
+    ("src/block_ciphers/acpkm.rs", "!section.is_multiple_of(block_size)",
+     "the section length against the cipher's block, both parameters."),
+    ("src/block_ciphers/acpkm.rs", "let blocks = data.len().div_ceil(bs)",
+     "the message's length in blocks."),
+    ("src/block_ciphers/acpkm.rs", ".min((self.section - self.in_section) / bs)",
+     "the blocks left in the section: the section length and the "
+     "position in it, both counts of public lengths."),
+    ("src/block_ciphers/acpkm.rs", "let blocks = key.len().div_ceil(block_size);",
+     "the key's length in blocks."),
+    ("src/block_ciphers/mgm.rs", "for _ in 0..chunk.len().div_ceil(bs) {",
+     "the keystream batch's length in blocks."),
+    ("src/block_ciphers/mgm.rs", "for _ in 0..group.len().div_ceil(bs) {",
+     "the authentication batch's length in blocks."),
+    ("src/block_ciphers/mgm.rs", "for (chunk, h) in group.chunks(bs).zip(hs.chunks_exact(bs)) {",
+     "the batch split into blocks: lengths only."),
 ]
 
 #: Somewhere a division is known to be, so that a scan which finds none

@@ -16,7 +16,7 @@ use crate::stream_ciphers::StreamCipher;
 
 fn rc4(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(data.len());
-    RC4::new(key.to_vec())?.crypt(data, &mut out);
+    RC4::new(key)?.crypt(data, &mut out);
     Ok(out)
 }
 
@@ -94,7 +94,7 @@ mod tests {
     fn test_layout() {
         let sealed = encrypt(b"ABCDE", &[9, 8, 7], b"x").unwrap();
         let mut plain = Vec::new();
-        RC4::new(b"\x09\x08\x07ABCDE".to_vec()).unwrap().crypt(&sealed, &mut plain);
+        RC4::new(b"\x09\x08\x07ABCDE").unwrap().crypt(&sealed, &mut plain);
         assert_eq!(plain[0], b'x');
         assert_eq!(plain[1..], crate::checksum::crc32(b"x").to_le_bytes());
     }

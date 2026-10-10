@@ -70,15 +70,12 @@ pub fn acpkm_next(cipher_name: &str, key: &[u8]) -> Result<Vec<u8>, String> {
     // the first k bytes of their encryptions - so a key that is not a
     // whole number of blocks (AES-192's 24 bytes) takes one block more
     // than it fills and keeps what it needs.
+    //
+    // Through `encrypt_blocks`, since the key that enciphers D is the
+    // secret one and AES's one-block `block_encrypt` is its table path.
     let blocks = key.len().div_ceil(block_size);
-    let mut next = Vec::with_capacity(blocks * block_size);
-    for chunk in D[..blocks * block_size].chunks(block_size) {
-        cipher.block_encrypt(chunk, &mut next);
-    }
-    if next.len() != blocks * block_size {
-        return Err(format!("{} produced {} bytes for {} blocks.",
-                           cipher_name, next.len(), blocks));
-    }
+    let mut next = D[..blocks * block_size].to_vec();
+    cipher.encrypt_blocks(&mut next)?;
     next.truncate(key.len());
     Ok(next)
 }

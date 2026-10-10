@@ -8,6 +8,7 @@ use allcrypt::bignum::BigUint;
 use allcrypt::block_ciphers::BlockCipher;
 use allcrypt::ec::Point;
 
+use crate::cli::hex;
 use crate::hash::keccak256;
 use crate::json::{self, Json};
 use crate::keys::{private_bytes, private_from_bytes, public_key, recover, sign_recoverable,
@@ -48,16 +49,7 @@ pub fn parse_address(text: &str) -> Result<[u8; 20], String> {
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    if !text.len().is_multiple_of(2) {
-        return Err("Odd-length hex.".to_string());
-    }
-    (0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| format!("Not hex: {text}")))
-        .collect()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crate::cli::unhex(text, &[])
 }
 
 // ---------------------------------------------------------------- keystores --
@@ -103,11 +95,17 @@ fn derive(crypto: &Json, password: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-#[derive(Debug)]
 pub struct Account {
     pub key: BigUint,
     pub address: [u8; 20],
     pub format: &'static str,
+}
+
+impl std::fmt::Debug for Account {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Account").field("key", &crate::hidden::Hidden)
+            .field("address", &self.address).field("format", &self.format).finish()
+    }
 }
 
 /// A keystore file of any of the three kinds, opened. The MAC (or, for a
@@ -155,7 +153,7 @@ pub fn decrypt_keystore(text: &str, password: &[u8]) -> Result<Account, String> 
         let key = keccak256(&derived[..16]);
         let mut out = Vec::new();
         AnyBlockCipher::new("aes", &key[..16], None)?.cbc_decrypt(&cipher_text, &mut out,
-                                                                    iv.clone())?;
+                                                                    &iv)?;
         unpad(out)?
     };
     // geth accepts keys shorter than 32 bytes, left-padded (its 30- and
@@ -197,7 +195,7 @@ fn decrypt_presale(json: &Json, seed: &str, password: &[u8]) -> Result<Account, 
     let key = api::pbkdf2("sha256", password, password, 2000, 16)?;
     let mut out = Vec::new();
     AnyBlockCipher::new("aes", &key, None)?.cbc_decrypt(&data[16..], &mut out,
-                                                          data[..16].to_vec())?;
+                                                          &data[..16])?;
     let wrong = || "Wrong password: the key it gives is not the address's.".to_string();
     let plain = unpad(out).map_err(|_| wrong())?;
     let key = private_from_bytes(&keccak256(&plain))?;

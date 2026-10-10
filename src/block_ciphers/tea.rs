@@ -526,10 +526,10 @@ mod tests {
                 let mut out = Vec::new();
                 match mode {
                     "ecb" => cipher.ecb_encrypt(&plain, &mut out).unwrap(),
-                    "cbc" => cipher.cbc_encrypt(&plain, &mut out, iv.clone()).unwrap(),
-                    "pcbc" => cipher.pcbc_encrypt(&plain, &mut out, iv.clone()).unwrap(),
-                    "cfb" => cipher.cfb_encrypt(&plain, &mut out, iv.clone()).unwrap(),
-                    "ofb" => cipher.ofb_encrypt(&plain, &mut out, iv.clone()).unwrap(),
+                    "cbc" => cipher.cbc_encrypt(&plain, &mut out, &iv).unwrap(),
+                    "pcbc" => cipher.pcbc_encrypt(&plain, &mut out, &iv).unwrap(),
+                    "cfb" => cipher.cfb_encrypt(&plain, &mut out, &iv).unwrap(),
+                    "ofb" => cipher.ofb_encrypt(&plain, &mut out, &iv).unwrap(),
                     _ => cipher.ctr_encrypt(&plain, &mut out, &iv).unwrap(),
                 }
                 assert_ne!(out, plain, "{} {} did not encrypt", name, mode);
@@ -538,10 +538,10 @@ mod tests {
                 let mut back = Vec::new();
                 match mode {
                     "ecb" => cipher.ecb_decrypt(&out, &mut back).unwrap(),
-                    "cbc" => cipher.cbc_decrypt(&out, &mut back, iv.clone()).unwrap(),
-                    "pcbc" => cipher.pcbc_decrypt(&out, &mut back, iv.clone()).unwrap(),
-                    "cfb" => cipher.cfb_decrypt(&out, &mut back, iv.clone()).unwrap(),
-                    "ofb" => cipher.ofb_decrypt(&out, &mut back, iv.clone()).unwrap(),
+                    "cbc" => cipher.cbc_decrypt(&out, &mut back, &iv).unwrap(),
+                    "pcbc" => cipher.pcbc_decrypt(&out, &mut back, &iv).unwrap(),
+                    "cfb" => cipher.cfb_decrypt(&out, &mut back, &iv).unwrap(),
+                    "ofb" => cipher.ofb_decrypt(&out, &mut back, &iv).unwrap(),
                     _ => cipher.ctr_decrypt(&out, &mut back, &iv).unwrap(),
                 }
                 assert_eq!(back, plain, "{} {} did not round-trip", name, mode);

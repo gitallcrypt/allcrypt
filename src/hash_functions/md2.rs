@@ -285,7 +285,7 @@ impl Md2 {
 
 impl HashFunction for Md2 {
     fn name(&self) -> String {
-        "MD2".to_string()
+        "md2".to_string()
     }
 
     fn digest_len(&self) -> usize {
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn test_the_name_and_sizes() {
         let h = Md2::new(&[]);
-        assert_eq!(h.name(), "MD2");
+        assert_eq!(h.name(), "md2");
         assert_eq!(h.digest_len(), 16);
         assert_eq!(h.block_size(), BLOCK);
         assert_eq!(Md2::default().clone().digest().len(), 16);

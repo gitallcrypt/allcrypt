@@ -27,7 +27,7 @@ description and test vectors.
 ## What is in it
 
 - **Block ciphers** - AES, ARIA, Blowfish, Camellia, CAST5, CAST-256, DES and 3DES,
-  GOST 28147-89, IDEA, Kuznyechik, Magma, RC2, RC5, RC6, Rijndael
+  GOST 28147-89, IDEA, Kalyna, Kuznyechik, Magma, RC2, RC5, RC6, Rijndael
   at every block size, SEED, Serpent, SM4,
   TEA, Twofish, XTEA - in the modes each one's block size allows: ECB,
   CBC, PCBC, CFB, OFB, CTR, ciphertext stealing, XTS, LRW, GCM, CCM,
@@ -36,7 +36,8 @@ description and test vectors.
   ZipCrypto, and WEP and TKIP's constructions on top of them.
 - **Hashes** - MD2, MD4, MD5, SHA-0 to SHA-3, SHAKE, Keccak, BLAKE2,
   RIPEMD-128 to -320, HAS-160, SM3, Whirlpool and its two earlier
-  versions, MD6, Streebog and GOST R 34.11-94.
+  versions, MD6, Streebog, GOST R 34.11-94, and Ukraine's GOST 34.311-95
+  and Kupyna.
 - **MACs and key derivation** - HMAC, CMAC, CBC-MAC, Poly1305, UMAC;
   PBKDF1 and 2, scrypt, Argon2, HKDF, SP 800-108, Windows's NT and LM
   hashes, and the KDFs that particular formats and protocols define.
@@ -82,7 +83,7 @@ let mut hash = sha2::SHA256::new(b"abc");
 println!("{}", allcrypt::to_hex(&hash.digest()));
 
 // encryption, streamed in as many pieces as you like
-let mut cipher = AesCrypto::new(vec![0u8; 16])?;
+let mut cipher = AesCrypto::new(&[0u8; 16])?;
 let mut stream = Ctr::new(&mut cipher, &[0u8; 16])?;
 let mut out = vec![];
 stream.update(b"first piece ", &mut out)?;
@@ -90,7 +91,7 @@ stream.update(b"second piece", &mut out)?;
 
 // or in place, with no copying at all
 let mut buffer = b"transformed in place".to_vec();
-let mut cipher = AesCrypto::new(vec![0u8; 16])?;
+let mut cipher = AesCrypto::new(&[0u8; 16])?;
 Ctr::new(&mut cipher, &[0u8; 16])?.apply(&mut buffer)?;
 ```
 

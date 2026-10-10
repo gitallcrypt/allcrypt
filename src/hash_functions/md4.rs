@@ -326,7 +326,7 @@ impl Md4 {
 
 impl HashFunction for Md4 {
     fn name(&self) -> String {
-        "MD4".to_string()
+        "md4".to_string()
     }
 
     fn digest_len(&self) -> usize {
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn test_the_name_and_sizes() {
         let h = Md4::new(&[]);
-        assert_eq!(h.name(), "MD4");
+        assert_eq!(h.name(), "md4");
         assert_eq!(h.digest_len(), 16);
         assert_eq!(h.block_size(), BLOCK);
         assert_eq!(Md4::default().clone().digest().len(), 16);

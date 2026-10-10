@@ -43,9 +43,7 @@ fn emit(label: &str, bytes: &[u8]) {
 /// Run every mode for one cipher instance factory.
 fn run<F>(name: &str, bs: usize, keylen: usize, mut make: F)
 where F: FnMut() -> Box<dyn BlockCipher> {
-    let k = key(keylen);
     let v = iv(bs);
-    let _ = k;
 
     for n in lengths(bs, true) {
         let p = data(n);
@@ -61,11 +59,11 @@ where F: FnMut() -> Box<dyn BlockCipher> {
 
         let mut out = vec![];
         let mut c = make();
-        c.cbc_encrypt(&p, &mut out, v.clone()).unwrap();
+        c.cbc_encrypt(&p, &mut out, &v).unwrap();
         emit(&format!("{}/{}/cbc/{}", name, keylen, n), &out);
         let mut back = vec![];
         let mut c = make();
-        c.cbc_decrypt(&out, &mut back, v.clone()).unwrap();
+        c.cbc_decrypt(&out, &mut back, &v).unwrap();
         assert_eq!(back, p, "{} cbc roundtrip {}", name, n);
     }
 
@@ -76,8 +74,8 @@ where F: FnMut() -> Box<dyn BlockCipher> {
             let mut out = vec![];
             let mut c = make();
             match mode {
-                "cfb" => c.cfb_encrypt(&p, &mut out, v.clone()).unwrap(),
-                "ofb" => c.ofb_encrypt(&p, &mut out, v.clone()).unwrap(),
+                "cfb" => c.cfb_encrypt(&p, &mut out, &v).unwrap(),
+                "ofb" => c.ofb_encrypt(&p, &mut out, &v).unwrap(),
                 _     => c.ctr_encrypt(&p, &mut out, &v).unwrap(),
             }
             emit(&format!("{}/{}/{}/{}", name, keylen, mode, n), &out);
@@ -85,8 +83,8 @@ where F: FnMut() -> Box<dyn BlockCipher> {
             let mut back = vec![];
             let mut c = make();
             match mode {
-                "cfb" => c.cfb_decrypt(&out, &mut back, v.clone()).unwrap(),
-                "ofb" => c.ofb_decrypt(&out, &mut back, v.clone()).unwrap(),
+                "cfb" => c.cfb_decrypt(&out, &mut back, &v).unwrap(),
+                "ofb" => c.ofb_decrypt(&out, &mut back, &v).unwrap(),
                 _     => c.ctr_decrypt(&out, &mut back, &v).unwrap(),
             }
             assert_eq!(back, p, "{} {} roundtrip {}", name, mode, n);
@@ -156,7 +154,7 @@ where F: FnMut() -> Box<dyn BlockCipher> {
 
         let mut one = vec![];
         let mut c = make();
-        c.cfb_encrypt(&p, &mut one, v.clone()).unwrap();
+        c.cfb_encrypt(&p, &mut one, &v).unwrap();
         let mut c = make();
         let mut streamed = vec![];
         {
@@ -167,7 +165,7 @@ where F: FnMut() -> Box<dyn BlockCipher> {
 
         let mut one = vec![];
         let mut c = make();
-        c.cfb_decrypt(&p, &mut one, v.clone()).unwrap();
+        c.cfb_decrypt(&p, &mut one, &v).unwrap();
         let mut c = make();
         let mut streamed = vec![];
         {
@@ -178,7 +176,7 @@ where F: FnMut() -> Box<dyn BlockCipher> {
 
         let mut one = vec![];
         let mut c = make();
-        c.ofb_encrypt(&p, &mut one, v.clone()).unwrap();
+        c.ofb_encrypt(&p, &mut one, &v).unwrap();
         let mut c = make();
         let mut streamed = vec![];
         {
@@ -190,7 +188,7 @@ where F: FnMut() -> Box<dyn BlockCipher> {
         // CBC buffers partial blocks across calls.
         let mut one = vec![];
         let mut c = make();
-        c.cbc_encrypt(&p, &mut one, v.clone()).unwrap();
+        c.cbc_encrypt(&p, &mut one, &v).unwrap();
         let mut c = make();
         let mut streamed = vec![];
         {
@@ -214,19 +212,19 @@ where F: FnMut() -> Box<dyn BlockCipher> {
 
 fn main() {
     for kl in [16usize, 24, 32] {
-        run("aes", 16, kl, move || Box::new(AesCrypto::new(key(kl)).unwrap()));
+        run("aes", 16, kl, move || Box::new(AesCrypto::new(&key(kl)).unwrap()));
     }
     for kl in [4usize, 8, 16, 32, 56] {
-        run("blowfish", 8, kl, move || Box::new(Blowfish::new(key(kl)).unwrap()));
+        run("blowfish", 8, kl, move || Box::new(Blowfish::new(&key(kl)).unwrap()));
     }
     // DES and Triple DES. OpenSSL still has 3DES - deprecated, in the
     // "decrepit" module, but present - so unlike RC4 these can be checked
     // against it properly rather than against a reference written here.
     // Single DES goes through the same comparison by giving 3DES a
     // repeated key, which is exactly what EDE mode is for.
-    run("des", 8, 8, || Box::new(Des::new(key(8)).unwrap()));
+    run("des", 8, 8, || Box::new(Des::new(&key(8)).unwrap()));
     for kl in [8usize, 16, 24] {
-        run("3des", 8, kl, move || Box::new(TripleDes::new(key(kl)).unwrap()));
+        run("3des", 8, kl, move || Box::new(TripleDes::new(&key(kl)).unwrap()));
     }
     // RC2, at the one key length OpenSSL's binding will accept - 128 bits,
     // which is also the length TLS's export suites expand to. The other
@@ -240,11 +238,11 @@ fn main() {
     // `hazmat.decrepit`. Every one of them still has a working
     // reference on this machine *today*, which is the whole reason
     // they are here now rather than later - see docs/pitfalls.md.
-    run("idea", 8, 16, || Box::new(Idea::new(key(16)).unwrap()));
-    run("seed", 16, 16, || Box::new(Seed::new(key(16)).unwrap()));
-    run("sm4", 16, 16, || Box::new(Sm4::new(key(16)).unwrap()));
+    run("idea", 8, 16, || Box::new(Idea::new(&key(16)).unwrap()));
+    run("seed", 16, 16, || Box::new(Seed::new(&key(16)).unwrap()));
+    run("sm4", 16, 16, || Box::new(Sm4::new(&key(16)).unwrap()));
     for kl in [16usize, 24, 32] {
-        run("camellia", 16, kl, move || Box::new(Camellia::new(key(kl)).unwrap()));
+        run("camellia", 16, kl, move || Box::new(Camellia::new(&key(kl)).unwrap()));
     }
     // CAST5 across the 80 bit boundary, where the round count changes
     // from twelve to sixteen - so these are two ciphers, not one with

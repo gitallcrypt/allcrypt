@@ -34,6 +34,12 @@ impl Prf<'_> {
             AnyHash::new(hash)?;
             Ok(Prf::Hmac(hash))
         } else if let Some(cipher) = name.strip_prefix("cmac-") {
+            // Checked here, as the hash is above, so that a misspelt
+            // cipher is refused when the PRF is named rather than when
+            // the first block is derived.
+            crate::api::block_cipher_name(cipher).ok_or_else(|| format!(
+                "Unknown PRF {name:?}: {cipher:?} is not a block cipher here. \
+                 Known: {}.", crate::api::BLOCK_CIPHERS.join(", ")))?;
             Ok(Prf::Cmac(cipher))
         } else {
             Err(format!("Unknown PRF {name:?}: hmac-<hash> or cmac-<block cipher>."))
@@ -265,5 +271,22 @@ mod tests {
         assert_ne!(a, b[..16]);
         assert!(Prf::named("sha256").is_err());
         assert!(Prf::named("hmac-nosuch").is_err());
+    }
+
+    /// A CMAC PRF names its cipher the way `AnyBlockCipher::new` does,
+    /// aliases and case included, and an unknown one is refused when it
+    /// is named. It used to be accepted here and refused only when the
+    /// first block was derived, which no test reached because every test
+    /// named a cipher that exists.
+    #[test]
+    fn test_a_cmac_prf_s_cipher_is_checked_when_named() {
+        let err = Prf::named("cmac-nosuch").unwrap_err();
+        assert!(err.contains("\"nosuch\" is not a block cipher"), "{err}");
+        assert!(Prf::named("cmac-").is_err());
+        for name in ["cmac-aes", "cmac-CAMELLIA", "cmac-grasshopper", "cmac-tripledes"] {
+            let prf = Prf::named(name).unwrap();
+            let key = if name.ends_with("tripledes") { 24 } else { 32 };
+            assert_eq!(kbkdf_counter(prf, &vec![1; key], b"l", b"c", 16).unwrap().len(), 16);
+        }
     }
 }

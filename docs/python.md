@@ -121,6 +121,21 @@ assert allcrypt.new("sm3").digest_size == 32
 It is also what `Hmac(..., "sm3")` and `pbkdf2_hmac("sm3", ...)` take,
 which is the form RFC 8998's TLS 1.3 suites need.
 
+`new("kupyna256")`, `"kupyna384"` and `"kupyna512"` are Kupyna, DSTU
+7564:2014, Ukraine's hash after GOST 34.311-95. Its rounds are Kalyna's,
+in a wide-pipe construction like Grøstl's, and its block is 64 bytes for
+256 bits and 128 above - which is what `Hmac` pads its key to:
+
+```python
+import allcrypt
+
+assert allcrypt.new("kupyna256").hexdigest().startswith("cd5101d1")
+assert allcrypt.new("kupyna512").digest_size == 64
+```
+
+The standard allows any multiple of 8 bits up to 512; the other sizes
+are in Rust, `hash_functions::kupyna::Kupyna::new(bits)`.
+
 `new("whirlpool")` is ISO/IEC 10118-3's 512 bit hash. `hashlib` has
 never had it and OpenSSL 3 moved it to the `legacy` provider, but
 **TrueCrypt and VeraCrypt derive their header keys with
@@ -190,7 +205,21 @@ byte first, which is backwards from what every implementation emits — see
 [pitfalls.md](pitfalls.md) before comparing against a published vector.
 
 Objects carry `digest_size`, `block_size` and `name`, and `copy()` forks the
-state, exactly as `hashlib` does:
+state, exactly as `hashlib` does. Names are case-insensitive going in and
+come out as the catalogue spells them, so `new(h.name)` always makes the
+same hash again: `allcrypt.new("SHA512_224").name` is `"sha512_224"`, and a
+length the catalogue does not list stays in the name (`"blake2b_256"`,
+`"kupyna128"`).
+
+```python
+import allcrypt
+
+h = allcrypt.new("SHA256")
+assert h.name == "sha256"
+assert allcrypt.new(allcrypt.new("blake2b_160").name).digest_size == 20
+```
+
+The rest of the `hashlib` shape:
 
 ```python
 import allcrypt
@@ -386,6 +415,36 @@ assert wide.block_size == 32
 assert wide.encrypt("ecb", bytes(32)).hex().startswith("c6227e7740b7e53b")
 assert wide.decrypt("cbc", wide.encrypt("cbc", bytes(64), iv=bytes(32)),
                     iv=bytes(32)) == bytes(64)
+```
+
+Kalyna, Ukraine's DSTU 7624:2014, is `"kalyna-128"`, `"kalyna-256"` and
+`"kalyna-512"`, named by block size; a key of the block's length or
+twice it picks the variant (Kalyna-512 takes 64 bytes only):
+
+```python
+import allcrypt
+
+k = allcrypt.Cipher("kalyna-128", bytes(range(16)))
+assert k.encrypt("ecb", bytes(range(16, 32))).hex() == "81bf1c7d779bac20e1c9ea39b4d2ad06"
+assert allcrypt.Cipher("kalyna-256", bytes(64)).block_size == 32
+```
+
+`ctr` on a Kalyna name is **DSTU 7624's counter mode**, which starts
+from the encrypted IV and counts little endian, as `ctr` on `gost` is
+GOST's; CBC, CFB and OFB are the generic modes, which the standard
+shares. Its MAC and key wrap are their own functions:
+
+```python
+import allcrypt
+
+key = bytes(range(16))
+tag = allcrypt.kalyna_mac("kalyna-128", key, b"a message", 16)
+assert len(tag) == 16
+wrapped = allcrypt.kalyna_key_wrap("kalyna-128", key, bytes(32))
+assert allcrypt.kalyna_key_unwrap("kalyna-128", key, wrapped) == bytes(32)
+# Data that is not whole blocks is padded, and unwrapped through it.
+odd = allcrypt.kalyna_key_wrap("kalyna-128", key, b"18 bytes of a key.")
+assert allcrypt.kalyna_key_unwrap_padded("kalyna-128", key, odd) == b"18 bytes of a key."
 ```
 
 RC6 is the AES finalist from the same family as RC5: a 128 bit block, twenty
@@ -1987,6 +2046,27 @@ message, for the same reason as above and more so: Manger's attack
 needs only to learn whether the decrypted block began with a zero, and
 takes about a thousand queries.
 
+With no padding at all, `encrypt_raw` is `m^e mod n` and `decrypt_raw`
+is `c^d mod n`, the bytes read and written as big-endian integers:
+
+```python,ignore
+block = (42).to_bytes(key.size, "big")
+ciphertext = public.encrypt_raw(block)
+assert ciphertext == pow(42, int.from_bytes(public.e, "big"),
+                         int.from_bytes(public.n, "big")).to_bytes(key.size, "big")
+assert key.decrypt_raw(ciphertext) == block
+assert key.decrypt_raw(public.encrypt_raw(b"hi"))[-2:] == b"hi"
+```
+
+The message may be shorter than the key and must be below the modulus;
+the plaintext always comes back at the key's size, because an unpadded
+block does not say where the message started. Nothing else is refused:
+this is textbook RSA - deterministic, multiplicative, and with `e = 3` a
+short message is a cube root away - and it is here for formats that pad
+for themselves, for building a padding, and for showing what the
+paddings prevent. `decrypt_raw` is also the raw signature: decrypting a
+chosen value signs it. `docs/pitfalls.md` has the detail.
+
 Until there is an ASN.1 encoder, keys move as raw numbers:
 
 ```python,ignore
@@ -2048,10 +2128,22 @@ allcrypt.verify_chain(chain, roots, now=int(time.time()),
                       min_rsa_bits=1024)        # a small key
 ```
 
+The one bound in the other direction is `max_key_bits`, 16384 by default
+as in OpenSSL: no RSA modulus, DSA group or (in `TlsClient`)
+Diffie-Hellman group above it is computed with. It is about cost, not
+strength - a peer can hand over a key whose single signature check takes
+as long as its author likes - and it can be raised to reach such a key on
+purpose.
+
 Parsing is strict, and deliberately stricter than some other libraries: a
-duplicate extension, a non-minimal DER length, or a name with an embedded
-NUL all raise. Those are the shapes an attacker uses to make two parsers
-disagree about what a certificate says.
+duplicate extension or a non-minimal DER length raises. Those are the
+shapes an attacker uses to make two parsers disagree about what a
+certificate says. A subjectAltName entry that is not well formed - a
+name with an embedded NUL, an address of the wrong length - does not
+make the certificate unreadable: `to_dict()["subjectAltName"]` lists it as
+`"DNS (malformed)"` (or `"IP Address (malformed)"`, ...) with its bytes
+in hex, it matches no host name, and a CA whose name constraints cover
+its form refuses it.
 
 ### Revocation
 
@@ -2626,8 +2718,21 @@ can open — safe, and useless for resumption, which is between *two*
 connections. A deployment that wants tickets to survive a restart, or to
 work across a fleet behind a load balancer, generates forty bytes out of
 band and configures the same ones everywhere. It is a key: protect it like
-a private key, and rotating it is the only way to end the sessions it has
-sealed.
+a private key.
+
+**Rotating** is passing a list, newest first: the first key seals new
+tickets and every key in the list opens them. Put the new key in front,
+keep the old one behind it for as long as the tickets it sealed last (a
+day by default), then drop it - which is also how its sessions are ended
+on purpose. A key that has sealed 2^32 tickets stops sealing and the
+server issues none until it is rotated: every ticket's nonce is random,
+and that is where the chance of two colliding stops being negligible.
+
+```python,ignore
+server = allcrypt.TlsServer(chain, key, now=int(time.time()),
+                            session_tickets=2,
+                            ticket_key=[new_40_bytes, previous_40_bytes])
+```
 
 Two tickets is the usual number, and not for redundancy: a client opening
 several connections at once would otherwise offer one ticket twice, and a
@@ -2976,7 +3081,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.2.0"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.3.0"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and
@@ -3456,6 +3561,19 @@ w = allcrypt.pwri_key_wrap("aes", bytes(16), bytes(16), b"a content key")
 assert allcrypt.pwri_key_unwrap("aes", bytes(16), bytes(16), w) == b"a content key"
 ```
 
+Ukraine's GOST key wrap has RFC 3217's shape with GOST 28147-89 in CFB
+and a 4-byte GOST MAC as the check value, under the DSTU 4145 default
+DKE. It wraps a 32-byte key in 44 bytes:
+
+```python
+import allcrypt
+
+kek, cek = bytes(range(32)), bytes(range(32, 64))
+wrapped = allcrypt.dstu_gost_key_wrap(kek, cek)
+assert len(wrapped) == 44
+assert allcrypt.dstu_gost_key_unwrap(kek, wrapped) == cek
+```
+
 The Triple-DES wrap sets DES parity on the key, so what comes back may
 differ from what went in by the low bit of some bytes. The RC2 wrap
 takes the key-encryption key's effective length; RFC 3217's own example
@@ -3654,6 +3772,21 @@ becoming readable. That last one is what the registry is for: without the
 registration the same certificate's key comes back as unsupported, naming
 the OID.
 
+### Ukraine's S-box
+
+Ukraine's GOST, DSTU GOST 28147:2009, uses the default long-term key
+element (DKE) of DSTU 4145-2002 as its S-box. It is built in as
+`"dstu4145-default-dke"`, and GOST 34.311-95 - GOST R 34.11-94 under
+that table - is the hash `"gost34311"`:
+
+```python
+import allcrypt
+
+ua = allcrypt.Cipher("gost", bytes(32), "dstu4145-default-dke")
+assert ua.encrypt("ecb", bytes(8)).hex() == "970cd7cf057aa0b7"
+assert len(allcrypt.new("gost34311", b"abc").digest()) == 32
+```
+
 ### Your own GOST S-box
 
 `gost_sbox=` is the one registration that carries cryptography rather
@@ -3680,10 +3813,12 @@ allcrypt.forget_oid("1.3.6.1.4.1.99999.2.1")
 ```
 
 The table is checked at registration: eight rows of sixteen, each a
-permutation of 0..16. A row that repeats a value is not a permutation -
-the round function stops being a bijection and the cipher stops
-inverting - and the output would still look like ciphertext, so it is
-refused rather than accepted.
+permutation of 0..16. A row that repeats a value is refused. The cipher
+would still decrypt what it encrypted - GOST is a Feistel network and
+inverts under any table - but every published table is eight
+permutations, so a repeat is taken for a typing mistake rather than
+accepted as a different, weaker cipher nobody else computes. The Rust
+constructor `GostCrypto::new_with_sbox` makes the same check.
 
 ### What it will not do
 

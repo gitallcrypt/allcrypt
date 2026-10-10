@@ -94,7 +94,6 @@ struct Keyed {
     l_star: u128,
     l_dollar: u128,
     l: Vec<u128>,
-    out: Vec<u8>,
     batch: Vec<u8>,
 }
 
@@ -107,18 +106,21 @@ impl Keyed {
                 cipher.blocksize() * 8));
         }
         let mut keyed = Keyed { cipher, l_star: 0, l_dollar: 0, l: Vec::new(),
-                                out: Vec::with_capacity(BLOCK),
                                 batch: Vec::with_capacity(BATCH * BLOCK) };
-        keyed.l_star = keyed.encipher(0);
+        keyed.l_star = keyed.encipher(0)?;
         keyed.l_dollar = double(keyed.l_star);
         keyed.l.push(double(keyed.l_dollar));
         Ok(keyed)
     }
 
-    fn encipher(&mut self, block: u128) -> u128 {
-        self.out.clear();
-        self.cipher.block_encrypt(&block.to_be_bytes(), &mut self.out);
-        u128::from_be_bytes(self.out[..BLOCK].try_into().unwrap())
+    /// One block, through `encrypt_blocks` like the batches: every single
+    /// block here - `L_*`, `Ktop`, a final partial block's pad, the tag -
+    /// is under the secret key and most are secret too, and AES's
+    /// one-block `block_encrypt` is its table path.
+    fn encipher(&mut self, block: u128) -> Result<u128, String> {
+        let mut one = block.to_be_bytes();
+        self.cipher.encrypt_blocks(&mut one)?;
+        Ok(u128::from_be_bytes(one))
     }
 
     /// The whole blocks of `input`, numbered from `first`, each
@@ -191,13 +193,13 @@ impl Keyed {
         let rest = &aad[whole..];
         if !rest.is_empty() {
             offset ^= self.l_star;
-            sum ^= self.encipher(padded(rest) ^ offset);
+            sum ^= self.encipher(padded(rest) ^ offset)?;
         }
         Ok(sum)
     }
 
     /// `Offset_0` from the nonce, section 4.2.
-    fn initial_offset(&mut self, nonce: &[u8], tag_len: usize) -> u128 {
+    fn initial_offset(&mut self, nonce: &[u8], tag_len: usize) -> Result<u128, String> {
         let mut n = 0u128;
         for &byte in nonce {
             n = n << 8 | u128::from(byte);
@@ -205,15 +207,15 @@ impl Keyed {
         // num2str(TAGLEN mod 128, 7) || zeros || 1 || N
         let block = ((tag_len as u128 * 8) % 128) << 121 | 1u128 << (8 * nonce.len()) | n;
         let bottom = (block & 0x3f) as u32;
-        let ktop = self.encipher(block & !0x3f);
+        let ktop = self.encipher(block & !0x3f)?;
         // Stretch = Ktop || (Ktop[1..64] xor Ktop[9..72]): the low 64
         // bits of a 192 bit string whose top 128 are Ktop.
         let tail = ((ktop >> 64) ^ (ktop >> 56)) as u64;
-        if bottom == 0 {
+        Ok(if bottom == 0 {
             ktop
         } else {
             ktop << bottom | u128::from(tail >> (64 - bottom))
-        }
+        })
     }
 }
 
@@ -262,7 +264,7 @@ impl Ocb {
                    -> Result<(Vec<u8>, Vec<u8>), String> {
         Ocb::check_nonce(nonce)?;
         let keyed = &mut self.keyed;
-        let mut offset = keyed.initial_offset(nonce, self.tag_len);
+        let mut offset = keyed.initial_offset(nonce, self.tag_len)?;
         let mut checksum = 0u128;
         let mut ciphertext = Vec::with_capacity(plaintext.len());
 
@@ -272,12 +274,12 @@ impl Ocb {
         let rest = &plaintext[whole..];
         if !rest.is_empty() {
             offset ^= keyed.l_star;
-            let pad = keyed.encipher(offset).to_be_bytes();
+            let pad = keyed.encipher(offset)?.to_be_bytes();
             ciphertext.extend(rest.iter().zip(pad).map(|(p, k)| p ^ k));
             checksum ^= padded(rest);
         }
         let hash = keyed.hash(aad)?;
-        let tag = keyed.encipher(checksum ^ offset ^ keyed.l_dollar) ^ hash;
+        let tag = keyed.encipher(checksum ^ offset ^ keyed.l_dollar)? ^ hash;
         Ok((ciphertext, tag.to_be_bytes()[..self.tag_len].to_vec()))
     }
 
@@ -289,7 +291,7 @@ impl Ocb {
             return Err(format!("An OCB tag is {} bytes here; got {}.", self.tag_len, tag.len()));
         }
         let keyed = &mut self.keyed;
-        let mut offset = keyed.initial_offset(nonce, self.tag_len);
+        let mut offset = keyed.initial_offset(nonce, self.tag_len)?;
         let mut checksum = 0u128;
         let mut plaintext = Vec::with_capacity(ciphertext.len());
 
@@ -299,13 +301,13 @@ impl Ocb {
         let rest = &ciphertext[whole..];
         if !rest.is_empty() {
             offset ^= keyed.l_star;
-            let pad = keyed.encipher(offset).to_be_bytes();
+            let pad = keyed.encipher(offset)?.to_be_bytes();
             let start = plaintext.len();
             plaintext.extend(rest.iter().zip(pad).map(|(c, k)| c ^ k));
             checksum ^= padded(&plaintext[start..]);
         }
         let hash = keyed.hash(aad)?;
-        let expected = keyed.encipher(checksum ^ offset ^ keyed.l_dollar) ^ hash;
+        let expected = keyed.encipher(checksum ^ offset ^ keyed.l_dollar)? ^ hash;
         if crate::bignum::ct::bytes_differ(&expected.to_be_bytes()[..self.tag_len], tag) {
             return Err("The OCB tag does not match; the message was altered or was not \
                         for this key.".to_string());
@@ -432,7 +434,7 @@ mod tests {
         assert_eq!(keyed.l_for(1), as_u128(value("L_0")));
         assert_eq!(keyed.l_for(2), as_u128(value("L_1")));
 
-        let offset0 = keyed.initial_offset(&nonce, 16);
+        let offset0 = keyed.initial_offset(&nonce, 16).unwrap();
         assert_eq!(offset0, as_u128(value("Offset_0")));
         let offset1 = offset0 ^ keyed.l_for(1);
         assert_eq!(offset1, as_u128(value("Offset_1")));

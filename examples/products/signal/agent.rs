@@ -10,6 +10,8 @@ use crate::rng::Random;
 use crate::session::{Bundle, Party};
 use crate::wire::{Error, PublicKey, SENDERKEY_TYPE};
 
+pub use crate::cli::hex;
+
 pub struct Agent {
     pub party: Party,
     name: String,
@@ -17,16 +19,7 @@ pub struct Agent {
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>, Error> {
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(Error::INVALID_ARGUMENT);
-    }
-    Ok((0..text.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap_or(0))
-        .collect())
-}
-
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crate::cli::unhex(text, &[]).map_err(|_| Error::INVALID_ARGUMENT)
 }
 
 fn number(text: &str) -> Result<u32, Error> {
