@@ -482,6 +482,10 @@ ALLOWED_VEC_FIELDS = {
     # look is where somebody decides whether the exemption still holds.
     # It does: the argument above is about nibbles, not about position.
     "                gost_sbox: Option<Vec<Vec<u8>>>,",
+    # `Cipher(..., sbox=)` takes the same table for the same reason, and
+    # keeps it to build each stream from.
+    "    sbox: Option<Vec<Vec<u8>>>,",
+    "    fn py_new(name: &str, key: Bytes, param: Option<String>, sbox: Option<Vec<Vec<u8>>>,",
 }
 
 

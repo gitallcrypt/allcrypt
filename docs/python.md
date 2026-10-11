@@ -133,8 +133,8 @@ assert allcrypt.new("kupyna256").hexdigest().startswith("cd5101d1")
 assert allcrypt.new("kupyna512").digest_size == 64
 ```
 
-The standard allows any multiple of 8 bits up to 512; the other sizes
-are in Rust, `hash_functions::kupyna::Kupyna::new(bits)`.
+The standard allows any multiple of 8 bits up to 512, and every one of
+them has a name: `"kupyna8"` to `"kupyna512"`.
 
 `new("whirlpool")` is ISO/IEC 10118-3's 512 bit hash. `hashlib` has
 never had it and OpenSSL 3 moved it to the `legacy` provider, but
@@ -560,7 +560,8 @@ library is for - and not because you should use it. Use an AEAD.
 
 ## Authenticated encryption
 
-`allcrypt.Aead` is AES-GCM, AES-CCM or ChaCha20-Poly1305, shaped like
+`allcrypt.Aead` is AES-GCM, AES-CCM, ChaCha20-Poly1305 or any name in
+`allcrypt.aeads_available`, shaped like
 `AESGCM`, `AESCCM` and `ChaCha20Poly1305` in `cryptography`: the tag is
 appended to the ciphertext, so code written against those moves across
 unchanged.
@@ -677,6 +678,42 @@ try:
 except allcrypt.CryptoError:
     pass
 ```
+
+### Other ciphers, and other tag lengths
+
+GCM and CCM are modes, and run over any 128 bit block cipher here by
+the same naming: `"camellia-gcm"`, `"sm4-ccm"` (RFC 8998's TLS suites),
+`"aria-gcm"`, `"serpent-gcm"`. Kalyna is the exception and is refused,
+because DSTU 7624 defines a GCM and a CCM of its own and the name would
+mean the wrong one.
+
+A tag length in bytes can follow GCM, CCM, EAX, MGM or OCB, and each
+mode's own rules decide which lengths exist: GCM's are SP 800-38D's 4,
+8 and 12 to 16; CCM's the even numbers 4 to 16; EAX and OCB anything up
+to the block; MGM 4 up to the block. `"aes-ccm-8"` is this spelling.
+
+```python
+import allcrypt
+
+key, nonce = bytes(range(16)), bytes(12)
+sealed = allcrypt.Aead(key, "sm4-gcm-8").encrypt(nonce, b"payload", b"headers")
+assert len(sealed) == len(b"payload") + 8
+assert allcrypt.Aead(key, "sm4-gcm-8").decrypt(nonce, sealed, b"headers") == b"payload"
+
+# GCM's short tag is the full tag's first bytes. CCM's is not: its
+# length is written into the first block the MAC covers.
+full = allcrypt.Aead(key, "sm4-gcm").encrypt(nonce, b"payload", b"headers")
+assert sealed == full[:len(sealed)]
+```
+
+**Naming the length is what makes a short GCM tag acceptable.** Without
+one, `"aes-gcm"` opens a tag cut to 12 to 16 bytes, because the length
+arrives with the message and whoever wrote the message chose it -
+accepting 4 there would let a forger choose 4 and guess. With one, only
+a tag of exactly that length opens. A 4 or 8 byte tag is forged blindly
+once in 2^32 or 2^64 tries, and SP 800-38D appendix C bounds how many
+messages and failed attempts it tolerates; nothing here can count
+those.
 
 ### The nonce
 
@@ -920,9 +957,9 @@ assert rc4.update(bytes(16)).hex() == "b2396305f03dc027ccc3524a0a1118a8"
 ```
 
 Names are `chacha20`, `chacha12`, `chacha8`, `xchacha20`, `salsa20`,
-`salsa12`, `salsa8`, `rc4` and `zipcrypto`
+`salsa12`, `salsa8`, `xsalsa20`, `rc4` and `zipcrypto`
 (`allcrypt.stream_ciphers_available`). ChaCha takes an 8 or 12 byte nonce,
-XChaCha20 a 24 byte one, Salsa20 an 8 byte one; RC4 and ZipCrypto take
+XChaCha20 and XSalsa20 a 24 byte one, Salsa20 an 8 byte one; RC4 and ZipCrypto take
 none. Keystream position carries across calls.
 
 `update` XORs the keystream onto the data, which encrypts and decrypts
@@ -940,6 +977,58 @@ ct = z.encrypt(b"hello, world")
 assert ct.hex() == "a0254d7b73bee67c15583a7e"
 assert allcrypt.StreamCipher("zipcrypto", b"secret").decrypt(ct) == b"hello, world"
 ```
+
+### The counter, and seeking
+
+ChaCha and Salsa20 compute each 64 byte block from a counter, so they
+can start anywhere and move anywhere. `counter` is the block to start
+at - RFC 8439's AEAD starts its payload at 1, block 0 having become the
+Poly1305 key - and `seek` moves to a byte offset, forwards or back:
+
+```python
+import allcrypt
+
+key, nonce = bytes(range(32)), bytes(12)
+whole = allcrypt.StreamCipher("chacha20", key, nonce).update(bytes(200))
+
+assert allcrypt.StreamCipher("chacha20", key, nonce, counter=1).update(bytes(64)) == whole[64:128]
+c = allcrypt.StreamCipher("chacha20", key, nonce)
+c.seek(150)
+assert c.update(bytes(50)) == whole[150:]
+```
+
+With a 12 byte nonce ChaCha's counter is 32 bits, and the stream ends
+after block 2^32 - 1 rather than wrapping onto block 0. With an 8 byte
+nonce, and for Salsa20, it is 64 bits. RC4 and ZipCrypto have no
+counter, so they refuse both.
+
+### The pieces underneath
+
+The primitives the AEADs and stream ciphers are built from, each on its
+own: `ghash` (GCM's hash, over whole blocks, no length block and no
+mask), `gmac` (GCM's tag with nothing encrypted, over any 128 bit
+cipher), `poly1305` and `poly1305_verify`, `hchacha20` and `hsalsa20`
+(the X-variants' subkeys), and `salsa20_core` (8 rounds is scrypt's
+BlockMix).
+
+```python
+import allcrypt
+
+key, nonce = bytes(range(16)), bytes(12)
+assert allcrypt.gmac(key, nonce, b"headers") == \
+    allcrypt.Aead(key, "aes-gcm").encrypt(nonce, b"", b"headers")
+assert len(allcrypt.gmac(key, nonce, b"headers", tag_size=8)) == 8
+
+one_time = bytes(range(32))
+tag = allcrypt.poly1305(one_time, b"one message")
+assert allcrypt.poly1305_verify(one_time, b"one message", tag)
+```
+
+A Poly1305 key authenticates **one** message: two tags under one key
+give `r` away by subtraction, after which anything can be forged. Every
+construction that uses it derives a fresh key per message from a
+cipher's keystream, and so must anything built from it here. GMAC's
+nonce must never repeat under one key, as GCM's must not - it is GCM.
 
 ## CMAC and CBC-MAC
 
@@ -1134,6 +1223,48 @@ assert (allcrypt.new("blake2b_256", b"abc").digest()
         == hashlib.blake2b(b"abc", digest_size=32).digest())
 assert allcrypt.new("blake2b_256", b"abc").digest() \
     != allcrypt.new("blake2b", b"abc").digest()[:32]
+```
+
+`blake2b` and `blake2s` take the rest of the parameter block with
+`hashlib`'s names: a key, which makes BLAKE2 a MAC on its own, and a
+salt and a personalisation for domain separation.
+
+```python
+import allcrypt, hashlib
+
+ours = allcrypt.blake2b(b"abc", digest_size=32, key=b"k", salt=b"s" * 16, person=b"app")
+theirs = hashlib.blake2b(b"abc", digest_size=32, key=b"k", salt=b"s" * 16, person=b"app")
+assert ours.digest() == theirs.digest()
+```
+
+### The pieces of the other derivations
+
+Older and narrower derivations, for reading what they made:
+
+* `pbkdf1(hash_name, password, salt, iterations, dklen=None)` - PBES1's
+  KDF, never longer than one hash output.
+* `pkcs12_kdf(hash_name, password, salt, id, iterations, dklen=None)`
+  with `pkcs12_bmp_password(text)` - RFC 7292's KDF, whose password is
+  UTF-16BE with a two byte NUL. `id` is 1 for a key, 2 for an IV, 3
+  for a MAC key.
+* `jdk_pbe_md5_3des(password, salt, iterations)` - the JDK's
+  `PBEWithMD5AndTripleDES`, a `(key, iv)` pair.
+* `openpgp_s2k_coded_count(octets)` - the other direction of
+  `openpgp_s2k_count`.
+* `bcrypt_pbkdf(password, salt, rounds, length)` - OpenSSH's key
+  encryption KDF.
+* `bitlocker_stretch(initial, salt)` - the 2^20 rounds after
+  BitLocker's first hash.
+* `hkdf_extract(ikm, salt=None)` and `hkdf_expand(prk, length,
+  info=None)` - HKDF's two halves, for protocols that use one alone.
+
+```python
+import allcrypt
+
+prk = allcrypt.hkdf_extract(b"input keying material", salt=b"salt")
+assert allcrypt.hkdf_expand(prk, 42, info=b"info") == \
+    allcrypt.hkdf(b"input keying material", 42, salt=b"salt", info=b"info")
+assert allcrypt.openpgp_s2k_count(allcrypt.openpgp_s2k_coded_count(65536)) >= 65536
 ```
 
 ### Windows password hashes
@@ -1334,6 +1465,37 @@ assert again.public_bytes() == original.public_bytes()
 Keys interoperate with OpenSSL in both directions — `pytests/test_ec.py`
 runs ECDH against `cryptography` on every curve.
 
+### The group law, unvalidated
+
+`ec_point_add`, `ec_point_double`, `ec_point_negate` and
+`ec_point_multiply` do the arithmetic on SEC1 points of a named curve
+with **nothing validated** - the identity is the single byte `00`, any
+scalar of any size is accepted, and a point need not be on the curve.
+The formulas use `a` and never `b`, so a point off the curve is
+multiplied on the curve with the same `a` that it *is* on: the
+invalid-curve attack, demonstrable in a few lines. Everything that takes
+a peer's point (`exchange`, `EcPublicKey`, `verify`) validates it first;
+`ec_point_validate` is that check on its own, and `ec_point_is_on_curve`
+the equation alone.
+
+```python
+import allcrypt
+
+g = allcrypt.ec_generator("P-256")
+two_g = allcrypt.ec_point_double("P-256", g)
+assert allcrypt.ec_point_add("P-256", g, g) == two_g
+assert allcrypt.ec_point_multiply("P-256", g, b"\x02") == two_g
+assert allcrypt.ec_point_add("P-256", g, allcrypt.ec_point_negate("P-256", g)) == b"\x00"
+
+off = b"\x04" + (5).to_bytes(32, "big") + (7).to_bytes(32, "big")
+assert not allcrypt.ec_point_is_on_curve("P-256", off)
+allcrypt.ec_point_double("P-256", off)      # computes; validate would refuse
+```
+
+The multiplication is double-and-add, variable time in the scalar: for
+scalars that are not secrets. A private key's multiplication is
+`EcKey`'s.
+
 ## X25519
 
 Four functions rather than a key type, because that is the shape RFC 7748
@@ -1527,6 +1689,11 @@ Keys and signatures interoperate with OpenSSL in both directions —
 `cryptography`, byte for byte rather than merely mutually, which only a
 deterministic scheme allows.
 
+`allcrypt.eddsa_is_public_key(name, public)` says whether bytes are a
+key at all - the right length, a canonical `y`, on the curve - which a
+store of keys wants before it stores one; about half of all 32 byte
+strings are not.
+
 ## XEdDSA: signing with an X25519 key
 
 Signal's identity key both agrees keys and signs. `xeddsa_sign` takes an
@@ -1604,6 +1771,12 @@ sealed = allcrypt.box_seal(public, b"anonymous")
 assert len(sealed) == 48 + 9
 assert allcrypt.box_seal_open(public, private, sealed) == b"anonymous"
 ```
+
+`ephemeral_private=` gives the sender's one-time key instead of drawing
+it, which makes the sealed box deterministic - how libsodium's own
+output is reproduced. Two messages sealed with one such key to one
+recipient share a nonce under one key, which gives away the XOR of the
+two plaintexts.
 
 **`"xchacha20poly1305"` here is not the AEAD `"xchacha20-poly1305"`.**
 The box authenticates the ciphertext alone, with no additional data and
@@ -1695,6 +1868,14 @@ full-width exponentiations, which is why nothing calls it for you — but a
 composite modulus makes the shared secret computable by whoever chose it
 while every other check passes. See [pitfalls.md](pitfalls.md) §3b.
 
+
+`DhGroup(p, g, q)` states the order of `g`'s subgroup, so
+`validate_peer` also requires `y**q == 1 mod p` - the check that keeps a
+peer's value out of a small subgroup in a DSA-style group, where `p - 1`
+has other factors. `q` is checked for structure, not primality;
+`allcrypt.is_probable_prime(q)` is Miller-Rabin for that.
+`check_size(min_bits)` raises for a group smaller than the caller's floor.
+
 ## ElGamal
 
 `allcrypt.ElGamalKey` is OpenPGP algorithm 16 — the `elg` half of the
@@ -1744,6 +1925,23 @@ Every decryption failure raises the same message, deliberately — saying
 which check failed turns the key into a decryption oracle. That is
 Bleichenbacher's attack, and it is about the padding check rather than
 about the trapdoor underneath it, so ElGamal is as exposed to it as RSA.
+
+Textbook ElGamal, with no padding, is `encrypt_raw` and `decrypt_raw`:
+the message is a big-endian integer in `[1, p-1]`, the ciphertext is
+`c1 || c2` as above, and the plaintext comes back at the modulus width.
+It is malleable - multiplying `c2` by `t` multiplies the plaintext by
+`t` - which is the property re-encryption and threshold schemes use and
+the reason OpenPGP pads:
+
+```python
+import allcrypt
+
+group = allcrypt.DhGroup.modp(1024)
+key = allcrypt.ElGamalKey.generate(group)
+sealed = key.public_key().encrypt_raw(b"\x2a")
+assert key.decrypt_raw(sealed)[-1:] == b"\x2a"
+assert len(key.decrypt_raw(sealed)) == key.size
+```
 
 ## ECDSA
 
@@ -1918,6 +2116,13 @@ The old name is refused with an error saying so rather than aliased,
 because it meant "what the equipment does" and named the one reading the
 equipment does not.
 
+`EcKey.vko_2001(peer_public, ukm)` is the 2001 version (RFC 4357 5.2):
+the shared point hashed with GOST R 34.11-94, under an eight byte UKM -
+what the 2001-era GOST TLS suites and CMS use. And `sign_gost` /
+`verify_gost` take `encoding="tls13"` for RFC 9367's
+`str_l(r) || str_l(s)`, little endian and `r` first, where a
+certificate's is `s || r` big endian.
+
 ## SM2
 
 GB/T 32918, over `sm2p256v1`. `EcKey` and `EcPublicKey` grow four
@@ -1953,6 +2158,24 @@ assert key.sm2_verify(b"hello", signature, b"ALICE123@YAHOO.COM")
 assert not key.sm2_verify(b"hello", signature)     # the default ID
 ```
 
+`k=` fixes the nonce of a signature or the ephemeral scalar of an
+encryption, big endian, instead of deriving or drawing it. That is how
+the standard's worked examples are reproduced, and it makes the output
+deterministic. A signing `k` that is used twice, or that anybody else
+knows, gives away the private key - `d = (k - s) / (s + r) mod n` - and an
+encryption `k` gives away that message:
+
+```python
+import allcrypt
+
+key = allcrypt.EcKey.generate("sm2p256v1")
+k = bytes(31) + b"\x07"
+assert key.sm2_sign(b"hello", k=k) == key.sm2_sign(b"hello", k=k)
+assert key.sm2_verify(b"hello", key.sm2_sign(b"hello", k=k))
+sealed = key.public_key().sm2_encrypt(b"hello", k=k)
+assert key.sm2_decrypt(sealed) == b"hello"
+```
+
 ### Talking to OpenSSL
 
 `sm2_encrypt_der` and `sm2_decrypt_der` use the
@@ -1967,6 +2190,12 @@ with no `-pkeyopt distid:` produces a signature that fails here unless
 you verify with `id=b""`. That is a real interoperability trap and not a
 bug on either side; the test file asserts it in both directions so it
 stays visible.
+
+`EcPublicKey.sm2_z(id)` and `sm2_digest(message, id)` are the two
+intermediates of a signature - `Z_A`, and `e = SM3(Z_A || M)` - for a
+caller hashing a large message itself or checking another
+implementation step by step; `allcrypt.sm2_kdf(shared, length)` is the
+encryption's KDF on its own.
 
 ## DSA
 
@@ -1999,6 +2228,12 @@ which reaches DHE_DSS servers at TLS 1.0 to 1.2. **The group is held to
 are 1024 bit: pass `min_rsa_bits=1024` to reach one, as for an old RSA
 key. `DsaKey.generate(l=2048, n=256)` makes a fresh group, which takes
 seconds.
+
+`DsaPublicKey.from_numbers(p, q, g, y)` is the verifying half on its
+own, and `DsaKey.public_key()` gives it; `sign_digest(digest, hash)` and
+`verify_digest(digest, signature)` work on a digest computed elsewhere,
+`hash` naming the hash that made it (RFC 6979 derives the nonce with
+it).
 
 ## RSA
 
@@ -2066,6 +2301,29 @@ short message is a cube root away - and it is here for formats that pad
 for themselves, for building a padding, and for showing what the
 paddings prevent. `decrypt_raw` is also the raw signature: decrypting a
 chosen value signs it. `docs/pitfalls.md` has the detail.
+
+The randomness the paddings draw can be given instead, which makes them
+deterministic - for reproducing somebody else's bytes, or a protocol that
+fixes them:
+
+```python,ignore
+digest = allcrypt.sha256(b"a message").digest()
+same = key.sign_pss(digest, "sha256", salt=bytes(32))         # salt given
+empty = key.sign_pss(digest, "sha256", salt=b"")              # no salt at all
+sealed = public.encrypt_oaep(b"hi", "sha256", seed=bytes(32))  # seed given
+
+# PKCS#1 v1.5 without the DigestInfo that names the hash, as TLS 1.0 and
+# 1.1 sign MD5 || SHA-1:
+signature = key.sign_without_digest_info(md5_and_sha1)
+assert public.verify_without_digest_info(md5_and_sha1, signature)
+
+# OAEP's decoding alone, on a block decrypt_raw returned:
+block = key.decrypt_raw(sealed)
+assert allcrypt.rsa_oaep_decode(block, "sha256") == b"hi"
+```
+
+A seed or salt used twice gives the same bytes twice, which is what the
+randomness was there to prevent; `docs/pitfalls.md` has the rest.
 
 Until there is an ASN.1 encoder, keys move as raw numbers:
 
@@ -3467,8 +3725,12 @@ under a second in a release build.
 
 WEP, TKIP and the WPA key hierarchy are here too. `wep_encrypt` /
 `wep_decrypt` take the 3-byte IV and the shared key; `tkip_rc4_key`
-mixes TKIP's per-frame RC4 key; `michael` is TKIP's MIC; `wpa_psk`,
-`wpa_ptk` and `wpa_pmkid` are the key derivations.
+mixes TKIP's per-frame RC4 key, and `tkip_encrypt` / `tkip_decrypt`
+seal and open a frame's payload under it; `michael` is TKIP's MIC and
+`tkip_msdu_mic` the MIC over a whole MSDU's addresses and priority;
+`wpa_psk`, `wpa_ptk` and `wpa_pmkid` are the key derivations, and
+`ieee80211_prf` and `ieee80211_kdf_sha256` the two functions they are
+built from.
 
 ```python
 import allcrypt
@@ -3480,6 +3742,10 @@ assert len(ptk) == 48
 
 sealed = allcrypt.wep_encrypt(b"ABCDE", bytes([1, 2, 3]), b"hi")
 assert allcrypt.wep_decrypt(b"ABCDE", bytes([1, 2, 3]), sealed) == b"hi"
+
+tk, ta = bytes(range(16)), bytes(6)
+frame = allcrypt.tkip_encrypt(tk, ta, 1, b"payload")
+assert allcrypt.tkip_decrypt(tk, ta, 1, frame) == b"payload"
 ```
 
 The `wifi` product example opens real captures with these.
@@ -3787,6 +4053,22 @@ assert ua.encrypt("ecb", bytes(8)).hex() == "970cd7cf057aa0b7"
 assert len(allcrypt.new("gost34311", b"abc").digest()) == 32
 ```
 
+**The empty message has two answers**, under all three of GOST R
+34.11-94's S-boxes. `"gost94"`, `"gost94_test"` and `"gost34311"`
+compress a block of zeros for it, as RFC 5831's step 2 reads and
+today's OpenSSL gost-engine computes. `"gost94_bc"`, `"gost94_test_bc"`
+and `"gost34311_bc"` compress nothing when nothing is left, as Bouncy
+Castle, gost89 and the gost engine of OpenSSL 1.0 do - which gives the
+value usually published for the empty message. Every other message
+hashes the same under both:
+
+```python
+import allcrypt
+
+assert allcrypt.new("gost94", b"").digest() != allcrypt.new("gost94_bc", b"").digest()
+assert allcrypt.new("gost34311", b"x").digest() == allcrypt.new("gost34311_bc", b"x").digest()
+```
+
 ### Your own GOST S-box
 
 `gost_sbox=` is the one registration that carries cryptography rather
@@ -3812,13 +4094,62 @@ assert ours.encryptor("ecb").update(block) != theirs.encryptor("ecb").update(blo
 allcrypt.forget_oid("1.3.6.1.4.1.99999.2.1")
 ```
 
-The table is checked at registration: eight rows of sixteen, each a
-permutation of 0..16. A row that repeats a value is refused. The cipher
+A table can also go straight to the cipher, without a name: `sbox=`
+takes the eight rows and `dke=` the 64 bytes of a DSTU 4145 DKE, which
+is how a Ukrainian key or key container carries one.
+
+```python
+import allcrypt
+
+rows = allcrypt.gost_sbox("id-tc26-gost-28147-param-Z")
+direct = allcrypt.Cipher("gost", b"\x01" * 32, sbox=rows)
+named = allcrypt.Cipher("gost", b"\x01" * 32, "id-tc26-gost-28147-param-Z")
+assert direct.encrypt("ecb", bytes(8)) == named.encrypt("ecb", bytes(8))
+```
+
+The table is checked at registration and when given directly: eight
+rows of sixteen, each a permutation of 0..16. A row that repeats a
+value is refused. The cipher
 would still decrypt what it encrypted - GOST is a Feistel network and
 inverts under any table - but every published table is eight
 permutations, so a repeat is taken for a typing mistake rather than
 accepted as a different, weaker cipher nobody else computes. The Rust
 constructor `GostCrypto::new_with_sbox` makes the same check.
+
+### GOST's other pieces
+
+What the GOST suites and formats are built from, each on its own:
+
+* `gost28147_mac(key, data, sbox=None, iv=None, tag_size=4)` - GOST
+  28147-89's own MAC, the imitovstavka. Four bytes from a zero IV is
+  gost-engine's `gost-mac`; up to eight bytes of the state are given.
+* `cryptopro_key_mesh(key, iv, sbox=None)` - RFC 4357's re-keying every
+  1024 bytes: the next key and IV, from the IV as it stands after them.
+* `ctr_acpkm(cipher, key, nonce, data, section)` and
+  `acpkm_next(cipher, key)` - RFC 8645's CTR with a key that changes
+  every `section` bytes, over Kuznyechik or Magma (or any cipher here).
+* `kdf_gostr3411_2012_256` and `kdf_tree_gostr3411_2012_256` - RFC
+  7836's KDFs over HMAC-Streebog-256.
+* `tlstree(suite, root, sequence)` - the per-record key of the GOST TLS
+  suites, under any of `tlstree_suites`' constants.
+* `kexp15` and `kimp15` - the key export of R 1323565.1.017-2018, as
+  RFC 9189 uses it; `kexp28147` and `kimp28147` - its GOST 28147-89
+  counterpart; `cryptopro_kek_diversify` - RFC 4357's key
+  diversification, which the latter's key goes through.
+* `EcKey.gost_keg`, `gost_keg_28147` and `gost_keg_2001` - the key
+  agreements those exports are keyed from, from the peer's point and
+  the hash of the two randoms.
+
+```python
+import allcrypt
+
+key = bytes(range(32))
+assert len(allcrypt.gost28147_mac(key, b"message")) == 4
+assert allcrypt.kdf_gostr3411_2012_256(key, b"label", b"seed") == \
+    allcrypt.kdf_tree_gostr3411_2012_256(key, b"label", b"seed", 32)
+wrapped = allcrypt.kexp15("kuznyechik", key, bytes(32), bytes([1]) * 32, bytes(8))
+assert allcrypt.kimp15("kuznyechik", wrapped, bytes(32), bytes([1]) * 32, bytes(8)) == key
+```
 
 ### What it will not do
 
@@ -4029,6 +4360,24 @@ NIST's ACVP data — 195 cases, 30 of them keys that must be refused — and
 `pytests/test_ml_kem.py` reads those itself rather than trusting the Rust
 tests' parse.
 
+## Post-quantum: sntrup761
+
+Streamlined NTRU Prime, the KEM in OpenSSH's `sntrup761x25519-sha512`.
+Same shape as ML-KEM, as functions on bytes:
+
+```python
+import allcrypt
+
+public, secret = allcrypt.sntrup761_keypair()
+shared, ciphertext = allcrypt.sntrup761_encapsulate(public)
+assert allcrypt.sntrup761_decapsulate(secret, ciphertext) == shared
+assert (len(public), len(secret), len(ciphertext)) == (1158, 1763, 1039)
+```
+
+`randombytes=`, a callable taking a byte count, replaces the OS random
+source in both - the shape NIST's known-answer generator has, which is
+how `pytests/test_public_key_extras.py` reproduces the draft's vectors.
+
 ## Post-quantum: ML-DSA
 
 FIPS 204's lattice signatures. Same shape as `SlhDsaKey` - the external
@@ -4118,6 +4467,42 @@ assert allcrypt.Certificate(leaf).to_dict()["publicKeyType"] == "ML-DSA-65"
 three forms, as OpenSSL 3.5 writes them - into an `MlDsaKey`, checking
 that the seed and the expanded key, where both are present, belong
 together.
+
+### The randomness and the internal interfaces
+
+Everything FIPS 203, 204 and 205 define is reachable, not only the
+external interface. `sign` and `verify` are the external one because its
+signatures are the ones another implementation's ordinary verifier
+accepts; the rest is for protocols and test vectors that specify it.
+
+```python
+import allcrypt
+
+key = allcrypt.MlDsaKey.generate("ML-DSA-44")
+public = key.public_key()
+
+# The 32 bytes a hedged signature would draw, given instead.
+assert key.sign(b"m", rnd=bytes(32)) == key.sign_deterministic(b"m")
+
+# The internal interface signs the message as given - no context, no
+# pre-hash - and only its own verifier accepts the result.
+internal = key.sign_internal(b"m")
+assert public.verify_internal(b"m", internal) and not public.verify(b"m", internal)
+
+# externalMu: sign a 64 byte mu computed elsewhere.
+mu = bytes(64)
+assert public.verify_mu(mu, key.sign_mu(mu))
+
+# ML-KEM with FIPS 203's m given: the same m, the same secret.
+kem = allcrypt.MlKemKey.generate("ML-KEM-512")
+assert kem.public_key().encapsulate(bytes(32)) == kem.public_key().encapsulate(bytes(32))
+```
+
+`SlhDsaKey` has the same: `sign(..., opt_rand=...)`, `sign_internal`,
+`verify_internal`, and `SlhDsaKey.from_seeds(set, sk_seed, sk_prf,
+pk_seed)` for a key from its three seeds. A repeated `rnd` or `opt_rand`
+costs the hedging and nothing more, since the deterministic forms are
+standard; an ML-KEM `m` anybody else knows is the shared secret.
 
 ## SSH keys and signatures
 
@@ -4246,6 +4631,22 @@ It uses the standard's unexplained `Q`. Whoever chose that point can
 recover the generator's state from a little of its output and predict the
 rest; the Rust module comment in `prng/dual_ec.rs` shows why. **Do not
 generate keys with it** — it is here to be recognised in the wild.
+
+`DualEcDrbg` is the same generator kept across calls, with `reseed` - and
+it takes another `Q`, as Juniper's ScreenOS did. Choose `Q = d^-1 P` and
+you are the party who can predict it:
+
+```python
+import allcrypt
+
+entropy = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+drbg = allcrypt.DualEcDrbg("P-256", "SHA-256", entropy, b"",
+                           q=allcrypt.ec_point_multiply("P-256",
+                                 allcrypt.ec_generator("P-256"), b"\x07"))
+first = drbg.generate(30)
+drbg.reseed(bytes(16))
+second = drbg.generate(30)
+```
 
 ## Linear congruential generators
 

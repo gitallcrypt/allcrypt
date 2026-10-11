@@ -795,7 +795,11 @@ $ python3 scripts/make_nacl_vectors.py --ours    # rewrites vectors/nacl.vec
 unchanged and built against OpenSSL 1.0.2 (`/opt/openssl102`) through the
 stand-in headers in `scripts/witness/dualecwitness/shim`. The script
 requires it to reproduce Bouncy Castle 1.78.1's published vectors (an
-implementation independent of OpenSSL) before writing the corpus.
+implementation independent of OpenSSL) before writing the corpus. The
+witness's `main.c` can also replace `Q` after initialisation - as
+ScreenOS replaced it - and the script first gives it its own `Q` back
+explicitly and requires the default output, then writes six rows under
+`7G` (computed by python-cryptography); those are OpenSSL's code alone.
 
 ```console
 $ scripts/witness/dualecwitness/build.sh         # builds /opt/dualecwitness/dualec

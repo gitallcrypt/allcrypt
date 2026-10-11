@@ -210,3 +210,61 @@ def test_repr_says_what_it_is():
     assert "ElGamalKey" in repr(key)
     assert "128" in repr(key)
     assert "ElGamalPublicKey" in repr(key.public_key())
+
+
+# ---------------------------------------------------------------- textbook ---
+#
+# The raw scheme against Python's integers: a ciphertext the test builds
+# itself with c1 = g^k and c2 = m * y^k, and the decryption equation
+# m = c2 * c1^(p-1-x), are both computed here without the library.
+
+def numbers(key):
+    group_ = group()
+    p, g = int.from_bytes(group_.p, "big"), int.from_bytes(group_.g, "big")
+    return p, g, int.from_bytes(key.private_bytes, "big"), int.from_bytes(key.public_bytes, "big")
+
+
+def test_textbook_elgamal_against_pow():
+    key = allcrypt.ElGamalKey.generate(group())
+    p, g, x, y = numbers(key)
+    size = key.size
+    message = (12345678901234567890).to_bytes(size, "big")
+    ciphertext = key.public_key().encrypt_raw(message)
+    assert len(ciphertext) == 2 * size
+    c1, c2 = int.from_bytes(ciphertext[:size], "big"), int.from_bytes(ciphertext[size:], "big")
+    assert c2 * pow(c1, p - 1 - x, p) % p == 12345678901234567890
+    assert key.decrypt_raw(ciphertext) == message
+    # One built here, with a k the library never saw.
+    k = 0x1234567
+    ours = (pow(g, k, p).to_bytes(size, "big")
+            + (42 * pow(y, k, p) % p).to_bytes(size, "big"))
+    assert key.decrypt_raw(ours) == (42).to_bytes(size, "big")
+
+
+def test_textbook_elgamal_is_randomised_and_homomorphic():
+    key = allcrypt.ElGamalKey.generate(group())
+    p, _, _, _ = numbers(key)
+    size = key.size
+    public = key.public_key()
+    a, b = public.encrypt_raw(b"\x06"), public.encrypt_raw(b"\x07")
+    assert public.encrypt_raw(b"\x06") != a
+    product = ((int.from_bytes(a[:size], "big") * int.from_bytes(b[:size], "big")) % p
+               ).to_bytes(size, "big") + \
+              ((int.from_bytes(a[size:], "big") * int.from_bytes(b[size:], "big")) % p
+               ).to_bytes(size, "big")
+    assert int.from_bytes(key.decrypt_raw(product), "big") == 42
+
+
+def test_textbook_elgamal_refuses_only_what_has_no_ciphertext():
+    key = allcrypt.ElGamalKey.generate(group())
+    p, _, _, _ = numbers(key)
+    size = key.size
+    public = key.public_key()
+    for value in (1, 2, p - 1):
+        block = value.to_bytes(size, "big")
+        assert key.decrypt_raw(public.encrypt_raw(block)) == block
+    for refused in (b"", bytes(size), p.to_bytes(size, "big"), bytes(size + 1)):
+        with pytest.raises(allcrypt.CryptoError):
+            public.encrypt_raw(refused)
+    with pytest.raises(allcrypt.CryptoError):
+        key.decrypt_raw(bytes(2 * size - 1))

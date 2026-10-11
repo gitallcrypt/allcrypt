@@ -97,10 +97,21 @@ def serve(sock, server, handler, *, timeout=60):
     sock.settimeout(timeout)
     with sock:
         while True:
-            out = server.take_outgoing()
-            if out:
-                sock.sendall(out)
-            data = sock.recv(65536)
+            try:
+                out = server.take_outgoing()
+                if out:
+                    sock.sendall(out)
+                data = sock.recv(65536)
+            except (ConnectionResetError, BrokenPipeError):
+                # A client may close as soon as it has the exit status,
+                # with something of ours still on its way - the reply to
+                # a key exchange it began, typically - and the kernel
+                # answers that with a reset. Once the command has been
+                # answered that is the client leaving; before, it is a
+                # failure.
+                if answered:
+                    break
+                raise
             if not data:
                 break
             server.push_incoming(data)

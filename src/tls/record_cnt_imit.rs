@@ -101,16 +101,8 @@ pub const IV_LEN: usize = BLOCK;
 /// to persist across records and uses `CntImit` below.
 pub fn gost28147imit(iv: &[u8], key: &[u8], message: &[u8], sbox: &str)
                      -> Result<Vec<u8>, String> {
-    if iv.len() != BLOCK {
-        return Err(format!("gostIMIT28147's IV is {} bytes; got {}.",
-                           BLOCK, iv.len()));
-    }
-    let mut mac = GostCrypto::new(key, sbox)?;
-    mac.set_mac_iv(iv);
-    mac.update(message);
-    let mut tag = mac.digest();
-    tag.truncate(TAG_LEN);
-    Ok(tag)
+    crate::block_ciphers::gost::imitovstavka(key, &GostCrypto::sbox_named(sbox)?, iv, message,
+                                             TAG_LEN)
 }
 
 /// The cipher half: CNT with meshing, one stream for the connection.

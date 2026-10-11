@@ -54,8 +54,9 @@ class Witness:
         self.proc.stdin.flush()
         return self.proc.stdout.readline().strip()
 
-    def instantiate(self, curve, hash_name, entropy, nonce, pers):
-        r = self.cmd(f"new {curve} {hash_name} {entropy or '-'} {nonce or '-'} {pers or '-'}")
+    def instantiate(self, curve, hash_name, entropy, nonce, pers, q=None):
+        r = self.cmd(f"new {curve} {hash_name} {entropy or '-'} {nonce or '-'} {pers or '-'} "
+                     f"{q or '-'}")
         if r != "OK":
             raise RuntimeError(f"instantiate {curve} {hash_name}: {r}")
 
@@ -64,6 +65,9 @@ class Witness:
         if r == "ERR":
             raise RuntimeError("generate failed")
         return r
+
+    def q(self):
+        return self.cmd("q")
 
     def reseed(self, entropy, adin):
         if self.cmd(f"reseed {entropy} {adin or '-'}") != "OK":
@@ -145,6 +149,41 @@ def main():
                        f"reseed_entropy={reseed_ent or '-'} reseed_adin={reseed_adin or '-'} "
                        f"adin2={adin2 or '-'} out2={out2}")
                 rows.append(row)
+
+    # Another Q, set after instantiation's init the way ScreenOS set its
+    # own. The witness's own Q given back explicitly must first reproduce
+    # the default path, or the override is not doing what it says. The Q
+    # used is 7G, computed by python-cryptography, so neither the point
+    # nor the arithmetic is ours.
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    named = {"P-256": ec.SECP256R1(), "P-384": ec.SECP384R1(), "P-521": ec.SECP521R1()}
+    for ci, (curve, hashes, strength) in enumerate(CURVES):
+        seven_g = ec.derive_private_key(7, named[curve]).public_key().public_bytes(
+            Encoding.X962, PublicFormat.UncompressedPoint).hex()
+        for hash_name in (hashes[0], hashes[-1]):
+            entropy = material(f"{curve}{hash_name}qent", strength)
+            nonce = material(f"{curve}{hash_name}qnon", strength // 2)
+            length = LENGTHS[(ci * 5 + len(hash_name)) % len(LENGTHS)]
+            w.instantiate(curve, hash_name, entropy, nonce, None)
+            standard = w.q()
+            plain = w.generate(length, None)
+            w.instantiate(curve, hash_name, entropy, nonce, None, standard)
+            if w.generate(length, None) != plain:
+                sys.exit("the witness's own Q, set explicitly, gives different output")
+            w.instantiate(curve, hash_name, entropy, nonce, None, seven_g)
+            if w.q() != seven_g:
+                sys.exit("the witness did not take the Q it was given")
+            out1 = w.generate(length, None)
+            reseed_ent = material(f"{curve}{hash_name}qre", strength)
+            w.reseed(reseed_ent, None)
+            out2 = w.generate(length, None)
+            if out1 == plain:
+                sys.exit("another Q gave the standard Q's output")
+            rows.append(f"vector curve={curve} hash={dash(dashhash(hash_name))} "
+                        f"entropy={entropy} nonce={nonce} pers=- adin1=- out1={out1} "
+                        f"reseed_entropy={reseed_ent} reseed_adin=- adin2=- out2={out2} "
+                        f"q={seven_g}")
     w.close()
 
     header = ("# Dual_EC_DRBG, as OpenSSL FIPS module 2.0.5 computes it, and Bouncy\n"
@@ -152,7 +191,9 @@ def main():
               "# not edit. Each row: instantiate(entropy, nonce, pers), generate(adin1)\n"
               "# = out1, optionally reseed(reseed_entropy, reseed_adin), generate(adin2)\n"
               "# = out2. '-' is empty. The source=bouncycastle row is from a different\n"
-              "# implementation; every other row the two agree on.\n")
+              "# implementation; every other row the two agree on. A row with q= runs\n"
+              "# under that Q instead of the standard's (7G, from python-cryptography),\n"
+              "# set the way ScreenOS set its own; those are OpenSSL's code alone.\n")
     with open(OUTPUT, "w") as f:
         f.write(header)
         for row in rows:

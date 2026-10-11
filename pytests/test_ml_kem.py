@@ -90,6 +90,21 @@ def test_from_seed_gives_nists_keys(cases):
                 == case["ekDigest"])
 
 
+def test_encapsulation_with_nists_m_gives_nists_answer(cases):
+    """NIST's `encapsulation` cases state the `m` they used; given it,
+    `encapsulate` must produce their shared secret and ciphertext."""
+    for parameter_set, case in cases["encapsulation"]:
+        public = allcrypt.MlKemPublicKey.from_public(parameter_set, bytes.fromhex(case["ek"]))
+        m = bytes.fromhex(case["m"])
+        shared, ciphertext = public.encapsulate(m)
+        assert shared.hex().upper() == case["k"], case["tcId"]
+        assert len(ciphertext) == int(case["cLength"])
+        assert hashlib.sha256(ciphertext).hexdigest().upper() == case["cDigest"]
+        assert public.encapsulate(m=m) == (shared, ciphertext)
+    with pytest.raises(allcrypt.CryptoError):
+        public.encapsulate(bytes(31))
+
+
 def test_decapsulation_matches_nist_on_both_paths(cases):
     """NIST's decapsulation cases, imported through `from_private`.
 

@@ -107,6 +107,12 @@ def test_sealed_boxes_from_libsodium_open():
                                       row["construction"]) == row["message"]
 
 
+def test_sealed_boxes_with_libsodiums_ephemeral_key_are_libsodiums():
+    for row in ROWS["seal"]:
+        assert allcrypt.box_seal(row["public"], row["message"], row["construction"],
+                                 ephemeral_private=row["ephemeral_private"]) == row["sealed"]
+
+
 def test_our_sealed_boxes_open_and_differ_each_time():
     private, public = allcrypt.box_keypair()
     for construction in ("xsalsa20poly1305", "xchacha20poly1305"):

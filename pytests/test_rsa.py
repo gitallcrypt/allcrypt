@@ -474,3 +474,74 @@ def test_unpadded_rsa_is_deterministic_and_opens_the_padded_forms(key, reference
     oaep_block = key.decrypt_raw(reference.public_key().encrypt(
         b"inside", padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None)))
     assert oaep_block[0] == 0 and len(oaep_block) == key.size
+
+
+# ---------------------------------------- chosen randomness, no DigestInfo ---
+
+def test_signing_without_digest_info_is_what_openssl_recovers(key, reference):
+    """OpenSSL recovers the signed bytes with no hash named, which is the
+    TLS 1.0 and 1.1 form: MD5 || SHA-1, 36 bytes, no DigestInfo."""
+    data = hashlib.md5(b"hello").digest() + hashlib.sha1(b"hello").digest()
+    signature = key.sign_without_digest_info(data)
+    assert reference.public_key().recover_data_from_signature(
+        signature, padding.PKCS1v15(), None) == data
+    assert key.sign_without_digest_info(data) == signature
+    assert key.public_key().verify_without_digest_info(data, signature)
+    assert not key.public_key().verify_without_digest_info(data[:-1] + b"\0", signature)
+    # It is not the ordinary signature over the same bytes.
+    assert signature != key.sign(hashlib.sha256(b"x").digest())
+
+
+def test_verifying_without_digest_info_against_pow(key, reference):
+    data = bytes(range(36))
+    size = key.size
+    block = b"\x00\x01" + b"\xff" * (size - len(data) - 3) + b"\x00" + data
+    d = reference.private_numbers().d
+    signature = pow(number(block), d, number(key.public_key().n)).to_bytes(size, "big")
+    assert key.public_key().verify_without_digest_info(data, signature)
+
+
+def test_pss_with_a_chosen_salt(key, reference):
+    digest = hashlib.sha256(b"a message").digest()
+    salt = bytes(range(32))
+    signature = key.sign_pss(digest, "sha256", salt=salt)
+    assert key.sign_pss(digest, "sha256", salt=salt) == signature
+    assert key.sign_pss(digest, "sha256", salt=bytes(32)) != signature
+    reference.public_key().verify(signature, digest,
+                                  padding.PSS(padding.MGF1(hashes.SHA256()), 32),
+                                  asym_utils.Prehashed(hashes.SHA256()))
+    # An empty salt is deterministic PSS, and OpenSSL verifies it too.
+    empty = key.sign_pss(digest, "sha256", salt=b"")
+    reference.public_key().verify(empty, digest,
+                                  padding.PSS(padding.MGF1(hashes.SHA256()), 0),
+                                  asym_utils.Prehashed(hashes.SHA256()))
+    assert key.public_key().verify_pss(digest, empty, "sha256", salt_length=0)
+    assert key.sign_pss(digest, "sha256", salt_length=32, salt=salt) == signature
+    with pytest.raises(ValueError):
+        key.sign_pss(digest, "sha256", salt_length=20, salt=salt)
+
+
+def test_oaep_with_a_chosen_seed(key, reference):
+    public = key.public_key()
+    seed = bytes(range(32))
+    ciphertext = public.encrypt_oaep(b"a message", "sha256", label=b"L", seed=seed)
+    assert public.encrypt_oaep(b"a message", "sha256", label=b"L", seed=seed) == ciphertext
+    assert public.encrypt_oaep(b"a message", "sha256", label=b"L",
+                               seed=bytes(32)) != ciphertext
+    assert reference.decrypt(ciphertext, padding.OAEP(
+        padding.MGF1(hashes.SHA256()), hashes.SHA256(), b"L")) == b"a message"
+    with pytest.raises(allcrypt.CryptoError):
+        public.encrypt_oaep(b"a message", "sha256", seed=bytes(20))
+
+
+def test_oaep_decoding_on_its_own(key, reference):
+    scheme = padding.OAEP(padding.MGF1(hashes.SHA1()), hashes.SHA256(), b"label")
+    block = key.decrypt_raw(reference.public_key().encrypt(b"inside", scheme))
+    assert allcrypt.rsa_oaep_decode(block, "sha256", "sha1", label=b"label") == b"inside"
+    errors = set()
+    for args in ((block, "sha256", "sha1", b"other"), (block, "sha256", None, b"label"),
+                 (b"\x01" + block[1:], "sha256", "sha1", b"label")):
+        with pytest.raises(allcrypt.CryptoError) as info:
+            allcrypt.rsa_oaep_decode(args[0], args[1], args[2], label=args[3])
+        errors.add(str(info.value))
+    assert len(errors) == 1

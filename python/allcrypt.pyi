@@ -11,7 +11,7 @@ unsigned integer, and raises ``OverflowError`` instead - which is not a
 """
 
 import enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 #: Anything holding bytes: `bytes`, `bytearray`, `memoryview`,
 #: `array("B")`, a NumPy `uint8` array - any contiguous buffer of single
@@ -108,6 +108,18 @@ def sha384(data: Optional[BytesLike] = None) -> Hash: ...
 def sha512(data: Optional[BytesLike] = None) -> Hash: ...
 def sha512_224(data: Optional[BytesLike] = None) -> Hash: ...
 def sha512_256(data: Optional[BytesLike] = None) -> Hash: ...
+def blake2b(data: Optional[BytesLike] = None, *, digest_size: int = 64,
+            key: Optional[BytesLike] = None, salt: Optional[BytesLike] = None,
+            person: Optional[BytesLike] = None) -> Hash:
+    """BLAKE2b with ``hashlib.blake2b``'s parameters: 1 to 64 bytes of
+    output, a key of up to 64 bytes (a MAC; no HMAC around it), and a
+    salt and personalisation of up to 16 bytes, zero filled as hashlib
+    fills them. Tree hashing is not here."""
+def blake2s(data: Optional[BytesLike] = None, *, digest_size: int = 32,
+            key: Optional[BytesLike] = None, salt: Optional[BytesLike] = None,
+            person: Optional[BytesLike] = None) -> Hash:
+    """BLAKE2s, the same with 32 byte outputs and keys and a salt and
+    personalisation of up to 8 bytes."""
 
 class Encryptor:
     """One encryption or decryption in progress."""
@@ -143,7 +155,7 @@ class AeadEncryptor:
         :meth:`verify` has been called and has not raised.
         """
     def tag(self) -> bytes:
-        """Finish an encryption and return the 16 byte tag."""
+        """Finish an encryption and return the tag, ``Aead.tag_size`` bytes."""
     def verify(self, tag: BytesLike) -> None:
         """Finish a decryption, raising :class:`CryptoError` if the tag does
         not match."""
@@ -164,7 +176,12 @@ class Aead:
         """``name`` is one of ``aeads_available`` - ``"aes-gcm"``,
         ``"aes-ccm"``, ``"aes-ccm-8"``, ``"chacha20-poly1305"``, or an
         EAX or MGM over any of the block ciphers, or an OCB over any
-        128 bit one (nonce up to 15 bytes, 16 byte tag).
+        128 bit one (nonce up to 15 bytes, 16 byte tag). GCM and CCM
+        take any 128 bit cipher by the same naming - ``"camellia-gcm"``,
+        ``"sm4-ccm"`` - except Kalyna, whose DSTU 7624 modes are other
+        modes. A tag length in bytes can follow GCM, CCM, EAX, MGM or OCB
+        (``"aes-gcm-8"``), within that mode's own set; once named, only a
+        tag of exactly that length opens.
 
         ChaCha20-Poly1305 takes a 256 bit key and a 96 bit nonce, and only
         those. AES-GCM takes 128, 192 or 256 bit keys and any non-empty
@@ -212,7 +229,7 @@ class Aead:
     def tag_size(self) -> int:
         """16 bytes, or 8 for ``aes-ccm-8`` - which exists for exactly
         that reason, so a constant here would misinform the one caller who
-        needs to know."""
+        needs to know - or whatever length the name gave."""
 
 class Cipher:
     """A keyed block cipher.
@@ -222,7 +239,13 @@ class Cipher:
     ``gost`` and is ignored by the other ciphers.
     """
 
-    def __init__(self, name: str, key: BytesLike, param: Optional[str] = None) -> None: ...
+    def __init__(self, name: str, key: BytesLike, param: Optional[str] = None, *,
+                 sbox: Optional[Sequence[Sequence[int]]] = None,
+                 dke: Optional[BytesLike] = None) -> None:
+        """``sbox`` gives GOST 28147-89's eight substitution rows directly,
+        each a permutation of 0..15, and ``dke`` the 64 byte DSTU 4145 DKE
+        that packs them; either one in place of ``param``, and only for
+        ``gost``."""
     def encryptor(self, mode: str, iv: Optional[BytesLike] = None) -> Encryptor: ...
     def decryptor(self, mode: str, iv: Optional[BytesLike] = None) -> Encryptor: ...
     def encrypt(self, mode: str, data: BytesLike, iv: Optional[BytesLike] = None) -> bytes: ...
@@ -241,7 +264,15 @@ class StreamCipher:
     which every stream cipher has, are the way to use it.
     """
 
-    def __init__(self, name: str, key: BytesLike, nonce: Optional[BytesLike] = None) -> None: ...
+    def __init__(self, name: str, key: BytesLike, nonce: Optional[BytesLike] = None,
+                 counter: int = 0) -> None:
+        """``counter`` is the ChaCha or Salsa20 block to start at; RFC
+        8439's AEAD starts its payload at 1. RC4 and ZipCrypto have no
+        counter and refuse anything but 0."""
+    def seek(self, offset: int) -> None:
+        """Move to byte ``offset`` of the keystream, forwards or back.
+        ChaCha and Salsa20 only; with a 12 byte nonce ChaCha's counter is
+        32 bits, so 256 GiB is as far as it goes."""
     def update(self, data: BytesLike) -> bytes: ...
     def encrypt(self, data: BytesLike) -> bytes: ...
     def decrypt(self, data: BytesLike) -> bytes: ...
@@ -279,12 +310,16 @@ class EcKey:
     def public_bytes(self, compressed: bool = False) -> bytes:
         """SEC1 encoding: ``0x04 || X || Y``, or ``0x02``/``0x03 || X``."""
 
-    def sm2_sign(self, message: BytesLike, id: Optional[BytesLike] = None) -> bytes:
+    def sm2_sign(self, message: BytesLike, id: Optional[BytesLike] = None,
+                 k: Optional[BytesLike] = None) -> bytes:
         """SM2 signature, GB/T 32918.2. Takes the **message**, not a digest.
 
         ``id`` is the distinguishing identifier and defaults to the
         standard's ``b"1234567812345678"``. Pass ``b""`` for the empty
         identity ``openssl pkeyutl`` uses by default. sm2p256v1 only.
+
+        ``k``, big endian, fixes the nonce instead of deriving it. A ``k``
+        used twice, or guessed, gives away the private key.
         """
 
     def sm2_verify(self, message: BytesLike, signature: BytesLike,
@@ -315,11 +350,28 @@ class EcKey:
         ``peer_public`` under the user keying material ``ukm``, hashed
         with Streebog of ``digest_bits`` (256 or 512)."""
 
-    def sign_gost(self, digest: BytesLike, digestmod: str = "streebog256") -> bytes:
-        """GOST R 34.10-2012 over an already computed digest: ``s || r``."""
+    def vko_2001(self, peer_public: BytesLike, ukm: BytesLike) -> bytes:
+        """VKO GOST R 34.10-2001 (RFC 4357 5.2): the shared point hashed
+        with GOST R 34.11-94, under an eight byte ``ukm``."""
+    def gost_keg(self, peer_public: BytesLike, h: BytesLike) -> bytes:
+        """RFC 9189's KEG: 64 bytes, the KExp15 MAC key then its
+        encryption key, from the peer's point and ``h``, the 32 byte
+        Streebog-256 of the client and server randoms."""
+    def gost_keg_28147(self, peer_public: BytesLike, h: BytesLike) -> bytes:
+        """RFC 9189's KEG_28147: VKO-256 under ``h[:8]``, diversified under
+        TC26's Z S-box - the 32 byte key :func:`kexp28147` takes."""
+    def gost_keg_2001(self, peer_public: BytesLike, ukm: BytesLike) -> bytes:
+        """The GOST 2001 TLS suite's KEK: VKO 2001 under the eight byte
+        ``ukm``, diversified under CryptoPro-A."""
 
-    def verify_gost(self, digest: BytesLike, signature: BytesLike) -> bool:
-        """Verify a GOST R 34.10-2012 ``s || r`` with this key's public half."""
+    def sign_gost(self, digest: BytesLike, digestmod: str = "streebog256",
+                  encoding: str = "certificate") -> bytes:
+        """GOST R 34.10-2012 over an already computed digest: ``s || r``,
+        or with ``encoding="tls13"`` RFC 9367's ``str_l(r) || str_l(s)``."""
+
+    def verify_gost(self, digest: BytesLike, signature: BytesLike,
+                    encoding: str = "certificate") -> bool:
+        """Verify a GOST R 34.10-2012 signature with this key's public half."""
 
     def public_key(self) -> "EcPublicKey": ...
 
@@ -367,18 +419,28 @@ class EcPublicKey:
     def verify(self, digest: BytesLike, signature: BytesLike) -> bool:
         """False for a wrong signature; raises for one that is malformed."""
 
-    def verify_gost(self, digest: BytesLike, signature: BytesLike) -> bool:
-        """The same for a GOST R 34.10-2012 signature, ``s || r``."""
+    def verify_gost(self, digest: BytesLike, signature: BytesLike,
+                    encoding: str = "certificate") -> bool:
+        """The same for a GOST R 34.10-2012 signature, ``s || r``, or with
+        ``encoding="tls13"`` RFC 9367's ``str_l(r) || str_l(s)``."""
+
+    def sm2_z(self, id: Optional[BytesLike] = None) -> bytes:
+        """GB/T 32918.2's ``Z_A`` for this key and an identity."""
+
+    def sm2_digest(self, message: BytesLike, id: Optional[BytesLike] = None) -> bytes:
+        """SM2's ``e = SM3(Z_A || M)``, the value a signature is over."""
 
     def sm2_verify(self, message: BytesLike, signature: BytesLike,
                    id: Optional[BytesLike] = None) -> bool:
         """Verify an SM2 signature over the message. sm2p256v1 only."""
 
-    def sm2_encrypt(self, message: BytesLike) -> bytes:
-        """Encrypt, returning ``C1 || C3 || C2``."""
+    def sm2_encrypt(self, message: BytesLike, k: Optional[BytesLike] = None) -> bytes:
+        """Encrypt, returning ``C1 || C3 || C2``. ``k``, big endian, fixes
+        the ephemeral scalar; anybody who learns it reads the message."""
 
-    def sm2_encrypt_der(self, message: BytesLike) -> bytes:
-        """Encrypt into the DER form OpenSSL reads."""
+    def sm2_encrypt_der(self, message: BytesLike, k: Optional[BytesLike] = None) -> bytes:
+        """Encrypt into the DER form OpenSSL reads; ``k`` as for
+        ``sm2_encrypt``."""
 
     @property
     def curve(self) -> str: ...
@@ -428,9 +490,17 @@ class RsaKey:
         """
 
     def sign_pss(self, digest: BytesLike, digestmod: str = "sha256",
-                 salt_length: Optional[int] = None) -> bytes:
+                 salt_length: Optional[int] = None,
+                 salt: Optional[BytesLike] = None) -> bytes:
         """PSS over an already computed digest, with a random salt of
-        ``salt_length`` bytes - the hash's length by default."""
+        ``salt_length`` bytes - the hash's length by default. ``salt``
+        gives the salt instead, which makes the signature deterministic;
+        ``salt_length`` must then be left out or agree with it."""
+
+    def sign_without_digest_info(self, digest: BytesLike) -> bytes:
+        """PKCS#1 v1.5 signature padding with no DigestInfo: the bytes are
+        signed as given, without naming a hash, as TLS 1.0 and 1.1 sign
+        ``MD5 || SHA-1``. Deterministic."""
 
     @property
     def numbers(self) -> dict:
@@ -458,9 +528,15 @@ class RsaPublicKey:
 
     def encrypt_oaep(self, message: BytesLike, digestmod: str = "sha256",
                      mgf_digestmod: Optional[str] = None,
-                     label: BytesLike = b"") -> bytes:
+                     label: BytesLike = b"",
+                     seed: Optional[BytesLike] = None) -> bytes:
         """RSAES-OAEP. ``digestmod`` hashes the label and sets the seed's
-        length; ``mgf_digestmod``, which defaults to it, drives MGF1."""
+        length; ``mgf_digestmod``, which defaults to it, drives MGF1.
+        Randomised, unless ``seed`` is given, which makes it deterministic."""
+
+    def verify_without_digest_info(self, digest: BytesLike,
+                                   signature: BytesLike) -> bool:
+        """The counterpart of ``RsaKey.sign_without_digest_info``."""
 
     def verify_pss(self, digest: BytesLike, signature: BytesLike,
                    digestmod: str = "sha256",
@@ -490,9 +566,17 @@ class DhGroup:
     method of its own rather than the default.
     """
 
-    def __init__(self, p: BytesLike, g: BytesLike) -> None:
+    def __init__(self, p: BytesLike, g: BytesLike, q: Optional[BytesLike] = None) -> None:
         """From ``p`` and ``g``, big endian. Raises for an even modulus or a
-        generator outside ``[2, p-2]``; size is a separate question."""
+        generator outside ``[2, p-2]``; size is a separate question. ``q``,
+        the order of ``g``'s subgroup, makes the peer check require
+        ``y**q == 1 mod p`` too."""
+
+    @property
+    def q(self) -> Optional[bytes]: ...
+
+    def check_size(self, min_bits: int) -> None:
+        """Raise if the group is smaller than ``min_bits``."""
 
     @staticmethod
     def modp(bits: int) -> "DhGroup":
@@ -563,6 +647,10 @@ class ElGamalKey:
         rather than the trapdoor, so ElGamal is as exposed as RSA.
         """
 
+    def decrypt_raw(self, ciphertext: BytesLike) -> bytes:
+        """Textbook ElGamal decryption: ``c1 || c2`` back to the integer
+        message, at the modulus width with leading zeros kept."""
+
     def sign(self, digest: BytesLike) -> bytes:
         """Sign a digest, returning ``r || s``.
 
@@ -589,6 +677,10 @@ class ElGamalPublicKey:
 
     def encrypt(self, message: BytesLike) -> bytes:
         """OpenPGP's ElGamal encryption, returning ``c1 || c2``."""
+
+    def encrypt_raw(self, message: BytesLike) -> bytes:
+        """Textbook ElGamal: the message a big-endian integer in [1, p-1],
+        no padding, returning ``c1 || c2``. Malleable on purpose."""
 
     def verify(self, digest: BytesLike, signature: BytesLike) -> bool:
         """Verify ``r || s``. Range-checks both, which is not a
@@ -1483,10 +1575,13 @@ def box_decrypt(peer_public: BytesLike, private: BytesLike, nonce: BytesLike,
     """Open a box from ``peer_public`` to ``private``."""
 
 def box_seal(recipient_public: BytesLike, message: BytesLike,
-             construction: str = "xsalsa20poly1305") -> bytes:
+             construction: str = "xsalsa20poly1305",
+             ephemeral_private: Optional[BytesLike] = None) -> bytes:
     """An anonymous box (libsodium's ``crypto_box_seal``): a fresh
     ephemeral key per message, 48 bytes of overhead. Anybody can make
-    one, so it says nothing about the sender."""
+    one, so it says nothing about the sender. ``ephemeral_private`` gives
+    the one-time key instead of drawing it, which makes the box
+    deterministic."""
 
 def box_seal_open(recipient_public: BytesLike, recipient_private: BytesLike,
                   sealed: BytesLike, construction: str = "xsalsa20poly1305") -> bytes:
@@ -1534,6 +1629,75 @@ def ed25519_private_to_x25519(private: BytesLike) -> bytes:
 def hsalsa20(key: BytesLike, input: BytesLike) -> bytes:
     """HSalsa20: 32 byte key and 16 byte input to 32 bytes. XSalsa20's
     subkey derivation, and NaCl's box key from an X25519 secret."""
+
+def ctr_acpkm(cipher: str, key: BytesLike, nonce: BytesLike, data: BytesLike,
+              section: int) -> bytes:
+    """CTR-ACPKM (RFC 8645): CTR whose key changes every ``section``
+    bytes, the counter running on. ``nonce`` is half a block; ``section``
+    a whole number of blocks. Encrypts and decrypts alike."""
+
+def acpkm_next(cipher: str, key: BytesLike) -> bytes:
+    """ACPKM's next section key: 0x80..0x9f encrypted under ``key``."""
+
+def gost28147_mac(key: BytesLike, data: BytesLike, sbox: Optional[str] = None,
+                  iv: Optional[BytesLike] = None, tag_size: int = 4) -> bytes:
+    """The GOST 28147-89 MAC (imitovstavka): ``tag_size`` bytes, 1 to 8,
+    of the state, from ``iv`` (zeros by default) under the named
+    parameter set (CryptoPro-A by default)."""
+
+def cryptopro_key_mesh(key: BytesLike, iv: BytesLike,
+                       sbox: Optional[str] = None) -> Tuple[bytes, bytes]:
+    """CryptoPro key meshing (RFC 4357 2.3.2): the next ``(key, iv)`` from
+    the key and the IV as it stands after 1024 bytes."""
+
+def kdf_gostr3411_2012_256(key: BytesLike, label: BytesLike, seed: BytesLike) -> bytes:
+    """``KDF_GOSTR3411_2012_256`` (RFC 7836 4.5): 32 bytes."""
+
+def kdf_tree_gostr3411_2012_256(key: BytesLike, label: BytesLike, seed: BytesLike,
+                                length: int, counter_bytes: int = 1) -> bytes:
+    """``KDF_TREE_GOSTR3411_2012_256`` (RFC 7836 4.4): ``length`` bytes,
+    the counter ``counter_bytes`` (the RFC's ``R``, 1 to 4) wide."""
+
+tlstree_suites: List[str]
+
+def tlstree(suite: str, root: BytesLike, sequence: int) -> bytes:
+    """TLSTREE (RFC 9189 8.1.1, RFC 9367 4.1.2): a record's key from the
+    32 byte traffic key, under one of ``tlstree_suites``' constants."""
+
+def kexp15(cipher: str, secret: BytesLike, mac_key: BytesLike, enc_key: BytesLike,
+           iv: BytesLike) -> bytes:
+    """KExp15 over ``"kuznyechik"`` or ``"magma"``: the secret and its OMAC
+    under ``mac_key``, in CTR under ``enc_key`` from ``iv``, half a block.
+    gost-engine's 64 byte key is ``mac_key + enc_key``."""
+
+def kimp15(cipher: str, wrapped: BytesLike, mac_key: BytesLike, enc_key: BytesLike,
+           iv: BytesLike) -> bytes:
+    """KExp15 undone; raises :class:`CryptoError` unless the OMAC checks."""
+
+def cryptopro_kek_diversify(ukm: BytesLike, key: BytesLike,
+                            sbox: Optional[str] = None) -> bytes:
+    """CryptoPro KEK diversification (RFC 4357 6.5) of a 32 byte key
+    under an eight byte UKM. CryptoPro-A by default; RFC 9189's suite
+    uses ``"id-tc26-gost-28147-param-Z"``."""
+
+def kexp28147(secret: BytesLike, key: BytesLike, iv: BytesLike,
+              sbox: Optional[str] = None) -> bytes:
+    """KExp28147 (RFC 9189 8.2.2): ``iv + ECB(secret) + MAC(secret)``, 44
+    bytes for a 32 byte secret and an eight byte IV."""
+
+def kimp28147(wrapped: BytesLike, key: BytesLike, iv: BytesLike,
+              sbox: Optional[str] = None) -> bytes:
+    """KExp28147 undone; raises unless the carried IV is ``iv`` and the
+    MAC checks."""
+
+def hchacha20(key: BytesLike, input: BytesLike) -> bytes:
+    """HChaCha20: 32 byte key and 16 byte input to 32 bytes, XChaCha20's
+    subkey derivation."""
+
+def salsa20_core(block: BytesLike, rounds: int = 20) -> bytes:
+    """The Salsa20 core on a 64 byte block: the double rounds, then the
+    input added back. 8 rounds is scrypt's BlockMix; the count must be
+    even."""
 
 def x448_generate() -> Tuple[bytes, bytes]:
     """A fresh X448 key pair (RFC 7748), as ``(private, public)``.
@@ -1673,6 +1837,47 @@ def phpass(password: BytesLike, setting: str) -> str:
 def phpass_verify(password: BytesLike, stored: str) -> bool:
     """Whether ``password`` produces the stored phpass hash. ``False``
     for a string phpass cannot parse."""
+
+class DualEcDrbg:
+    """Dual_EC_DRBG kept across calls: ``generate``, ``reseed``,
+    ``generate``. ``q``, a SEC1 point on the curve, replaces the standard's
+    ``Q`` - as Juniper's ScreenOS did - which is what makes the back door
+    demonstrable. Not for keys."""
+
+    def __init__(self, curve: str, hash: str, entropy: BytesLike,
+                 nonce: BytesLike = b"", personalization: BytesLike = b"",
+                 q: Optional[BytesLike] = None) -> None: ...
+    def generate(self, n: int, additional_input: BytesLike = b"") -> bytes: ...
+    def reseed(self, entropy: BytesLike, additional_input: BytesLike = b"") -> None: ...
+    @property
+    def q(self) -> bytes:
+        """The ``Q`` in use, uncompressed."""
+
+def ec_point_add(curve: str, p: BytesLike, q: BytesLike, compressed: bool = False) -> bytes:
+    """``P + Q`` on a named curve, SEC1 in and out, **nothing validated**:
+    a point off the curve is arithmetic on the curve with the same ``a``
+    it is on, which is the invalid-curve attack. For points you chose.
+    The identity is ``b"\\x00"``."""
+
+def ec_point_double(curve: str, p: BytesLike, compressed: bool = False) -> bytes:
+    """``2P``, unvalidated; see ``ec_point_add``."""
+
+def ec_point_negate(curve: str, p: BytesLike, compressed: bool = False) -> bytes:
+    """``-P``, unvalidated; see ``ec_point_add``."""
+
+def ec_point_multiply(curve: str, p: BytesLike, k: BytesLike, compressed: bool = False) -> bytes:
+    """``k * P`` for a big-endian ``k`` of any size, unvalidated and
+    variable time in ``k``; see ``ec_point_add``."""
+
+def ec_generator(curve: str, compressed: bool = False) -> bytes:
+    """The curve's base point."""
+
+def ec_point_is_on_curve(curve: str, p: BytesLike) -> bool:
+    """Whether a point satisfies the curve equation; the identity does."""
+
+def ec_point_validate(curve: str, p: BytesLike) -> None:
+    """The check a peer's point gets: not the identity, on the curve, in
+    the prime-order subgroup. Raises saying which."""
 
 def dual_ec_drbg(curve: str, hash: str, entropy: BytesLike, nonce: BytesLike,
                  personalization: BytesLike = b"",
@@ -1867,6 +2072,18 @@ def eddsa_curves() -> List[str]:
     curves, and treating one as the pure variant would produce signatures
     that verify here and nowhere else."""
 
+def eddsa_is_public_key(name: str, public: BytesLike) -> bool:
+    """Whether these bytes are a public key of the named variant: the
+    right length, a canonical ``y``, on the curve."""
+
+def sm2_kdf(shared: BytesLike, length: int) -> bytes:
+    """SM2's KDF (GB/T 32918.4 5.4.3): SM3 in counter mode over ``shared``."""
+
+def is_probable_prime(candidate: BytesLike, rounds: int = 64) -> bool:
+    """Miller-Rabin with ``rounds`` random bases on a big-endian integer.
+    ``False`` is certain; ``True`` is wrong with probability at most
+    ``4**-rounds``."""
+
 def eddsa_generate(name: str) -> Tuple[bytes, bytes]:
     """A fresh EdDSA key pair, as ``(private, public)``.
 
@@ -1933,6 +2150,47 @@ def umac(key: BytesLike, nonce: BytesLike, data: BytesLike, tag_len: int = 8) ->
 def hkdf(ikm: BytesLike, length: int, salt: Optional[BytesLike] = None,
          info: Optional[BytesLike] = None, digestmod: str = "sha256") -> bytes:
     """HKDF (RFC 5869). ``salt=None`` uses the all-zero salt from the RFC."""
+
+def hkdf_extract(ikm: BytesLike, salt: Optional[BytesLike] = None,
+                 digestmod: str = "sha256") -> bytes:
+    """HKDF-Extract alone: the pseudorandom key, one hash output long."""
+
+def hkdf_expand(prk: BytesLike, length: int, info: Optional[BytesLike] = None,
+                digestmod: str = "sha256") -> bytes:
+    """HKDF-Expand alone, from a pseudorandom key; at most 255 hash
+    outputs."""
+
+def pbkdf1(hash_name: str, password: BytesLike, salt: BytesLike, iterations: int,
+           dklen: Optional[int] = None) -> bytes:
+    """PBKDF1 (RFC 8018 5.1), PBES1's KDF: never more than one hash
+    output, which is also what ``dklen=None`` gives."""
+
+def pkcs12_kdf(hash_name: str, password: BytesLike, salt: BytesLike, id: int,
+               iterations: int, dklen: Optional[int] = None) -> bytes:
+    """The PKCS#12 KDF (RFC 7292 B.2). ``password`` is the BMPString
+    :func:`pkcs12_bmp_password` makes; ``id`` is 1 for a key, 2 for an
+    IV, 3 for a MAC key."""
+
+def pkcs12_bmp_password(password: str) -> bytes:
+    """UTF-16BE with a two byte NUL, as the PKCS#12 KDF takes a password.
+    For the empty password OpenSSL passes ``b""`` instead; try both."""
+
+def jdk_pbe_md5_3des(password: BytesLike, salt: BytesLike,
+                     iterations: int) -> Tuple[bytes, bytes]:
+    """The JDK's ``PBEWithMD5AndTripleDES`` derivation (JCEKS): the 24
+    byte 3DES key and the 8 byte IV, from an 8 byte salt."""
+
+def openpgp_s2k_coded_count(octets: int) -> int:
+    """The smallest OpenPGP coded count byte standing for at least
+    ``octets``, or 255; :func:`openpgp_s2k_count` reads one back."""
+
+def bcrypt_pbkdf(password: BytesLike, salt: BytesLike, rounds: int, length: int) -> bytes:
+    """OpenBSD's ``bcrypt_pbkdf``, as OpenSSH's key format uses it; at
+    most 1024 bytes."""
+
+def bitlocker_stretch(initial: BytesLike, salt: BytesLike) -> bytes:
+    """BitLocker's 2^20-round SHA-256 stretch from a 32 byte initial hash
+    and a 16 byte salt."""
 
 def pbkdf2_hmac(hash_name: str, password: BytesLike, salt: BytesLike, iterations: int,
                 dklen: Optional[int] = None) -> bytes:
@@ -2085,6 +2343,38 @@ def wpa_ptk(akm: str, pmk: BytesLike, aa: BytesLike, spa: BytesLike, anonce: Byt
     """The pairwise transient key (akm "sha1" or "sha256"; bits 512 TKIP, 384 CCMP)."""
 def wpa_pmkid(pmk: BytesLike, aa: BytesLike, spa: BytesLike) -> bytes:
     """The PMKID that names a cached pairwise master key."""
+def ieee80211_prf(key: BytesLike, label: BytesLike, data: BytesLike, bits: int) -> bytes:
+    """IEEE 802.11's PRF-n over HMAC-SHA-1: ``bits`` of it."""
+def ieee80211_kdf_sha256(key: BytesLike, label: BytesLike, context: BytesLike,
+                         bits: int) -> bytes:
+    """IEEE 802.11's KDF over SHA-256, as 802.11w and WPA3 derive."""
+def tkip_encrypt(tk: BytesLike, ta: BytesLike, tsc: int, plaintext: BytesLike) -> bytes:
+    """A TKIP MPDU's payload: RC4 under the frame's key over the plaintext
+    and its CRC-32 ICV. ``tsc`` is the 48 bit sequence counter."""
+def tkip_decrypt(tk: BytesLike, ta: BytesLike, tsc: int, ciphertext: BytesLike) -> bytes:
+    """``tkip_encrypt`` undone; raises on a wrong ICV."""
+def tkip_msdu_mic(mic_key: BytesLike, da: BytesLike, sa: BytesLike, priority: int,
+                  data: BytesLike) -> bytes:
+    """TKIP's MSDU MIC: Michael over the destination and source
+    addresses, the priority and three zero bytes, then the data."""
+def ghash(h: BytesLike, data: BytesLike) -> bytes:
+    """GHASH (SP 800-38D 6.4) under the 16 byte subkey ``h``, over whole
+    16 byte blocks: no padding, no length block, no mask."""
+
+def gmac(key: BytesLike, nonce: BytesLike, data: BytesLike, cipher: str = "aes",
+         tag_size: Optional[int] = None) -> bytes:
+    """GMAC: GCM over ``cipher`` with ``data`` as the additional data and
+    nothing encrypted. ``tag_size`` is any GCM tag length, 16 by default.
+    The nonce must never repeat under one key, as for GCM."""
+
+def poly1305(key: BytesLike, message: BytesLike) -> bytes:
+    """Poly1305 under a 32 byte one-time key, ``r`` then ``s``: a 16 byte
+    tag. A key authenticates one message; two tags under one key give it
+    away."""
+
+def poly1305_verify(key: BytesLike, message: BytesLike, tag: BytesLike) -> bool:
+    """Check a Poly1305 tag in constant time."""
+
 def cmac(cipher: str, key: BytesLike, data: BytesLike) -> bytes:
     """CMAC (SP 800-38B, RFC 4493) over any block cipher here."""
 def cbc_mac(cipher: str, key: BytesLike, data: BytesLike, iv: Optional[BytesLike] = None,
@@ -2164,6 +2454,13 @@ def curve_parameters(name: str) -> Dict[str, str]:
     boundary where that is easiest to get wrong.
     """
 
+def rsa_oaep_decode(block: BytesLike, digestmod: str = "sha256",
+                    mgf_digestmod: Optional[str] = None,
+                    label: BytesLike = b"") -> bytes:
+    """EME-OAEP decoding on its own: an encoded block - what
+    ``RsaKey.decrypt_raw`` returns for an OAEP ciphertext - back to the
+    message. Every failure raises the one message ``decrypt_oaep`` does."""
+
 def gost_sbox(name: str) -> List[List[int]]:
     """The eight substitution rows of a GOST parameter set, built in or
     registered - so a new one can start from one that exists."""
@@ -2190,6 +2487,12 @@ class SlhDsaKey:
         """
 
     @staticmethod
+    def from_seeds(parameter_set: str, sk_seed: BytesLike, sk_prf: BytesLike,
+                   pk_seed: BytesLike) -> "SlhDsaKey":
+        """A key pair from its three ``n`` byte seeds - FIPS 205's
+        ``slh_keygen_internal``, which is what a test vector states."""
+
+    @staticmethod
     def from_private(parameter_set: str, private: BytesLike) -> "SlhDsaKey":
         """Import ``SK.seed || SK.prf || PK.seed || PK.root``.
 
@@ -2214,8 +2517,10 @@ class SlhDsaKey:
         does for you."""
 
     def sign(self, message: BytesLike, context: Optional[BytesLike] = None,
-             prehash: Optional[str] = None) -> bytes:
-        """Sign, drawing fresh randomness - FIPS 205's hedged mode.
+             prehash: Optional[str] = None,
+             opt_rand: Optional[BytesLike] = None) -> bytes:
+        """Sign, drawing fresh randomness - FIPS 205's hedged mode, unless
+        ``opt_rand`` (``n`` bytes) is given.
 
         ``context`` is a domain separator of at most 255 bytes; a longer
         one raises rather than being truncated. ``prehash`` names one of
@@ -2240,6 +2545,14 @@ class SlhDsaKey:
         """False for a wrong signature; raises only for an input that could
         never be one."""
 
+    def sign_internal(self, message: BytesLike,
+                      opt_rand: Optional[BytesLike] = None) -> bytes:
+        """FIPS 205's internal interface: the message signed as given, no
+        context or pre-hash around it. Verifies only through
+        ``verify_internal``. ``opt_rand`` is drawn when left out."""
+
+    def verify_internal(self, message: BytesLike, signature: BytesLike) -> bool: ...
+
 class SlhDsaPublicKey:
     """The verifying half of an SLH-DSA key: ``PK.seed || PK.root``."""
 
@@ -2252,6 +2565,8 @@ class SlhDsaPublicKey:
     def verify(self, message: BytesLike, signature: BytesLike,
                context: Optional[BytesLike] = None,
                prehash: Optional[str] = None) -> bool: ...
+    def verify_internal(self, message: BytesLike, signature: BytesLike) -> bool:
+        """FIPS 205's internal interface: the message as given."""
 
 def slh_dsa_parameter_sets() -> List[str]:
     """The twelve parameter sets, as FIPS 205 names them.
@@ -2317,9 +2632,25 @@ class MlKemPublicKey:
 
     def public_bytes(self) -> bytes: ...
 
-    def encapsulate(self) -> Tuple[bytes, bytes]:
+    def encapsulate(self, m: Optional[BytesLike] = None) -> Tuple[bytes, bytes]:
         """``(shared_secret, ciphertext)``: keep the first, send the
-        second. Fresh randomness on every call."""
+        second. Fresh randomness on every call, unless ``m`` (32 bytes)
+        is given, which makes both deterministic."""
+
+def sntrup761_keypair(randombytes: Optional[Callable[[int], bytes]] = None
+                      ) -> Tuple[bytes, bytes]:
+    """An sntrup761 key pair, ``(public, secret)``, 1158 and 1763 bytes.
+    ``randombytes``, called with a byte count, replaces the OS random
+    source - the shape NIST's known-answer generator has."""
+
+def sntrup761_encapsulate(public: BytesLike,
+                          randombytes: Optional[Callable[[int], bytes]] = None
+                          ) -> Tuple[bytes, bytes]:
+    """``(shared_secret, ciphertext)`` for ``public``."""
+
+def sntrup761_decapsulate(secret: BytesLike, ciphertext: BytesLike) -> bytes:
+    """The shared secret; a ciphertext not made for this key gives a
+    different one rather than an error."""
 
 def ml_kem_parameter_sets() -> List[str]:
     """``ML-KEM-512``, ``ML-KEM-768`` and ``ML-KEM-1024``."""
@@ -2347,9 +2678,27 @@ class DsaKey:
     def sign(self, message: BytesLike, hash: str = "sha256") -> bytes: ...
     def verify(self, message: BytesLike, signature: BytesLike,
                hash: str = "sha256") -> bool: ...
+    def sign_digest(self, digest: BytesLike, hash: str = "sha256") -> bytes:
+        """Sign a digest computed elsewhere; ``hash`` names the hash that
+        made it, for RFC 6979's nonce. DER."""
+    def verify_digest(self, digest: BytesLike, signature: BytesLike) -> bool: ...
+    def public_key(self) -> "DsaPublicKey": ...
     @property
     def key_size(self) -> int:
         """The bit length of ``p``."""
+
+class DsaPublicKey:
+    """The verifying half of a DSA key: the group and ``y``."""
+
+    @staticmethod
+    def from_numbers(p: BytesLike, q: BytesLike, g: BytesLike,
+                     y: BytesLike) -> "DsaPublicKey":
+        """``y`` must be in the subgroup of order ``q``."""
+    def parameters(self) -> Tuple[bytes, bytes, bytes]: ...
+    def public_bytes(self) -> bytes: ...
+    def verify(self, message: BytesLike, signature: BytesLike,
+               hash: str = "sha256") -> bool: ...
+    def verify_digest(self, digest: BytesLike, signature: BytesLike) -> bool: ...
 
 class MlDsaKey:
     """An ML-DSA key pair (FIPS 204), the lattice signature scheme, over
@@ -2383,8 +2732,10 @@ class MlDsaKey:
     def public_key(self) -> "MlDsaPublicKey": ...
 
     def sign(self, message: BytesLike, context: Optional[BytesLike] = None,
-             prehash: Optional[str] = None) -> bytes:
-        """Sign with fresh randomness - FIPS 204's hedged mode.
+             prehash: Optional[str] = None,
+             rnd: Optional[BytesLike] = None) -> bytes:
+        """Sign with fresh randomness - FIPS 204's hedged mode - unless
+        ``rnd`` (32 bytes) is given.
 
         ``context`` is at most 255 bytes; ``prehash`` names one of the
         twelve approved functions (the same names as
@@ -2400,6 +2751,19 @@ class MlDsaKey:
     def verify(self, message: BytesLike, signature: BytesLike,
                context: Optional[BytesLike] = None,
                prehash: Optional[str] = None) -> bool: ...
+
+    def sign_internal(self, message: BytesLike, rnd: Optional[BytesLike] = None) -> bytes:
+        """FIPS 204's internal interface: the message signed as given, no
+        context or pre-hash around it. Verifies only through
+        ``verify_internal``. ``rnd`` is drawn when left out; 32 zero bytes
+        is the deterministic form."""
+
+    def sign_mu(self, mu: BytesLike, rnd: Optional[BytesLike] = None) -> bytes:
+        """The ``externalMu`` variant: sign a 64 byte ``mu = H(tr || M', 64)``
+        computed elsewhere. Verifies through ``verify_mu``."""
+
+    def verify_internal(self, message: BytesLike, signature: BytesLike) -> bool: ...
+    def verify_mu(self, mu: BytesLike, signature: BytesLike) -> bool: ...
 
 class MlDsaPublicKey:
     """The verifying half of an ML-DSA key."""
@@ -2417,6 +2781,12 @@ class MlDsaPublicKey:
         """``False`` for a wrong signature, including a wrong length or a
         malformed hint; raises only for a context over 255 bytes or an
         unknown pre-hash name."""
+
+    def verify_internal(self, message: BytesLike, signature: BytesLike) -> bool:
+        """FIPS 204's internal interface: the message as given."""
+
+    def verify_mu(self, mu: BytesLike, signature: BytesLike) -> bool:
+        """The ``externalMu`` variant: a signature over a 64 byte ``mu``."""
 
 def ml_dsa_parameter_sets() -> List[str]:
     """``ML-DSA-44``, ``ML-DSA-65`` and ``ML-DSA-87``."""

@@ -300,16 +300,48 @@ impl GcmState {
         self.compute_tag()
     }
 
-    /// Finish a decryption by checking the tag.
+    /// Finish a decryption by checking the tag, when the protocol did not
+    /// fix the tag's length in advance.
     ///
     /// A shorter tag than 16 bytes is accepted and compared over its own
-    /// length, because the protocols that use one specify it. Anything
-    /// under 12 bytes is refused: at that point a forgery succeeds often
-    /// enough to be worth trying, and SP 800-38D permits 8 and 4 byte tags
-    /// only for specific applications that can bound the number of
-    /// attempts. Nothing here can bound that, so it does not offer them.
+    /// length, down to 12 bytes. Here the length comes with the message,
+    /// so whoever wrote the message chose it: accepting 4 or 8 would let
+    /// a forger pick the shortest and guess. A protocol that does use a
+    /// short tag fixes its length beforehand, and `verify_fixed` takes
+    /// that.
     pub fn verify<C: BlockCipher + ?Sized>(&mut self, _cipher: &mut C,
                                            expected: &[u8]) -> Result<(), String> {
+        self.ready_to_verify()?;
+        if expected.len() < 12 || expected.len() > BLOCK {
+            return Err(format!(
+                "GCM tag must be 12 to 16 bytes; got {}. A protocol with a \
+                 shorter tag names its length, as in \"aes-gcm-8\".",
+                expected.len()));
+        }
+        self.compare(expected)
+    }
+
+    /// Finish a decryption by checking a tag of a length fixed in advance.
+    ///
+    /// `tag_len` is any of SP 800-38D section 5.2.1.2's seven lengths:
+    /// 4, 8, or 12 to 16 bytes. The tag must be exactly that long, so a
+    /// shorter one in the message is a failure rather than a cheaper
+    /// guess. SP 800-38D appendix C bounds how many messages and failed
+    /// attempts a 4 or 8 byte tag tolerates; nothing here can count
+    /// those, so that bound is the caller's.
+    pub fn verify_fixed<C: BlockCipher + ?Sized>(&mut self, _cipher: &mut C,
+                                                 expected: &[u8], tag_len: usize)
+                                                 -> Result<(), String> {
+        self.ready_to_verify()?;
+        check_tag_len(tag_len)?;
+        if expected.len() != tag_len {
+            return Err(format!("This GCM tag is {} bytes; got {}.",
+                               tag_len, expected.len()));
+        }
+        self.compare(expected)
+    }
+
+    fn ready_to_verify(&self) -> Result<(), String> {
         if self.direction != Direction::Decrypt {
             return Err("verify() is for decryption; an encryption calls tag()."
                        .to_string());
@@ -317,10 +349,10 @@ impl GcmState {
         if self.done {
             return Err("This GCM stream is already finished.".to_string());
         }
-        if expected.len() < 12 || expected.len() > BLOCK {
-            return Err(format!(
-                "GCM tag must be 12 to 16 bytes; got {}.", expected.len()));
-        }
+        Ok(())
+    }
+
+    fn compare(&mut self, expected: &[u8]) -> Result<(), String> {
         self.done = true;
         let tag = self.compute_tag()?;
 
@@ -338,6 +370,18 @@ impl GcmState {
                        .to_string());
         }
         Ok(())
+    }
+}
+
+/// Whether `tag_len` bytes is a GCM tag length: SP 800-38D section
+/// 5.2.1.2 allows 128, 120, 112, 104 and 96 bits, and 64 and 32 for
+/// applications that bound their use (appendix C).
+pub fn check_tag_len(tag_len: usize) -> Result<(), String> {
+    if tag_len == 4 || tag_len == 8 || (12..=BLOCK).contains(&tag_len) {
+        Ok(())
+    } else {
+        Err(format!("A GCM tag is 4, 8, or 12 to 16 bytes (SP 800-38D \
+                     5.2.1.2); {tag_len} is not one of them."))
     }
 }
 
@@ -702,6 +746,50 @@ mod tests {
             altered[length - 1] ^= 1;
             assert!(cipher.gcm_decrypt(&out, &mut back, &[5u8; 12], &altered, b"aad").is_err(),
                     "length {length}");
+        }
+    }
+
+    /// A length fixed in advance is SP 800-38D's whole set, 4 and 8
+    /// included, and a tag of any other length, the full tag among them,
+    /// is refused rather than compared over a prefix. Without the exact
+    /// check, a stream fixed at 12 would accept a 4 byte guess.
+    #[test]
+    fn test_a_fixed_tag_length_accepts_that_length_only() {
+        let mut cipher = AesCrypto::new(&[3u8; 16]).unwrap();
+        let mut out = Vec::new();
+        let mut tag = Vec::new();
+        cipher.gcm_encrypt(b"message", &mut out, &[5u8; 12], &mut tag, b"aad").unwrap();
+        let decryptor = |cipher: &mut AesCrypto| {
+            let mut state = GcmState::decryptor(cipher, &[5u8; 12], b"aad").unwrap();
+            let mut back = Vec::new();
+            state.update(cipher, &out, &mut back).unwrap();
+            state
+        };
+        for fixed in [4usize, 8, 12, 13, 14, 15, 16] {
+            let mut state = decryptor(&mut cipher);
+            state.verify_fixed(&mut cipher, &tag[..fixed], fixed)
+                .unwrap_or_else(|e| panic!("{fixed}: {e}"));
+            let mut altered = tag[..fixed].to_vec();
+            altered[fixed - 1] ^= 0x80;
+            assert!(decryptor(&mut cipher).verify_fixed(&mut cipher, &altered, fixed).is_err());
+            for other in [4usize, 8, 12, 16] {
+                if other != fixed {
+                    assert!(decryptor(&mut cipher)
+                                .verify_fixed(&mut cipher, &tag[..other], fixed).is_err(),
+                            "fixed {fixed}, offered {other}");
+                }
+            }
+        }
+        for not_a_length in [0usize, 1, 3, 5, 7, 9, 10, 11, 17] {
+            assert!(check_tag_len(not_a_length).is_err(), "{not_a_length}");
+            // And `verify_fixed` asks it, rather than trusting its caller
+            // to have asked: a five byte prefix of the right tag is still
+            // not a GCM tag.
+            if (1..=16).contains(&not_a_length) {
+                assert!(decryptor(&mut cipher)
+                            .verify_fixed(&mut cipher, &tag[..not_a_length], not_a_length)
+                            .is_err(), "{not_a_length}");
+            }
         }
     }
 

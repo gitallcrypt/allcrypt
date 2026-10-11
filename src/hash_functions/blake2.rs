@@ -93,10 +93,13 @@ pub struct Params {
     /// MAC; there is no need to wrap it in HMAC and doing so is a
     /// mistake.
     pub key: Vec<u8>,
-    /// Exactly 16 bytes for BLAKE2b, 8 for BLAKE2s, or empty.
+    /// Up to 16 bytes for BLAKE2b, 8 for BLAKE2s. The field is that
+    /// size, and a shorter value fills its start with zeros after it, as
+    /// the reference code and hashlib do - so empty is all zeros.
     pub salt: Vec<u8>,
-    /// The same sizes as `salt`. Domain separation: the same key and
-    /// message under two personalisations give unrelated results.
+    /// The same sizes as `salt`, filled the same way. Domain separation:
+    /// the same key and message under two personalisations give
+    /// unrelated results.
     pub personal: Vec<u8>,
 }
 
@@ -174,15 +177,15 @@ macro_rules! blake2 {
                         $label, $max_out, params.key.len()));
                 }
                 let side = $max_out / 4;   // 16 for BLAKE2b, 8 for BLAKE2s
-                if !params.salt.is_empty() && params.salt.len() != side {
+                if params.salt.len() > side {
                     return Err(format!(
-                        "A {} salt is exactly {} bytes or absent; this one is {}.",
+                        "A {} salt is at most {} bytes; this one is {}.",
                         $label, side, params.salt.len()));
                 }
-                if !params.personal.is_empty() && params.personal.len() != side {
+                if params.personal.len() > side {
                     return Err(format!(
-                        "A {} personalisation is exactly {} bytes or absent; \
-                         this one is {}.", $label, side, params.personal.len()));
+                        "A {} personalisation is at most {} bytes; this one is {}.",
+                        $label, side, params.personal.len()));
                 }
 
                 // The parameter block, XORed into the IV. Laid out in
@@ -202,13 +205,9 @@ macro_rules! blake2 {
                 // for BLAKE2b (bytes 32..64) and the last four for
                 // BLAKE2s (bytes 16..32).
                 let salt_at = 4 * word_bytes;
-                if !params.salt.is_empty() {
-                    block[salt_at..salt_at + side].copy_from_slice(&params.salt);
-                }
-                if !params.personal.is_empty() {
-                    let at = salt_at + side;
-                    block[at..at + side].copy_from_slice(&params.personal);
-                }
+                block[salt_at..salt_at + params.salt.len()].copy_from_slice(&params.salt);
+                let at = salt_at + side;
+                block[at..at + params.personal.len()].copy_from_slice(&params.personal);
 
                 let mut h = $iv;
                 for (index, word) in h.iter_mut().enumerate() {
@@ -565,9 +564,25 @@ mod tests {
         assert!(Blake2s::with_length(33).is_err());
         assert!(Blake2b::keyed(&[0u8; 65], 64).is_err());
         assert!(Blake2b::with_params(&Params {
-            digest_len: 64, salt: vec![0; 15], ..Params::default() }).is_err());
+            digest_len: 64, salt: vec![0; 17], ..Params::default() }).is_err());
         assert!(Blake2s::with_params(&Params {
             digest_len: 32, personal: vec![0; 9], ..Params::default() }).is_err());
+    }
+
+    /// A short salt or personalisation fills the start of its field and
+    /// leaves zeros after it, as the reference code and hashlib do: it
+    /// is the full-length value with zeros on the end, and an empty one
+    /// is all zeros. hashlib is what `pytests/test_kdf_pieces.py` holds
+    /// this to.
+    #[test]
+    fn test_a_short_salt_is_zero_filled() {
+        let digest = |salt: &[u8], personal: &[u8]| Blake2s::with_params(&Params {
+            digest_len: 32, salt: salt.to_vec(), personal: personal.to_vec(),
+            ..Params::default() }).unwrap().digest();
+        assert_eq!(digest(b"abc", b""), digest(b"abc\0\0\0\0\0", b""));
+        assert_eq!(digest(b"", b"xy"), digest(b"", b"xy\0\0\0\0\0\0"));
+        assert_eq!(digest(b"", b""), digest(&[0; 8], &[0; 8]));
+        assert_ne!(digest(b"abc", b""), digest(b"", b"abc"));
     }
 
     /// `Params` derived `Debug`, so `{:?}` printed the MAC key. No test

@@ -96,3 +96,21 @@ def test_a_negative_length_raises_overflow_error_as_documented():
     with pytest.raises(OverflowError):
         allcrypt.hkdf(b"key", -1)
     assert "OverflowError" in (allcrypt.__doc__ or "")
+
+
+def test_every_public_name_in_the_module_is_in_the_stub():
+    """The other direction. The test above walks the stub, so a function
+    added to the module and not to the stub is invisible to it - which
+    is how a whole batch of bindings could ship with no types at all."""
+    tree = ast.parse(open(STUB, encoding="utf-8").read())
+    stubbed = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            stubbed.add(node.name)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            stubbed.add(node.target.id)
+        elif isinstance(node, ast.Assign):
+            stubbed.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    public = {name for name in dir(allcrypt) if not name.startswith("_")}
+    assert sorted(public - stubbed) == []
+    assert len(public) > 200

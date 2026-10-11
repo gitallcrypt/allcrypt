@@ -1,9 +1,12 @@
 /* OpenSSL FIPS module 2.0's Dual_EC_DRBG (fips_drbg_ec.c, unchanged),
  * driven one request a line for scripts/make_dual_ec_vectors.py:
  *
- *   new CURVE HASH ENTROPY NONCE PERS   CURVE: P-256 P-384 P-521
+ *   new CURVE HASH ENTROPY NONCE PERS [Q] CURVE: P-256 P-384 P-521
+ *                                       Q: another point, SEC1 hex, set
+ *                                       after init as ScreenOS set its own
  *   gen NBYTES ADIN                     -> the bytes
  *   reseed ENTROPY ADIN
+ *   q                                   -> the Q in use, uncompressed
  *
  * Hex in and out; "-" is empty. */
 #include <stdio.h>
@@ -11,6 +14,7 @@
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/objects.h>
+#include <openssl/ec.h>
 #include "fips_rand_lcl.h"
 #include <openssl/fips_rand.h>
 
@@ -34,7 +38,8 @@ int main(void) {
 		if (sscanf(line, "%15s", op) != 1) continue;
 		if (strcmp(op, "new") == 0) {
 			int curve, md;
-			sscanf(line, "%*s %s %s %s %s %s", f1, f2, f3, f4, f5);
+			char f6[1 << 12] = "-";
+			sscanf(line, "%*s %s %s %s %s %s %s", f1, f2, f3, f4, f5, f6);
 			curve = strcmp(f1, "P-256") == 0 ? NID_X9_62_prime256v1 :
 				strcmp(f1, "P-384") == 0 ? NID_secp384r1 : NID_secp521r1;
 			md = OBJ_sn2nid(f2);
@@ -44,6 +49,13 @@ int main(void) {
 			ctx.xflags = DRBG_FLAG_TEST;
 			if (fips_drbg_ec_init(&ctx) != 1) { printf("ERR\n"); fflush(stdout); have = 0; continue; }
 			have = 1;
+			if (strcmp(f6, "-") != 0) {
+				size_t nq = unhex(f6, out);
+				DRBG_EC_CTX *ectx = &ctx.d.ec;
+				if (!EC_POINT_oct2point(ectx->curve, ectx->Q, out, nq, ectx->bctx)) {
+					printf("ERR\n"); fflush(stdout); continue;
+				}
+			}
 			size_t na = unhex(f3, a), nb = unhex(f4, b), nc = unhex(f5, c);
 			if (!ctx.instantiate(&ctx, a, na, nb ? b : NULL, nb, nc ? c : NULL, nc)) { printf("ERR\n"); }
 			else printf("OK\n");
@@ -52,6 +64,12 @@ int main(void) {
 			size_t na = unhex(f1, a);
 			if (!ctx.generate(&ctx, out, n, na ? a : NULL, na)) { printf("ERR\n"); }
 			else { for (size_t i = 0; i < n; i++) printf("%02x", out[i]); printf("\n"); }
+		} else if (strcmp(op, "q") == 0) {
+			DRBG_EC_CTX *ectx = &ctx.d.ec;
+			size_t n = EC_POINT_point2oct(ectx->curve, ectx->Q, POINT_CONVERSION_UNCOMPRESSED,
+						      out, sizeof out, ectx->bctx);
+			for (size_t i = 0; i < n; i++) printf("%02x", out[i]);
+			printf("\n");
 		} else if (strcmp(op, "reseed") == 0) {
 			sscanf(line, "%*s %s %s", f1, f2);
 			size_t na = unhex(f1, a), nb = unhex(f2, b);

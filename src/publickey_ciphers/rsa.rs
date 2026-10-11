@@ -665,8 +665,12 @@ pub fn encrypt_oaep(key: &RsaPublicKey, hash_name: &str, mgf_hash: &str, label: 
 }
 
 /// RSAES-OAEP encryption with the seed given, which makes it
-/// deterministic: for known-answer tests, and nothing else. A repeated
-/// seed encrypts a repeated message to the same ciphertext.
+/// deterministic: the same message, label and seed always give the same
+/// ciphertext. That is what a known-answer test needs, and what
+/// reproducing somebody else's ciphertext needs. A repeated seed is
+/// exactly as revealing as that sounds: two encryptions of one message
+/// under one seed are equal, which is the property the seed is there to
+/// remove.
 pub fn encrypt_oaep_with_seed(key: &RsaPublicKey, hash_name: &str, mgf_hash: &str,
                               label: &[u8], message: &[u8], seed: &[u8])
                               -> Result<Vec<u8>, String> {
@@ -740,8 +744,8 @@ const OAEP_FAILURE: &str = "RSA decryption failed.";
 /// EME-OAEP decoding (RFC 8017 section 7.1.2 step 3): the encoded
 /// message `EM = Y || maskedSeed || maskedDB` back to the message.
 ///
-/// Public so the padding can be tested apart from the private operation.
-/// The conditions - `Y` zero, `lHash'` equal, a `0x01` after the zeros -
+/// Public so the padding can be used and tested apart from the private
+/// operation - on a block `decrypt_raw` returned, say. The conditions - `Y` zero, `lHash'` equal, a `0x01` after the zeros -
 /// are folded into one mask before anything branches, and every one of
 /// them fails with the same error as `decrypt_oaep`'s.
 pub fn eme_oaep_decode(em: &[u8], hash_name: &str, mgf_hash: &str, label: &[u8])
@@ -1080,10 +1084,20 @@ fn emsa_pss_encode(hash_name: &str, digest: &[u8], salt: &[u8], em_bits: usize)
 /// Sign an already computed digest with PSS and a random salt.
 pub fn sign_pss(key: &RsaPrivateKey, hash_name: &str, digest: &[u8],
                 salt_len: usize) -> Result<Vec<u8>, String> {
+    sign_pss_with_salt(key, hash_name, digest, &random::bytes(salt_len)?)
+}
+
+/// PSS with the salt given, which makes the signature deterministic: the
+/// same digest and salt always give the same bytes. That is what a
+/// known-answer test needs, and what a protocol that fixes the salt - or
+/// sets it empty - asks for. A salt reused across messages costs PSS its
+/// randomisation and nothing else; an empty one makes it as deterministic
+/// as PKCS#1 v1.5, with the tighter security proof still in place.
+pub fn sign_pss_with_salt(key: &RsaPrivateKey, hash_name: &str, digest: &[u8],
+                          salt: &[u8]) -> Result<Vec<u8>, String> {
     let size = key.size();
     let em_bits = key.public_key().n.bit_len() - 1;
-    let salt = random::bytes(salt_len)?;
-    let em = emsa_pss_encode(hash_name, digest, &salt, em_bits)?;
+    let em = emsa_pss_encode(hash_name, digest, salt, em_bits)?;
     let signature = key.raw(&BigUint::from_bytes_be(&em))?;
     signature.to_bytes_be_padded(size)
 }

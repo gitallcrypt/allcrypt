@@ -36,6 +36,9 @@ pub struct GostCrypto{
 /// `cms_wrap`. There is no OID for it; the name says where it is from.
 pub const DSTU_PARAM_SET: &str = "dstu4145-default-dke";
 
+/// GOST 28147-89's block, in bytes.
+const BLOCK: usize = 8;
+
 /// DSTU 4145-2002's default DKE, packed as the standard and every key
 /// container carry it. Bouncy Castle's `DSTU4145Params.getDefaultDKE`
 /// and gost89's `packSbox(defaultSbox)` agree on it, and
@@ -508,12 +511,36 @@ impl BlockCipher for GostCrypto {
     }
 }
 
+/// The GOST 28147-89 MAC (imitovstavka, section 5 of the standard) of
+/// one whole message: the sixteen round transform chained over the
+/// message, zero padded, from `iv` (eight bytes, zeros for the standard
+/// itself; RFC 9189's `gost28147IMIT` XORs one into the first block),
+/// and the first `tag_len` bytes of the result. The standard leaves the
+/// length to the protocol, up to the 32 bits of `N1`; gost-engine and
+/// RFC 9189 take four bytes, and up to eight - the whole state - are
+/// given here for protocols that take more.
+pub fn imitovstavka(key: &[u8], sbox: &[Vec<u8>], iv: &[u8], message: &[u8], tag_len: usize)
+                    -> Result<Vec<u8>, String> {
+    if iv.len() != BLOCK {
+        return Err(format!("The GOST 28147-89 MAC's IV is {BLOCK} bytes; got {}.", iv.len()));
+    }
+    if !(1..=BLOCK).contains(&tag_len) {
+        return Err(format!(
+            "A GOST 28147-89 MAC is 1 to {BLOCK} bytes of the state; {tag_len} was asked for."));
+    }
+    let mut mac = GostCrypto::new_with_sbox(key, sbox)?;
+    mac.set_mac_iv(iv);
+    mac.update(message);
+    let mut tag = mac.digest();
+    tag.truncate(tag_len);
+    Ok(tag)
+}
+
 impl Mac for GostCrypto {
     /// Whole blocks straight from `input`; the ragged end waits in
     /// `mac_data_unprocessed` for the next call, and a partial block
     /// left from the previous call is completed first.
     fn update(&mut self, mut input: &[u8]) {
-        const BLOCK: usize = 8;
         if !self.mac_data_unprocessed.is_empty() {
             let take = (BLOCK - self.mac_data_unprocessed.len()).min(input.len());
             self.mac_data_unprocessed.extend_from_slice(&input[..take]);

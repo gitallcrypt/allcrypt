@@ -238,61 +238,63 @@ def test_the_bindings_produce_nists_signatures(sections):
     for mode, parameter_set, _count, cases in sections:
         if not parameter_set.endswith("f"):
             continue
-        # **Two whole families of case are unreachable from Python, both on
-        # purpose.** The `internal` sections are FIPS 205's internal
-        # interface, which the bindings do not expose - a signature made
-        # with it is not one another implementation's default verifier
-        # accepts, so the facade offers only the external interface. And
-        # the `hedged` sections state the `opt_rand` the signer used, which
-        # the bindings draw themselves rather than accept, because an
-        # argument for it is an invitation to pass a counter.
-        #
-        # Both are covered against NIST by `tests/test_slh_dsa.rs`, which
-        # calls the layer underneath. Skipping them here is a statement
-        # about the surface rather than a gap in the checking.
-        if not mode.startswith("sigGen-external") or mode.endswith("hedged"):
+        if not mode.startswith("sigGen"):
             continue
-        external = True
+        # Every section is reachable: the external interface and the
+        # internal one, deterministic and hedged - the hedged cases state
+        # the `opt_rand` the signer used, and `opt_rand=` takes it.
+        external = mode.startswith("sigGen-external")
+        hedged = mode.endswith("hedged")
         for case in cases:
             key = allcrypt.SlhDsaKey.from_private(
                 parameter_set, bytes.fromhex(case["sk"]))
             message = bytes.fromhex(case["message"])
             context = bytes.fromhex(case.get("context", "")) if external else b""
             prehash = case.get("hashAlg") or None
+            opt_rand = bytes.fromhex(case["additionalRandomness"]) if hedged else None
             if prehash:
                 algorithms.add(prehash)
 
-            signature = key.sign_deterministic(message, context, prehash)
+            if external and hedged:
+                signature = key.sign(message, context, prehash, opt_rand=opt_rand)
+            elif external:
+                signature = key.sign_deterministic(message, context, prehash)
+            else:
+                # The internal interface's deterministic form is opt_rand =
+                # PK.seed, the third quarter of the private key.
+                n = len(key.private_bytes()) // 4
+                pk_seed = key.private_bytes()[2 * n:3 * n]
+                signature = key.sign_internal(message, opt_rand if hedged else pk_seed)
             assert len(signature) == int(case["signatureLength"])
             assert signature[:256].hex().upper() == case["signaturePrefix"]
             assert hashlib.sha256(signature).hexdigest().upper() \
                 == case["signatureDigest"], \
                 f"{mode} {parameter_set} tcId {case['tcId']}"
 
-            # Our own verifier on bytes that are now known to be NIST's.
-            assert key.verify(message, signature, context, prehash)
+            # Our own verifier on bytes that are now known to be NIST's,
+            # and the two interfaces kept apart: neither accepts the
+            # other's signature over the same message.
+            if external:
+                assert key.verify(message, signature, context, prehash)
+                assert not key.verify_internal(message, signature)
+            else:
+                assert key.verify_internal(message, signature)
+                assert key.public_key().verify_internal(message, signature)
+                assert not key.verify(message, signature)
             checked += 1
 
-    assert checked == 18, ("the fast external deterministic cases: twelve "
-                           "pre-hash, at two per parameter set, and six pure")
+    assert checked == 72, ("the fast cases: eighteen external deterministic "
+                           "(twelve pre-hash and six pure), eighteen external "
+                           "hedged, and eighteen internal of each kind")
 
-    # **Nine of the twelve, not all twelve**, and the number is measured
-    # rather than hoped for: ACVP varies `hashAlg` per test, and the
-    # deterministic half of the fast pre-hash groups happens to carry nine
-    # of them. The other three - SHA2-384, SHA3-512, SHAKE-256 - are
-    # reached against NIST's bytes by `tests/test_slh_dsa.rs`, which also
-    # runs the hedged cases, and through *these bindings* by
-    # `test_every_pre_hash_signs_and_verifies_only_as_itself` above, which
-    # exercises all twelve without an external answer to compare to.
-    #
-    # So: twelve exercised through Python, nine of them against NIST from
-    # Python, twelve against NIST from Rust. Asserting the exact set means
-    # a change to the vector file's caps shows up here as a failure rather
-    # than as quietly less coverage.
-    assert sorted(algorithms) == [
-        "SHA2-224", "SHA2-256", "SHA2-512", "SHA2-512/224", "SHA2-512/256",
-        "SHA3-224", "SHA3-256", "SHA3-384", "SHAKE-128",
-    ], sorted(algorithms)
+    # **All twelve**, now that the hedged cases are reachable: the
+    # deterministic half of the fast pre-hash groups carries nine of
+    # ACVP's `hashAlg` values and the hedged half brings SHA2-384,
+    # SHA3-512 and SHAKE-256. Asserting the exact set means a change to the
+    # vector file's caps shows up here as a failure rather than as quietly
+    # less coverage.
+    assert sorted(algorithms) == sorted(allcrypt.slh_dsa_pre_hashes()), \
+        sorted(algorithms)
 
 
 SIGVER = VECTORS.parent / "slh_dsa_sigver.vec"
@@ -305,8 +307,7 @@ def test_the_bindings_refuse_what_nist_refuses():
     include signatures ACVP altered on purpose - the message, `R`, the
     FORS signature, the hypertree signature, one byte short, one byte
     long - and the bindings must return `False` for each, not raise. The
-    internal-interface sections are skipped because the bindings do not
-    expose that interface.
+    internal-interface sections go through `verify_internal`.
 
     Parsed here rather than through the Rust reader, for the same reason
     `_sections` is.
@@ -333,22 +334,41 @@ def test_the_bindings_refuse_what_nist_refuses():
     refused = {}
     checked = 0
     for interface, parameter_set, _count, cases in sections:
-        if interface == "sigVer-internal":
-            continue
         for case in cases:
             public = allcrypt.SlhDsaPublicKey.from_public(
                 parameter_set, bytes.fromhex(case["pk"]))
             prehash = case.get("hashAlg") if interface.endswith("preHash") \
                 else None
-            got = public.verify(bytes.fromhex(case["message"]),
-                                bytes.fromhex(case["signature"]),
-                                bytes.fromhex(case["context"]), prehash)
+            if interface == "sigVer-internal":
+                got = public.verify_internal(bytes.fromhex(case["message"]),
+                                             bytes.fromhex(case["signature"]))
+            else:
+                got = public.verify(bytes.fromhex(case["message"]),
+                                    bytes.fromhex(case["signature"]),
+                                    bytes.fromhex(case["context"]), prehash)
             want = case["testPassed"] == "true"
             assert got is want, (f"{parameter_set} {interface} tcId "
                                  f"{case['tcId']}: {case['reason']}")
             if not want:
                 refused[case["reason"]] = refused.get(case["reason"], 0) + 1
             checked += 1
-    assert checked == 28
-    # Six refusal reasons, each from four external sections.
-    assert sorted(refused.values()) == [4] * 6, refused
+    assert checked == 42
+    # Six refusal reasons, each from all six sections.
+    assert sorted(refused.values()) == [6] * 6, refused
+
+
+def test_from_seeds_gives_nists_keys(sections):
+    """NIST's `keyGen` cases state the three seeds; `from_seeds` must give
+    their private and public keys. The fast sets only, for time."""
+    checked = 0
+    for mode, parameter_set, _count, cases in sections:
+        if mode != "keyGen" or not parameter_set.endswith("f"):
+            continue
+        for case in cases:
+            key = allcrypt.SlhDsaKey.from_seeds(
+                parameter_set, bytes.fromhex(case["skSeed"]),
+                bytes.fromhex(case["skPrf"]), bytes.fromhex(case["pkSeed"]))
+            assert key.private_bytes().hex().upper() == case["sk"]
+            assert key.public_bytes().hex().upper() == case["pk"]
+            checked += 1
+    assert checked > 0

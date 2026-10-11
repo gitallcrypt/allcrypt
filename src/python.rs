@@ -220,7 +220,19 @@ pub struct Hash {
 
 impl Hash {
     fn build(py: Python<'_>, name: &str, data: Option<Bytes>) -> PyResult<Self> {
-        let mut inner = AnyHash::new(name).map_err(err)?;
+        Hash::fed(py, AnyHash::new(name).map_err(err)?, data)
+    }
+
+    fn blake2(py: Python<'_>, variant: &str, data: Option<Bytes>, digest_size: usize,
+              key: Option<Bytes>, salt: Option<Bytes>, person: Option<Bytes>)
+              -> PyResult<Self> {
+        let empty = |b: &Option<Bytes>| b.as_deref().unwrap_or(&[]).to_vec();
+        let inner = AnyHash::blake2(variant, digest_size, &empty(&key), &empty(&salt),
+                                    &empty(&person)).map_err(err)?;
+        Hash::fed(py, inner, data)
+    }
+
+    fn fed(py: Python<'_>, mut inner: AnyHash, data: Option<Bytes>) -> PyResult<Self> {
         if let Some(d) = data {
             // Same GIL release as `update`: the constructors take the whole
             // message, so this is where the bulk of the work usually happens.
@@ -547,6 +559,9 @@ pub struct Cipher {
     name: String,
     key: Vec<u8>,
     param: Option<String>,
+    /// GOST's substitution rows when given directly, by `sbox=` or
+    /// `dke=`, rather than by a parameter set's name.
+    sbox: Option<Vec<Vec<u8>>>,
     block_size: usize,
 }
 
@@ -557,9 +572,15 @@ impl Drop for Cipher {
 }
 
 impl Cipher {
+    fn build(&self) -> PyResult<AnyBlockCipher> {
+        match &self.sbox {
+            Some(rows) => AnyBlockCipher::gost_with_sbox(&self.key, rows),
+            None => AnyBlockCipher::new(&self.name, &self.key, self.param.as_deref()),
+        }.map_err(err)
+    }
+
     fn stream(&self, mode: &str, iv: Option<Bytes>, decrypting: bool) -> PyResult<Encryptor> {
-        let cipher = AnyBlockCipher::new(&self.name, &self.key, self.param.as_deref())
-            .map_err(err)?;
+        let cipher = self.build()?;
         let mode = Mode::from_name(mode).map_err(err)?;
         let inner = CipherStream::new(cipher, mode, iv.as_deref().unwrap_or(&[]), decrypting)
             .map_err(err)?;
@@ -570,17 +591,33 @@ impl Cipher {
 #[pymethods]
 impl Cipher {
     /// `param` selects the S-box parameter set for GOST and is ignored by the
-    /// other ciphers.
+    /// other ciphers. `sbox` gives GOST's eight rows directly and `dke` a
+    /// DSTU 4145 DKE that packs them; either one instead of `param`.
     #[new]
-    #[pyo3(signature = (name, key, param = None))]
-    fn py_new(name: &str, key: Bytes, param: Option<String>) -> PyResult<Self> {
-        let probe = AnyBlockCipher::new(name, &key, param.as_deref()).map_err(err)?;
-        Ok(Cipher {
+    #[pyo3(signature = (name, key, param = None, *, sbox = None, dke = None))]
+    fn py_new(name: &str, key: Bytes, param: Option<String>, sbox: Option<Vec<Vec<u8>>>,
+              dke: Option<Bytes>) -> PyResult<Self> {
+        let given = param.is_some() as u8 + sbox.is_some() as u8 + dke.is_some() as u8;
+        if (sbox.is_some() || dke.is_some()) && api::block_cipher_name(name) != Some("gost") {
+            return Err(err(format!(
+                "sbox= and dke= are GOST 28147-89's; {name:?} has a fixed S-box.")));
+        }
+        if given > 1 {
+            return Err(err("A GOST S-box is one of param, sbox= or dke=, not several.".to_string()));
+        }
+        let sbox = match dke {
+            Some(dke) => Some(api::gost_sbox_from_dke(&dke).map_err(err)?),
+            None => sbox,
+        };
+        let mut cipher = Cipher {
             name: name.to_ascii_lowercase(),
             key: key.to_vec(),
             param,
-            block_size: probe.blocksize(),
-        })
+            sbox,
+            block_size: 0,
+        };
+        cipher.block_size = cipher.build()?.blocksize();
+        Ok(cipher)
     }
 
     #[pyo3(signature = (mode, iv = None))]
@@ -645,12 +682,23 @@ pub struct PyStreamCipher {
 #[pymethods]
 impl PyStreamCipher {
     /// RC4 and ZipCrypto take no nonce; the ChaCha variants take 8 or 12
-    /// bytes. ZipCrypto's key is the password.
+    /// bytes. ZipCrypto's key is the password. `counter` is the block
+    /// counter to start at, for ChaCha and Salsa20 - RFC 8439's AEAD
+    /// starts its payload at 1.
     #[new]
-    #[pyo3(signature = (name, key, nonce = None))]
-    fn py_new(name: &str, key: Bytes, nonce: Option<Bytes>) -> PyResult<Self> {
-        let inner = AnyStreamCipher::new(name, &key, nonce.as_deref().unwrap_or(&[])).map_err(err)?;
+    #[pyo3(signature = (name, key, nonce = None, counter = 0))]
+    fn py_new(name: &str, key: Bytes, nonce: Option<Bytes>, counter: u64) -> PyResult<Self> {
+        let mut inner = AnyStreamCipher::new(name, &key, nonce.as_deref().unwrap_or(&[]))
+            .map_err(err)?;
+        if counter != 0 {
+            inner.seek_block(counter).map_err(err)?;
+        }
         Ok(PyStreamCipher { inner, name: name.to_ascii_lowercase() })
+    }
+
+    /// Move to byte `offset` of the keystream, forwards or back.
+    fn seek(&mut self, offset: u64) -> PyResult<()> {
+        self.inner.seek(offset).map_err(err)
     }
 
     /// The keystream XORed onto the data, which encrypts and decrypts
@@ -818,6 +866,154 @@ fn hkdf<'py>(py: Python<'py>, ikm: Bytes, length: usize, salt: Option<Bytes>,
         || api::hkdf(digestmod, salt.as_deref().unwrap_or(&[]), &ikm, info.as_deref().unwrap_or(&[]), length))
         .map_err(err)?;
     Ok(PyBytes::new(py, &out))
+}
+
+/// HKDF-Extract alone: the pseudorandom key.
+#[pyfunction]
+#[pyo3(signature = (ikm, salt = None, digestmod = "sha256"))]
+fn hkdf_extract<'py>(py: Python<'py>, ikm: Bytes, salt: Option<Bytes>, digestmod: &str)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::hkdf_extract(digestmod, salt.as_deref().unwrap_or(&[]), &ikm).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// HKDF-Expand alone, from a pseudorandom key.
+#[pyfunction]
+#[pyo3(signature = (prk, length, info = None, digestmod = "sha256"))]
+fn hkdf_expand<'py>(py: Python<'py>, prk: Bytes, length: usize, info: Option<Bytes>,
+                    digestmod: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(
+        || api::hkdf_expand(digestmod, &prk, info.as_deref().unwrap_or(&[]), length))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The hash's output length, for a `dklen=None` that means it.
+fn hash_output_len(hash_name: &str, dklen: Option<usize>) -> PyResult<usize> {
+    match dklen {
+        Some(length) => Ok(length),
+        None => Ok(api::AnyHash::new(hash_name).map_err(err)?.digest_len()),
+    }
+}
+
+/// PBKDF1 (RFC 8018 5.1), in `pbkdf2_hmac`'s shape. `dklen=None` is the
+/// hash's output, which is also the most PBKDF1 can give.
+#[pyfunction]
+#[pyo3(signature = (hash_name, password, salt, iterations, dklen = None))]
+fn pbkdf1<'py>(py: Python<'py>, hash_name: &str, password: Bytes, salt: Bytes,
+               iterations: u32, dklen: Option<usize>) -> PyResult<Bound<'py, PyBytes>> {
+    let length = hash_output_len(hash_name, dklen)?;
+    let out = py.allow_threads(|| api::pbkdf1(hash_name, &password, &salt, iterations, length))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The PKCS#12 KDF (RFC 7292 B.2). `password` is the BMPString that
+/// `pkcs12_bmp_password` makes; `id` is 1 for a key, 2 an IV, 3 a MAC key.
+#[pyfunction]
+#[pyo3(signature = (hash_name, password, salt, id, iterations, dklen = None))]
+fn pkcs12_kdf<'py>(py: Python<'py>, hash_name: &str, password: Bytes, salt: Bytes, id: u8,
+                   iterations: u32, dklen: Option<usize>) -> PyResult<Bound<'py, PyBytes>> {
+    let length = hash_output_len(hash_name, dklen)?;
+    let out = py.allow_threads(
+        || api::pkcs12_kdf(hash_name, &password, &salt, id, iterations, length))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// A password as the PKCS#12 KDF takes it: UTF-16BE and a two byte NUL.
+#[pyfunction]
+fn pkcs12_bmp_password<'py>(py: Python<'py>, password: &str) -> Bound<'py, PyBytes> {
+    PyBytes::new(py, &api::pkcs12_bmp_password(password))
+}
+
+/// The JDK's `PBEWithMD5AndTripleDES` derivation: `(key, iv)`.
+#[pyfunction]
+fn jdk_pbe_md5_3des(py: Python<'_>, password: Bytes, salt: Bytes, iterations: u32)
+                    -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let (key, iv) = api::jdk_pbe_md5_3des(&password, &salt, iterations).map_err(err)?;
+    Ok((PyBytes::new(py, &key).unbind(), PyBytes::new(py, &iv).unbind()))
+}
+
+/// The OpenPGP coded count byte for at least `octets`.
+#[pyfunction]
+fn openpgp_s2k_coded_count(octets: usize) -> u8 {
+    api::openpgp_s2k_coded_count(octets)
+}
+
+/// OpenBSD's `bcrypt_pbkdf`, as OpenSSH keys use it.
+#[pyfunction]
+fn bcrypt_pbkdf<'py>(py: Python<'py>, password: Bytes, salt: Bytes, rounds: u32, length: usize)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::bcrypt_pbkdf(&password, &salt, rounds, length))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// BitLocker's 2^20-round SHA-256 stretch on its own.
+#[pyfunction]
+fn bitlocker_stretch<'py>(py: Python<'py>, initial: Bytes, salt: Bytes)
+                          -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::bitlocker_stretch(&initial, &salt)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// IEEE 802.11's PRF-n over HMAC-SHA-1.
+#[pyfunction]
+fn ieee80211_prf<'py>(py: Python<'py>, key: Bytes, label: Bytes, data: Bytes, bits: usize)
+                      -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::ieee80211_prf(&key, &label, &data, bits).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// IEEE 802.11's KDF over SHA-256 (802.11w, WPA3).
+#[pyfunction]
+fn ieee80211_kdf_sha256<'py>(py: Python<'py>, key: Bytes, label: Bytes, context: Bytes,
+                             bits: usize) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::ieee80211_kdf_sha256(&key, &label, &context, bits).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// A TKIP MPDU's payload encrypted, its ICV appended.
+#[pyfunction]
+fn tkip_encrypt<'py>(py: Python<'py>, tk: Bytes, ta: Bytes, tsc: u64, plaintext: Bytes)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::tkip_encrypt(&tk, &ta, tsc, &plaintext).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// A TKIP MPDU's payload decrypted, raising on a wrong ICV.
+#[pyfunction]
+fn tkip_decrypt<'py>(py: Python<'py>, tk: Bytes, ta: Bytes, tsc: u64, ciphertext: Bytes)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::tkip_decrypt(&tk, &ta, tsc, &ciphertext).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// TKIP's MSDU MIC: Michael over DA, SA, priority and the data.
+#[pyfunction]
+fn tkip_msdu_mic<'py>(py: Python<'py>, mic_key: Bytes, da: Bytes, sa: Bytes, priority: u8,
+                      data: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::tkip_msdu_mic(&mic_key, &da, &sa, priority, &data).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// BLAKE2b with hashlib's parameters: the output length, a key, and a
+/// salt and personalisation of up to 16 bytes.
+#[pyfunction]
+#[pyo3(signature = (data = None, *, digest_size = 64, key = None, salt = None, person = None))]
+fn blake2b(py: Python<'_>, data: Option<Bytes>, digest_size: usize, key: Option<Bytes>,
+           salt: Option<Bytes>, person: Option<Bytes>) -> PyResult<Hash> {
+    Hash::blake2(py, "blake2b", data, digest_size, key, salt, person)
+}
+
+/// BLAKE2s with hashlib's parameters; the salt and personalisation are up
+/// to 8 bytes.
+#[pyfunction]
+#[pyo3(signature = (data = None, *, digest_size = 32, key = None, salt = None, person = None))]
+fn blake2s(py: Python<'_>, data: Option<Bytes>, digest_size: usize, key: Option<Bytes>,
+           salt: Option<Bytes>, person: Option<Bytes>) -> PyResult<Hash> {
+    Hash::blake2(py, "blake2s", data, digest_size, key, salt, person)
 }
 
 /// SP 800-108 counter mode; `prf` is "hmac-<hash>" or "cmac-<cipher>".
@@ -1076,12 +1272,9 @@ fn bitlocker_recovery_password_key<'py>(py: Python<'py>, recovery: &str, salt: B
 fn pbkdf2_hmac<'py>(py: Python<'py>, hash_name: &str, password: Bytes, salt: Bytes,
                     iterations: u32, dklen: Option<usize>)
                     -> PyResult<Bound<'py, PyBytes>> {
-    let length = match dklen {
-        Some(length) => length,
-        // hashlib's default. Resolved here rather than in `api` so the
-        // Rust side keeps an explicit length and no hidden default.
-        None => api::AnyHash::new(hash_name).map_err(err)?.digest_len(),
-    };
+    // hashlib's default. Resolved here rather than in `api` so the Rust
+    // side keeps an explicit length and no hidden default.
+    let length = hash_output_len(hash_name, dklen)?;
     let out = py.allow_threads(
         || api::pbkdf2(hash_name, &password, &salt, iterations, length))
         .map_err(err)?;
@@ -1388,11 +1581,48 @@ impl PyEcKey {
     }
 
     /// Sign under GOST R 34.10-2012 instead of ECDSA. A different
-    /// equation over the same curve, and a different encoding: `s || r`.
-    #[pyo3(signature = (digest, digestmod = "streebog256"))]
-    fn sign_gost<'py>(&self, py: Python<'py>, digest: Bytes, digestmod: &str)
+    /// equation over the same curve, and a different encoding: `s || r`,
+    /// or with `encoding="tls13"` RFC 9367's `str_l(r) || str_l(s)`.
+    #[pyo3(signature = (digest, digestmod = "streebog256", encoding = "certificate"))]
+    fn sign_gost<'py>(&self, py: Python<'py>, digest: Bytes, digestmod: &str, encoding: &str)
                       -> PyResult<Bound<'py, PyBytes>> {
-        let out = py.allow_threads(|| self.inner.sign_gost(&digest, digestmod))
+        let tls13 = gost_encoding_is_13(encoding)?;
+        let out = py.allow_threads(|| if tls13 {
+            self.inner.sign_gost_13(&digest, digestmod)
+        } else {
+            self.inner.sign_gost(&digest, digestmod)
+        }).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// VKO GOST R 34.10-2001 (RFC 4357 5.2): the shared point hashed with
+    /// GOST R 34.11-94, under an eight byte UKM. `vko` is the 2012 one.
+    fn vko_2001<'py>(&self, py: Python<'py>, peer_public: Bytes, ukm: Bytes)
+                     -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.vko_2001(&peer_public, &ukm)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// RFC 9189's KEG: 64 bytes of export keys from the peer's point and
+    /// the 32 byte hash of the two randoms.
+    fn gost_keg<'py>(&self, py: Python<'py>, peer_public: Bytes, h: Bytes)
+                     -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.gost_keg(&peer_public, &h)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// RFC 9189's KEG_28147: the 32 byte key KExp28147 takes.
+    fn gost_keg_28147<'py>(&self, py: Python<'py>, peer_public: Bytes, h: Bytes)
+                           -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.gost_keg_28147(&peer_public, &h))
+            .map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// The 2001 suite's KEK, from an eight byte UKM.
+    fn gost_keg_2001<'py>(&self, py: Python<'py>, peer_public: Bytes, ukm: Bytes)
+                          -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.gost_keg_2001(&peer_public, &ukm))
             .map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
@@ -1410,12 +1640,18 @@ impl PyEcKey {
     /// `id` defaults to GB/T 32918.2's `1234567812345678`. Pass `b""`
     /// for a genuinely empty identity, which is what
     /// `openssl pkeyutl` uses when no `distid` is given.
-    #[pyo3(signature = (message, id = None))]
-    fn sm2_sign<'py>(&self, py: Python<'py>, message: Bytes, id: Option<Bytes>)
-                     -> PyResult<Bound<'py, PyBytes>> {
+    ///
+    /// `k`, big endian, fixes the nonce instead of deriving it - how
+    /// GB/T 32918's worked examples are reproduced. A `k` used twice or
+    /// guessed gives away the private key.
+    #[pyo3(signature = (message, id = None, k = None))]
+    fn sm2_sign<'py>(&self, py: Python<'py>, message: Bytes, id: Option<Bytes>,
+                     k: Option<Bytes>) -> PyResult<Bound<'py, PyBytes>> {
         let id = id.as_deref().unwrap_or(api::sm2::DEFAULT_ID).to_vec();
-        let out = py.allow_threads(|| self.inner.sm2_sign_with_id(&id, &message))
-            .map_err(err)?;
+        let out = py.allow_threads(|| match &k {
+            Some(k) => self.inner.sm2_sign_with_nonce(&id, &message, k),
+            None => self.inner.sm2_sign_with_id(&id, &message),
+        }).map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -1441,10 +1677,16 @@ impl PyEcKey {
         Ok(PyBytes::new(py, &out))
     }
 
-    fn verify_gost(&self, py: Python<'_>, digest: Bytes, signature: Bytes)
+    #[pyo3(signature = (digest, signature, encoding = "certificate"))]
+    fn verify_gost(&self, py: Python<'_>, digest: Bytes, signature: Bytes, encoding: &str)
                    -> PyResult<bool> {
+        let tls13 = gost_encoding_is_13(encoding)?;
         let public = self.inner.public_key();
-        py.allow_threads(|| public.verify_gost(&digest, &signature)).map_err(err)
+        py.allow_threads(|| if tls13 {
+            public.verify_gost_13(&digest, &signature)
+        } else {
+            public.verify_gost(&digest, &signature)
+        }).map_err(err)
     }
 
     /// The public half on its own, which is what a verifier needs.
@@ -1570,6 +1812,24 @@ impl PyDsaKey {
         py.allow_threads(|| self.inner.verify(hash, &message, &signature)).map_err(err)
     }
 
+    /// Sign a digest computed elsewhere; ``hash`` names the hash that made
+    /// it, for RFC 6979's nonce. DER.
+    #[pyo3(signature = (digest, hash = "sha256"))]
+    fn sign_digest<'py>(&self, py: Python<'py>, digest: Bytes, hash: &str)
+                        -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.sign_digest(hash, &digest)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    fn verify_digest(&self, py: Python<'_>, digest: Bytes, signature: Bytes) -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_digest(&digest, &signature)).map_err(err)
+    }
+
+    /// The verifying half on its own.
+    fn public_key(&self) -> PyDsaPublicKey {
+        PyDsaPublicKey { inner: self.inner.public_key() }
+    }
+
     /// The bit length of ``p``.
     #[getter]
     fn key_size(&self) -> usize {
@@ -1578,6 +1838,60 @@ impl PyDsaKey {
 
     fn __repr__(&self) -> String {
         format!("<allcrypt.DsaKey {} bits>", self.key_size())
+    }
+}
+
+/// The verifying half of a DSA key: the group and ``y``.
+#[pyclass(name = "DsaPublicKey", module = "allcrypt")]
+pub struct PyDsaPublicKey {
+    inner: api::DsaPublicKey,
+}
+
+#[pymethods]
+impl PyDsaPublicKey {
+    /// From the group and ``y``, big endian; ``y`` must be in the subgroup
+    /// of order ``q``.
+    #[staticmethod]
+    fn from_numbers(p: Bytes, q: Bytes, g: Bytes, y: Bytes) -> PyResult<PyDsaPublicKey> {
+        Ok(PyDsaPublicKey { inner: api::DsaPublicKey::from_numbers(&p, &q, &g, &y).map_err(err)? })
+    }
+
+    /// ``(p, q, g)``, big endian.
+    fn parameters<'py>(&self, py: Python<'py>)
+                       -> (Bound<'py, PyBytes>, Bound<'py, PyBytes>, Bound<'py, PyBytes>) {
+        let (p, q, g) = self.inner.parameters();
+        (PyBytes::new(py, &p), PyBytes::new(py, &q), PyBytes::new(py, &g))
+    }
+
+    /// ``y``, big endian.
+    fn public_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.public_bytes())
+    }
+
+    #[pyo3(signature = (message, signature, hash = "sha256"))]
+    fn verify(&self, py: Python<'_>, message: Bytes, signature: Bytes, hash: &str)
+              -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify(hash, &message, &signature)).map_err(err)
+    }
+
+    fn verify_digest(&self, py: Python<'_>, digest: Bytes, signature: Bytes) -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_digest(&digest, &signature)).map_err(err)
+    }
+
+    fn __repr__(&self) -> String {
+        "<allcrypt.DsaPublicKey>".to_string()
+    }
+}
+
+/// The GOST signature encoding a caller names: `"certificate"` is
+/// `s || r` big endian, `"tls13"` RFC 9367's `str_l(r) || str_l(s)`.
+fn gost_encoding_is_13(encoding: &str) -> PyResult<bool> {
+    match encoding {
+        "certificate" => Ok(false),
+        "tls13" => Ok(true),
+        other => Err(PyValueError::new_err(format!(
+            "encoding is \"certificate\" (s || r, big endian) or \"tls13\" \
+             (RFC 9367's str_l(r) || str_l(s)), not {other:?}."))),
     }
 }
 
@@ -1613,10 +1927,33 @@ impl PyEcPublicKey {
     }
 
     /// The same for a GOST R 34.10-2012 signature, which is `s || r` and
-    /// a different equation over the same curve.
-    fn verify_gost(&self, py: Python<'_>, digest: Bytes, signature: Bytes)
+    /// a different equation over the same curve - or with
+    /// `encoding="tls13"`, RFC 9367's `str_l(r) || str_l(s)`.
+    #[pyo3(signature = (digest, signature, encoding = "certificate"))]
+    fn verify_gost(&self, py: Python<'_>, digest: Bytes, signature: Bytes, encoding: &str)
                    -> PyResult<bool> {
-        py.allow_threads(|| self.inner.verify_gost(&digest, &signature)).map_err(err)
+        let tls13 = gost_encoding_is_13(encoding)?;
+        py.allow_threads(|| if tls13 {
+            self.inner.verify_gost_13(&digest, &signature)
+        } else {
+            self.inner.verify_gost(&digest, &signature)
+        }).map_err(err)
+    }
+
+    /// GB/T 32918.2's `Z_A` for this key and an identity, which defaults
+    /// to the standard's `1234567812345678`.
+    #[pyo3(signature = (id = None))]
+    fn sm2_z<'py>(&self, py: Python<'py>, id: Option<Bytes>) -> PyResult<Bound<'py, PyBytes>> {
+        let id = id.as_deref().unwrap_or(api::sm2::DEFAULT_ID).to_vec();
+        Ok(PyBytes::new(py, &self.inner.sm2_z(&id).map_err(err)?))
+    }
+
+    /// SM2's `e = SM3(Z_A || M)`, the value a signature is over.
+    #[pyo3(signature = (message, id = None))]
+    fn sm2_digest<'py>(&self, py: Python<'py>, message: Bytes, id: Option<Bytes>)
+                       -> PyResult<Bound<'py, PyBytes>> {
+        let id = id.as_deref().unwrap_or(api::sm2::DEFAULT_ID).to_vec();
+        Ok(PyBytes::new(py, &self.inner.sm2_digest(&id, &message).map_err(err)?))
     }
 
     /// Verify an SM2 signature. `id` defaults to GB/T 32918.2's
@@ -1629,17 +1966,27 @@ impl PyEcPublicKey {
             .map_err(err)
     }
 
-    /// Encrypt to this key, returning `C1 || C3 || C2`.
-    fn sm2_encrypt<'py>(&self, py: Python<'py>, message: Bytes)
+    /// Encrypt to this key, returning `C1 || C3 || C2`. `k`, big endian,
+    /// fixes the ephemeral scalar, which makes the ciphertext
+    /// deterministic; anybody who learns it reads the message.
+    #[pyo3(signature = (message, k = None))]
+    fn sm2_encrypt<'py>(&self, py: Python<'py>, message: Bytes, k: Option<Bytes>)
                         -> PyResult<Bound<'py, PyBytes>> {
-        let out = py.allow_threads(|| self.inner.sm2_encrypt(&message)).map_err(err)?;
+        let out = py.allow_threads(|| match &k {
+            Some(k) => self.inner.sm2_encrypt_with_nonce(&message, k),
+            None => self.inner.sm2_encrypt(&message),
+        }).map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
 
-    /// Encrypt in the DER form OpenSSL exchanges.
-    fn sm2_encrypt_der<'py>(&self, py: Python<'py>, message: Bytes)
+    /// Encrypt in the DER form OpenSSL exchanges; `k` as for `sm2_encrypt`.
+    #[pyo3(signature = (message, k = None))]
+    fn sm2_encrypt_der<'py>(&self, py: Python<'py>, message: Bytes, k: Option<Bytes>)
                             -> PyResult<Bound<'py, PyBytes>> {
-        let out = py.allow_threads(|| self.inner.sm2_encrypt_der(&message)).map_err(err)?;
+        let out = py.allow_threads(|| match &k {
+            Some(k) => self.inner.sm2_encrypt_der_with_nonce(&message, k),
+            None => self.inner.sm2_encrypt_der(&message),
+        }).map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -1693,12 +2040,33 @@ impl PyRsaKey {
     }
 
     /// Sign a digest with PSS and a random salt. Two signatures over the
-    /// same digest differ, which is the point.
-    #[pyo3(signature = (digest, digestmod = "sha256", salt_length = None))]
+    /// same digest differ, which is the point. `salt` gives the salt
+    /// instead, which makes the signature deterministic; `salt_length`
+    /// then has to be left out or agree with it.
+    #[pyo3(signature = (digest, digestmod = "sha256", salt_length = None, salt = None))]
     fn sign_pss<'py>(&self, py: Python<'py>, digest: Bytes, digestmod: &str,
-                     salt_length: Option<usize>) -> PyResult<Bound<'py, PyBytes>> {
-        let out = py.allow_threads(|| self.inner.sign_pss(digestmod, &digest,
-                                                          salt_length))
+                     salt_length: Option<usize>, salt: Option<Bytes>)
+                     -> PyResult<Bound<'py, PyBytes>> {
+        let out = match salt {
+            Some(salt) => {
+                if salt_length.is_some_and(|n| n != salt.len()) {
+                    return Err(PyValueError::new_err(format!(
+                        "salt_length is {} and the salt is {} bytes; give one or \
+                         the other.", salt_length.unwrap_or_default(), salt.len())));
+                }
+                py.allow_threads(|| self.inner.sign_pss_with_salt(digestmod, &digest, &salt))
+            }
+            None => py.allow_threads(|| self.inner.sign_pss(digestmod, &digest, salt_length)),
+        }.map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// PKCS#1 v1.5 signature padding with no DigestInfo: the bytes are
+    /// signed as given, without naming a hash, as TLS 1.0 and 1.1 sign
+    /// `MD5 || SHA-1`. Deterministic.
+    fn sign_without_digest_info<'py>(&self, py: Python<'py>, digest: Bytes)
+                                     -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.sign_without_digest_info(&digest))
             .map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
@@ -1904,6 +2272,20 @@ fn forget_oid(oid: &str) -> bool {
     registry::forget(oid)
 }
 
+/// EME-OAEP decoding on its own: an encoded block - what
+/// `RsaKey.decrypt_raw` returns for an OAEP ciphertext - back to the
+/// message. Every failure of the block raises the one message
+/// `decrypt_oaep` raises.
+#[pyfunction]
+#[pyo3(signature = (block, digestmod = "sha256", mgf_digestmod = None,
+                    label = Bytes::empty()))]
+fn rsa_oaep_decode<'py>(py: Python<'py>, block: Bytes, digestmod: &str,
+                        mgf_digestmod: Option<&str>, label: Bytes)
+                        -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::rsa_oaep_decode(&block, digestmod, mgf_digestmod, &label).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 /// The substitution rows of a GOST parameter set, built in or
 /// registered.
 ///
@@ -2073,12 +2455,19 @@ fn box_seed_keypair(py: Python<'_>, seed: Bytes) -> PyResult<(Py<PyBytes>, Py<Py
 }
 
 /// An anonymous box to ``recipient_public`` (libsodium's ``crypto_box_seal``).
+/// ``ephemeral_private`` gives the sender's one-time key instead of
+/// drawing it, which makes the box deterministic; two messages sealed with
+/// one such key to one recipient share a nonce under one key.
 #[pyfunction]
-#[pyo3(signature = (recipient_public, message, construction = "xsalsa20poly1305"))]
-fn box_seal<'py>(py: Python<'py>, recipient_public: Bytes, message: Bytes, construction: &str)
-                 -> PyResult<Bound<'py, PyBytes>> {
-    let out = py.allow_threads(|| api::box_seal(&recipient_public, &message, construction))
-        .map_err(err)?;
+#[pyo3(signature = (recipient_public, message, construction = "xsalsa20poly1305",
+                    ephemeral_private = None))]
+fn box_seal<'py>(py: Python<'py>, recipient_public: Bytes, message: Bytes, construction: &str,
+                 ephemeral_private: Option<Bytes>) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| match &ephemeral_private {
+        Some(ephemeral) => api::box_seal_with_ephemeral(&recipient_public, &message, ephemeral,
+                                                        construction),
+        None => api::box_seal(&recipient_public, &message, construction),
+    }).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -2171,6 +2560,158 @@ fn ed25519_private_to_x25519<'py>(py: Python<'py>, private: Bytes)
 fn hsalsa20<'py>(py: Python<'py>, key: Bytes, input: Bytes) -> PyResult<Bound<'py, PyBytes>> {
     let out = py.allow_threads(|| api::hsalsa20(&key, &input)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
+}
+
+/// CTR-ACPKM (RFC 8645): CTR re-keyed every `section` bytes.
+#[pyfunction]
+#[pyo3(signature = (cipher, key, nonce, data, section))]
+fn ctr_acpkm<'py>(py: Python<'py>, cipher: &str, key: Bytes, nonce: Bytes, data: Bytes,
+                  section: usize) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ctr_acpkm(cipher, &key, &nonce, section, &data))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// ACPKM's next section key.
+#[pyfunction]
+fn acpkm_next<'py>(py: Python<'py>, cipher: &str, key: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::acpkm_next(cipher, &key).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The GOST 28147-89 MAC (imitovstavka).
+#[pyfunction]
+#[pyo3(signature = (key, data, sbox = None, iv = None, tag_size = 4))]
+fn gost28147_mac<'py>(py: Python<'py>, key: Bytes, data: Bytes, sbox: Option<&str>,
+                      iv: Option<Bytes>, tag_size: usize) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::gost28147_mac(&key, &data, sbox, iv.as_deref(), tag_size))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// CryptoPro key meshing: `(key, iv)` for the next 1024 bytes.
+#[pyfunction]
+#[pyo3(signature = (key, iv, sbox = None))]
+fn cryptopro_key_mesh(py: Python<'_>, key: Bytes, iv: Bytes, sbox: Option<&str>)
+                      -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+    let (key, iv) = api::cryptopro_key_mesh(&key, &iv, sbox).map_err(err)?;
+    Ok((PyBytes::new(py, &key).unbind(), PyBytes::new(py, &iv).unbind()))
+}
+
+/// `KDF_GOSTR3411_2012_256` (RFC 7836 4.5).
+#[pyfunction]
+fn kdf_gostr3411_2012_256<'py>(py: Python<'py>, key: Bytes, label: Bytes, seed: Bytes)
+                               -> Bound<'py, PyBytes> {
+    PyBytes::new(py, &api::kdf_gostr3411_2012_256(&key, &label, &seed))
+}
+
+/// `KDF_TREE_GOSTR3411_2012_256` (RFC 7836 4.4).
+#[pyfunction]
+#[pyo3(signature = (key, label, seed, length, counter_bytes = 1))]
+fn kdf_tree_gostr3411_2012_256<'py>(py: Python<'py>, key: Bytes, label: Bytes, seed: Bytes,
+                                    length: usize, counter_bytes: usize)
+                                    -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(
+        || api::kdf_tree_gostr3411_2012_256(&key, &label, &seed, length, counter_bytes))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// TLSTREE (RFC 9189 8.1.1): a record's key from the traffic key.
+#[pyfunction]
+fn tlstree<'py>(py: Python<'py>, suite: &str, root: Bytes, sequence: u64)
+                -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::tlstree(suite, &root, sequence).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// CryptoPro KEK diversification (RFC 4357 6.5).
+#[pyfunction]
+#[pyo3(signature = (ukm, key, sbox = None))]
+fn cryptopro_kek_diversify<'py>(py: Python<'py>, ukm: Bytes, key: Bytes, sbox: Option<&str>)
+                                -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::cryptopro_kek_diversify(&ukm, &key, sbox).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// KExp28147: `iv || ECB(secret) || MAC(secret)`.
+#[pyfunction]
+#[pyo3(signature = (secret, key, iv, sbox = None))]
+fn kexp28147<'py>(py: Python<'py>, secret: Bytes, key: Bytes, iv: Bytes, sbox: Option<&str>)
+                  -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::kexp28147(&secret, &key, &iv, sbox).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// KImp28147: KExp28147 undone, raising unless the IV and MAC check.
+#[pyfunction]
+#[pyo3(signature = (wrapped, key, iv, sbox = None))]
+fn kimp28147<'py>(py: Python<'py>, wrapped: Bytes, key: Bytes, iv: Bytes, sbox: Option<&str>)
+                  -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::kimp28147(&wrapped, &key, &iv, sbox).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// KExp15: a secret wrapped under an OMAC key and a CTR key.
+#[pyfunction]
+fn kexp15<'py>(py: Python<'py>, cipher: &str, secret: Bytes, mac_key: Bytes, enc_key: Bytes,
+               iv: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::kexp15(cipher, &secret, &mac_key, &enc_key, &iv).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// KImp15: KExp15 undone, raising unless the OMAC checks.
+#[pyfunction]
+fn kimp15<'py>(py: Python<'py>, cipher: &str, wrapped: Bytes, mac_key: Bytes, enc_key: Bytes,
+               iv: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::kimp15(cipher, &wrapped, &mac_key, &enc_key, &iv).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// HChaCha20, XChaCha20's subkey derivation.
+#[pyfunction]
+fn hchacha20<'py>(py: Python<'py>, key: Bytes, input: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::hchacha20(&key, &input).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The Salsa20 core on a 64 byte block; 8 rounds is scrypt's.
+#[pyfunction]
+#[pyo3(signature = (block, rounds = 20))]
+fn salsa20_core<'py>(py: Python<'py>, block: Bytes, rounds: usize)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    let out = api::salsa20_core(&block, rounds).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// GHASH under the subkey `h`, over whole 16 byte blocks.
+#[pyfunction]
+fn ghash<'py>(py: Python<'py>, h: Bytes, data: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ghash(&h, &data)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// GMAC: GCM's tag over `data` with nothing encrypted.
+#[pyfunction]
+#[pyo3(signature = (key, nonce, data, cipher = "aes", tag_size = None))]
+fn gmac<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, data: Bytes, cipher: &str,
+             tag_size: Option<usize>) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::gmac(cipher, &key, &nonce, &data, tag_size))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Poly1305 under a one-time 32 byte key.
+#[pyfunction]
+fn poly1305<'py>(py: Python<'py>, key: Bytes, message: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::poly1305(&key, &message)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Check a Poly1305 tag in constant time.
+#[pyfunction]
+fn poly1305_verify(py: Python<'_>, key: Bytes, message: Bytes, tag: Bytes) -> PyResult<bool> {
+    py.allow_threads(|| api::poly1305_verify(&key, &message, &tag)).map_err(err)
 }
 
 /// X448 (RFC 7748), the key agreement on Curve448.
@@ -2446,6 +2987,187 @@ fn dual_ec_drbg<'py>(py: Python<'py>, curve: &str, hash: &str, entropy: Bytes, n
     Ok(out.iter().map(|block| PyBytes::new(py, block)).collect())
 }
 
+/// Dual_EC_DRBG kept across calls: ``generate``, ``reseed``, ``generate``.
+/// ``q``, a SEC1 point on the curve, replaces the standard's ``Q`` - as
+/// Juniper's ScreenOS did - which is what makes the backdoor
+/// demonstrable. Not for keys.
+#[pyclass(name = "DualEcDrbg", module = "allcrypt")]
+pub struct PyDualEcDrbg {
+    inner: api::DualEcDrbg,
+}
+
+#[pymethods]
+impl PyDualEcDrbg {
+    #[new]
+    #[pyo3(signature = (curve, hash, entropy, nonce = Bytes::empty(),
+                        personalization = Bytes::empty(), q = None))]
+    fn py_new(curve: &str, hash: &str, entropy: Bytes, nonce: Bytes, personalization: Bytes,
+              q: Option<Bytes>) -> PyResult<PyDualEcDrbg> {
+        Ok(PyDualEcDrbg {
+            inner: api::DualEcDrbg::new(curve, hash, &entropy, &nonce, &personalization,
+                                        q.as_deref()).map_err(err)?,
+        })
+    }
+
+    /// ``n`` bytes, with optional additional input.
+    #[pyo3(signature = (n, additional_input = Bytes::empty()))]
+    fn generate<'py>(&mut self, py: Python<'py>, n: usize, additional_input: Bytes)
+                     -> PyResult<Bound<'py, PyBytes>> {
+        let out = self.inner.generate(n, &additional_input).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    #[pyo3(signature = (entropy, additional_input = Bytes::empty()))]
+    fn reseed(&mut self, entropy: Bytes, additional_input: Bytes) -> PyResult<()> {
+        self.inner.reseed(&entropy, &additional_input).map_err(err)
+    }
+
+    /// The ``Q`` in use, uncompressed.
+    #[getter]
+    fn q<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.q().map_err(err)?))
+    }
+}
+
+/// ``P + Q`` on a named curve, SEC1 in and out, **nothing validated**: a
+/// point off the curve is arithmetic on the curve with the same ``a`` it
+/// is on, which is the invalid-curve attack. For points you chose. The
+/// identity is ``b"\x00"``.
+#[pyfunction]
+#[pyo3(signature = (curve, p, q, compressed = false))]
+fn ec_point_add<'py>(py: Python<'py>, curve: &str, p: Bytes, q: Bytes, compressed: bool)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ec_point_add(curve, &p, &q, compressed)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// ``2P``, unvalidated; see ``ec_point_add``.
+#[pyfunction]
+#[pyo3(signature = (curve, p, compressed = false))]
+fn ec_point_double<'py>(py: Python<'py>, curve: &str, p: Bytes, compressed: bool)
+                        -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ec_point_double(curve, &p, compressed)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// ``-P``, unvalidated; see ``ec_point_add``.
+#[pyfunction]
+#[pyo3(signature = (curve, p, compressed = false))]
+fn ec_point_negate<'py>(py: Python<'py>, curve: &str, p: Bytes, compressed: bool)
+                        -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ec_point_negate(curve, &p, compressed)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// ``k * P`` for a big-endian ``k`` of any size, unvalidated and variable
+/// time in ``k``; see ``ec_point_add``.
+#[pyfunction]
+#[pyo3(signature = (curve, p, k, compressed = false))]
+fn ec_point_multiply<'py>(py: Python<'py>, curve: &str, p: Bytes, k: Bytes, compressed: bool)
+                          -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::ec_point_multiply(curve, &p, &k, compressed))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The curve's base point.
+#[pyfunction]
+#[pyo3(signature = (curve, compressed = false))]
+fn ec_generator<'py>(py: Python<'py>, curve: &str, compressed: bool)
+                     -> PyResult<Bound<'py, PyBytes>> {
+    Ok(PyBytes::new(py, &api::ec_generator(curve, compressed).map_err(err)?))
+}
+
+/// Whether a point satisfies the curve equation; the identity does.
+#[pyfunction]
+fn ec_point_is_on_curve(curve: &str, p: Bytes) -> PyResult<bool> {
+    api::ec_point_is_on_curve(curve, &p).map_err(err)
+}
+
+/// The check a peer's point gets: not the identity, on the curve, in the
+/// prime-order subgroup. Raises saying which, returns ``None`` otherwise.
+#[pyfunction]
+fn ec_point_validate(curve: &str, p: Bytes) -> PyResult<()> {
+    api::ec_point_validate(curve, &p).map_err(err)
+}
+
+/// Whether these bytes are a public key of the named EdDSA variant: the
+/// right length, a canonical ``y``, on the curve.
+#[pyfunction]
+fn eddsa_is_public_key(name: &str, public: Bytes) -> PyResult<bool> {
+    api::eddsa_is_public_key(name, &public).map_err(err)
+}
+
+/// SM2's key derivation function (GB/T 32918.4 5.4.3): SM3 in counter
+/// mode over ``shared``.
+#[pyfunction]
+fn sm2_kdf<'py>(py: Python<'py>, shared: Bytes, length: usize) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::sm2_kdf(&shared, length)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Miller-Rabin with ``rounds`` random bases on a big-endian integer.
+/// ``False`` is certain; ``True`` is wrong with probability at most
+/// ``4**-rounds``.
+#[pyfunction]
+#[pyo3(signature = (candidate, rounds = 64))]
+fn is_probable_prime(py: Python<'_>, candidate: Bytes, rounds: usize) -> PyResult<bool> {
+    py.allow_threads(|| api::is_probable_prime(&candidate, rounds)).map_err(err)
+}
+
+/// A ``randombytes`` callable, as the sntrup761 functions take it: called
+/// with a byte count, returning that many bytes.
+fn python_fill<'a, 'py>(source: &'a Bound<'py, PyAny>)
+                        -> impl FnMut(&mut [u8]) -> Result<(), String> + 'a {
+    move |buf: &mut [u8]| {
+        let got = source.call1((buf.len(),)).map_err(|e| e.to_string())?;
+        let bytes: Bytes = got.extract().map_err(|e| e.to_string())?;
+        if bytes.len() != buf.len() {
+            return Err(format!("randombytes({}) returned {} bytes.", buf.len(), bytes.len()));
+        }
+        buf.copy_from_slice(&bytes);
+        Ok(())
+    }
+}
+
+/// An sntrup761 key pair, ``(public, secret)``. ``randombytes``, a callable
+/// taking a byte count, replaces the OS random source - the shape NIST's
+/// known-answer generator has.
+#[pyfunction]
+#[pyo3(signature = (randombytes = None))]
+fn sntrup761_keypair<'py>(py: Python<'py>, randombytes: Option<Bound<'py, PyAny>>)
+                          -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+    let (public, secret) = match &randombytes {
+        Some(source) => api::sntrup761_keypair_with(&mut python_fill(source)),
+        None => py.allow_threads(api::sntrup761_keypair),
+    }.map_err(err)?;
+    Ok((PyBytes::new(py, &public), PyBytes::new(py, &secret)))
+}
+
+/// ``(shared_secret, ciphertext)`` for ``public``; ``randombytes`` as for
+/// ``sntrup761_keypair``.
+#[pyfunction]
+#[pyo3(signature = (public, randombytes = None))]
+fn sntrup761_encapsulate<'py>(py: Python<'py>, public: Bytes,
+                              randombytes: Option<Bound<'py, PyAny>>)
+                              -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+    let (shared, ciphertext) = match &randombytes {
+        Some(source) => api::sntrup761_encapsulate_with(&public, &mut python_fill(source)),
+        None => py.allow_threads(|| api::sntrup761_encapsulate(&public)),
+    }.map_err(err)?;
+    Ok((PyBytes::new(py, &shared), PyBytes::new(py, &ciphertext)))
+}
+
+/// The shared secret; a ciphertext not made for this key gives a
+/// different one rather than an error.
+#[pyfunction]
+fn sntrup761_decapsulate<'py>(py: Python<'py>, secret: Bytes, ciphertext: Bytes)
+                              -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::sntrup761_decapsulate(&secret, &ciphertext))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 /// The named linear congruential generators: ``minstd_rand0``,
 /// ``msvc``, ``java``, ``randu`` and the rest. Not for keys.
 #[pyfunction]
@@ -2718,9 +3440,30 @@ pub struct PyDhGroup {
 #[pymethods]
 impl PyDhGroup {
     /// From `p` and `g` as big-endian bytes.
+    ///
+    /// `q`, the order of `g`'s subgroup, makes the peer check require
+    /// `y^q = 1 mod p` as well; it is checked for structure, not
+    /// primality.
     #[new]
-    fn py_new(p: Bytes, g: Bytes) -> PyResult<PyDhGroup> {
-        Ok(PyDhGroup { inner: api::DhGroup::new(&p, &g).map_err(err)? })
+    #[pyo3(signature = (p, g, q = None))]
+    fn py_new(p: Bytes, g: Bytes, q: Option<Bytes>) -> PyResult<PyDhGroup> {
+        let group = api::DhGroup::new(&p, &g).map_err(err)?;
+        let inner = match q {
+            Some(q) => group.with_subgroup_order(&q).map_err(err)?,
+            None => group,
+        };
+        Ok(PyDhGroup { inner })
+    }
+
+    /// The subgroup order, if one was given.
+    #[getter]
+    fn q<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.inner.q().map(|q| PyBytes::new(py, &q))
+    }
+
+    /// Raise if the group is smaller than `min_bits`.
+    fn check_size(&self, min_bits: usize) -> PyResult<()> {
+        self.inner.check_size(min_bits).map_err(err)
     }
 
     /// One of the built-in MODP groups: 1024 (RFC 2409), or 1536, 2048,
@@ -2864,6 +3607,14 @@ impl PyElGamalKey {
         Ok(PyBytes::new(py, &out))
     }
 
+    /// Textbook ElGamal decryption: `c1 || c2` back to the integer
+    /// message, at the modulus width with its leading zeros kept.
+    fn decrypt_raw<'py>(&self, py: Python<'py>, ciphertext: Bytes)
+                        -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.decrypt_raw(&ciphertext)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
     /// Sign a digest, returning `r || s`. GnuPG withdrew ElGamal
     /// signing; see `docs/pitfalls.md` before using it for anything new.
     fn sign<'py>(&self, py: Python<'py>, digest: Bytes)
@@ -2901,6 +3652,15 @@ impl PyElGamalPublicKey {
                     -> PyResult<Bound<'py, PyBytes>> {
         let out = py.allow_threads(|| self.inner.encrypt(&message))
             .map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// Textbook ElGamal: the message a big-endian integer in [1, p-1], no
+    /// padding, returning `c1 || c2`. Malleable: multiplying `c2` by `t`
+    /// multiplies the plaintext by `t`.
+    fn encrypt_raw<'py>(&self, py: Python<'py>, message: Bytes)
+                        -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.encrypt_raw(&message)).map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -2948,16 +3708,28 @@ impl PyRsaPublicKey {
     }
 
     /// RSAES-OAEP encryption. `digestmod` hashes the label and
-    /// `mgf_digestmod`, which defaults to it, drives MGF1. Randomised.
+    /// `mgf_digestmod`, which defaults to it, drives MGF1. Randomised,
+    /// unless `seed` - as long as `digestmod`'s digest - is given, which
+    /// makes it deterministic.
     #[pyo3(signature = (message, digestmod = "sha256", mgf_digestmod = None,
-                        label = Bytes::empty()))]
+                        label = Bytes::empty(), seed = None))]
     fn encrypt_oaep<'py>(&self, py: Python<'py>, message: Bytes, digestmod: &str,
-                         mgf_digestmod: Option<&str>, label: Bytes)
+                         mgf_digestmod: Option<&str>, label: Bytes, seed: Option<Bytes>)
                          -> PyResult<Bound<'py, PyBytes>> {
-        let out = py.allow_threads(|| self.inner.encrypt_oaep(digestmod, mgf_digestmod,
-                                                              &label, &message))
-            .map_err(err)?;
+        let out = py.allow_threads(|| match &seed {
+            Some(seed) => self.inner.encrypt_oaep_with_seed(digestmod, mgf_digestmod,
+                                                            &label, &message, seed),
+            None => self.inner.encrypt_oaep(digestmod, mgf_digestmod, &label, &message),
+        }).map_err(err)?;
         Ok(PyBytes::new(py, &out))
+    }
+
+    /// Verify a PKCS#1 v1.5 signature with no DigestInfo, the counterpart
+    /// of `RsaKey.sign_without_digest_info`.
+    fn verify_without_digest_info(&self, py: Python<'_>, digest: Bytes, signature: Bytes)
+                                  -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_without_digest_info(&digest, &signature))
+            .map_err(err)
     }
 
     /// Verify a PKCS#1 v1.5 signature over a digest. False for a signature
@@ -3029,6 +3801,17 @@ impl PySlhDsaKey {
         Ok(PySlhDsaKey { inner })
     }
 
+    /// A key pair from its three seeds, `n` bytes each: FIPS 205's
+    /// `slh_keygen_internal`, which is what a test vector states.
+    #[staticmethod]
+    fn from_seeds(py: Python<'_>, parameter_set: &str, sk_seed: Bytes, sk_prf: Bytes,
+                  pk_seed: Bytes) -> PyResult<PySlhDsaKey> {
+        let inner = py.allow_threads(
+            || api::SlhDsaKey::from_seeds(parameter_set, &sk_seed, &sk_prf, &pk_seed))
+            .map_err(err)?;
+        Ok(PySlhDsaKey { inner })
+    }
+
     /// Import a private key: `SK.seed || SK.prf || PK.seed || PK.root`.
     ///
     /// Only the length is checked. Every byte string of the right length
@@ -3076,15 +3859,35 @@ impl PySlhDsaKey {
     /// `context` is a domain separator of at most 255 bytes; empty is
     /// normal. `prehash` names one of `slh_dsa_pre_hashes()`, or is left
     /// out for the pure form. A verifier has to be given the same two,
-    /// because both are part of what gets signed.
-    #[pyo3(signature = (message, context = None, prehash = None))]
+    /// because both are part of what gets signed. `opt_rand`, `n` bytes,
+    /// gives the randomness instead of drawing it.
+    #[pyo3(signature = (message, context = None, prehash = None, opt_rand = None))]
     fn sign<'py>(&self, py: Python<'py>, message: Bytes,
-                 context: Option<Bytes>, prehash: Option<&str>)
+                 context: Option<Bytes>, prehash: Option<&str>, opt_rand: Option<Bytes>)
                  -> PyResult<Bound<'py, PyBytes>> {
         let context = context.map(|c| c.to_vec()).unwrap_or_default();
-        let out = py.allow_threads(
-            || self.inner.sign(&message, &context, prehash)).map_err(err)?;
+        let out = py.allow_threads(|| match &opt_rand {
+            Some(given) => self.inner.sign_with_randomness(&message, &context, prehash, given),
+            None => self.inner.sign(&message, &context, prehash),
+        }).map_err(err)?;
         Ok(PyBytes::new(py, &out))
+    }
+
+    /// FIPS 205's internal interface: the message signed as given, with no
+    /// context or pre-hash around it. Verifies only through
+    /// `verify_internal`. `opt_rand` is drawn when left out.
+    #[pyo3(signature = (message, opt_rand = None))]
+    fn sign_internal<'py>(&self, py: Python<'py>, message: Bytes, opt_rand: Option<Bytes>)
+                          -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.sign_internal(&message, opt_rand.as_deref()))
+            .map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// The internal interface's verification.
+    fn verify_internal(&self, py: Python<'_>, message: Bytes, signature: Bytes)
+                       -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_internal(&message, &signature)).map_err(err)
     }
 
     /// Sign deterministically: the same message always gives the same
@@ -3154,6 +3957,13 @@ impl PySlhDsaPublicKey {
         py.allow_threads(
             || self.inner.verify(&message, &context, prehash, &signature))
             .map_err(err)
+    }
+
+    /// FIPS 205's internal interface: the message as given, no context, no
+    /// pre-hash.
+    fn verify_internal(&self, py: Python<'_>, message: Bytes, signature: Bytes)
+                       -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_internal(&message, &signature)).map_err(err)
     }
 
     fn __repr__(&self) -> String {
@@ -3279,10 +4089,15 @@ impl PyMlKemPublicKey {
     }
 
     /// `(shared_secret, ciphertext)`: keep the first, send the second.
-    fn encapsulate<'py>(&self, py: Python<'py>)
+    /// `m`, 32 bytes, gives the randomness instead of drawing it, which
+    /// makes both deterministic; an `m` anybody else knows is the secret.
+    #[pyo3(signature = (m = None))]
+    fn encapsulate<'py>(&self, py: Python<'py>, m: Option<Bytes>)
                         -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
-        let (shared, ciphertext) = py.allow_threads(|| self.inner.encapsulate())
-            .map_err(err)?;
+        let (shared, ciphertext) = py.allow_threads(|| match &m {
+            Some(m) => self.inner.encapsulate_with_randomness(m),
+            None => self.inner.encapsulate(),
+        }).map_err(err)?;
         Ok((PyBytes::new(py, &shared), PyBytes::new(py, &ciphertext)))
     }
 
@@ -3364,15 +4179,50 @@ impl PyMlDsaKey {
 
     /// Sign with fresh randomness - FIPS 204's hedged mode, and the one to
     /// use. `context` is at most 255 bytes; `prehash` names one of the
-    /// twelve approved functions or is left out for the pure form.
-    #[pyo3(signature = (message, context = None, prehash = None))]
+    /// twelve approved functions or is left out for the pure form. `rnd`,
+    /// 32 bytes, gives the randomness instead of drawing it.
+    #[pyo3(signature = (message, context = None, prehash = None, rnd = None))]
     fn sign<'py>(&self, py: Python<'py>, message: Bytes,
-                 context: Option<Bytes>, prehash: Option<&str>)
+                 context: Option<Bytes>, prehash: Option<&str>, rnd: Option<Bytes>)
                  -> PyResult<Bound<'py, PyBytes>> {
         let context = context.map(|c| c.to_vec()).unwrap_or_default();
-        let out = py.allow_threads(
-            || self.inner.sign(&message, &context, prehash)).map_err(err)?;
+        let out = py.allow_threads(|| match &rnd {
+            Some(given) => self.inner.sign_with_randomness(&message, &context, prehash, given),
+            None => self.inner.sign(&message, &context, prehash),
+        }).map_err(err)?;
         Ok(PyBytes::new(py, &out))
+    }
+
+    /// FIPS 204's internal interface: the message signed as given, with no
+    /// context or pre-hash around it. Verifies only through
+    /// `verify_internal`. `rnd` is drawn when left out; 32 zero bytes is
+    /// the deterministic form.
+    #[pyo3(signature = (message, rnd = None))]
+    fn sign_internal<'py>(&self, py: Python<'py>, message: Bytes, rnd: Option<Bytes>)
+                          -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.sign_internal(&message, rnd.as_deref()))
+            .map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// The `externalMu` variant: sign a 64 byte `mu = H(tr || M', 64)`
+    /// computed elsewhere. Verifies through `verify_mu`.
+    #[pyo3(signature = (mu, rnd = None))]
+    fn sign_mu<'py>(&self, py: Python<'py>, mu: Bytes, rnd: Option<Bytes>)
+                    -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.sign_mu(&mu, rnd.as_deref())).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// The internal interface's verification.
+    fn verify_internal(&self, py: Python<'_>, message: Bytes, signature: Bytes)
+                       -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_internal(&message, &signature)).map_err(err)
+    }
+
+    /// Verify a signature over a 64 byte `mu`.
+    fn verify_mu(&self, py: Python<'_>, mu: Bytes, signature: Bytes) -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_mu(&mu, &signature)).map_err(err)
     }
 
     /// Sign deterministically: the same message always gives the same
@@ -3436,6 +4286,18 @@ impl PyMlDsaPublicKey {
         py.allow_threads(
             || self.inner.verify(&message, &context, prehash, &signature))
             .map_err(err)
+    }
+
+    /// FIPS 204's internal interface: the message as given, no context, no
+    /// pre-hash.
+    fn verify_internal(&self, py: Python<'_>, message: Bytes, signature: Bytes)
+                       -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_internal(&message, &signature)).map_err(err)
+    }
+
+    /// The `externalMu` variant: verify a signature over a 64 byte `mu`.
+    fn verify_mu(&self, py: Python<'_>, mu: Bytes, signature: Bytes) -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify_mu(&mu, &signature)).map_err(err)
     }
 
     fn __repr__(&self) -> String {
@@ -5156,6 +6018,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEcKey>()?;
     m.add_class::<PyEddsaKey>()?;
     m.add_class::<PyDsaKey>()?;
+    m.add_class::<PyDsaPublicKey>()?;
     m.add_class::<PyEcPublicKey>()?;
     m.add_class::<PyRsaKey>()?;
     m.add_class::<PyRsaPublicKey>()?;
@@ -5224,6 +6087,22 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(office_xor_decrypt, m)?)?;
     m.add_function(wrap_pyfunction!(office_xor_encrypt, m)?)?;
     m.add_function(wrap_pyfunction!(hkdf, m)?)?;
+    m.add_function(wrap_pyfunction!(hkdf_extract, m)?)?;
+    m.add_function(wrap_pyfunction!(hkdf_expand, m)?)?;
+    m.add_function(wrap_pyfunction!(pbkdf1, m)?)?;
+    m.add_function(wrap_pyfunction!(pkcs12_kdf, m)?)?;
+    m.add_function(wrap_pyfunction!(pkcs12_bmp_password, m)?)?;
+    m.add_function(wrap_pyfunction!(jdk_pbe_md5_3des, m)?)?;
+    m.add_function(wrap_pyfunction!(openpgp_s2k_coded_count, m)?)?;
+    m.add_function(wrap_pyfunction!(bcrypt_pbkdf, m)?)?;
+    m.add_function(wrap_pyfunction!(bitlocker_stretch, m)?)?;
+    m.add_function(wrap_pyfunction!(ieee80211_prf, m)?)?;
+    m.add_function(wrap_pyfunction!(ieee80211_kdf_sha256, m)?)?;
+    m.add_function(wrap_pyfunction!(tkip_encrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(tkip_decrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(tkip_msdu_mic, m)?)?;
+    m.add_function(wrap_pyfunction!(blake2b, m)?)?;
+    m.add_function(wrap_pyfunction!(blake2s, m)?)?;
     m.add_function(wrap_pyfunction!(umac, m)?)?;
     m.add_function(wrap_pyfunction!(pbkdf2_hmac, m)?)?;
     m.add_function(wrap_pyfunction!(shake, m)?)?;
@@ -5275,6 +6154,25 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ed25519_public_to_x25519, m)?)?;
     m.add_function(wrap_pyfunction!(ed25519_private_to_x25519, m)?)?;
     m.add_function(wrap_pyfunction!(hsalsa20, m)?)?;
+    m.add_function(wrap_pyfunction!(hchacha20, m)?)?;
+    m.add_function(wrap_pyfunction!(ctr_acpkm, m)?)?;
+    m.add_function(wrap_pyfunction!(acpkm_next, m)?)?;
+    m.add_function(wrap_pyfunction!(gost28147_mac, m)?)?;
+    m.add_function(wrap_pyfunction!(cryptopro_key_mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(kdf_gostr3411_2012_256, m)?)?;
+    m.add_function(wrap_pyfunction!(kdf_tree_gostr3411_2012_256, m)?)?;
+    m.add_function(wrap_pyfunction!(tlstree, m)?)?;
+    m.add_function(wrap_pyfunction!(kexp15, m)?)?;
+    m.add_function(wrap_pyfunction!(cryptopro_kek_diversify, m)?)?;
+    m.add_function(wrap_pyfunction!(kexp28147, m)?)?;
+    m.add_function(wrap_pyfunction!(kimp28147, m)?)?;
+    m.add_function(wrap_pyfunction!(kimp15, m)?)?;
+    m.add("tlstree_suites", api::TLSTREE_SUITES.to_vec())?;
+    m.add_function(wrap_pyfunction!(salsa20_core, m)?)?;
+    m.add_function(wrap_pyfunction!(ghash, m)?)?;
+    m.add_function(wrap_pyfunction!(gmac, m)?)?;
+    m.add_function(wrap_pyfunction!(poly1305, m)?)?;
+    m.add_function(wrap_pyfunction!(poly1305_verify, m)?)?;
     m.add_function(wrap_pyfunction!(x448_generate, m)?)?;
     m.add_function(wrap_pyfunction!(x448_public_key, m)?)?;
     m.add_function(wrap_pyfunction!(x448_exchange, m)?)?;
@@ -5282,6 +6180,21 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(random_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(random_source, m)?)?;
     m.add_function(wrap_pyfunction!(dual_ec_drbg, m)?)?;
+    m.add_class::<PyDualEcDrbg>()?;
+    for function in [wrap_pyfunction!(eddsa_is_public_key, m)?, wrap_pyfunction!(sm2_kdf, m)?,
+                     wrap_pyfunction!(is_probable_prime, m)?,
+                     wrap_pyfunction!(sntrup761_keypair, m)?,
+                     wrap_pyfunction!(sntrup761_encapsulate, m)?,
+                     wrap_pyfunction!(sntrup761_decapsulate, m)?] {
+        m.add_function(function)?;
+    }
+    for function in [wrap_pyfunction!(ec_point_add, m)?, wrap_pyfunction!(ec_point_double, m)?,
+                     wrap_pyfunction!(ec_point_negate, m)?,
+                     wrap_pyfunction!(ec_point_multiply, m)?, wrap_pyfunction!(ec_generator, m)?,
+                     wrap_pyfunction!(ec_point_is_on_curve, m)?,
+                     wrap_pyfunction!(ec_point_validate, m)?] {
+        m.add_function(function)?;
+    }
     m.add_function(wrap_pyfunction!(lcg_names, m)?)?;
     m.add_function(wrap_pyfunction!(hardware_aes, m)?)?;
     m.add_function(wrap_pyfunction!(key_wrap, m)?)?;
@@ -5327,6 +6240,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(curve_parameters, m)?)?;
     m.add_function(wrap_pyfunction!(forget_oid, m)?)?;
     m.add_function(wrap_pyfunction!(gost_sbox, m)?)?;
+    m.add_function(wrap_pyfunction!(rsa_oaep_decode, m)?)?;
 
     // The catalogue, so Python can discover what is available rather than
     // guessing. These come straight from the Rust constants, and

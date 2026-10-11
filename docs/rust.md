@@ -159,6 +159,9 @@ assert!(!sm2::verify(&curve, &public, b"someone else", b"message digest",
 
 Encryption returns `C1 || C3 || C2` - the 2012 ordering. `ciphertext_to_der`
 converts to the `SEQUENCE { x1, y1, C3, C2 }` OpenSSL exchanges.
+`sign_with_nonce` and `encrypt_with_nonce` take `k` instead of deriving
+or drawing it, for the standard's worked examples; a signing `k` anybody
+else knows is the private key.
 
 ```rust
 use allcrypt::bignum::BigUint;
@@ -2120,10 +2123,12 @@ assert_eq!(sealed.len(), 2 * key.public().size());
 assert_eq!(decrypt_pkcs1v15(&key, &sealed)?, b"from an old keyring");
 ```
 
-**Use the padded functions.** Raw ElGamal is malleable: multiply `c2` by
-`t` and the plaintext is multiplied by `t`, with no key and no way to
-tell. That is why OpenPGP pads, and `elgamal::ElGamalPublicKey::encrypt`
-exists for the cases that specify their own framing.
+Raw ElGamal is malleable: multiply `c2` by `t` and the plaintext is
+multiplied by `t`, with no key and no way to tell. That is why OpenPGP
+pads. The raw scheme is there for the cases that specify their own
+framing or want the homomorphism: `ElGamalPublicKey::encrypt` on
+integers, and `elgamal::encrypt_raw` / `decrypt_raw` on bytes in the
+same `c1 || c2` layout.
 
 Signing is here too, and comes with a warning. **GnuPG withdrew ElGamal
 signing in 2003** after Phong Nguyen showed that its sign+encrypt keys
@@ -2214,6 +2219,9 @@ traditional `DSA PRIVATE KEY`. The group is held to `min_rsa_bits`.
 `publickey_ciphers::rsa` has the primitives, key generation, PKCS#1 v1.5
 for both encryption and signatures, PSS signatures and OAEP encryption,
 and `encrypt_raw` / `decrypt_raw` for RSA with no padding at all.
+`encrypt_oaep_with_seed` and `sign_pss_with_salt` take the randomness
+instead of drawing it, `sign_pkcs1v15_raw` signs without a DigestInfo,
+and `eme_oaep_decode` is OAEP's decoding on its own.
 
 ```rust,ignore
 use allcrypt::hash_functions::{sha2::SHA256, HashFunction};
@@ -2353,6 +2361,18 @@ assert_eq!(hash.digest().len(), 32);
 let mut old_hash = AnyHash::new("gost94")?;
 old_hash.update(b"This is message, length=32 bytes");
 assert_eq!(old_hash.digest().len(), 32);
+
+// The empty message has two readings. "gost94" compresses a zero
+// block for it, as RFC 5831's step 2 reads and today's gost-engine
+// does; "gost94_bc" compresses nothing, as Bouncy Castle, gost89 and
+// OpenSSL 1.0's gost engine do. Every other message is the same.
+let digest = |name: &str, message: &[u8]| -> Result<Vec<u8>, String> {
+    let mut hash = AnyHash::new(name)?;
+    hash.update(message);
+    Ok(hash.digest())
+};
+assert_ne!(digest("gost94", b"")?, digest("gost94_bc", b"")?);
+assert_eq!(digest("gost94", b"abc")?, digest("gost94_bc", b"abc")?);
 ```
 
 ### Ukraine's GOST
@@ -2719,9 +2739,14 @@ assert!(key.verify(b"a message", b"", None, &signature)?);
 assert_eq!(key.public_bytes(), &key.private_bytes()[32..]);
 ```
 
-The internal interface has no Python binding on purpose: signatures made
-with it are not ones another implementation's default verifier accepts, so
-the obvious thing to reach for should not be that one.
+`sign` and `verify` are the external interface, because signatures made
+with the internal one are not ones another implementation's ordinary
+verifier accepts and the obvious names should be the interoperable ones.
+The rest is there as well, in Rust and in Python: `from_seeds`,
+`sign_with_randomness` (`opt_rand=` in Python), and `sign_internal` /
+`verify_internal`. ML-DSA's facade has the same set, plus `sign_mu` /
+`verify_mu` for the `externalMu` variant, and ML-KEM's
+`encapsulate_with_randomness` takes FIPS 203's `m`.
 
 ## Post-quantum: ML-KEM
 

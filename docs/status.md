@@ -88,8 +88,9 @@ published and is listed under public key as not yet implemented.
 |CTR|✓|✓|
 |CTR with a little-endian counter (WinZip AES, Gladman's fileenc)|✓|✓|
 |CBC with ciphertext stealing, CS1/CS2/CS3 (SP 800-38A addendum; RFC 3962)|✓|✓|
-|GCM, and GHASH|✓|✓|
+|GCM, GHASH and GMAC|✓|✓|
 |CCM|✓|✓|
+|GCM and CCM over Camellia, SM4 and ARIA, and at every tag length SP 800-38D and RFC 3610 allow|✓|RFC 8998's SM4 examples; SP 800-38D and RFC 3610 in Python over python-cryptography's Camellia and SM4, the same code held to OpenSSL's AES-GCM and AES-CCM|
 |EAX|✓|Botan's vectors|
 |OCB (RFC 7253)|✓|✓|
 |MGM (RFC 9058)|✓|✓|
@@ -114,6 +115,8 @@ and key wrap's registers are the two halves of a 128-bit block. **MGM is
 the exception**: RFC 9058 gives it a field for 64-bit blocks too, so
 `magma-mgm` and `kuznyechik-mgm` are two different modes sharing a name.
 EAX works on 64-bit ciphers, and its tag is then 8 bytes.
+A tag length can follow GCM, CCM, EAX, MGM and OCB in a name
+(`aes-gcm-8`), within each mode's own set.
 
 **CCM cannot stream**, because its MAC begins with the message's length.
 The one-shot calls work; the streaming calls refuse rather than buffer
@@ -136,7 +139,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |XSalsa20 and HSalsa20 ("Extending the Salsa20 nonce")|✓|NaCl's own values; libsodium 1.0.18 and golang.org/x/crypto, `vectors/nacl.vec`|
 |ZipCrypto (PKWARE traditional ZIP encryption)|✓|✓|
 |WEP (RC4 with the per-frame IV; IEEE 802.11)|✓|spec reference|
-|TKIP per-packet key mixing (WPA; IEEE 802.11)|✓|spec reference|
+|TKIP per-packet key mixing and frame encryption (WPA; IEEE 802.11)|✓|spec reference; frames against python-cryptography's RC4 and zlib's CRC-32|
 |Office XOR obfuscation (MS-OFFCRYPTO, method 1)|✓|msoffcrypto-tool's answers|
 |A5/1|||
 |Crypto-1|||
@@ -166,7 +169,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |HKDF (RFC 5869)|✓|✓|
 |SP 800-108 KBKDF, counter and feedback modes, HMAC or CMAC|✓|✓|
 |SP 800-56C one-step (Concat KDF) and ANSI X9.63 KDF|✓|✓|
-|PKCS#12 KDF (RFC 7292 appendix B)|✓|OpenSSL's encrypted key files, both ways|
+|PKCS#12 KDF (RFC 7292 appendix B)|✓|OpenSSL's encrypted key files, both ways; OpenSSL's PKCS12KDF over five hashes, `vectors/pkcs12_kdf.vec`|
 |PBEWithMD5AndTripleDES (the JDK's)|✓|keytool's JCEKS files|
 |OpenPGP S2K: simple, salted, iterated and salted (RFC 9580 §3.7.1)|✓|✓|
 |RFC 3961 n-fold, DR/DK, DES string-to-key, DES/3DES random-to-key|✓|RFC 3961 appendix A; MIT Kerberos, through the Kerberos example|
@@ -200,14 +203,15 @@ for a tag. Key wrap authenticates without one. Both are in
 |SHA3-224/256/384/512 (FIPS 202)|✓|✓|
 |SHAKE128, SHAKE256 (FIPS 202)|✓|✓|
 |Keccak-224/256/384/512 (pre-standard)|✓|spec reference; Ethereum's function selectors|
-|BLAKE2b, BLAKE2s (RFC 7693)|✓|✓|
+|BLAKE2b, BLAKE2s (RFC 7693), keyed, salted and personalised|✓|✓; the parameter block against hashlib|
 |RIPEMD-160|✓|✓|
 |SM3 (GB/T 32905-2016)|✓|✓|
 |Kupyna (DSTU 7564:2014), any multiple of 8 bits to 512; `kupyna256`, `kupyna384`, `kupyna512`|✓|the standard's 15 byte-aligned examples; the authors' reference implementation and Bouncy Castle 1.77 agree on 19 messages at each of the three named sizes; the reference alone at ten other sizes; `vectors/kupyna.vec`|
 |Whirlpool (ISO/IEC 10118-3)|✓|✓|
 |Streebog-256 and -512 (GOST R 34.11-2012)|✓|✓|
 |GOST R 34.11-94 (RFC 5831, RFC 4357 parameters)|✓|✓|
-|GOST 34.311-95 (Ukraine; GOST R 34.11-94 under the DSTU 4145 default DKE)|✓|Bouncy Castle 1.77 and gost89 agree on 14 messages; the empty message is left out, see [pitfalls 7zzo](pitfalls.md#7zzo-ukraines-gost); `vectors/dstu_gost.vec`|
+|GOST 34.311-95 (Ukraine; GOST R 34.11-94 under the DSTU 4145 default DKE)|✓|Bouncy Castle 1.77 and gost89 agree on 14 messages, `vectors/dstu_gost.vec`|
+|GOST R 34.11-94 and GOST 34.311-95 with the other reading of the empty message (`_bc` names)|✓|Bouncy Castle 1.77 and gost89 under all three S-boxes, the empty message included, `vectors/gost94_readings.vec`; see [pitfalls 7zzo](pitfalls.md#7zzo-ukraines-gost)|
 |RIPEMD-128, RIPEMD-256, RIPEMD-320|✓|libtomcrypt, Bouncy Castle, Crypto++ and RustCrypto (and GNU Crypto for RIPEMD-128), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |HAS-160 (TTA.KO-12.0011/R2)|✓|RHash, Botan 1.10 and GNU Crypto, agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |Whirlpool-0, Whirlpool-T|✓|sphlib and GNU Crypto (and Crypto++ 5.2.1 for Whirlpool-T), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|

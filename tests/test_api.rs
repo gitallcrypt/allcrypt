@@ -570,7 +570,8 @@ fn test_aead_through_the_api() {
     // intended cost; the combinations below must gain a row in the same
     // commit, and `test_every_aead_in_the_catalogue_is_exercised_here`
     // fails if they do not.
-    assert_eq!(AEADS, &["aes-gcm", "aes-ccm", "aes-ccm-8", "chacha20-poly1305",
+    assert_eq!(AEADS, &["aes-gcm", "aes-ccm", "aes-ccm-8", "aria-gcm", "camellia-gcm", "sm4-gcm",
+                        "aria-ccm", "camellia-ccm", "sm4-ccm", "chacha20-poly1305",
                         "xchacha20-poly1305", "aes-eax", "twofish-eax", "serpent-eax", "camellia-eax",
                         "sm4-eax", "des-eax", "3des-eax", "blowfish-eax",
                         "tea-eax", "xtea-eax", "rc5-eax", "aria-eax", "rc6-eax",
@@ -589,6 +590,8 @@ fn test_aead_through_the_api() {
         ("aes-gcm", 16), ("aes-gcm", 24), ("aes-gcm", 32),
         ("aes-ccm", 16), ("aes-ccm", 24), ("aes-ccm", 32),
         ("aes-ccm-8", 16), ("aes-ccm-8", 32),
+        ("aria-gcm", 16), ("aria-gcm", 32), ("camellia-gcm", 24), ("sm4-gcm", 16),
+        ("aria-ccm", 24), ("camellia-ccm", 16), ("camellia-ccm", 32), ("sm4-ccm", 16),
         ("chacha20-poly1305", 32), ("xchacha20-poly1305", 32),
         // EAX, over a cipher of each block size the catalogue offers -
         // 128 bit and 64 bit - because EAX's OMAC tweak is a whole
@@ -723,7 +726,7 @@ fn test_aead_through_the_api() {
         // is one-shot, though the mode is online in both passes; that
         // is a property of the code rather than of the mode, and
         // `buffers_everything` is what says so honestly either way.
-        let expected_to_buffer = aead.starts_with("aes-ccm")
+        let expected_to_buffer = aead.ends_with("-ccm") || aead.ends_with("-ccm-8")
             || aead.ends_with("-eax") || aead.ends_with("-mgm") || aead.ends_with("-ocb")
             || aead.contains("-cbc-hmac-");
         assert_eq!(buffers, expected_to_buffer,
@@ -1246,6 +1249,100 @@ fn test_lcg_outputs_and_custom_parameters() {
 /// which is the repeated nonce the type's documentation forbids. GCM and
 /// ChaCha20-Poly1305 already refused inside their own states, and the
 /// existing tests only ever finished a stream once, so nothing noticed.
+/// A tag length after GCM, CCM, EAX, MGM or OCB is a parameter of the
+/// mode, and each mode's own set of lengths decides. Once named, a tag
+/// of exactly that length is the only one opened: for GCM a shorter one
+/// is a prefix a forger can guess more cheaply, and for CCM it is a tag
+/// of a different CCM.
+#[test]
+fn test_aead_tag_lengths_by_name() {
+    use allcrypt::api::{aead_decrypt, aead_encrypt, aead_tag_len, AeadStream};
+    let key = [0x42u8; 16];
+    let message = b"twenty-three bytes long";
+    let cases: &[(&str, &[usize], &[usize], usize)] = &[
+        // (AEAD, lengths it takes, lengths it refuses, nonce length)
+        ("aes-gcm", &[4, 8, 12, 13, 14, 15, 16], &[0, 1, 5, 9, 11, 17], 12),
+        ("camellia-gcm", &[4, 8, 16], &[6, 17], 12),
+        ("aes-ccm", &[4, 6, 8, 10, 12, 14, 16], &[0, 2, 3, 5, 15, 18], 12),
+        ("sm4-ccm", &[4, 16], &[7], 12),
+        ("aes-eax", &[1, 8, 16], &[0, 17], 12),
+        ("des-eax", &[1, 8], &[9], 12),
+        ("aes-ocb", &[1, 8, 12, 16], &[0, 17], 12),
+        ("aes-mgm", &[4, 8, 16], &[3, 17], 16),
+        ("magma-mgm", &[4, 8], &[3, 9], 8),
+    ];
+    let mut opened = 0;
+    for &(aead, takes, refuses, nonce_len) in cases {
+        let key: Vec<u8> = if aead.starts_with("des") { key[..8].to_vec() }
+                           else if aead.starts_with("magma") { [key, key].concat() }
+                           else { key.to_vec() };
+        let nonce = vec![0x1du8; nonce_len];
+        let (_, full) = aead_encrypt(aead, &key, &nonce, b"aad", message).unwrap();
+        for &n in takes {
+            let name = format!("{aead}-{n}");
+            assert_eq!(aead_tag_len(&name, &key).unwrap(), n, "{name}");
+            let (ciphertext, tag) = aead_encrypt(&name, &key, &nonce, b"aad", message).unwrap();
+            assert_eq!(tag.len(), n, "{name}");
+            assert_eq!(aead_decrypt(&name, &key, &nonce, b"aad", &ciphertext, &tag).unwrap(),
+                       message, "{name}");
+            let mut altered = tag.clone();
+            altered[n - 1] ^= 1;
+            assert!(aead_decrypt(&name, &key, &nonce, b"aad", &ciphertext, &altered).is_err());
+            // The full-length tag, and any other length, is not this one.
+            for &other in takes.iter().filter(|&&other| other != n) {
+                let (_, other_tag) = aead_encrypt(&format!("{aead}-{other}"), &key, &nonce,
+                                                  b"aad", message).unwrap();
+                let mut stream = AeadStream::new(&name, &key, &nonce, b"aad", true).unwrap();
+                let mut nothing = Vec::new();
+                stream.update(&ciphertext, &mut nothing).unwrap();
+                let refused = if stream.buffers_everything() {
+                    stream.open(&other_tag, &mut nothing).is_err()
+                } else {
+                    stream.verify(&other_tag).is_err()
+                };
+                assert!(refused, "{name} opened a {other} byte tag");
+            }
+            // The default length, named, is the default.
+            if n == full.len() {
+                assert_eq!(tag, full, "{name}");
+            }
+            opened += 1;
+        }
+        for &n in refuses {
+            let name = format!("{aead}-{n}");
+            assert!(AeadStream::new(&name, &key, &nonce, b"", false).is_err(), "{name}");
+        }
+    }
+    assert_eq!(opened, 33);
+
+    // The bare names and the suffix spelling agree, and the suffix is
+    // read only after a mode that has one.
+    let (_, eight) = aead_encrypt("ccm-8", &key, &[1; 12], b"", b"m").unwrap();
+    assert_eq!(aead_encrypt("aes-ccm-8", &key, &[1; 12], b"", b"m").unwrap().1, eight);
+    assert_eq!(aead_encrypt("gcm-12", &key, &[1; 12], b"", b"m").unwrap().1.len(), 12);
+    assert!(aead_encrypt("chacha20-poly1305-8", &[0; 32], &[1; 12], b"", b"m").is_err());
+    assert!(aead_encrypt("aes-gcm-99999999999999999999999", &key, &[1; 12], b"", b"m")
+                .is_err());
+
+    // Without a named length, GCM still opens 12 to 16 byte prefixes and
+    // nothing shorter: there the length arrives with the message.
+    let (ciphertext, tag) = aead_encrypt("aes-gcm", &key, &[1; 12], b"", message).unwrap();
+    for n in 12..=16 {
+        aead_decrypt("aes-gcm", &key, &[1; 12], b"", &ciphertext, &tag[..n]).unwrap();
+    }
+    for n in [4, 8, 11] {
+        assert!(aead_decrypt("aes-gcm", &key, &[1; 12], b"", &ciphertext, &tag[..n]).is_err());
+    }
+
+    // GCM and CCM need a 128 bit block, and Kalyna's are DSTU 7624's own.
+    assert!(AeadStream::new("des-gcm", &[0; 8], &[1; 12], b"", false).is_err());
+    assert!(AeadStream::new("blowfish-ccm", &[0; 16], &[1; 12], b"", false).is_err());
+    for name in ["kalyna-128-gcm", "kalyna-128-ccm", "kalyna-128-gcm-16"] {
+        let refusal = AeadStream::new(name, &[0; 16], &[1; 12], b"", false).err().unwrap();
+        assert!(refusal.contains("DSTU 7624"), "{name}: {refusal}");
+    }
+}
+
 #[test]
 fn test_aead_stream_refuses_use_after_finish() {
     use allcrypt::api::AeadStream;
@@ -1487,4 +1584,456 @@ fn test_wipe_zeroes_the_buffer() {
     assert!(secret.iter().any(|b| *b != 0));
     allcrypt::api::wipe(&mut secret);
     assert_eq!(secret, vec![0u8; 64]);
+}
+
+/// `seek` lands on the same keystream byte a straight run reaches, at
+/// offsets on and either side of block boundaries, forwards and back,
+/// for every cipher with a counter; and the 32 bit counter of a 12 byte
+/// ChaCha nonce ends where RFC 8439 says rather than wrapping.
+#[test]
+fn test_stream_cipher_seek() {
+    let key = [0x5au8; 32];
+    let cases: &[(&str, usize)] = &[("chacha20", 8), ("chacha20", 12), ("chacha12", 12),
+                                    ("chacha8", 8), ("xchacha20", 24), ("salsa20", 8),
+                                    ("salsa12", 8), ("salsa8", 8), ("xsalsa20", 24)];
+    for &(name, nonce_len) in cases {
+        let nonce: Vec<u8> = (0..nonce_len as u8).collect();
+        let long = AnyStreamCipher::new(name, &key, &nonce).unwrap().update(&[0; 1000]).unwrap();
+        let mut reused = AnyStreamCipher::new(name, &key, &nonce).unwrap();
+        reused.update(&[0; 300]).unwrap();
+        for offset in [999usize, 0, 1, 63, 64, 65, 127, 128, 200, 640, 1000] {
+            let mut fresh = AnyStreamCipher::new(name, &key, &nonce).unwrap();
+            fresh.seek(offset as u64).unwrap();
+            assert_eq!(fresh.update(&vec![0; 1000 - offset]).unwrap(), long[offset..],
+                       "{name}/{nonce_len} at {offset}");
+            // The same stream, moved about.
+            reused.seek(offset as u64).unwrap();
+            assert_eq!(reused.update(&vec![0; 1000 - offset]).unwrap(), long[offset..],
+                       "{name}/{nonce_len} reused at {offset}");
+        }
+    }
+
+    // A 12 byte nonce: the last block is 2^32 - 1, and it is usable.
+    let mut chacha = AnyStreamCipher::new("chacha20", &key, &[1; 12]).unwrap();
+    assert!(chacha.seek(64 << 32).is_err());
+    chacha.seek((64 << 32) - 64).unwrap();
+    assert_eq!(chacha.update(&[0; 64]).unwrap().len(), 64);
+    assert!(chacha.update(&[0; 1]).is_err());
+    chacha.seek(0).unwrap();
+    assert_eq!(chacha.update(&[0; 64]).unwrap(),
+               AnyStreamCipher::new("chacha20", &key, &[1; 12]).unwrap().update(&[0; 64])
+                   .unwrap());
+    // A 64 bit counter: block 2^32 reached by running across the carry
+    // is block 2^32 reached by seeking, and is not block 0.
+    for name in ["chacha20", "salsa20", "xsalsa20"] {
+        let nonce = if name == "xsalsa20" { vec![1; 24] } else { vec![1; 8] };
+        let mut wide = AnyStreamCipher::new(name, &key, &nonce).unwrap();
+        wide.seek_block(u32::MAX as u64).unwrap();
+        let across = wide.update(&[0; 128]).unwrap();
+        wide.seek_block(1 << 32).unwrap();
+        let past_32_bits = wide.update(&[0; 64]).unwrap();
+        assert_eq!(past_32_bits, across[64..], "{name}");
+        wide.seek(0).unwrap();
+        assert_ne!(wide.update(&[0; 64]).unwrap(), past_32_bits, "{name}");
+    }
+
+    for name in ["rc4", "zipcrypto"] {
+        assert!(AnyStreamCipher::new(name, &key, &[]).unwrap().seek(0).is_err(), "{name}");
+    }
+}
+
+/// The raw primitives, each composed back into the construction it comes
+/// from: GHASH and an AES block are GMAC, GMAC is GCM's tag, Poly1305 under
+/// ChaCha20's block zero is ChaCha20-Poly1305's tag, and HChaCha20 and
+/// ChaCha20 are XChaCha20.
+#[test]
+fn test_raw_primitives_compose_into_their_constructions() {
+    let key = [0x24u8; 16];
+    let nonce = [0x36u8; 12];
+    let aad: Vec<u8> = (0..37u8).collect();
+
+    let mut aes = AnyBlockCipher::new("aes", &key, None).unwrap();
+    let mut h = Vec::new();
+    aes.block_encrypt(&[0; 16], &mut h);
+    let mut j0 = nonce.to_vec();
+    j0.extend_from_slice(&[0, 0, 0, 1]);
+    let mut mask = Vec::new();
+    aes.block_encrypt(&j0, &mut mask);
+    let mut blocks = aad.clone();
+    blocks.resize(48, 0);
+    blocks.extend_from_slice(&((aad.len() as u64) * 8).to_be_bytes());
+    blocks.extend_from_slice(&0u64.to_be_bytes());
+    let s = api::ghash(&h, &blocks).unwrap();
+    let tag: Vec<u8> = s.iter().zip(&mask).map(|(a, b)| a ^ b).collect();
+    assert_eq!(api::gmac("aes", &key, &nonce, &aad, None).unwrap(), tag);
+    assert_eq!(api::aead_encrypt("aes-gcm", &key, &nonce, &aad, b"").unwrap().1, tag);
+    assert_eq!(api::gmac("aes", &key, &nonce, &aad, Some(8)).unwrap(), tag[..8]);
+    assert!(api::ghash(&h, &blocks[..47]).is_err());
+    assert!(api::ghash(&h[..15], &blocks).is_err());
+    assert_eq!(api::ghash(&h, &[]).unwrap(), [0; 16]);
+    assert!(api::gmac("des", &[0; 8], &nonce, &aad, None).is_err());
+
+    // ChaCha20-Poly1305 (RFC 8439 2.8): the one-time key is block zero's
+    // first 32 bytes, and the payload starts at block one.
+    let key = [0x71u8; 32];
+    let message = b"twenty-seven bytes of text.";
+    let (ciphertext, tag) =
+        api::aead_encrypt("chacha20-poly1305", &key, &nonce, &aad, message).unwrap();
+    let mut chacha = AnyStreamCipher::new("chacha20", &key, &nonce).unwrap();
+    let one_time = chacha.update(&[0; 32]).unwrap();
+    chacha.seek(64).unwrap();
+    assert_eq!(chacha.update(message).unwrap(), ciphertext);
+    let mut mac_data = aad.clone();
+    mac_data.resize(48, 0);
+    mac_data.extend_from_slice(&ciphertext);
+    mac_data.resize(48 + 32, 0);
+    mac_data.extend_from_slice(&(aad.len() as u64).to_le_bytes());
+    mac_data.extend_from_slice(&(ciphertext.len() as u64).to_le_bytes());
+    assert_eq!(api::poly1305(&one_time, &mac_data).unwrap(), tag);
+    assert!(api::poly1305_verify(&one_time, &mac_data, &tag).unwrap());
+    let mut altered = tag.clone();
+    altered[15] ^= 1;
+    assert!(!api::poly1305_verify(&one_time, &mac_data, &altered).unwrap());
+    assert!(!api::poly1305_verify(&one_time, &mac_data, &tag[..15]).unwrap());
+    assert!(api::poly1305(&one_time[..31], b"").is_err());
+
+    // XChaCha20 (draft-irtf-cfrg-xchacha 2.3): ChaCha20 under
+    // HChaCha20(key, nonce[..16]) with four zero bytes and nonce[16..].
+    let long_nonce: Vec<u8> = (100..124u8).collect();
+    let subkey = api::hchacha20(&key, &long_nonce[..16]).unwrap();
+    let mut inner_nonce = vec![0u8; 4];
+    inner_nonce.extend_from_slice(&long_nonce[16..]);
+    assert_eq!(AnyStreamCipher::new("xchacha20", &key, &long_nonce).unwrap()
+                   .update(&[0; 200]).unwrap(),
+               AnyStreamCipher::new("chacha20", &subkey, &inner_nonce).unwrap()
+                   .update(&[0; 200]).unwrap());
+    assert!(api::hchacha20(&key[..16], &long_nonce[..16]).is_err());
+    assert!(api::hchacha20(&key, &long_nonce[..15]).is_err());
+
+    // The Salsa20 core: zero is its fixed point, and the round count
+    // must be even.
+    assert_eq!(api::salsa20_core(&[0; 64], 20).unwrap(), [0; 64]);
+    assert_ne!(api::salsa20_core(&[1; 64], 20).unwrap(),
+               api::salsa20_core(&[1; 64], 8).unwrap());
+    assert!(api::salsa20_core(&[1; 64], 7).is_err());
+    assert!(api::salsa20_core(&[1; 63], 8).is_err());
+}
+
+/// The GOST pieces through the facade, each tied to the thing it is a
+/// piece of. The engine's answers for the MAC, CTR-ACPKM, KExp15 and
+/// TLSTREE are in `tests/test_gost_engine_vectors.rs` and, through
+/// Python, in `pytests/test_gost_primitives.py`.
+#[test]
+fn test_gost_primitives_through_the_api() {
+    let key: Vec<u8> = (0..32u8).map(|i| i.wrapping_mul(29).wrapping_add(3)).collect();
+    let block = [0x5cu8, 0x11, 0x92, 0x07, 0xe4, 0x3a, 0x60, 0xbd];
+
+    // S-boxes given directly are the named ones.
+    let encrypt = |mut cipher: AnyBlockCipher| {
+        let mut out = Vec::new();
+        cipher.block_encrypt(&block, &mut out);
+        out
+    };
+    for name in ["id-tc26-gost-28147-param-Z", "id-Gost28147-89-CryptoPro-B-ParamSet",
+                 "dstu4145-default-dke"] {
+        let rows = api::gost_sbox(name).unwrap();
+        assert_eq!(encrypt(AnyBlockCipher::gost_with_sbox(&key, &rows).unwrap()),
+                   encrypt(AnyBlockCipher::new("gost", &key, Some(name)).unwrap()), "{name}");
+    }
+    let dke = allcrypt::block_ciphers::gost::DSTU4145_DEFAULT_DKE;
+    assert_eq!(encrypt(AnyBlockCipher::gost_with_dke(&key, &dke).unwrap()),
+               encrypt(AnyBlockCipher::new("gost", &key, Some("dstu4145-default-dke")).unwrap()));
+    let mut not_a_permutation = api::gost_sbox("id-tc26-gost-28147-param-Z").unwrap();
+    not_a_permutation[3][5] = not_a_permutation[3][6];
+    assert!(AnyBlockCipher::gost_with_sbox(&key, &not_a_permutation).is_err());
+    assert!(AnyBlockCipher::gost_with_dke(&key, &dke[..63]).is_err());
+
+    // The MAC: four bytes is RFC 9189's gost28147IMIT, and a longer tag
+    // carries on into the rest of the state.
+    let message = b"seventeen bytes!!";
+    let iv = [0x0fu8; 8];
+    let four = api::gost28147_mac(&key, message, Some("id-tc26-gost-28147-param-Z"), Some(&iv), 4)
+        .unwrap();
+    assert_eq!(four, allcrypt::tls::record_cnt_imit::gost28147imit(
+        &iv, &key, message, "id-tc26-gost-28147-param-Z").unwrap());
+    let eight = api::gost28147_mac(&key, message, Some("id-tc26-gost-28147-param-Z"), Some(&iv), 8)
+        .unwrap();
+    assert_eq!(eight.len(), 8);
+    assert_eq!(eight[..4], four);
+    // The defaults are CryptoPro-A and a zero IV, gost-engine's `gost-mac`.
+    assert_eq!(api::gost28147_mac(&key, message, None, None, 4).unwrap(),
+               api::gost28147_mac(&key, message, Some("id-Gost28147-89-CryptoPro-A-ParamSet"),
+                                  Some(&[0; 8]), 4).unwrap());
+    assert_ne!(api::gost28147_mac(&key, message, None, None, 4).unwrap(), four);
+    for bad in [0usize, 9] {
+        assert!(api::gost28147_mac(&key, message, None, None, bad).is_err());
+    }
+    assert!(api::gost28147_mac(&key, message, None, Some(&[0; 7]), 4).is_err());
+
+    // Meshing, and that the new key is not the old one's encryption.
+    let (meshed, meshed_iv) = api::cryptopro_key_mesh(&key, &iv, None).unwrap();
+    assert_eq!((meshed.clone(), meshed_iv.clone()),
+               allcrypt::block_ciphers::meshing::mesh(
+                   "id-Gost28147-89-CryptoPro-A-ParamSet", &key, &iv).unwrap());
+    assert_eq!(meshed.len(), 32);
+    assert!(api::cryptopro_key_mesh(&key, &iv[..7], None).is_err());
+
+    // CTR-ACPKM: within the first section it is plain CTR from
+    // `nonce || 0`, and it is its own inverse.
+    let nonce = [0x12u8, 0x34, 0x56, 0x78, 0x90, 0xab, 0xce, 0xf0];
+    let data: Vec<u8> = (0..200u8).collect();
+    let k_key = [0x88u8; 32];
+    let sealed = api::ctr_acpkm("kuznyechik", &k_key, &nonce, 4096, &data).unwrap();
+    let mut counter = nonce.to_vec();
+    counter.resize(16, 0);
+    let mut plain_ctr = CipherStream::new(AnyBlockCipher::new("kuznyechik", &k_key, None).unwrap(),
+                                          Mode::Ctr, &counter, false).unwrap();
+    assert_eq!(plain_ctr.update(&data).unwrap(), sealed);
+    assert_eq!(api::ctr_acpkm("kuznyechik", &k_key, &nonce, 4096, &sealed).unwrap(), data);
+    // A section boundary inside the data changes what follows it only.
+    let short_sections = api::ctr_acpkm("kuznyechik", &k_key, &nonce, 32, &data).unwrap();
+    assert_eq!(short_sections[..32], sealed[..32]);
+    assert_ne!(short_sections[32..64], sealed[32..64]);
+    assert_eq!(api::acpkm_next("kuznyechik", &k_key).unwrap().len(), 32);
+    assert!(api::ctr_acpkm("kuznyechik", &k_key, &nonce, 24, &data).is_err());
+
+    // RFC 7836 4.5: KDF_256 is KDF_TREE with R = 1 and L = 256.
+    assert_eq!(api::kdf_gostr3411_2012_256(&key, b"label", b"seed"),
+               api::kdf_tree_gostr3411_2012_256(&key, b"label", b"seed", 32, 1).unwrap());
+    let long = api::kdf_tree_gostr3411_2012_256(&key, b"label", b"seed", 64, 1).unwrap();
+    assert_eq!(long.len(), 64);
+    assert!(api::kdf_tree_gostr3411_2012_256(&key, b"label", b"seed", 64, 5).is_err());
+    assert!(api::kdf_tree_gostr3411_2012_256(&key, b"label", b"seed", 0, 1).is_err());
+
+    // TLSTREE: at sequence 0 every mask is zero, so every suite agrees
+    // there; past the lowest level boundary of any of them they part.
+    let at_zero: Vec<Vec<u8>> = api::TLSTREE_SUITES.iter()
+        .map(|suite| api::tlstree(suite, &key, 0).unwrap()).collect();
+    assert!(at_zero.windows(2).all(|pair| pair[0] == pair[1]));
+    let later: std::collections::HashSet<Vec<u8>> = api::TLSTREE_SUITES.iter()
+        .map(|suite| api::tlstree(suite, &key, 1 << 40 | 0xfff_ffff).unwrap()).collect();
+    assert!(later.len() > 1);
+    // Each name is its own suite's constants, which `kdf::gost`'s
+    // document tests read out of RFC 9189 and RFC 9367; past the top
+    // level boundary of all six, a name on the wrong set differs.
+    use allcrypt::kdf::gost::{tlstree, TlsTreeParams};
+    for (name, params) in [("kuznyechik-ctr-omac", TlsTreeParams::KUZNYECHIK),
+                           ("magma-ctr-omac", TlsTreeParams::MAGMA),
+                           ("kuznyechik-mgm-l", TlsTreeParams::KUZNYECHIK_MGM_L),
+                           ("magma-mgm-l", TlsTreeParams::MAGMA_MGM_L),
+                           ("kuznyechik-mgm-s", TlsTreeParams::KUZNYECHIK_MGM_S),
+                           ("magma-mgm-s", TlsTreeParams::MAGMA_MGM_S)] {
+        for sequence in [1u64 << 40 | 0xfff_ffff, u64::MAX, 0x0123_4567_89ab_cdef] {
+            assert_eq!(api::tlstree(name, &key, sequence).unwrap(),
+                       tlstree(&key, sequence, params), "{name}");
+        }
+    }
+    assert!(api::tlstree("aes", &key, 0).is_err());
+    assert!(api::tlstree("magma-ctr-omac", &key[..31], 0).is_err());
+
+    // KExp15 and KImp15.
+    let (mac_key, enc_key) = ([0x31u8; 32], [0x47u8; 32]);
+    for (cipher, half_block) in [("kuznyechik", 8usize), ("magma", 4)] {
+        let iv = vec![0x5au8; half_block];
+        let wrapped = api::kexp15(cipher, &key, &mac_key, &enc_key, &iv).unwrap();
+        assert_eq!(wrapped.len(), 32 + 2 * half_block);
+        assert_eq!(api::kimp15(cipher, &wrapped, &mac_key, &enc_key, &iv).unwrap(), key);
+        let mut altered = wrapped.clone();
+        altered[5] ^= 1;
+        assert!(api::kimp15(cipher, &altered, &mac_key, &enc_key, &iv).is_err());
+        assert!(api::kimp15(cipher, &wrapped, &enc_key, &mac_key, &iv).is_err());
+    }
+    assert!(api::kexp15("aes", &key, &mac_key, &enc_key, &[0; 8]).is_err());
+}
+
+/// The derivations and 802.11 pieces through the facade, each tied to
+/// the construction it is part of; their outside witnesses are in
+/// `pytests/test_kdf_pieces.py` and `tests/test_pkcs12_kdf_vectors.rs`.
+#[test]
+fn test_kdf_and_wifi_pieces_through_the_api() {
+    use allcrypt::api::AnyHash;
+
+    // BLAKE2's parameter block: the defaults are the plain hash, and each
+    // of key, salt and personalisation changes the answer.
+    let digest = |mut h: AnyHash| { h.update(b"abc"); h.digest() };
+    assert_eq!(digest(AnyHash::blake2("blake2b", 64, b"", b"", b"").unwrap()),
+               digest(AnyHash::new("blake2b").unwrap()));
+    assert_eq!(digest(AnyHash::blake2("blake2s", 16, b"", b"", b"").unwrap()),
+               digest(AnyHash::new("blake2s_128").unwrap()));
+    let plain = digest(AnyHash::blake2("blake2s", 32, b"", b"", b"").unwrap());
+    for (key, salt, personal) in [(&b"k"[..], &b""[..], &b""[..]), (b"", b"saltsalt", b""),
+                                  (b"", b"", b"personal")] {
+        assert_ne!(digest(AnyHash::blake2("blake2s", 32, key, salt, personal).unwrap()), plain);
+    }
+    // Each argument reaches its own field of the module's parameter block.
+    use allcrypt::hash_functions::blake2::{Blake2s, Params};
+    let direct = Blake2s::with_params(&Params { digest_len: 20, key: b"key".to_vec(),
+                                                salt: b"salt".to_vec(),
+                                                personal: b"person".to_vec() }).unwrap();
+    assert_eq!(digest(AnyHash::blake2("blake2s", 20, b"key", b"salt", b"person").unwrap()),
+               digest(AnyHash::Blake2s(direct)));
+    assert!(AnyHash::blake2("blake2s", 32, b"", b"nine byte", b"").is_err());
+    assert!(AnyHash::blake2("blake2b", 65, b"", b"", b"").is_err());
+    assert!(AnyHash::blake2("blake2b", 32, &[0; 65], b"", b"").is_err());
+    assert!(AnyHash::blake2("blake3", 32, b"", b"", b"").is_err());
+
+    // HKDF's halves are HKDF.
+    let prk = api::hkdf_extract("sha256", b"salt", b"ikm").unwrap();
+    assert_eq!(prk.len(), 32);
+    assert_eq!(api::hkdf_expand("sha256", &prk, b"info", 100).unwrap(),
+               api::hkdf("sha256", b"salt", b"ikm", b"info", 100).unwrap());
+    assert!(api::hkdf_expand("sha256", &prk, b"", 255 * 32 + 1).is_err());
+
+    // PBKDF1 is the hash iterated: once is one hash of password || salt.
+    assert_eq!(api::pbkdf1("sha1", b"pw", b"saltsalt", 1, 20).unwrap(),
+               digest_of("sha1", b"pwsaltsalt"));
+    assert_eq!(api::pbkdf1("md5", b"pw", b"saltsalt", 2, 16).unwrap(),
+               digest_of("md5", &digest_of("md5", b"pwsaltsalt")));
+    assert!(api::pbkdf1("md5", b"pw", b"saltsalt", 1, 17).is_err());
+    assert!(api::pbkdf1("md5", b"pw", b"saltsalt", 0, 16).is_err());
+
+    assert!(api::pkcs12_kdf("sha1", b"", b"salt", 4, 1, 20).is_err());
+    assert!(api::pkcs12_kdf("sha1", b"", b"salt", 0, 1, 20).is_err());
+
+    let (key, iv) = api::jdk_pbe_md5_3des(b"password", b"8 bytes!", 20).unwrap();
+    assert_eq!((key.len(), iv.len()), (24, 8));
+    assert!(api::jdk_pbe_md5_3des(b"password", b"7 bytes", 20).is_err());
+
+    for octets in [0usize, 1024, 1025, 65536, 65_011_712] {
+        let coded = api::openpgp_s2k_coded_count(octets);
+        assert!(api::openpgp_s2k_count(coded) >= octets, "{octets}");
+        assert!(coded == 0 || api::openpgp_s2k_count(coded - 1) < octets, "{octets}");
+    }
+    assert_eq!(api::openpgp_s2k_coded_count(usize::MAX), 255);
+
+    assert_eq!(api::bcrypt_pbkdf(b"pw", b"salt", 4, 48).unwrap().len(), 48);
+    assert!(api::bcrypt_pbkdf(b"pw", b"salt", 0, 48).is_err());
+
+    // BitLocker's password key is the stretch after two SHA-256s of the
+    // UTF-16LE password.
+    let salt = [0x2au8; 16];
+    let utf16: Vec<u8> = "pass word".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let initial = digest_of("sha256", &digest_of("sha256", &utf16));
+    assert_eq!(api::bitlocker_stretch(&initial, &salt).unwrap(),
+               api::bitlocker_password_key("pass word", &salt).unwrap());
+    assert!(api::bitlocker_stretch(&initial[..31], &salt).is_err());
+    assert!(api::bitlocker_stretch(&initial, &salt[..15]).is_err());
+
+    // The PTK is PRF-384 over the sorted addresses and nonces.
+    let pmk = [0x55u8; 32];
+    let (aa, spa) = ([0x02u8; 6], [0x01u8; 6]);
+    let (anonce, snonce) = ([0x10u8; 32], [0x20u8; 32]);
+    let mut data = Vec::new();
+    data.extend_from_slice(&spa);
+    data.extend_from_slice(&aa);
+    data.extend_from_slice(&anonce);
+    data.extend_from_slice(&snonce);
+    assert_eq!(api::ieee80211_prf(&pmk, b"Pairwise key expansion", &data, 384).unwrap(),
+               api::wpa_ptk("sha1", &pmk, &aa, &spa, &anonce, &snonce, 384).unwrap());
+    assert_eq!(api::ieee80211_kdf_sha256(&pmk, b"Pairwise key expansion", &data, 384).unwrap(),
+               api::wpa_ptk("sha256", &pmk, &aa, &spa, &anonce, &snonce, 384).unwrap());
+
+    // A TKIP payload is RC4 under the frame's key over the plaintext and
+    // its CRC-32, little endian.
+    let (tk, ta) = ([0x77u8; 16], [0x08u8, 0, 0x27, 0x11, 0x22, 0x33]);
+    let tsc = 0x0001_0000_fffe;
+    let plaintext = b"an MPDU's payload";
+    let sealed = api::tkip_encrypt(&tk, &ta, tsc, plaintext).unwrap();
+    let mut with_icv = plaintext.to_vec();
+    with_icv.extend_from_slice(&crc32(plaintext).to_le_bytes());
+    let rc4_key = api::tkip_rc4_key(&tk, &ta, tsc).unwrap();
+    assert_eq!(sealed, AnyStreamCipher::new("rc4", &rc4_key, &[]).unwrap().update(&with_icv)
+                           .unwrap());
+    assert_eq!(api::tkip_decrypt(&tk, &ta, tsc, &sealed).unwrap(), plaintext);
+    let mut altered = sealed.clone();
+    altered[3] ^= 1;
+    assert!(api::tkip_decrypt(&tk, &ta, tsc, &altered).is_err());
+    assert!(api::tkip_encrypt(&tk, &ta, 1 << 48, plaintext).is_err());
+    assert!(api::tkip_rc4_key(&tk, &ta, 1 << 48).is_err());
+
+    // The MSDU MIC is Michael over DA, SA, the priority and three zeros.
+    let (da, sa) = ([1u8; 6], [2u8; 6]);
+    let mut mic_input = [da, sa].concat();
+    mic_input.extend_from_slice(&[5, 0, 0, 0]);
+    mic_input.extend_from_slice(b"data");
+    assert_eq!(api::tkip_msdu_mic(&[9; 8], &da, &sa, 5, b"data").unwrap(),
+               api::michael(&[9; 8], &mic_input).unwrap());
+    assert!(api::tkip_msdu_mic(&[9; 7], &da, &sa, 5, b"data").is_err());
+    assert!(api::tkip_msdu_mic(&[9; 8], &da[..5], &sa, 5, b"data").is_err());
+}
+
+fn digest_of(name: &str, data: &[u8]) -> Vec<u8> {
+    let mut hash = AnyHash::new(name).unwrap();
+    hash.update(data);
+    hash.digest()
+}
+
+/// CRC-32 (IEEE 802.3), bit by bit, for the TKIP ICV.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// RFC 9189's key agreements and the 28147 export through the facade:
+/// both ends of each agreement derive the same keys, the 28147 KEG is
+/// VKO-256 under `H[1..8]` diversified under TC26-Z, and the export
+/// round-trips and refuses a wrong IV or MAC. The RFC's own worked
+/// handshakes are `pytests/test_gost_key_export.py` and
+/// `tests/test_gost_rfc9189_flight.rs`.
+#[test]
+fn test_gost_key_agreement_and_28147_export_through_the_api() {
+    use allcrypt::api::EcKey;
+    let h: Vec<u8> = (0..32u8).map(|i| i.wrapping_mul(13).wrapping_add(1)).collect();
+    for curve in ["gost256-a", "gost512-a", "gost256-tc26-a", "gost512-c"] {
+        let size = if curve.starts_with("gost256") { 32 } else { 64 };
+        let a = EcKey::from_private(curve, &vec![0x11; size]).unwrap();
+        let b = EcKey::from_private(curve, &vec![0x07; size]).unwrap();
+        let (pa, pb) = (a.public_key().to_bytes(false).unwrap(),
+                        b.public_key().to_bytes(false).unwrap());
+        let keys = a.gost_keg(&pb, &h).unwrap();
+        assert_eq!(keys.len(), 64, "{curve}");
+        assert_eq!(keys, b.gost_keg(&pa, &h).unwrap(), "{curve}");
+        let k28147 = a.gost_keg_28147(&pb, &h).unwrap();
+        assert_eq!(k28147, b.gost_keg_28147(&pa, &h).unwrap(), "{curve}");
+        let vko = a.vko(&pb, &h[..8], 256).unwrap();
+        assert_eq!(k28147, api::cryptopro_kek_diversify(&h[..8], &vko,
+                                                        Some("id-tc26-gost-28147-param-Z"))
+                               .unwrap(), "{curve}");
+        assert!(a.gost_keg(&pb, &h[..31]).is_err());
+        assert!(a.gost_keg_28147(&pb, &h[..31]).is_err());
+    }
+    let a = EcKey::from_private("gost256-a", &[0x23; 32]).unwrap();
+    let b = EcKey::from_private("gost256-a", &[0x45; 32]).unwrap();
+    let ukm = [0x5au8; 8];
+    let (pa, pb) = (a.public_key().to_bytes(false).unwrap(),
+                    b.public_key().to_bytes(false).unwrap());
+    assert_eq!(a.gost_keg_2001(&pb, &ukm).unwrap(),
+               b.gost_keg_2001(&pa, &ukm).unwrap());
+    assert!(a.gost_keg_2001(&pb, &ukm[..7]).is_err());
+
+    let key = [0x3cu8; 32];
+    let secret: Vec<u8> = (0..32u8).collect();
+    let iv = [0x9eu8; 8];
+    let wrapped = api::kexp28147(&secret, &key, &iv, None).unwrap();
+    assert_eq!(wrapped.len(), 44);
+    assert_eq!(wrapped[..8], iv);
+    assert_eq!(wrapped[40..], api::gost28147_mac(&key, &secret, None, Some(&iv), 4).unwrap());
+    assert_eq!(api::kimp28147(&wrapped, &key, &iv, None).unwrap(), secret);
+    assert_ne!(api::kexp28147(&secret, &key, &iv, Some("id-tc26-gost-28147-param-Z")).unwrap(),
+               wrapped);
+    let mut altered = wrapped.clone();
+    altered[43] ^= 1;
+    assert!(api::kimp28147(&altered, &key, &iv, None).is_err());
+    assert!(api::kimp28147(&wrapped, &key, &[0; 8], None).is_err());
+    assert!(api::kexp28147(&secret[..31], &key, &iv, None).is_err());
+    assert_ne!(api::cryptopro_kek_diversify(&iv, &key, None).unwrap(),
+               api::cryptopro_kek_diversify(&iv, &key, Some("id-tc26-gost-28147-param-Z"))
+                   .unwrap());
+    assert!(api::cryptopro_kek_diversify(&iv[..7], &key, None).is_err());
 }

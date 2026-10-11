@@ -530,10 +530,6 @@ mod tests {
         assert!(seen.len() >= 12, "{seen:?}");
     }
 
-    /// Found by the recorded archives: libarchive's empty entry opened
-    /// under a wrong password. The check byte lets one wrong password
-    /// in 256 through, and an empty entry has nothing for the CRC to
-    /// catch. AES's 16-bit verifier and its HMAC leave no such gap.
     /// Decompression was bounded by a fixed 2 GiB and the directory's
     /// size compared only afterwards, so a small entry could cost its
     /// full expansion before being refused. The fixtures' sizes are all
@@ -566,15 +562,25 @@ mod tests {
         assert!(error.contains("outside the archive"), "{error}");
     }
 
+    /// Found by the recorded archives: libarchive's empty entry opened
+    /// under a wrong password. The check byte lets one wrong password
+    /// in 256 through, and an empty entry has nothing for the CRC to
+    /// catch - and nothing to give away either: what it opens to is the
+    /// empty file, the same under any password. So the test finds one
+    /// such password and shows that, rather than counting how many
+    /// there are; counting them was a bound on a random number, and
+    /// failed once with nothing wrong. AES's 16-bit verifier and its
+    /// HMAC leave no such gap.
     #[test]
     fn test_an_empty_zipcrypto_entry_cannot_refuse_every_wrong_password() {
         let archive = write(&[("empty".to_string(), Vec::new())], &Sealing::ZipCrypto, b"pw")
             .unwrap();
         let entry = &entries(&archive).unwrap()[0];
-        let accepted = (0..2000u32)
-            .filter(|i| read(&archive, entry, Some(format!("wrong {i}").as_bytes())).is_ok())
-            .count();
-        assert!((1..30).contains(&accepted), "{accepted} of 2000");
+        // One in 256 on average; 2^16 tries miss with probability e^-256.
+        let opened = (0..1u32 << 16)
+            .find_map(|i| read(&archive, entry, Some(format!("wrong {i}").as_bytes())).ok())
+            .expect("a wrong password through the one-byte check");
+        assert!(opened.is_empty());
 
         let archive = write(&[("empty".to_string(), Vec::new())],
                             &Sealing::Aes { version: 2, strength: 1 }, b"pw").unwrap();

@@ -297,6 +297,45 @@ impl ElGamalPrivateKey {
     }
 }
 
+// -------------------------------------------------------------- raw ---
+
+/// Textbook ElGamal on bytes: the message read as a big-endian integer
+/// in [1, p-1], encrypted with a fresh `k`, returned as `c1 || c2`, each
+/// at the modulus width - the layout `encrypt_pkcs1v15` uses, without
+/// the padding.
+///
+/// Malleable, as `ElGamalPublicKey::encrypt` says: multiplying `c2` by
+/// `t` multiplies the plaintext by `t`. It is also the form whose
+/// ciphertexts are homomorphic on purpose, which is what some protocols
+/// (re-encryption mixes, threshold decryption) want from it.
+pub fn encrypt_raw(key: &ElGamalPublicKey, message: &[u8]) -> Result<Vec<u8>, String> {
+    let size = key.size();
+    if message.len() > size {
+        return Err(format!("Message of {} bytes is longer than the {} byte \
+                            modulus.", message.len(), size));
+    }
+    let (c1, c2) = key.encrypt(&BigUint::from_bytes_be(message))?;
+    let mut out = c1.to_bytes_be_padded(size)?;
+    out.extend_from_slice(&c2.to_bytes_be_padded(size)?);
+    Ok(out)
+}
+
+/// The counterpart of `encrypt_raw`: `c1 || c2` back to the integer
+/// message, at the modulus width with its leading zeros kept, since an
+/// unpadded message does not say where it started. `c1` gets the check
+/// a Diffie-Hellman peer value gets (see `ElGamalPrivateKey::decrypt`),
+/// and `c2` must be in [1, p-1]; nothing else is refused.
+pub fn decrypt_raw(key: &ElGamalPrivateKey, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    let size = key.public().size();
+    if ciphertext.len() != 2 * size {
+        return Err(format!("An ElGamal ciphertext under this key is {} bytes, \
+                            c1 || c2; this one is {}.", 2 * size, ciphertext.len()));
+    }
+    key.decrypt(&BigUint::from_bytes_be(&ciphertext[..size]),
+                &BigUint::from_bytes_be(&ciphertext[size..]))?
+        .to_bytes_be_padded(size)
+}
+
 // --------------------------------------------------- PKCS#1 v1.5 framing ---
 
 /// OpenPGP's ElGamal encryption (RFC 4880 section 13.1), which is
@@ -405,6 +444,43 @@ mod tests {
     /// generated one, so the parameters are still somebody else's.
     fn small_group() -> DhGroup {
         modp_group(crate::publickey_ciphers::dh::MODP_1024).unwrap()
+    }
+
+    /// The byte form of the raw scheme: the layout `encrypt_pkcs1v15`
+    /// uses without its padding, leading zeros kept on the way out, and
+    /// nothing refused but a value with no ciphertext. The arithmetic is
+    /// checked against Python's integers in `pytests/test_elgamal.py`.
+    #[test]
+    fn test_textbook_bytes() {
+        let key = ElGamalPrivateKey::generate(small_group()).unwrap();
+        let public = key.public();
+        let size = public.size();
+        let p = public.group().p().to_bytes_be_padded(size).unwrap();
+
+        let sealed = encrypt_raw(public, b"short").unwrap();
+        assert_eq!(sealed.len(), 2 * size);
+        let opened = decrypt_raw(&key, &sealed).unwrap();
+        assert_eq!(&opened[size - 5..], b"short");
+        assert!(opened[..size - 5].iter().all(|&b| b == 0));
+        assert_ne!(encrypt_raw(public, b"short").unwrap(), sealed, "k is fresh each time");
+
+        let mut largest = p.clone();
+        *largest.last_mut().unwrap() -= 1;
+        assert_eq!(decrypt_raw(&key, &encrypt_raw(public, &largest).unwrap()).unwrap(),
+                   largest);
+        // Longer than the modulus is refused even when the value fits.
+        let mut longer = vec![0u8];
+        longer.extend_from_slice(&largest);
+        for refused in [&[][..], &[0u8][..], &p[..], &longer[..]] {
+            assert!(encrypt_raw(public, refused).is_err(), "{}", refused.len());
+        }
+        assert!(decrypt_raw(&key, &sealed[1..]).is_err());
+
+        // The raw decryption of an OpenPGP ciphertext is its 00 02 block.
+        let padded = encrypt_pkcs1v15(public, b"inside").unwrap();
+        let block = decrypt_raw(&key, &padded).unwrap();
+        assert_eq!(&block[..2], &[0, 2]);
+        assert_eq!(&block[size - 7..], b"\0inside");
     }
 
     // ---------------------------------------------------- encryption ---

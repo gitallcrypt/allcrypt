@@ -27,6 +27,7 @@ rediscover. Every other test passes `distid` explicitly on the OpenSSL
 side, so none of them depends on either default.
 """
 
+import hashlib
 import subprocess
 
 import pytest
@@ -365,3 +366,139 @@ def test_sm2_refuses_another_curve(curve):
         key.sm2_sign(b"x")
     with pytest.raises(ValueError, match="sm2p256v1"):
         key.public_key().sm2_encrypt(b"x")
+
+
+# ------------------------------------------------------------- chosen k ---
+#
+# With `k` fixed, the signature and the ciphertext are determined, so they
+# can be computed here from the standard's equations - affine arithmetic
+# in Python's integers, SM3 from hashlib (OpenSSL's), the curve from
+# `openssl ecparam` - and compared byte for byte. Nothing below calls the
+# library except the operation under test.
+
+def sm2_curve():
+    text = subprocess.run(["openssl", "ecparam", "-name", "SM2", "-param_enc", "explicit",
+                           "-text", "-noout"], capture_output=True, check=True,
+                          text=True).stdout
+    fields, label = {}, None
+    for line in text.splitlines():
+        if line and not line.startswith(" "):
+            label = line.split(":")[0].strip()
+            rest = line.split(":", 1)[1].strip() if ":" in line else ""
+            fields[label] = rest.replace(":", "") if rest and all(
+                c in "0123456789abcdef:" for c in rest) else ""
+        elif label:
+            fields[label] += line.strip().replace(":", "")
+    point = bytes.fromhex(fields["Generator (uncompressed)"])
+    assert point[0] == 4 and len(point) == 65
+    return {"p": int(fields["Prime"], 16), "a": int(fields["A"], 16),
+            "b": int(fields["B"], 16), "n": int(fields["Order"], 16),
+            "g": (int.from_bytes(point[1:33], "big"), int.from_bytes(point[33:], "big"))}
+
+
+def ec_add(c, P, Q):
+    p = c["p"]
+    if P is None:
+        return Q
+    if Q is None:
+        return P
+    if P[0] == Q[0] and (P[1] + Q[1]) % p == 0:
+        return None
+    if P == Q:
+        slope = (3 * P[0] * P[0] + c["a"]) * pow(2 * P[1], -1, p) % p
+    else:
+        slope = (Q[1] - P[1]) * pow(Q[0] - P[0], -1, p) % p
+    x = (slope * slope - P[0] - Q[0]) % p
+    return x, (slope * (P[0] - x) - P[1]) % p
+
+
+def ec_mul(c, k, P):
+    out = None
+    for bit in bin(k)[2:]:
+        out = ec_add(c, out, out)
+        if bit == "1":
+            out = ec_add(c, out, P)
+    return out
+
+
+def sm3(data):
+    return hashlib.new("sm3", data).digest()
+
+
+def b32(value):
+    return value.to_bytes(32, "big")
+
+
+@pytest.fixture(scope="module")
+def curve_numbers():
+    try:
+        hashlib.new("sm3")
+    except ValueError:
+        pytest.skip("this hashlib has no SM3")
+    return sm2_curve()
+
+
+def test_the_python_curve_is_the_librarys(curve_numbers):
+    _, private, public = openssl_keypair()
+    point = ec_mul(curve_numbers, int.from_bytes(private, "big"), curve_numbers["g"])
+    assert b"\x04" + b32(point[0]) + b32(point[1]) == public
+
+
+@pytest.mark.parametrize("identity", [STANDARD_ID, b""])
+def test_signing_with_a_given_k_is_the_standards_equation(curve_numbers, identity):
+    c = curve_numbers
+    _, private, public = openssl_keypair()
+    d = int.from_bytes(private, "big")
+    key = allcrypt.EcKey.from_private(CURVE, private)
+    message, k = b"message digest", 0x6CB28D99385C175C94F94E934817663FC176D925DD72B727260DBAAE1FB2F96F
+    signature = key.sm2_sign(message, id=identity, k=b32(k))
+
+    entl = (8 * len(identity)).to_bytes(2, "big")
+    z = sm3(entl + identity + b32(c["a"]) + b32(c["b"]) + b32(c["g"][0]) + b32(c["g"][1])
+            + public[1:])
+    e = int.from_bytes(sm3(z + message), "big")
+    x1 = ec_mul(c, k, c["g"])[0]
+    r = (e + x1) % c["n"]
+    s = pow(1 + d, -1, c["n"]) * (k - r * d) % c["n"]
+    assert signature == b32(r) + b32(s)
+    assert key.sm2_sign(message, id=identity, k=b32(k)) == signature
+    assert key.sm2_verify(message, signature, id=identity)
+    # Which is why a known k is the private key.
+    assert (k - s) * pow(s + r, -1, c["n"]) % c["n"] == d
+
+
+def test_encrypting_with_a_given_k_is_the_standards_equation(curve_numbers, tmp_path):
+    c = curve_numbers
+    pem, _, public = openssl_keypair()
+    message, k = b"encryption standard", 0x4C62EEFD6ECFC2B95B92FD6C3D9575148AFA17425546D49018E5388D49DD7B4F
+    key = allcrypt.EcPublicKey(CURVE, public)
+    ciphertext = key.sm2_encrypt(message, k=b32(k))
+
+    point = (int.from_bytes(public[1:33], "big"), int.from_bytes(public[33:], "big"))
+    c1 = ec_mul(c, k, c["g"])
+    x2, y2 = ec_mul(c, k, point)
+    stream, counter = b"", 1
+    while len(stream) < len(message):
+        stream += sm3(b32(x2) + b32(y2) + counter.to_bytes(4, "big"))
+        counter += 1
+    c2 = bytes(m ^ t for m, t in zip(message, stream))
+    c3 = sm3(b32(x2) + message + b32(y2))
+    assert ciphertext == b"\x04" + b32(c1[0]) + b32(c1[1]) + c3 + c2
+    assert key.sm2_encrypt(message, k=b32(k)) == ciphertext
+
+    der = key.sm2_encrypt_der(message, k=b32(k))
+    proc = subprocess.run(["openssl", "pkeyutl", "-decrypt", "-inkey",
+                           write(tmp_path, "k.pem", pem), "-in", write(tmp_path, "c.der", der)],
+                          capture_output=True)
+    assert proc.returncode == 0, proc.stderr.decode()[:200]
+    assert proc.stdout == message
+
+
+def test_a_given_k_out_of_range_is_refused(curve_numbers):
+    _, private, public = openssl_keypair()
+    key = allcrypt.EcKey.from_private(CURVE, private)
+    for k in (b"", bytes(32), b32(curve_numbers["n"])):
+        with pytest.raises(allcrypt.CryptoError):
+            key.sm2_sign(b"m", k=k)
+        with pytest.raises(allcrypt.CryptoError):
+            allcrypt.EcPublicKey(CURVE, public).sm2_encrypt(b"m", k=k)

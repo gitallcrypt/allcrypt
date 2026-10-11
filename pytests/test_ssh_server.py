@@ -135,6 +135,72 @@ def test_serve_and_run_over_a_socket():
     assert served["server"].user == "alice"
 
 
+class _ResetWhenArmed:
+    """A socket that answers `sendall` with a reset once armed, the way
+    the kernel does when the peer has already closed."""
+
+    def __init__(self, sock, state):
+        self.sock, self.state = sock, state
+
+    def settimeout(self, value):
+        self.sock.settimeout(value)
+
+    def recv(self, size):
+        return self.sock.recv(size)
+
+    def sendall(self, data):
+        if self.state["armed"]:
+            raise ConnectionResetError(104, "Connection reset by peer")
+        return self.sock.sendall(data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.sock.close()
+
+
+@pytest.mark.parametrize("answer_first", [True, False])
+def test_a_reset_after_the_answer_ends_the_connection(answer_first):
+    """OpenSSH closes as soon as it has the exit status, and anything of
+    ours still in flight - the reply to a key exchange it began - meets
+    a reset. After the answer that is the client leaving, and `serve`
+    returns; before it, it is a failure, and `serve` raises. Found by
+    `test_openssh_ssh_against_our_server`'s rekeying row, which hit the
+    first case about one run in three."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    state = {"armed": not answer_first}
+
+    def handler(command, stdin):
+        state["armed"] = True
+        return b"out", b"", 0
+
+    client = threading.Thread(target=lambda: _quietly(
+        lambda: allcrypt_ssh.run("127.0.0.1", "x", port=port, user="alice", keys=[ALICE],
+                                 host_key=HOST.public_key(), stdin=b"in", timeout=5)))
+    client.start()
+    try:
+        sock, _ = listener.accept()
+        server = allcrypt.SshServer([HOST], authorized=[("alice", ALICE.public_key())])
+        if answer_first:
+            assert allcrypt_ssh.serve(_ResetWhenArmed(sock, state), server, handler) is server
+            assert server.user == "alice"
+        else:
+            with pytest.raises(ConnectionResetError):
+                allcrypt_ssh.serve(_ResetWhenArmed(sock, state), server, handler)
+    finally:
+        listener.close()
+        client.join(timeout=10)
+
+
+def _quietly(call):
+    try:
+        call()
+    except Exception:                                         # noqa: BLE001
+        pass
+
+
 def openssh_client():
     for candidate in (shutil.which("ssh"), "/opt/openssh/bin/ssh"):
         if candidate and os.path.exists(candidate):

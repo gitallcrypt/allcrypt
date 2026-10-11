@@ -325,3 +325,92 @@ def test_unknown_digestmod_raises():
     key = allcrypt.EcKey.generate("P-256")
     with pytest.raises(allcrypt.CryptoError):
         key.sign(bytes(32), digestmod="md6")
+
+
+# ------------------------------------------------------- raw point arithmetic ---
+#
+# The group law with nothing validated. On the curve, python-cryptography
+# is the reference: it computes kG from a private key. Off the curve, a
+# few lines of affine arithmetic here are, since no library will multiply
+# a point it would refuse.
+
+from cryptography.hazmat.primitives.asymmetric import ec as _ec
+from cryptography.hazmat.primitives.serialization import Encoding as _Encoding
+from cryptography.hazmat.primitives.serialization import PublicFormat as _PublicFormat
+
+_NAMED = {"P-256": _ec.SECP256R1(), "P-384": _ec.SECP384R1(), "P-521": _ec.SECP521R1()}
+
+
+def _times_g(curve, k):
+    return _ec.derive_private_key(k, _NAMED[curve]).public_key().public_bytes(
+        _Encoding.X962, _PublicFormat.UncompressedPoint)
+
+
+@pytest.mark.parametrize("curve", sorted(_NAMED))
+def test_raw_point_arithmetic_on_the_curve_is_openssls(curve):
+    g = allcrypt.ec_generator(curve)
+    assert g == _times_g(curve, 1)
+    a, b = 0x1234567, 0x89abcdef0123
+    assert allcrypt.ec_point_multiply(curve, g, a.to_bytes(8, "big")) == _times_g(curve, a)
+    assert allcrypt.ec_point_add(curve, _times_g(curve, a), _times_g(curve, b)) \
+        == _times_g(curve, a + b)
+    assert allcrypt.ec_point_double(curve, _times_g(curve, a)) == _times_g(curve, 2 * a)
+    # P + (-P) is the identity, encoded as one zero byte, and the identity
+    # is an operand like any other.
+    minus = allcrypt.ec_point_negate(curve, _times_g(curve, a))
+    assert allcrypt.ec_point_add(curve, _times_g(curve, a), minus) == b"\x00"
+    assert allcrypt.ec_point_add(curve, b"\x00", g) == g
+    assert allcrypt.ec_point_is_on_curve(curve, minus)
+    # Compressed out, and back in.
+    compressed = allcrypt.ec_point_multiply(curve, g, a.to_bytes(8, "big"), compressed=True)
+    assert len(compressed) == 1 + (len(g) - 1) // 2
+    assert allcrypt.ec_point_add(curve, compressed, b"\x00") == _times_g(curve, a)
+
+
+def test_a_point_off_the_curve_is_arithmetic_on_another_curve():
+    """P-256's a with a point that satisfies no b of P-256: the library
+    must refuse it as a peer key and still double and multiply it, by the
+    same formulas, which never read b."""
+    p = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff
+    a = p - 3
+    x, y = 5, 7
+    point = b"\x04" + x.to_bytes(32, "big") + y.to_bytes(32, "big")
+    assert not allcrypt.ec_point_is_on_curve("P-256", point)
+    with pytest.raises(allcrypt.CryptoError):
+        allcrypt.ec_point_validate("P-256", point)
+
+    def add(P, Q):
+        if P is None:
+            return Q
+        if Q is None:
+            return P
+        if P[0] == Q[0] and (P[1] + Q[1]) % p == 0:
+            return None
+        if P == Q:
+            s = (3 * P[0] * P[0] + a) * pow(2 * P[1], -1, p) % p
+        else:
+            s = (Q[1] - P[1]) * pow(Q[0] - P[0], -1, p) % p
+        rx = (s * s - P[0] - Q[0]) % p
+        return rx, (s * (P[0] - rx) - P[1]) % p
+
+    def encode(P):
+        return b"\x00" if P is None else b"\x04" + P[0].to_bytes(32, "big") + P[1].to_bytes(32, "big")
+
+    doubled = add((x, y), (x, y))
+    assert allcrypt.ec_point_double("P-256", point) == encode(doubled)
+    k, acc = 0b1011011, None
+    for bit in bin(k)[2:]:
+        acc = add(acc, acc)
+        if bit == "1":
+            acc = add(acc, (x, y))
+    assert allcrypt.ec_point_multiply("P-256", point, bytes([k])) == encode(acc)
+    assert allcrypt.ec_point_add("P-256", point, encode(doubled)) == encode(add((x, y), doubled))
+
+
+def test_raw_points_refuse_what_is_not_a_point():
+    for bad in (b"", b"\x04" + bytes(10), b"\x05" + bytes(64),
+                b"\x04" + b"\xff" * 64):          # coordinates not below p
+        with pytest.raises(allcrypt.CryptoError):
+            allcrypt.ec_point_double("P-256", bad)
+    with pytest.raises(allcrypt.CryptoError):
+        allcrypt.ec_point_validate("P-256", b"\x00")   # the identity is no peer key

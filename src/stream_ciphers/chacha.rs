@@ -102,6 +102,28 @@ impl Chacha {
         Ok(())
     }
 
+    /// Move to the start of block `block`, before or during a stream:
+    /// the next byte of keystream is that block's first. With an 8 byte
+    /// nonce the counter is 64 bits; with a 12 byte one it is 32 bits,
+    /// and a block past `u32::MAX` is refused rather than wrapped into
+    /// the nonce or onto block zero.
+    pub fn seek_block(&mut self, block: u64) -> Result<(), String> {
+        if !self.wide_counter && block > u32::MAX as u64 {
+            return Err(format!(
+                "With a 12 byte nonce the ChaCha counter is 32 bits; block {block} \
+                 is past its last, {}.", u32::MAX));
+        }
+        self.state[12] = block as u32;
+        if self.wide_counter {
+            self.state[13] = (block >> 32) as u32;
+        }
+        self.key_pos = 0;
+        self.byte_state = [0; 64];
+        self.exhausted = false;
+        self.started = true;
+        Ok(())
+    }
+
     /// Advance the block counter by one: word 12, carrying into word 13
     /// only for the 64 bit counter of the 8 byte nonce construction. With a
     /// 12 byte nonce word 13 holds nonce material, and carrying into it

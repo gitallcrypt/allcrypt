@@ -28,9 +28,11 @@ except for two operations only one of them has:
 What is left out, and why:
 
 - **The empty message to GOST 34.311-95.** Both witnesses skip the
-  padded block when nothing is left; this library compresses a zero
-  block, as gost-engine does for GOST R 34.11-94. Every non-empty
-  length agrees. `docs/pitfalls.md` records the split.
+  padded block when nothing is left; this library's `gost34311`
+  compresses a zero block, as gost-engine does for GOST R 34.11-94, and
+  `gost34311_bc` is the witnesses' reading. Every non-empty length
+  agrees. `scripts/make_gost94_vectors.py` records the empty message
+  under all three S-boxes.
 - **MACs of one block or less.** GOST 28147-89 defines the MAC for two
   blocks or more. Bouncy Castle MACs one block as it is, gost89 adds a
   zero block only to an exact 8-byte message, and this library pads to

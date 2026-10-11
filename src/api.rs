@@ -63,6 +63,13 @@ pub const MODES: &[&str] = &["ecb", "cbc", "pcbc", "cfb", "ofb", "ctr", "ctr-le"
 /// share its interface: they take a nonce and additional data, and
 /// decryption can fail.
 pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
+                             // GCM and CCM over the other 128 bit ciphers
+                             // with a standard that names them: ARIA (RFC
+                             // 6209), Camellia (RFC 6367), SM4 (RFC
+                             // 8998). Any 128 bit cipher here works by
+                             // the same naming, Kalyna excepted.
+                             "aria-gcm", "camellia-gcm", "sm4-gcm",
+                             "aria-ccm", "camellia-ccm", "sm4-ccm",
                              "chacha20-poly1305", "xchacha20-poly1305",
                              // EAX over any block cipher here. Named per
                              // cipher rather than as one "eax" taking a
@@ -117,7 +124,10 @@ pub const HASHES: &[&str] = &[
     // standard's own test parameter set is a separate name because it
     // is a different hash of the same message. GOST 34.311-95 is
     // Ukraine's: the same construction under the DSTU 4145 default DKE.
-    "gost94", "gost94_test", "gost34311",
+    // The `_bc` names are the same three hashes under the other reading
+    // of the empty message - Bouncy Castle's, gost89's and OpenSSL 1.0's
+    // gost engine's - and agree with them on every other message.
+    "gost94", "gost94_test", "gost34311", "gost94_bc", "gost94_test_bc", "gost34311_bc",
     "blake2b", "blake2s", "ripemd128", "ripemd160", "ripemd256", "ripemd320",
     "sm3", "whirlpool", "whirlpool_0", "whirlpool_t", "has160",
     // Kupyna, DSTU 7564:2014, Ukraine's hash after GOST 34.311-95, at
@@ -371,6 +381,19 @@ impl AnyBlockCipher {
         }
     }
 
+    /// GOST 28147-89 under substitution rows given directly - eight rows,
+    /// each a permutation of 0..16 - rather than under a parameter set's
+    /// name. The rows are checked as `register_oid` checks them.
+    pub fn gost_with_sbox(key: &[u8], rows: &[Vec<u8>]) -> Result<Self, String> {
+        Ok(AnyBlockCipher::Gost(GostCrypto::new_with_sbox(key, rows)?))
+    }
+
+    /// GOST 28147-89 under the S-box a DSTU 4145 DKE packs: the 64 bytes
+    /// a Ukrainian key or key container carries.
+    pub fn gost_with_dke(key: &[u8], dke: &[u8]) -> Result<Self, String> {
+        AnyBlockCipher::gost_with_sbox(key, &gost_sbox_from_dke(dke)?)
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             AnyBlockCipher::Aes(_) => "aes",
@@ -535,7 +558,10 @@ pub struct AeadStream {
 /// Poly1305 - so this is an enum rather than a trait object. Concrete
 /// types are what let the Python bindings own one.
 enum AeadInner {
-    Gcm { cipher: AnyBlockCipher, state: GcmState },
+    /// `tag_len` is `None` unless the name fixed one (`"aes-gcm-8"`):
+    /// then the tag is cut to it, and only a tag of exactly that length
+    /// is accepted. See `GcmState::verify_fixed`.
+    Gcm { cipher: AnyBlockCipher, state: GcmState, tag_len: Option<usize> },
     ChaChaPoly(ChaCha20Poly1305),
     /// CCM cannot stream: its MAC starts with the message's length, so
     /// nothing can be processed until all of it has arrived. The
@@ -605,24 +631,38 @@ impl AeadStream {
     /// `"chacha20-poly1305"`.
     pub fn new(name: &str, key: &[u8], nonce: &[u8], aad: &[u8],
                decrypting: bool) -> Result<Self, String> {
-        let inner = match name.to_ascii_lowercase().as_str() {
-            "aes-gcm" | "gcm" => {
-                let mut cipher = AnyBlockCipher::new("aes", key, None)?;
+        let lower = name.to_ascii_lowercase();
+        let (base, tag_len) = split_tag_len(&lower)?;
+        let inner = match base {
+            "gcm" | "ccm" => return AeadStream::new(&format!("aes-{lower}"), key, nonce, aad,
+                                                    decrypting),
+            other if other.ends_with("-gcm") => {
+                let mut cipher = AnyBlockCipher::new(sp800_38_cipher(other)?, key, None)?;
+                if let Some(n) = tag_len {
+                    crate::block_ciphers::gcm::check_tag_len(n)?;
+                }
                 let state = if decrypting {
                     GcmState::decryptor(&mut cipher, nonce, aad)?
                 } else {
                     GcmState::encryptor(&mut cipher, nonce, aad)?
                 };
-                AeadInner::Gcm { cipher, state }
+                AeadInner::Gcm { cipher, state, tag_len }
             }
-            "aes-ccm" | "ccm" | "aes-ccm-8" | "ccm-8" => {
-                let cipher = AnyBlockCipher::new("aes", key, None)?;
+            other if other.ends_with("-ccm") => {
+                let cipher = AnyBlockCipher::new(sp800_38_cipher(other)?, key, None)?;
+                let tag_len = tag_len.unwrap_or(16);
+                crate::block_ciphers::ccm::check_tag_len(tag_len)?;
+                if cipher.blocksize() != 16 {
+                    return Err(format!(
+                        "CCM is defined for 128 bit blocks only; {} has {} bit blocks.",
+                        &other[..other.len() - 4], cipher.blocksize() * 8));
+                }
                 AeadInner::Ccm {
                     cipher,
                     nonce: nonce.to_vec(),
                     aad: aad.to_vec(),
                     buffered: Vec::new(),
-                    tag_len: if name.ends_with("-8") { 8 } else { 16 },
+                    tag_len,
                 }
             }
             "chacha20-poly1305" | "chacha20poly1305" => {
@@ -642,7 +682,10 @@ impl AeadStream {
             other if other.ends_with("-eax") => {
                 let cipher = &other[..other.len() - 4];
                 AeadInner::Eax {
-                    eax: crate::block_ciphers::eax::Eax::new(cipher, key)?,
+                    eax: match tag_len {
+                        None => crate::block_ciphers::eax::Eax::new(cipher, key)?,
+                        Some(n) => crate::block_ciphers::eax::Eax::with_tag_len(cipher, key, n)?,
+                    },
                     nonce: nonce.to_vec(),
                     aad: aad.to_vec(),
                     buffered: Vec::new(),
@@ -651,7 +694,10 @@ impl AeadStream {
             other if other.ends_with("-mgm") => {
                 let cipher = &other[..other.len() - 4];
                 AeadInner::Mgm {
-                    mgm: crate::block_ciphers::mgm::Mgm::new(cipher, key)?,
+                    mgm: match tag_len {
+                        None => crate::block_ciphers::mgm::Mgm::new(cipher, key)?,
+                        Some(n) => crate::block_ciphers::mgm::Mgm::with_tag_len(cipher, key, n)?,
+                    },
                     nonce: nonce.to_vec(),
                     aad: aad.to_vec(),
                     buffered: Vec::new(),
@@ -660,7 +706,10 @@ impl AeadStream {
             other if other.ends_with("-ocb") => {
                 let cipher = &other[..other.len() - 4];
                 AeadInner::Ocb {
-                    ocb: crate::block_ciphers::ocb::Ocb::new(cipher, key)?,
+                    ocb: match tag_len {
+                        None => crate::block_ciphers::ocb::Ocb::new(cipher, key)?,
+                        Some(n) => crate::block_ciphers::ocb::Ocb::with_tag_len(cipher, key, n)?,
+                    },
                     nonce: nonce.to_vec(),
                     aad: aad.to_vec(),
                     buffered: Vec::new(),
@@ -668,7 +717,7 @@ impl AeadStream {
             }
             "aes-128-cbc-hmac-sha256" | "aes-192-cbc-hmac-sha384" | "aes-256-cbc-hmac-sha512" => {
                 use crate::block_ciphers::cbc_hmac::{CbcHmac, Variant};
-                let variant = match &name.to_ascii_lowercase()[..7] {
+                let variant = match &lower[..7] {
                     "aes-128" => Variant::Aes128HmacSha256,
                     "aes-192" => Variant::Aes192HmacSha384,
                     _ => Variant::Aes256HmacSha512,
@@ -685,10 +734,11 @@ impl AeadStream {
                 }
             }
             other => return Err(format!(
-                "Unknown AEAD {:?}. Known: {}.", other, AEADS.join(", "))),
+                "Unknown AEAD {:?}. Known: {}. GCM and CCM take any 128 bit \
+                 cipher, and a tag length in bytes can follow GCM, CCM, EAX, \
+                 MGM or OCB, as in \"aes-gcm-12\".", other, AEADS.join(", "))),
         };
-        Ok(AeadStream { inner, decrypting, name: name.to_ascii_lowercase(),
-                        finished: false })
+        Ok(AeadStream { inner, decrypting, name: lower, finished: false })
     }
 
     /// Feed input. For GCM and ChaCha20-Poly1305 this produces output as
@@ -697,7 +747,7 @@ impl AeadStream {
     pub fn update(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
         self.refuse_if_finished()?;
         match &mut self.inner {
-            AeadInner::Gcm { cipher, state } => state.update(cipher, input, out),
+            AeadInner::Gcm { cipher, state, .. } => state.update(cipher, input, out),
             AeadInner::ChaChaPoly(state) => state.update(input, out),
             AeadInner::Ccm { buffered, .. } | AeadInner::Eax { buffered, .. }
             | AeadInner::Mgm { buffered, .. } | AeadInner::Ocb { buffered, .. }
@@ -725,7 +775,8 @@ impl AeadStream {
     /// altered when in fact the library split it in the wrong place.
     pub fn tag_len(&self) -> usize {
         match &self.inner {
-            AeadInner::Gcm { .. } | AeadInner::ChaChaPoly(_) => 16,
+            AeadInner::Gcm { tag_len, .. } => tag_len.unwrap_or(16),
+            AeadInner::ChaChaPoly(_) => 16,
             AeadInner::Ccm { tag_len, .. } => *tag_len,
             AeadInner::Eax { eax, .. } => eax.tag_len(),
             AeadInner::Mgm { mgm, .. } => mgm.tag_len(),
@@ -796,7 +847,14 @@ impl AeadStream {
             self.finished = true;
         }
         match &mut self.inner {
-            AeadInner::Ccm { cipher, nonce, aad, buffered, .. } => {
+            AeadInner::Ccm { cipher, nonce, aad, buffered, tag_len } => {
+                // The tag's length is part of what CCM authenticates, so
+                // a shorter tag is not a prefix of this one but a tag of
+                // another CCM - one a forger can guess more cheaply.
+                if tag.len() != *tag_len {
+                    return Err(format!("This CCM tag is {} bytes; got {}.",
+                                       tag_len, tag.len()));
+                }
                 let plaintext = crate::block_ciphers::ccm::decrypt(
                     cipher, nonce, aad, buffered, tag)?;
                 out.extend_from_slice(&plaintext);
@@ -836,7 +894,9 @@ impl AeadStream {
             self.finished = true;
         }
         match &mut self.inner {
-            AeadInner::Gcm { cipher, state } => Ok(state.tag(cipher)?.to_vec()),
+            AeadInner::Gcm { cipher, state, tag_len } => {
+                Ok(state.tag(cipher)?[..tag_len.unwrap_or(16)].to_vec())
+            }
             AeadInner::ChaChaPoly(state) => Ok(state.tag()?.to_vec()),
             // CCM's ciphertext and tag appear together, so asking for the
             // tag alone would silently drop the ciphertext.
@@ -879,7 +939,10 @@ impl AeadStream {
             self.finished = true;
         }
         match &mut self.inner {
-            AeadInner::Gcm { cipher, state } => state.verify(cipher, tag),
+            AeadInner::Gcm { cipher, state, tag_len: None } => state.verify(cipher, tag),
+            AeadInner::Gcm { cipher, state, tag_len: Some(n) } => {
+                state.verify_fixed(cipher, tag, *n)
+            }
             AeadInner::ChaChaPoly(state) => state.verify(tag),
             AeadInner::Ccm { .. } => Err(
                 "CCM releases its plaintext only once the tag checks; call \
@@ -898,6 +961,38 @@ impl AeadStream {
                  open() with a buffer for it.".to_string()),
         }
     }
+}
+
+/// Split a trailing tag length off an AEAD name: `"aes-gcm-8"` is
+/// `("aes-gcm", Some(8))`. Only after a mode whose tag length is a
+/// parameter - GCM, CCM, EAX, MGM and OCB - so `"kalyna-128"` and
+/// `"aes-128-cbc-hmac-sha256"` are left whole.
+fn split_tag_len(name: &str) -> Result<(&str, Option<usize>), String> {
+    let Some((base, digits)) = name.rsplit_once('-') else { return Ok((name, None)) };
+    let parameterised = ["gcm", "ccm"].contains(&base)
+        || ["-gcm", "-ccm", "-eax", "-mgm", "-ocb"].iter().any(|mode| base.ends_with(mode));
+    if !parameterised || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok((name, None));
+    }
+    let tag_len = digits.parse::<usize>()
+        .map_err(|_| format!("{name:?}: {digits} is not a tag length in bytes."))?;
+    Ok((base, Some(tag_len)))
+}
+
+/// The block cipher under `"<cipher>-gcm"` or `"<cipher>-ccm"`.
+///
+/// Kalyna is refused by name: DSTU 7624:2014 defines its own GCM and
+/// CCM, which are not SP 800-38D's over a different cipher, and
+/// `"kalyna-128-gcm"` would be read as that standard's mode.
+fn sp800_38_cipher(name: &str) -> Result<&str, String> {
+    let cipher = &name[..name.len() - 4];
+    if cipher.starts_with("kalyna") {
+        return Err(format!(
+            "{name:?} is not offered: DSTU 7624:2014 defines a GCM and a CCM of \
+             its own for Kalyna, which are different modes from NIST's, so \
+             this name would mean the wrong one."));
+    }
+    Ok(cipher)
 }
 
 /// The tag length of a named AEAD, for a caller that has to split
@@ -1180,6 +1275,39 @@ impl AnyStreamCipher {
         }
     }
 
+    /// Move to byte `offset` of the keystream, forwards or back: the
+    /// next byte `update` transforms is the one at that offset.
+    ///
+    /// ChaCha and Salsa20 compute any block directly from its counter, so
+    /// this costs one block at most. RC4 and ZipCrypto have no counter -
+    /// their state is everything that came before - and refuse. With a
+    /// 12 byte nonce ChaCha's counter is 32 bits, so an offset of
+    /// 256 GiB or more is refused there.
+    pub fn seek(&mut self, offset: u64) -> Result<(), String> {
+        self.seek_block(offset / 64)?;
+        // Into the block: its first bytes are produced and dropped.
+        let within = (offset % 64) as usize;
+        let mut discarded = Vec::with_capacity(within);
+        self.keystream(&[0u8; 64][..within], &mut discarded)
+    }
+
+    /// Move to the start of block `block`: the block counter, which a
+    /// byte offset cannot reach past 2^58 blocks and which RFC 8439's
+    /// AEAD sets to 1 for its payload.
+    pub fn seek_block(&mut self, block: u64) -> Result<(), String> {
+        match self {
+            AnyStreamCipher::Chacha(c) => c.seek_block(block),
+            AnyStreamCipher::Salsa20(c) => {
+                c.seek_block(block);
+                Ok(())
+            }
+            AnyStreamCipher::Rc4(_) | AnyStreamCipher::ZipCrypto(_) => Err(
+                "RC4 and ZipCrypto cannot seek: their state is everything that \
+                 came before, not a counter. Start a new one and discard up to \
+                 the offset.".to_string()),
+        }
+    }
+
     /// Transform `buf` in place, continuing the keystream.
     ///
     /// The same operation as `update` with no allocation, which matters in
@@ -1200,6 +1328,84 @@ impl AnyStreamCipher {
         buf.copy_from_slice(&transformed);
         Ok(())
     }
+}
+
+// ------------------------------------------- one-time and raw primitives ---
+
+/// GHASH (SP 800-38D section 6.4) under the hash subkey `h`, over `data`
+/// of whole 16 byte blocks: GCM's universal hash with no length block and
+/// no mask. A last partial block is refused rather than padded, because
+/// where the padding goes - after the additional data, after the
+/// ciphertext, before the length block - is the caller's construction.
+pub fn ghash(h: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    if !data.len().is_multiple_of(16) {
+        return Err(format!(
+            "GHASH is defined on whole 16 byte blocks; {} bytes is not. Pad it \
+             as the construction says - GCM pads each section with zeros.",
+            data.len()));
+    }
+    let mut ghash = crate::block_ciphers::ghash::Ghash::new(h)?;
+    ghash.update(data);
+    Ok(ghash.digest().to_vec())
+}
+
+/// GMAC (SP 800-38D section 3): GCM over `cipher` with `data` as the
+/// additional data and nothing to encrypt, so the tag is the MAC.
+/// `tag_len` is any GCM tag length; `None` is 16. **The nonce must never
+/// repeat under one key**, exactly as for GCM - GMAC is GCM, and a
+/// repeat gives away the hash subkey.
+pub fn gmac(cipher: &str, key: &[u8], nonce: &[u8], data: &[u8], tag_len: Option<usize>)
+            -> Result<Vec<u8>, String> {
+    let name = match tag_len {
+        Some(n) => format!("{cipher}-gcm-{n}"),
+        None => format!("{cipher}-gcm"),
+    };
+    Ok(aead_encrypt(&name, key, nonce, data, &[])?.1)
+}
+
+/// Poly1305 (RFC 8439 section 2.5) on its own: a 32 byte one-time key,
+/// `r` then `s`, and a 16 byte tag. **A key authenticates one message.**
+/// Two tags under one key give `r` away by subtraction, after which
+/// anything can be forged under it; every construction that uses
+/// Poly1305 derives a fresh key per message, from a cipher's keystream.
+pub fn poly1305(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(poly1305_over(key, message)?.tag().to_vec())
+}
+
+/// Check a Poly1305 tag in constant time. `false` for a tag of the
+/// wrong length as for a wrong tag.
+pub fn poly1305_verify(key: &[u8], message: &[u8], tag: &[u8]) -> Result<bool, String> {
+    Ok(poly1305_over(key, message)?.verify(tag))
+}
+
+fn poly1305_over(key: &[u8], message: &[u8])
+                 -> Result<crate::mac::poly1305::Poly1305, String> {
+    use crate::Mac;
+    let mut mac = crate::mac::poly1305::Poly1305::new(key)?;
+    mac.update(message);
+    Ok(mac)
+}
+
+/// HChaCha20 (draft-irtf-cfrg-xchacha section 2.2): XChaCha20's subkey
+/// from a 32 byte key and 16 byte input.
+pub fn hchacha20(key: &[u8], input: &[u8]) -> Result<Vec<u8>, String> {
+    let key: &[u8; 32] = key.try_into()
+        .map_err(|_| format!("An HChaCha20 key is 32 bytes, not {}.", key.len()))?;
+    let input: &[u8; 16] = input.try_into()
+        .map_err(|_| format!("HChaCha20's input is 16 bytes, not {}.", input.len()))?;
+    Ok(crate::stream_ciphers::chacha::hchacha20(key, input).to_vec())
+}
+
+/// The Salsa20 core on a 64 byte block: `rounds / 2` double rounds and
+/// the input added back. 20 is Salsa20's, 8 is scrypt's BlockMix. The
+/// rounds come in pairs, column then row, so an odd count is refused.
+pub fn salsa20_core(input: &[u8], rounds: usize) -> Result<Vec<u8>, String> {
+    let input: &[u8; 64] = input.try_into()
+        .map_err(|_| format!("The Salsa20 core takes a 64 byte block, not {}.", input.len()))?;
+    if !rounds.is_multiple_of(2) {
+        return Err(format!("Salsa20's rounds come in column-and-row pairs; {rounds} is odd."));
+    }
+    Ok(crate::stream_ciphers::salsa20::core(input, rounds).to_vec())
 }
 
 // ------------------------------------------------------------- CBC-MAC ---
@@ -1250,9 +1456,7 @@ pub fn office_xor_encrypt(password: &[u8], data: &[u8], index: usize)
 /// Michael, TKIP's message integrity code (`mac::michael`). The key is
 /// 8 bytes.
 pub fn michael(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
-    let key: [u8; 8] = key.try_into()
-        .map_err(|_| format!("Michael's key is 8 bytes, not {}.", key.len()))?;
-    Ok(crate::mac::michael::michael(&key, data).to_vec())
+    Ok(crate::mac::michael::michael(&michael_key(key)?, data).to_vec())
 }
 
 /// WEP's RC4 encapsulation of `plaintext` under the IV and shared key
@@ -1274,10 +1478,7 @@ pub fn wep_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, 
 /// TKIP's per-packet RC4 key from the temporal key, the transmitter
 /// address and the 48-bit sequence counter (`stream_ciphers::tkip`).
 pub fn tkip_rc4_key(tk: &[u8], ta: &[u8], tsc: u64) -> Result<Vec<u8>, String> {
-    let tk: [u8; 16] = tk.try_into()
-        .map_err(|_| format!("A TKIP temporal key is 16 bytes, not {}.", tk.len()))?;
-    let ta: [u8; 6] = ta.try_into()
-        .map_err(|_| format!("A transmitter address is 6 bytes, not {}.", ta.len()))?;
+    let (tk, ta) = tkip_frame_parts(tk, ta, tsc)?;
     Ok(crate::stream_ciphers::tkip::rc4_key(&tk, &ta, tsc).to_vec())
 }
 
@@ -1305,6 +1506,66 @@ pub fn wpa_ptk(akm: &str, pmk: &[u8], aa: &[u8], spa: &[u8], anonce: &[u8], snon
         "sha256" => crate::kdf::ieee80211::try_ptk_sha256(pmk, &aa, &spa, &anonce, &snonce, bits)?,
         other => return Err(format!("A WPA AKM is \"sha1\" or \"sha256\", not {other:?}.")),
     })
+}
+
+/// IEEE 802.11's PRF-n (12.7.1.2): HMAC-SHA-1 over `label || 0 ||
+/// data || i`, `bits` of it. The PTK, the GTK and the PMKID's older
+/// relatives are this.
+pub fn ieee80211_prf(key: &[u8], label: &[u8], data: &[u8], bits: usize)
+                     -> Result<Vec<u8>, String> {
+    crate::kdf::ieee80211::prf_sha1(key, label, data, bits)
+}
+
+/// IEEE 802.11's KDF-Hash-Length (12.7.1.7.2) over SHA-256: the counter
+/// mode 802.11w and WPA3 derive with.
+pub fn ieee80211_kdf_sha256(key: &[u8], label: &[u8], context: &[u8], bits: usize)
+                            -> Result<Vec<u8>, String> {
+    crate::kdf::ieee80211::kdf_sha256(key, label, context, bits)
+}
+
+/// A TKIP frame's temporal key and transmitter address, checked, and
+/// its sequence counter, which is 48 bits: the key mixing reads the
+/// top 32 and the bottom 16, so anything above would be dropped.
+fn tkip_frame_parts(tk: &[u8], ta: &[u8], tsc: u64) -> Result<([u8; 16], [u8; 6]), String> {
+    let tk: [u8; 16] = tk.try_into()
+        .map_err(|_| format!("A TKIP temporal key is 16 bytes, not {}.", tk.len()))?;
+    let ta: [u8; 6] = ta.try_into()
+        .map_err(|_| format!("A transmitter address is 6 bytes, not {}.", ta.len()))?;
+    if tsc >> 48 != 0 {
+        return Err(format!("TKIP's sequence counter is 48 bits; {tsc:#x} is wider."));
+    }
+    Ok((tk, ta))
+}
+
+fn michael_key(key: &[u8]) -> Result<[u8; 8], String> {
+    key.try_into().map_err(|_| format!("Michael's key is 8 bytes, not {}.", key.len()))
+}
+
+/// A TKIP MPDU's payload: RC4 under the frame's key over the plaintext
+/// and its CRC-32 ICV. `tsc` is the 48 bit sequence counter.
+pub fn tkip_encrypt(tk: &[u8], ta: &[u8], tsc: u64, plaintext: &[u8])
+                    -> Result<Vec<u8>, String> {
+    let (tk, ta) = tkip_frame_parts(tk, ta, tsc)?;
+    crate::stream_ciphers::tkip::encrypt_mpdu(&tk, &ta, tsc, plaintext)
+}
+
+/// `tkip_encrypt` undone, refusing a wrong ICV.
+pub fn tkip_decrypt(tk: &[u8], ta: &[u8], tsc: u64, ciphertext: &[u8])
+                    -> Result<Vec<u8>, String> {
+    let (tk, ta) = tkip_frame_parts(tk, ta, tsc)?;
+    crate::stream_ciphers::tkip::decrypt_mpdu(&tk, &ta, tsc, ciphertext)
+}
+
+/// TKIP's MSDU MIC: Michael over the destination and source addresses,
+/// the priority and three zero bytes, then the data.
+pub fn tkip_msdu_mic(mic_key: &[u8], da: &[u8], sa: &[u8], priority: u8, data: &[u8])
+                     -> Result<Vec<u8>, String> {
+    let mic_key = michael_key(mic_key)?;
+    let address = |m: &[u8], what: &str| -> Result<[u8; 6], String> {
+        m.try_into().map_err(|_| format!("A {what} address is 6 bytes, not {}.", m.len()))
+    };
+    Ok(crate::stream_ciphers::tkip::msdu_mic(&mic_key, &address(da, "destination")?,
+                                             &address(sa, "source")?, priority, data).to_vec())
 }
 
 /// The PMKID, which names a cached pairwise master key.
@@ -1371,6 +1632,23 @@ pub enum AnyHash {
 }
 
 impl AnyHash {
+    /// BLAKE2b or BLAKE2s (RFC 7693) with the whole parameter block:
+    /// `digest_len` bytes of output, a key (which makes it a MAC; no HMAC
+    /// around it), and a salt and personalisation of up to 16 bytes for
+    /// BLAKE2b and 8 for BLAKE2s, zero filled. hashlib's `blake2b` and
+    /// `blake2s` take the same four.
+    pub fn blake2(variant: &str, digest_len: usize, key: &[u8], salt: &[u8], personal: &[u8])
+                  -> Result<Self, String> {
+        use crate::hash_functions::blake2::{Blake2b, Blake2s, Params};
+        let params = Params { digest_len, key: key.to_vec(), salt: salt.to_vec(),
+                              personal: personal.to_vec() };
+        match variant.to_ascii_lowercase().as_str() {
+            "blake2b" => Ok(AnyHash::Blake2b(Blake2b::with_params(&params)?)),
+            "blake2s" => Ok(AnyHash::Blake2s(Blake2s::with_params(&params)?)),
+            other => Err(format!("BLAKE2 is \"blake2b\" or \"blake2s\", not {other:?}.")),
+        }
+    }
+
     pub fn new(name: &str) -> Result<Self, String> {
         // **The built-in names first, then the registry.** An OID a
         // caller has given a meaning to can be used as a hash name
@@ -1415,6 +1693,16 @@ impl AnyHash {
             "gost94" | "gostr341194" | "gost34.11_94" =>
                 Ok(AnyHash::Gost94(
                     crate::hash_functions::gost94::Gost94::new(&[]))),
+            bc @ ("gost94_bc" | "gost94_test_bc" | "gost34311_bc") => {
+                use crate::hash_functions::gost94::{EmptyMessage, Gost94, CRYPTOPRO_PARAM_SET,
+                                                    DSTU_PARAM_SET, TEST_PARAM_SET};
+                let params = match bc {
+                    "gost94_bc" => CRYPTOPRO_PARAM_SET,
+                    "gost94_test_bc" => TEST_PARAM_SET,
+                    _ => DSTU_PARAM_SET,
+                };
+                Ok(AnyHash::Gost94(Gost94::with_reading(&[], params, EmptyMessage::NoBlock)?))
+            }
             "gost94_test" | "gostr341194_test" =>
                 Ok(AnyHash::Gost94(
                     crate::hash_functions::gost94::Gost94::with_param_set(
@@ -1644,6 +1932,84 @@ pub fn umac(key: &[u8], nonce: &[u8], message: &[u8], tag_len: usize)
 pub fn hkdf(hash_name: &str, salt: &[u8], ikm: &[u8], info: &[u8],
             length: usize) -> Result<Vec<u8>, String> {
     kdf::hkdf(AnyHash::new(hash_name)?, salt, ikm, info, length)
+}
+
+/// HKDF-Extract (RFC 5869 2.2) alone: the pseudorandom key, one hash
+/// output long. An empty `salt` is the all-zero one.
+pub fn hkdf_extract(hash_name: &str, salt: &[u8], ikm: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(kdf::hkdf_extract(AnyHash::new(hash_name)?, salt, ikm))
+}
+
+/// HKDF-Expand (RFC 5869 2.3) alone, from a pseudorandom key: what TLS
+/// 1.3's `HKDF-Expand-Label` and many protocols call on a key that did
+/// not come from Extract. At most 255 hash outputs.
+pub fn hkdf_expand(hash_name: &str, prk: &[u8], info: &[u8], length: usize)
+                   -> Result<Vec<u8>, String> {
+    kdf::hkdf_expand(AnyHash::new(hash_name)?, prk, info, length)
+}
+
+/// PBKDF1 (RFC 8018 5.1): the first `length` bytes of the hash iterated
+/// over `password || salt`, so never more than one hash output.
+/// PBES1's `pbeWithMD5AndDES-CBC` and relatives.
+pub fn pbkdf1(hash_name: &str, password: &[u8], salt: &[u8], iterations: u32, length: usize)
+              -> Result<Vec<u8>, String> {
+    kdf::password::pbkdf1(AnyHash::new(hash_name)?, password, salt, iterations, length)
+}
+
+/// The PKCS#12 KDF (RFC 7292 appendix B.2). `password` is already the
+/// BMPString - `pkcs12_bmp_password` makes one - and `purpose` is the
+/// RFC's ID: 1 for a key, 2 for an IV, 3 for a MAC key.
+pub fn pkcs12_kdf(hash_name: &str, password: &[u8], salt: &[u8], purpose: u8, iterations: u32,
+                  length: usize) -> Result<Vec<u8>, String> {
+    use kdf::password::Pkcs12Purpose;
+    let purpose = match purpose {
+        1 => Pkcs12Purpose::Key,
+        2 => Pkcs12Purpose::Iv,
+        3 => Pkcs12Purpose::Mac,
+        other => return Err(format!(
+            "The PKCS#12 KDF's ID is 1 (key), 2 (IV) or 3 (MAC), not {other}.")),
+    };
+    kdf::password::pkcs12_kdf(AnyHash::new(hash_name)?, password, salt, purpose, iterations,
+                              length)
+}
+
+/// A password as the PKCS#12 KDF takes it: UTF-16 big endian with a
+/// two byte terminating NUL. The empty password is ambiguous - OpenSSL
+/// passes nothing, others the NUL alone - and this gives the NUL.
+pub fn pkcs12_bmp_password(password: &str) -> Vec<u8> {
+    kdf::password::pkcs12_bmp_password(password)
+}
+
+/// The JDK's `PBEWithMD5AndTripleDES` derivation (JCEKS): `(key, iv)`,
+/// a 24 byte 3DES key and an 8 byte IV, from an 8 byte salt.
+pub fn jdk_pbe_md5_3des(password: &[u8], salt: &[u8], iterations: u32)
+                        -> Result<(Vec<u8>, Vec<u8>), String> {
+    kdf::password::jdk_pbe_md5_3des_key(password, salt, iterations)
+}
+
+/// The coded count byte (RFC 4880 3.7.1.3) for at least `octets`: the
+/// smallest that reaches it, or 255 past the largest, 65,011,712.
+pub fn openpgp_s2k_coded_count(octets: usize) -> u8 {
+    kdf::password::openpgp_s2k_coded_count(octets)
+}
+
+/// OpenBSD's `bcrypt_pbkdf`, which OpenSSH's private key format uses:
+/// `length` bytes, at most 1024, from `rounds` rounds.
+pub fn bcrypt_pbkdf(password: &[u8], salt: &[u8], rounds: u32, length: usize)
+                    -> Result<Vec<u8>, String> {
+    kdf::bcrypt_pbkdf::bcrypt_pbkdf(password, salt, rounds, length)
+}
+
+/// BitLocker's stretch on its own: 2^20 SHA-256 rounds from a 32 byte
+/// initial hash and a 16 byte salt. `bitlocker_password_key` and
+/// `bitlocker_recovery_password_key` are this after their own first
+/// hashes.
+pub fn bitlocker_stretch(initial: &[u8], salt: &[u8]) -> Result<Vec<u8>, String> {
+    let initial: [u8; 32] = initial.try_into()
+        .map_err(|_| format!("BitLocker's initial hash is 32 bytes, not {}.", initial.len()))?;
+    let salt: [u8; 16] = salt.try_into()
+        .map_err(|_| format!("A BitLocker salt is 16 bytes, not {}.", salt.len()))?;
+    Ok(kdf::password::bitlocker_stretch(&initial, &salt).to_vec())
 }
 
 /// SP 800-108 counter mode. `prf` is `"hmac-<hash>"` or
@@ -2143,6 +2509,40 @@ impl EcKey {
     ///
     /// `digest_bits` is 256 or 512 and follows the key size rather than
     /// the curve's.
+    /// VKO GOST R 34.10-2001 (RFC 4357 section 5.2): the shared point
+    /// hashed with GOST R 34.11-94 under the CryptoPro parameter set, and
+    /// an eight byte UKM. What the 2001-era GOST TLS suites and CMS use;
+    /// `vko` is the 2012 one.
+    pub fn vko_2001(&self, peer_public: &[u8], ukm: &[u8]) -> Result<Vec<u8>, String> {
+        let peer = self.curve.decode_point(peer_public)?;
+        self.curve.vko_2001(&self.private, &peer, ukm)
+    }
+
+    /// `KEG(d, Q, H)` (RFC 9189 8.3.1): 64 bytes of export keys, the
+    /// MAC key then the encryption key, from this key, the peer's point
+    /// and `H`, the 32 byte Streebog-256 of the two randoms. VKO with
+    /// `INT(H[1..16])` and the tree KDF over a 256 bit order; VKO-512
+    /// alone over a 512 bit one.
+    pub fn gost_keg(&self, peer_public: &[u8], h: &[u8]) -> Result<Vec<u8>, String> {
+        let peer = self.curve.decode_point(peer_public)?;
+        crate::tls::gost_kex::keg(&self.curve, &self.private, &peer, h)
+    }
+
+    /// `KEG_28147(d, Q, H)` (RFC 9189 8.3.2): VKO-256 under `H[1..8]`,
+    /// then CryptoPro diversification under TC26's Z parameter set; the
+    /// 32 byte key `kexp28147` takes.
+    pub fn gost_keg_28147(&self, peer_public: &[u8], h: &[u8]) -> Result<Vec<u8>, String> {
+        let peer = self.curve.decode_point(peer_public)?;
+        crate::tls::gost_kex_28147::keg_28147(&self.curve, &self.private, &peer, h)
+    }
+
+    /// The 2001 suite's KEK: VKO GOST R 34.10-2001 under the eight byte
+    /// UKM, then CryptoPro diversification under CryptoPro-A.
+    pub fn gost_keg_2001(&self, peer_public: &[u8], ukm: &[u8]) -> Result<Vec<u8>, String> {
+        let peer = self.curve.decode_point(peer_public)?;
+        crate::tls::gost_kex_28147::keg_2001(&self.curve, &self.private, &peer, ukm)
+    }
+
     pub fn vko(&self, peer_public: &[u8], ukm: &[u8], digest_bits: usize)
                -> Result<Vec<u8>, String> {
         let peer = self.curve.decode_point(peer_public)?;
@@ -2210,6 +2610,18 @@ impl EcKey {
         signature.to_bytes(&self.curve)
     }
 
+    /// Sign under SM2 with the nonce `k` given, big endian, rather than
+    /// derived. Reproduces GB/T 32918's worked examples; a `k` used twice,
+    /// or one anybody else can guess, gives away the private key. See
+    /// `sm2::sign_with_nonce`.
+    pub fn sm2_sign_with_nonce(&self, id: &[u8], message: &[u8], k: &[u8])
+                               -> Result<Vec<u8>, String> {
+        self.require_sm2()?;
+        let signature = sm2::sign_with_nonce(&self.curve, &self.private, id, message,
+                                             &BigUint::from_bytes_be(k))?;
+        signature.to_bytes(&self.curve)
+    }
+
     /// Verify an SM2 signature with our own public key.
     pub fn sm2_verify(&self, message: &[u8], signature: &[u8]) -> Result<bool, String> {
         self.sm2_verify_with_id(sm2::DEFAULT_ID, message, signature)
@@ -2267,6 +2679,15 @@ impl EcKey {
         self.curve.gost_signature_bytes(&signature)
     }
 
+    /// The same signature in RFC 9367's TLS 1.3 encoding, `str_l(r) ||
+    /// str_l(s)` - little endian, `r` first - where a certificate's is
+    /// `s || r` big endian.
+    pub fn sign_gost_13(&self, digest: &[u8], hash_name: &str) -> Result<Vec<u8>, String> {
+        let hash = AnyHash::new(hash_name)?;
+        let signature = self.curve.gost_sign(&self.private, digest, hash)?;
+        self.curve.gost_signature_bytes_13(&signature)
+    }
+
     /// The public half on its own, which is what a verifier needs.
     pub fn public_key(&self) -> EcPublicKey {
         EcPublicKey { curve: self.curve.clone(), point: self.public.clone() }
@@ -2322,6 +2743,25 @@ impl EcPublicKey {
         self.curve.gost_verify(&self.point, digest, &signature)
     }
 
+    /// Verify a signature in RFC 9367's TLS 1.3 encoding.
+    pub fn verify_gost_13(&self, digest: &[u8], signature: &[u8]) -> Result<bool, String> {
+        let signature = self.curve.gost_signature_from_bytes_13(signature)?;
+        self.curve.gost_verify(&self.point, digest, &signature)
+    }
+
+    /// GB/T 32918.2's `Z_A = SM3(ENTL || ID || a || b || xG || yG || xA ||
+    /// yA)` for this key and an identity.
+    pub fn sm2_z(&self, id: &[u8]) -> Result<Vec<u8>, String> {
+        self.require_sm2()?;
+        sm2::z_value(&self.curve, id, &self.point)
+    }
+
+    /// SM2's `e = SM3(Z_A || M)`, the value the signature is over.
+    pub fn sm2_digest(&self, id: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
+        self.require_sm2()?;
+        sm2::message_digest(&self.curve, id, &self.point, message)
+    }
+
     /// Verify an SM2 signature under GB/T 32918.2's default identity.
     pub fn sm2_verify(&self, message: &[u8], signature: &[u8]) -> Result<bool, String> {
         self.sm2_verify_with_id(sm2::DEFAULT_ID, message, signature)
@@ -2346,6 +2786,21 @@ impl EcPublicKey {
     pub fn sm2_encrypt_der(&self, message: &[u8]) -> Result<Vec<u8>, String> {
         self.require_sm2()?;
         let raw = sm2::encrypt(&self.curve, &self.point, message)?;
+        sm2::ciphertext_to_der(&self.curve, &raw)
+    }
+
+    /// Encrypt with the ephemeral `k` given, big endian, returning
+    /// `C1 || C3 || C2`. Deterministic; anybody who learns `k` reads the
+    /// message. See `sm2::encrypt_with_nonce`.
+    pub fn sm2_encrypt_with_nonce(&self, message: &[u8], k: &[u8]) -> Result<Vec<u8>, String> {
+        self.require_sm2()?;
+        sm2::encrypt_with_nonce(&self.curve, &self.point, message, &BigUint::from_bytes_be(k))
+    }
+
+    /// The same, in the DER form OpenSSL exchanges.
+    pub fn sm2_encrypt_der_with_nonce(&self, message: &[u8], k: &[u8])
+                                      -> Result<Vec<u8>, String> {
+        let raw = self.sm2_encrypt_with_nonce(message, k)?;
         sm2::ciphertext_to_der(&self.curve, &raw)
     }
 
@@ -2499,6 +2954,21 @@ impl RsaKey {
         rsa::sign_pss(&self.inner, hash_name, digest, salt_len)
     }
 
+    /// PKCS#1 v1.5 signature padding with **no DigestInfo**: the bytes are
+    /// signed as given, without naming a hash. TLS 1.0 and 1.1 sign
+    /// `MD5 || SHA-1` this way; anything else that does gets a signature no
+    /// ordinary verifier accepts. See `rsa::sign_pkcs1v15_raw`.
+    pub fn sign_without_digest_info(&self, digest: &[u8]) -> Result<Vec<u8>, String> {
+        rsa::sign_pkcs1v15_raw(&self.inner, digest)
+    }
+
+    /// PSS with the salt given rather than drawn, so the signature is
+    /// deterministic. See `rsa::sign_pss_with_salt`.
+    pub fn sign_pss_with_salt(&self, hash_name: &str, digest: &[u8], salt: &[u8])
+                              -> Result<Vec<u8>, String> {
+        rsa::sign_pss_with_salt(&self.inner, hash_name, digest, salt)
+    }
+
     /// PKCS#1 v1.5 decryption. Every failure returns the same error, on
     /// purpose — see the note on `rsa::decrypt_pkcs1v15`.
     pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
@@ -2576,6 +3046,23 @@ impl RsaPublicKey {
                           message)
     }
 
+    /// RSAES-OAEP with the seed given rather than drawn, so the ciphertext
+    /// is deterministic. The seed is as long as `hash_name`'s digest. See
+    /// `rsa::encrypt_oaep_with_seed`.
+    pub fn encrypt_oaep_with_seed(&self, hash_name: &str, mgf_hash: Option<&str>,
+                                  label: &[u8], message: &[u8], seed: &[u8])
+                                  -> Result<Vec<u8>, String> {
+        rsa::encrypt_oaep_with_seed(&self.inner, hash_name, mgf_hash.unwrap_or(hash_name),
+                                    label, message, seed)
+    }
+
+    /// Verify a PKCS#1 v1.5 signature with no DigestInfo, the counterpart
+    /// of `RsaKey::sign_without_digest_info`.
+    pub fn verify_without_digest_info(&self, digest: &[u8], signature: &[u8])
+                                      -> Result<bool, String> {
+        rsa::verify_pkcs1v15_raw(&self.inner, digest, signature)
+    }
+
     /// Verify a PKCS#1 v1.5 signature over a digest. `false` for a signature
     /// that is well formed and wrong, an error for one that is not a
     /// signature at all.
@@ -2599,6 +3086,15 @@ impl RsaPublicKey {
         };
         rsa::verify_pss(&self.inner, hash_name, digest, signature, salt_len)
     }
+}
+
+/// EME-OAEP decoding on its own: an encoded block - what `decrypt_raw`
+/// returns for an OAEP ciphertext - back to the message. Every failure of
+/// the block is the one error `decrypt_oaep` gives. See
+/// `rsa::eme_oaep_decode`.
+pub fn rsa_oaep_decode(block: &[u8], hash_name: &str, mgf_hash: Option<&str>, label: &[u8])
+                       -> Result<Vec<u8>, String> {
+    rsa::eme_oaep_decode(block, hash_name, mgf_hash.unwrap_or(hash_name), label)
 }
 
 // -------------------------------------------------------- TLS key schedule ---
@@ -2675,6 +3171,77 @@ pub fn x25519_public_key(private: &[u8]) -> Result<Vec<u8>, String> {
 pub fn x25519_exchange(private: &[u8], peer: &[u8]) -> Result<Vec<u8>, String> {
     Ok(x25519::exchange(&thirty_two("private key", private)?,
                         &thirty_two("public key", peer)?)?.to_vec())
+}
+
+// ------------------------------------------------- raw point arithmetic ---
+
+/// The group law on a named short Weierstrass curve, on SEC1 encodings,
+/// with nothing validated: a point need not be on the curve, the identity
+/// is a valid operand (its encoding is the single byte `00`), and any
+/// scalar is accepted, reduced or not. The formulas use `a` and never
+/// `b`, so arithmetic on a point off the curve is arithmetic on the
+/// curve with the same `a` that the point *is* on - which is the
+/// invalid-curve attack, and why everything that takes a peer's point
+/// validates it first. These are for points chosen rather than received.
+///
+/// Results are uncompressed, or compressed when asked.
+fn raw_point(curve: &crate::ec::Curve, bytes: &[u8]) -> Result<crate::ec::Point, String> {
+    curve.decode_point_unchecked(bytes)
+}
+
+pub fn ec_point_add(curve_name: &str, p: &[u8], q: &[u8], compressed: bool)
+                    -> Result<Vec<u8>, String> {
+    let curve = crate::ec::curves::by_name(curve_name)?;
+    let sum = curve.add(&raw_point(&curve, p)?, &raw_point(&curve, q)?);
+    curve.encode_point(&sum, compressed)
+}
+
+/// `2P`; see `ec_point_add`.
+pub fn ec_point_double(curve_name: &str, p: &[u8], compressed: bool) -> Result<Vec<u8>, String> {
+    let curve = crate::ec::curves::by_name(curve_name)?;
+    let doubled = curve.double(&raw_point(&curve, p)?);
+    curve.encode_point(&doubled, compressed)
+}
+
+/// `-P`; see `ec_point_add`.
+pub fn ec_point_negate(curve_name: &str, p: &[u8], compressed: bool) -> Result<Vec<u8>, String> {
+    let curve = crate::ec::curves::by_name(curve_name)?;
+    let negated = curve.negate(&raw_point(&curve, p)?);
+    curve.encode_point(&negated, compressed)
+}
+
+/// `k * P` for a big-endian `k` of any size, by double-and-add on the
+/// generic formulas - variable time in `k`, so for public scalars; a
+/// private key's multiplication belongs to `EcKey`. See `ec_point_add`.
+pub fn ec_point_multiply(curve_name: &str, p: &[u8], k: &[u8], compressed: bool)
+                         -> Result<Vec<u8>, String> {
+    let curve = crate::ec::curves::by_name(curve_name)?;
+    let product = curve.scalar_mul_double_and_add(&raw_point(&curve, p)?,
+                                                  &BigUint::from_bytes_be(k));
+    curve.encode_point(&product, compressed)
+}
+
+/// The curve's base point.
+pub fn ec_generator(curve_name: &str, compressed: bool) -> Result<Vec<u8>, String> {
+    let curve = crate::ec::curves::by_name(curve_name)?;
+    curve.encode_point(&curve.g, compressed)
+}
+
+/// Whether a SEC1 point satisfies the curve equation. The identity does.
+/// This is the equation alone: a point on a curve with a cofactor can be
+/// on it and outside the prime-order subgroup, which `ec_point_validate`
+/// refuses.
+pub fn ec_point_is_on_curve(curve_name: &str, p: &[u8]) -> Result<bool, String> {
+    let curve = crate::ec::curves::by_name(curve_name)?;
+    Ok(curve.is_on_curve(&raw_point(&curve, p)?))
+}
+
+/// The whole check a peer's point gets before any arithmetic: not the
+/// identity, coordinates in range, on the curve, and in the prime-order
+/// subgroup. `Err` says which.
+pub fn ec_point_validate(curve_name: &str, p: &[u8]) -> Result<(), String> {
+    let curve = crate::ec::curves::by_name(curve_name)?;
+    curve.validate(&raw_point(&curve, p)?)
 }
 
 /// The raw primitive, with no refusal of degenerate outputs. Here because
@@ -3035,8 +3602,8 @@ pub use crate::prng::dual_ec;
 /// dual_ec`), not something to generate keys with.
 ///
 /// `curve` is `"P-256"`, `"P-384"` or `"P-521"`; `hash` is `"SHA-1"` or a
-/// SHA-2 name. For prediction resistance, reseed between requests, which
-/// this one-shot does not expose - the streaming type in `dual_ec` does.
+/// SHA-2 name. `DualEcDrbg` below is the same generator kept across calls,
+/// with reseeding and another `Q`.
 ///
 /// # Errors
 /// An unknown curve or hash, a hash too weak for the curve, or too little
@@ -3044,10 +3611,46 @@ pub use crate::prng::dual_ec;
 pub fn dual_ec_drbg(curve: &str, hash: &str, entropy: &[u8], nonce: &[u8],
                     personalization: &[u8], requests: &[(usize, &[u8])])
                     -> Result<Vec<Vec<u8>>, String> {
-    let params = dual_ec::Parameters::standard(dual_ec::DualEcCurve::from_name(curve)?);
-    let hash = dual_ec::DrbgHash::from_name(hash)?;
-    let mut drbg = dual_ec::DualEcDrbg::new(params, hash, entropy, nonce, personalization)?;
+    let mut drbg = DualEcDrbg::new(curve, hash, entropy, nonce, personalization, None)?;
     requests.iter().map(|(n, adin)| drbg.generate(*n, adin)).collect()
+}
+
+/// Dual_EC_DRBG as a generator that lives across calls: generate, reseed,
+/// generate. `q`, a SEC1 point on the curve, replaces the standard's `Q`,
+/// as Juniper's ScreenOS did. That is what makes the back door
+/// demonstrable: whoever chose `Q` as `d^-1 P` recovers the state from 30
+/// bytes of output. See `crate::prng::dual_ec`.
+pub struct DualEcDrbg {
+    inner: dual_ec::DualEcDrbg,
+}
+
+impl DualEcDrbg {
+    pub fn new(curve: &str, hash: &str, entropy: &[u8], nonce: &[u8], personalization: &[u8],
+               q: Option<&[u8]>) -> Result<DualEcDrbg, String> {
+        let which = dual_ec::DualEcCurve::from_name(curve)?;
+        let params = match q {
+            None => dual_ec::Parameters::standard(which),
+            Some(q) => dual_ec::Parameters::with_q(which, which.curve().decode_point(q)?)?,
+        };
+        let hash = dual_ec::DrbgHash::from_name(hash)?;
+        Ok(DualEcDrbg {
+            inner: dual_ec::DualEcDrbg::new(params, hash, entropy, nonce, personalization)?,
+        })
+    }
+
+    pub fn generate(&mut self, n: usize, additional_input: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner.generate(n, additional_input)
+    }
+
+    pub fn reseed(&mut self, entropy: &[u8], additional_input: &[u8]) -> Result<(), String> {
+        self.inner.reseed(entropy, additional_input)
+    }
+
+    /// The `Q` in use, uncompressed.
+    pub fn q(&self) -> Result<Vec<u8>, String> {
+        let params = self.inner.parameters();
+        params.curve.encode_point(&params.q, false)
+    }
 }
 
 // ------------------------------------------------------------------ LCGs ---
@@ -3124,6 +3727,25 @@ pub fn eddsa_curves() -> Vec<&'static str> {
 ///
 /// # Errors
 /// An unknown curve name, or the system random source failing.
+/// Whether these bytes are a public key of the named EdDSA variant: the
+/// right length, a canonical `y`, on the curve. A store of keys wants this
+/// before it stores one; a verifier refuses a non-point anyway.
+pub fn eddsa_is_public_key(name: &str, public: &[u8]) -> Result<bool, String> {
+    Ok(eddsa::is_public_key(eddsa_variant(name)?, public))
+}
+
+/// SM2's key derivation function (GB/T 32918.4 5.4.3): SM3 in counter
+/// mode over `shared`, `length` bytes.
+pub fn sm2_kdf(shared: &[u8], length: usize) -> Result<Vec<u8>, String> {
+    sm2::kdf(shared, length)
+}
+
+/// Miller-Rabin with `rounds` random bases on a big-endian integer. `false`
+/// is certain; `true` is wrong with probability at most `4^-rounds`.
+pub fn is_probable_prime(candidate: &[u8], rounds: usize) -> Result<bool, String> {
+    crate::publickey_ciphers::rsa::is_probably_prime(&BigUint::from_bytes_be(candidate), rounds)
+}
+
 pub fn eddsa_generate(name: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
     eddsa::generate_key_pair(eddsa_variant(name)?)
 }
@@ -3323,6 +3945,17 @@ pub fn box_seal(recipient_public: &[u8], message: &[u8], construction_name: &str
     nacl::box_seal(construction(construction_name)?, recipient_public, message)
 }
 
+/// `box_seal` with the ephemeral private key given rather than drawn,
+/// so the sealed box is deterministic. Two messages sealed with one
+/// ephemeral key to one recipient share a nonce under one key; see
+/// `nacl::box_seal_with_ephemeral`.
+pub fn box_seal_with_ephemeral(recipient_public: &[u8], message: &[u8],
+                               ephemeral_private: &[u8], construction_name: &str)
+                               -> Result<Vec<u8>, String> {
+    nacl::box_seal_with_ephemeral(construction(construction_name)?, recipient_public, message,
+                                  ephemeral_private)
+}
+
 pub fn box_seal_open(recipient_public: &[u8], recipient_private: &[u8], sealed: &[u8],
                      construction_name: &str) -> Result<Vec<u8>, String> {
     nacl::box_seal_open(construction(construction_name)?, recipient_public,
@@ -3434,6 +4067,23 @@ impl DhGroup {
                  anything else.", other)),
         };
         Ok(DhGroup { inner: dh::modp_group(group)? })
+    }
+
+    /// The same group with the order of `g`'s subgroup stated, so the peer
+    /// check also requires `y^q = 1 mod p`. `q` is checked for structure
+    /// (it divides `p - 1`, `g` has order `q`), not for primality.
+    pub fn with_subgroup_order(&self, q: &[u8]) -> Result<DhGroup, String> {
+        Ok(DhGroup { inner: self.inner.clone().with_subgroup_order(BigUint::from_bytes_be(q))? })
+    }
+
+    /// The subgroup order, when one was stated.
+    pub fn q(&self) -> Option<Vec<u8>> {
+        self.inner.q().map(|q| q.to_bytes_be())
+    }
+
+    /// Refuse a group smaller than `min_bits`.
+    pub fn check_size(&self, min_bits: usize) -> Result<(), String> {
+        self.inner.check_size(min_bits)
     }
 
     pub fn bits(&self) -> usize {
@@ -3548,6 +4198,12 @@ impl ElGamalKey {
         elgamal::decrypt_pkcs1v15(&self.inner, ciphertext)
     }
 
+    /// Textbook ElGamal decryption: `c1 || c2` back to the integer
+    /// message, at the modulus width. See `elgamal::decrypt_raw`.
+    pub fn decrypt_raw(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+        elgamal::decrypt_raw(&self.inner, ciphertext)
+    }
+
     /// Sign a digest, returning `r || s`, each padded to the modulus
     /// width. Read `elgamal`'s module comment first: GnuPG withdrew
     /// ElGamal signing, for a reason that was about its choice of nonce.
@@ -3580,6 +4236,12 @@ impl ElGamalPublicKey {
     /// OpenPGP's ElGamal encryption, returning `c1 || c2`.
     pub fn encrypt(&self, message: &[u8]) -> Result<Vec<u8>, String> {
         elgamal::encrypt_pkcs1v15(&self.inner, message)
+    }
+
+    /// Textbook ElGamal: the message a big-endian integer in [1, p-1], no
+    /// padding, returning `c1 || c2`. Malleable. See `elgamal::encrypt_raw`.
+    pub fn encrypt_raw(&self, message: &[u8]) -> Result<Vec<u8>, String> {
+        elgamal::encrypt_raw(&self.inner, message)
     }
 
     /// Verify a signature given as `r || s`.
@@ -5237,15 +5899,12 @@ fn serial() -> Result<Vec<u8>, String> {
 
 use crate::pq::slh_dsa;
 
-/// An SLH-DSA key pair, over FIPS 205's **external** interface.
-///
-/// The external interface on purpose: `slh_dsa::sign_internal` is the
-/// layer underneath and signs a different byte string, so a signature
-/// made with it is not one another implementation's default verifier
-/// accepts. A facade exists to be the obvious thing to reach for, and the
-/// obvious thing should be the interoperable one. A protocol that
-/// specifies the internal interface can call the `pq::slh_dsa` module
-/// directly.
+/// An SLH-DSA key pair. `sign` and `verify` are FIPS 205's **external**
+/// interface, the one another implementation's ordinary verifier
+/// accepts, so the obvious names are the interoperable ones.
+/// `sign_internal` and `verify_internal` are the layer underneath, which
+/// signs a different byte string; they are here for protocols and test
+/// vectors that specify it.
 ///
 /// Holds the private key, so it is the signing half. [`SlhDsaPublicKey`]
 /// is the other.
@@ -5278,11 +5937,8 @@ fn slh_pre_hash(name: Option<&str>) -> Result<Option<slh_dsa::PreHash>, String> 
 impl SlhDsaKey {
     /// A fresh key pair from the OS random source.
     ///
-    /// Three `n` byte seeds, drawn here rather than taken as arguments -
-    /// which is the whole difference between this and
-    /// `slh_dsa::key_gen_internal`, and the reason that one exists: it is
-    /// testable against vectors that state the seeds, and this one is
-    /// what a caller should use.
+    /// Three `n` byte seeds, drawn here; `from_seeds` takes them, which is
+    /// what a vector that states the seeds needs.
     ///
     /// **Slow at the `s` parameter sets**, on the order of a second, because
     /// a key is the root of a tree over `2^h'` one-time keys and every leaf
@@ -5293,6 +5949,18 @@ impl SlhDsaKey {
         let seed = crate::random::bytes(3 * n)?;
         let (private, _public) = slh_dsa::key_gen_internal(
             parameters, &seed[..n], &seed[n..2 * n], &seed[2 * n..])?;
+        Ok(SlhDsaKey { parameters, private })
+    }
+
+    /// A key pair from its three seeds, `SK.seed`, `SK.prf` and `PK.seed`,
+    /// each `n` bytes: FIPS 205's `slh_keygen_internal`, which is what a
+    /// test vector states and what a key escrowed as seeds is rebuilt
+    /// from. `generate` is this with the seeds drawn.
+    pub fn from_seeds(parameter_set: &str, sk_seed: &[u8], sk_prf: &[u8], pk_seed: &[u8])
+                      -> Result<SlhDsaKey, String> {
+        let parameters = slh_dsa::parameters(parameter_set)?;
+        let (private, _public) = slh_dsa::key_gen_internal(parameters, sk_seed, sk_prf,
+                                                           pk_seed)?;
         Ok(SlhDsaKey { parameters, private })
     }
 
@@ -5386,11 +6054,44 @@ impl SlhDsaKey {
                       slh_pre_hash(pre_hash)?, &pk_seed)
     }
 
+    /// Sign with the `n` bytes of `opt_rand` given: the external
+    /// interface with the randomness a hedged signature would draw stated
+    /// instead. `sign_deterministic` is this with `PK.seed`.
+    pub fn sign_with_randomness(&self, message: &[u8], context: &[u8],
+                                pre_hash: Option<&str>, opt_rand: &[u8])
+            -> Result<Vec<u8>, String> {
+        slh_dsa::sign(self.parameters, &self.private, message, context,
+                      slh_pre_hash(pre_hash)?, opt_rand)
+    }
+
+    /// FIPS 205's **internal** interface, `slh_sign_internal`: the message
+    /// signed as given, with no context and no pre-hash wrapped round it.
+    /// A signature made here verifies only through `verify_internal`, and
+    /// is not one another implementation's ordinary verifier accepts; it
+    /// is what a protocol specifying the internal interface, or a test
+    /// vector, needs. `opt_rand` is drawn when `None`.
+    pub fn sign_internal(&self, message: &[u8], opt_rand: Option<&[u8]>)
+            -> Result<Vec<u8>, String> {
+        let drawn;
+        let opt_rand = match opt_rand {
+            Some(given) => given,
+            None => { drawn = crate::random::bytes(self.parameters.n)?; &drawn[..] }
+        };
+        slh_dsa::sign_internal(self.parameters, &self.private, message, opt_rand)
+    }
+
     /// Verify against this key's own public half.
     pub fn verify(&self, message: &[u8], context: &[u8],
                   pre_hash: Option<&str>, signature: &[u8])
             -> Result<bool, String> {
         self.public_key().verify(message, context, pre_hash, signature)
+    }
+
+    /// The internal interface's verification, against this key's own
+    /// public half.
+    pub fn verify_internal(&self, message: &[u8], signature: &[u8])
+            -> Result<bool, String> {
+        self.public_key().verify_internal(message, signature)
     }
 }
 
@@ -5419,6 +6120,13 @@ impl SlhDsaPublicKey {
             -> Result<bool, String> {
         slh_dsa::verify(self.parameters, &self.public, message, context,
                         slh_pre_hash(pre_hash)?, signature)
+    }
+
+    /// FIPS 205's internal interface, `slh_verify_internal`: the message
+    /// as given, no context, no pre-hash. See `SlhDsaKey::sign_internal`.
+    pub fn verify_internal(&self, message: &[u8], signature: &[u8])
+            -> Result<bool, String> {
+        slh_dsa::verify_internal(self.parameters, &self.public, message, signature)
     }
 }
 
@@ -5579,13 +6287,59 @@ impl MlKemPublicKey {
     /// order.
     ///
     /// The secret is 32 bytes and stays here; the ciphertext is what gets
-    /// sent. Draws its 32 byte `m` from the OS random source - a repeated
-    /// `m` gives a repeated secret, which is why it is not an argument
-    /// here. `ml_kem::encapsulate_internal` takes it, for testing.
+    /// sent. Draws its 32 byte `m` from the OS random source;
+    /// `encapsulate_with_randomness` takes it instead.
     pub fn encapsulate(&self) -> Result<(Vec<u8>, Vec<u8>), String> {
         let m = crate::random::bytes(32)?;
         ml_kem::encapsulate_internal(self.parameters, &self.public, &m)
     }
+
+    /// Encapsulate with the 32 bytes of `m` given rather than drawn:
+    /// FIPS 203's `ML-KEM.Encaps_internal`. Deterministic - the same `m`
+    /// gives the same secret and ciphertext - which is what a test vector
+    /// states and what reproducing another implementation's ciphertext
+    /// needs. An `m` anybody else knows is the shared secret.
+    pub fn encapsulate_with_randomness(&self, m: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+        ml_kem::encapsulate_internal(self.parameters, &self.public, m)
+    }
+}
+
+// ------------------------------------------------------------ sntrup761 ---
+
+use crate::pq::sntrup;
+
+/// Streamlined NTRU Prime 761 (`sntrup761`), the KEM in OpenSSH's
+/// `sntrup761x25519-sha512`: `(public, secret)`, 1158 and 1763 bytes,
+/// from the OS random source.
+pub fn sntrup761_keypair() -> Result<(Vec<u8>, Vec<u8>), String> {
+    sntrup::keypair(&mut crate::random::fill)
+}
+
+/// The same, drawing every random byte from `fill`, which is called with
+/// each buffer the algorithm wants filled - the shape NIST's
+/// `randombytes` has, so a known-answer test's generator plugs in.
+pub fn sntrup761_keypair_with(fill: sntrup::Fill<'_>) -> Result<(Vec<u8>, Vec<u8>), String> {
+    sntrup::keypair(fill)
+}
+
+/// `(shared_secret, ciphertext)` for `public`, in ML-KEM's order; the
+/// secret is 32 bytes and the ciphertext 1039.
+pub fn sntrup761_encapsulate(public: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    sntrup761_encapsulate_with(public, &mut crate::random::fill)
+}
+
+/// The same, with the randomness drawn from `fill`.
+pub fn sntrup761_encapsulate_with(public: &[u8], fill: sntrup::Fill<'_>)
+                                  -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (ciphertext, shared) = sntrup::encapsulate(public, fill)?;
+    Ok((shared, ciphertext))
+}
+
+/// The shared secret. A ciphertext of the right length always gives one;
+/// a ciphertext not made for this key gives a different one, which is
+/// implicit rejection rather than an error.
+pub fn sntrup761_decapsulate(secret: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    sntrup::decapsulate(ciphertext, secret)
 }
 
 /// The three ML-KEM parameter sets, as FIPS 203 names them.
@@ -5669,6 +6423,17 @@ impl DsaKey {
     pub fn verify(&self, hash: &str, message: &[u8], signature: &[u8]) -> Result<bool, String> {
         self.public_key().verify(hash, message, signature)
     }
+
+    /// Sign a digest computed elsewhere; `hash` names the hash that made it,
+    /// which RFC 6979 runs its nonce derivation on. The signature is DER.
+    pub fn sign_digest(&self, hash: &str, digest: &[u8]) -> Result<Vec<u8>, String> {
+        let (r, s) = self.inner.sign(digest, AnyHash::new(hash)?)?;
+        Ok(crate::x509::verify::encode_ecdsa_der(&Signature { r, s }))
+    }
+
+    pub fn verify_digest(&self, digest: &[u8], signature: &[u8]) -> Result<bool, String> {
+        self.public_key().verify_digest(digest, signature)
+    }
 }
 
 impl DsaPublicKey {
@@ -5690,10 +6455,21 @@ impl DsaPublicKey {
     pub fn verify(&self, hash: &str, message: &[u8], signature: &[u8]) -> Result<bool, String> {
         let mut hasher = AnyHash::new(hash)?;
         hasher.update(message);
+        self.verify_digest(&hasher.digest(), signature)
+    }
+
+    /// Verify a DER signature over a digest computed elsewhere.
+    pub fn verify_digest(&self, digest: &[u8], signature: &[u8]) -> Result<bool, String> {
         let Ok(decoded) = crate::x509::verify::decode_ecdsa_der(signature) else {
             return Ok(false);
         };
-        self.inner.verify(&hasher.digest(), &decoded.r, &decoded.s)
+        self.inner.verify(digest, &decoded.r, &decoded.s)
+    }
+
+    /// `(p, q, g)`, big endian.
+    pub fn parameters(&self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let dsa::DsaParameters { p, q, g } = &self.inner.parameters;
+        (p.to_bytes_be(), q.to_bytes_be(), g.to_bytes_be())
     }
 }
 
@@ -5701,11 +6477,11 @@ impl DsaPublicKey {
 
 use crate::pq::ml_dsa;
 
-/// An ML-DSA key pair (FIPS 204), over the **external** interface.
-///
-/// The external interface for the same reason as [`SlhDsaKey`]: it is the
-/// one another implementation's default verifier accepts. The internal
-/// interface and the external-`mu` variant are in `pq::ml_dsa`.
+/// An ML-DSA key pair (FIPS 204). `sign` and `verify` are the
+/// **external** interface, for the same reason as [`SlhDsaKey`]: it is
+/// the one another implementation's ordinary verifier accepts.
+/// `sign_internal` / `verify_internal` and the `externalMu` variant
+/// `sign_mu` / `verify_mu` are here too, for what specifies them.
 ///
 /// Holds the 32 byte seed as well as the expanded private key when it
 /// was made from one, because the seed is the compact and portable form -
@@ -5807,11 +6583,59 @@ impl MlDsaKey {
                      ml_dsa_pre_hash(pre_hash)?, &[0u8; 32])
     }
 
+    /// Sign with the 32 bytes of `rnd` given: the external interface
+    /// with the randomness a hedged signature would draw stated instead.
+    /// `sign_deterministic` is this with 32 zero bytes.
+    pub fn sign_with_randomness(&self, message: &[u8], context: &[u8],
+                                pre_hash: Option<&str>, rnd: &[u8])
+            -> Result<Vec<u8>, String> {
+        ml_dsa::sign(self.parameters, &self.private, message, context,
+                     ml_dsa_pre_hash(pre_hash)?, rnd)
+    }
+
+    /// FIPS 204's **internal** interface, `ML-DSA.Sign_internal`: the
+    /// message signed as given, with no context and no pre-hash wrapped
+    /// round it. Verifies only through `verify_internal`. `rnd` is drawn
+    /// when `None`; 32 zero bytes is the deterministic form.
+    pub fn sign_internal(&self, message: &[u8], rnd: Option<&[u8]>)
+            -> Result<Vec<u8>, String> {
+        let drawn;
+        let rnd = match rnd {
+            Some(given) => given,
+            None => { drawn = crate::random::bytes(32)?; &drawn[..] }
+        };
+        ml_dsa::sign_internal(self.parameters, &self.private, message, rnd)
+    }
+
+    /// The `externalMu` variant: sign the 64 byte `mu = H(tr || M', 64)`
+    /// that the caller computed - the shape a hardware module that never
+    /// sees the message uses. Verifies through `verify_mu`.
+    pub fn sign_mu(&self, mu: &[u8], rnd: Option<&[u8]>) -> Result<Vec<u8>, String> {
+        let drawn;
+        let rnd = match rnd {
+            Some(given) => given,
+            None => { drawn = crate::random::bytes(32)?; &drawn[..] }
+        };
+        ml_dsa::sign_mu(self.parameters, &self.private, mu, rnd)
+    }
+
     pub fn verify(&self, message: &[u8], context: &[u8],
                   pre_hash: Option<&str>, signature: &[u8])
             -> Result<bool, String> {
         ml_dsa::verify(self.parameters, &self.public, message, context,
                        ml_dsa_pre_hash(pre_hash)?, signature)
+    }
+
+    /// The internal interface's verification, against this key's own
+    /// public half.
+    pub fn verify_internal(&self, message: &[u8], signature: &[u8]) -> Result<bool, String> {
+        ml_dsa::verify_internal(self.parameters, &self.public, message, signature)
+    }
+
+    /// Verify a signature over a 64 byte `mu`, against this key's own
+    /// public half.
+    pub fn verify_mu(&self, mu: &[u8], signature: &[u8]) -> Result<bool, String> {
+        ml_dsa::verify_mu(self.parameters, &self.public, mu, signature)
     }
 }
 
@@ -5840,6 +6664,17 @@ impl MlDsaPublicKey {
         ml_dsa::verify(self.parameters, &self.public, message, context,
                        ml_dsa_pre_hash(pre_hash)?, signature)
     }
+
+    /// FIPS 204's internal interface, `ML-DSA.Verify_internal`: the
+    /// message as given, no context, no pre-hash.
+    pub fn verify_internal(&self, message: &[u8], signature: &[u8]) -> Result<bool, String> {
+        ml_dsa::verify_internal(self.parameters, &self.public, message, signature)
+    }
+
+    /// The `externalMu` variant: verify a signature over a 64 byte `mu`.
+    pub fn verify_mu(&self, mu: &[u8], signature: &[u8]) -> Result<bool, String> {
+        ml_dsa::verify_mu(self.parameters, &self.public, mu, signature)
+    }
 }
 
 /// The three ML-DSA parameter sets.
@@ -5854,12 +6689,144 @@ pub fn cmac(cipher_name: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, Strin
     crate::mac::cmac::cmac(cipher_name, key, data)
 }
 
+// ------------------------------------------------------ GOST primitives ---
+
+/// CTR-ACPKM (RFC 8645 section 6.1), one whole message: CTR whose key
+/// changes every `section` bytes, the counter running on across each
+/// change. `nonce` is half a block; `section` a whole number of blocks.
+/// Encrypts and decrypts alike.
+pub fn ctr_acpkm(cipher: &str, key: &[u8], nonce: &[u8], section: usize, data: &[u8])
+                 -> Result<Vec<u8>, String> {
+    crate::block_ciphers::acpkm::ctr_acpkm(cipher, key, nonce, section, data)
+}
+
+/// ACPKM's next section key (RFC 8645 section 4.1): the constant `D`
+/// encrypted under the current key, cut to the key's length.
+pub fn acpkm_next(cipher: &str, key: &[u8]) -> Result<Vec<u8>, String> {
+    crate::block_ciphers::acpkm::acpkm_next(cipher, key)
+}
+
+/// The GOST 28147-89 MAC (imitovstavka) under a named parameter set,
+/// from `iv` (zeros if `None`), `tag_len` bytes of the state. Four
+/// bytes from zeros is gost-engine's `gost-mac`.
+pub fn gost28147_mac(key: &[u8], data: &[u8], sbox: Option<&str>, iv: Option<&[u8]>,
+                     tag_len: usize) -> Result<Vec<u8>, String> {
+    let rows = GostCrypto::sbox_named(sbox.unwrap_or(GostCrypto::DEFAULT_PARAM_SET))?;
+    crate::block_ciphers::gost::imitovstavka(key, &rows, iv.unwrap_or(&[0; 8]), data, tag_len)
+}
+
+/// CryptoPro key meshing (RFC 4357 section 2.3.2): the next key and IV
+/// from the current key and the IV *as it stands after* the 1024 bytes
+/// it covered. The MAC meshes its key and keeps its own state, so it
+/// takes the key and leaves the IV.
+pub fn cryptopro_key_mesh(key: &[u8], iv: &[u8], sbox: Option<&str>)
+                          -> Result<(Vec<u8>, Vec<u8>), String> {
+    crate::block_ciphers::meshing::mesh(sbox.unwrap_or(GostCrypto::DEFAULT_PARAM_SET), key, iv)
+}
+
+/// `KDF_GOSTR3411_2012_256` (RFC 7836 section 4.5): HMAC-Streebog-256
+/// of `0x01 | label | 0x00 | seed | 0x01 0x00`, 32 bytes.
+pub fn kdf_gostr3411_2012_256(key: &[u8], label: &[u8], seed: &[u8]) -> Vec<u8> {
+    crate::kdf::gost::kdf_gostr3411_2012_256(key, label, seed)
+}
+
+/// `KDF_TREE_GOSTR3411_2012_256` (RFC 7836 section 4.4): `length` bytes,
+/// with a block counter `counter_bytes` wide (the RFC's `R`, 1 to 4).
+pub fn kdf_tree_gostr3411_2012_256(key: &[u8], label: &[u8], seed: &[u8], length: usize,
+                                   counter_bytes: usize) -> Result<Vec<u8>, String> {
+    let bits = length.checked_mul(8).ok_or_else(|| format!("{length} bytes is too many."))?;
+    crate::kdf::gost::kdf_tree_gostr3411_2012_256(key, label, seed, counter_bytes, bits)
+}
+
+/// The suites TLSTREE has constants for, by the name `tlstree` takes:
+/// RFC 9189's two TLS 1.2 suites and RFC 9367's four TLS 1.3 ones.
+pub const TLSTREE_SUITES: &[&str] = &["kuznyechik-ctr-omac", "magma-ctr-omac",
+                                      "kuznyechik-mgm-l", "magma-mgm-l",
+                                      "kuznyechik-mgm-s", "magma-mgm-s"];
+
+/// TLSTREE (RFC 9189 section 8.1.1): the record key for `sequence` from
+/// the traffic key `root`, under the named suite's three masks.
+pub fn tlstree(suite: &str, root: &[u8], sequence: u64) -> Result<Vec<u8>, String> {
+    use crate::kdf::gost::TlsTreeParams;
+    let params = match suite.to_ascii_lowercase().as_str() {
+        "kuznyechik-ctr-omac" => TlsTreeParams::KUZNYECHIK,
+        "magma-ctr-omac" => TlsTreeParams::MAGMA,
+        "kuznyechik-mgm-l" => TlsTreeParams::KUZNYECHIK_MGM_L,
+        "magma-mgm-l" => TlsTreeParams::MAGMA_MGM_L,
+        "kuznyechik-mgm-s" => TlsTreeParams::KUZNYECHIK_MGM_S,
+        "magma-mgm-s" => TlsTreeParams::MAGMA_MGM_S,
+        other => return Err(format!("No TLSTREE constants for {other:?}. Known: {}.",
+                                    TLSTREE_SUITES.join(", "))),
+    };
+    if root.len() != 32 {
+        return Err(format!("TLSTREE's root is a 32 byte traffic key, not {}.", root.len()));
+    }
+    Ok(crate::kdf::gost::tlstree(root, sequence, params))
+}
+
+/// CryptoPro KEK diversification (RFC 4357 6.5): eight rounds of CFB
+/// over a 32 byte key, steered by the bits of an eight byte UKM. RFC
+/// 9189's 28147 suite runs it under TC26's Z parameter set; RFC 4357
+/// itself under CryptoPro-A, the default here.
+pub fn cryptopro_kek_diversify(ukm: &[u8], key: &[u8], sbox: Option<&str>)
+                               -> Result<Vec<u8>, String> {
+    crate::tls::gost_kex_28147::cp_divers(ukm, key,
+                                          sbox.unwrap_or(GostCrypto::DEFAULT_PARAM_SET))
+}
+
+/// `KExp28147(S, K, IV)` (RFC 9189 8.2.2): `IV || ECB(S) || MAC(S)`,
+/// the 32 byte secret encrypted block by block and the GOST 28147-89
+/// MAC of it from the eight byte IV - 44 bytes.
+pub fn kexp28147(secret: &[u8], key: &[u8], iv: &[u8], sbox: Option<&str>)
+                 -> Result<Vec<u8>, String> {
+    crate::tls::gost_kex_28147::kexp28147(secret, key, iv,
+                                          sbox.unwrap_or(GostCrypto::DEFAULT_PARAM_SET))
+}
+
+/// `KImp28147`: `kexp28147` undone, refused unless the carried IV is
+/// `iv` and the MAC checks.
+pub fn kimp28147(wrapped: &[u8], key: &[u8], iv: &[u8], sbox: Option<&str>)
+                 -> Result<Vec<u8>, String> {
+    crate::tls::gost_kex_28147::kimp28147(wrapped, key, iv,
+                                          sbox.unwrap_or(GostCrypto::DEFAULT_PARAM_SET))
+}
+
+fn kexp15_suite(cipher: &str) -> Result<crate::tls::record_gost::CtrOmacSuite, String> {
+    use crate::tls::record_gost::CtrOmacSuite;
+    match cipher.to_ascii_lowercase().as_str() {
+        "kuznyechik" => Ok(CtrOmacSuite::KUZNYECHIK),
+        "magma" => Ok(CtrOmacSuite::MAGMA),
+        other => Err(format!("KExp15 is defined over kuznyechik and magma, not {other:?}.")),
+    }
+}
+
+/// KExp15 (R 1323565.1.017-2018; RFC 9189 section 8.2.1): `secret`
+/// followed by its OMAC under `mac_key`, encrypted in CTR under
+/// `enc_key` from `iv`, half a block. gost-engine's 64 byte key is
+/// `mac_key || enc_key`.
+pub fn kexp15(cipher: &str, secret: &[u8], mac_key: &[u8], enc_key: &[u8], iv: &[u8])
+              -> Result<Vec<u8>, String> {
+    crate::tls::gost_kex::kexp15(kexp15_suite(cipher)?, secret, mac_key, enc_key, iv)
+}
+
+/// KImp15: `kexp15` undone, refused unless the OMAC checks.
+pub fn kimp15(cipher: &str, wrapped: &[u8], mac_key: &[u8], enc_key: &[u8], iv: &[u8])
+              -> Result<Vec<u8>, String> {
+    crate::tls::gost_kex::kimp15(kexp15_suite(cipher)?, wrapped, mac_key, enc_key, iv)
+}
+
 // ---------------------------------------------------- parameter read-outs ---
 
 /// The substitution rows of a GOST 28147-89 parameter set, built in or
 /// registered: eight rows of sixteen.
 pub fn gost_sbox(name: &str) -> Result<Vec<Vec<u8>>, String> {
     crate::block_ciphers::gost::GostCrypto::sbox_named(name)
+}
+
+/// The substitution rows a 64 byte DSTU 4145 DKE packs, row by row,
+/// high nibble first.
+pub fn gost_sbox_from_dke(dke: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    GostCrypto::sbox_from_dke(dke)
 }
 
 /// A curve's domain parameters as `(field, value)` pairs, in the order

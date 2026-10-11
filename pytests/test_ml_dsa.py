@@ -133,6 +133,76 @@ def test_the_bindings_refuse_what_nist_refuses(sigver):
     assert sorted(refused.values()) == [6] * 4, refused
 
 
+def test_every_other_signing_form_is_nists(vectors):
+    """The sections the test above leaves: external hedged, with the `rnd`
+    NIST used; the internal interface, deterministic (`rnd` of zeros) and
+    hedged; and `externalMu`, which signs a stated `mu` rather than a
+    message. Each signature against NIST's digest, and each verified
+    only through its own interface."""
+    checked = {}
+    for mode, parameter_set, cases in vectors:
+        if not mode.startswith("sigGen") or (mode.startswith("sigGen-external")
+                                             and mode.endswith("-deterministic")):
+            continue
+        hedged = mode.endswith("-hedged")
+        for case in cases:
+            key = allcrypt.MlDsaKey.from_private(parameter_set,
+                                                 bytes.fromhex(case["sk"]))
+            rnd = bytes.fromhex(case["rnd"]) if hedged else bytes(32)
+            if mode.startswith("sigGen-external"):
+                message, context = bytes.fromhex(case["message"]), bytes.fromhex(case["context"])
+                prehash = case.get("hashAlg")
+                signature = key.sign(message, context, prehash, rnd=rnd)
+                assert key.verify(message, signature, context, prehash)
+                assert not key.verify_internal(message, signature)
+            elif "externalMu" in mode:
+                mu = bytes.fromhex(case["mu"])
+                signature = key.sign_mu(mu, rnd)
+                assert key.verify_mu(mu, signature)
+                assert key.public_key().verify_mu(mu, signature)
+            else:
+                message = bytes.fromhex(case["message"])
+                signature = key.sign_internal(message, rnd)
+                assert key.verify_internal(message, signature)
+                assert key.public_key().verify_internal(message, signature)
+                assert not key.verify(message, signature)
+            assert len(signature) == int(case["signatureLength"])
+            assert _digest(signature) == case["signatureDigest"], \
+                f"{mode} {parameter_set} tcId {case['tcId']}"
+            checked[mode] = checked.get(mode, 0) + 1
+    assert checked == {mode: 9 for mode in (
+        "sigGen-external-pure-hedged", "sigGen-external-preHash-hedged",
+        "sigGen-internal-deterministic", "sigGen-internal-hedged",
+        "sigGen-internal-externalMu-deterministic",
+        "sigGen-internal-externalMu-hedged")}, checked
+
+
+def test_the_internal_interfaces_refuse_what_nist_refuses(sigver):
+    """NIST's `sigVer` cases for the internal interface and `externalMu`,
+    through `verify_internal` and `verify_mu`: altered signatures must
+    give False, not raise."""
+    refused = {}
+    checked = 0
+    for mode, parameter_set, cases in sigver:
+        if mode.startswith("sigVer-external"):
+            continue
+        for case in cases:
+            public = allcrypt.MlDsaPublicKey.from_public(
+                parameter_set, bytes.fromhex(case["pk"]))
+            signature = bytes.fromhex(case["signature"])
+            if mode == "sigVer-internal-externalMu":
+                got = public.verify_mu(bytes.fromhex(case["mu"]), signature)
+            else:
+                got = public.verify_internal(bytes.fromhex(case["message"]), signature)
+            want = case["testPassed"] == "true"
+            assert got is want, f"{parameter_set} {mode} {case['reason']}"
+            if not want:
+                refused[case["reason"]] = refused.get(case["reason"], 0) + 1
+            checked += 1
+    assert checked == 30
+    assert sum(refused.values()) > 0, refused
+
+
 @pytest.mark.parametrize("parameter_set", SETS)
 def test_round_trip(parameter_set):
     key = allcrypt.MlDsaKey.generate(parameter_set)

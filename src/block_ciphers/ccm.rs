@@ -69,6 +69,18 @@ fn encode_aad_length(len: usize, out: &mut Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `tag_len` bytes is a CCM tag length: RFC 3610 section 2
+/// allows 4, 6, 8, 10, 12, 14 and 16, because the length is written into
+/// `B0` as `(M - 2) / 2` in three bits.
+pub fn check_tag_len(tag_len: usize) -> Result<(), String> {
+    if !(4..=16).contains(&tag_len) || !tag_len.is_multiple_of(2) {
+        return Err(format!(
+            "A CCM tag is 4, 6, 8, 10, 12, 14 or 16 bytes; {} is not one of \
+             them.", tag_len));
+    }
+    Ok(())
+}
+
 /// Validate the three parameters and return `L`, the length field's width.
 fn parameters(nonce_len: usize, tag_len: usize, message_len: usize)
               -> Result<usize, String> {
@@ -78,11 +90,7 @@ fn parameters(nonce_len: usize, tag_len: usize, message_len: usize)
              message length field share 15 bytes, which is why the range is \
              not open ended.", nonce_len));
     }
-    if !(4..=16).contains(&tag_len) || !tag_len.is_multiple_of(2) {
-        return Err(format!(
-            "A CCM tag is 4, 6, 8, 10, 12, 14 or 16 bytes; {} is not one of \
-             them.", tag_len));
-    }
+    check_tag_len(tag_len)?;
     let l = 15 - nonce_len;
     // The message length must fit in L bytes. For L >= 8 every usize does.
     if l < 8 {

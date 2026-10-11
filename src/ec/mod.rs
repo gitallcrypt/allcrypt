@@ -509,6 +509,22 @@ impl Curve {
     /// build a public key the arithmetic has to refuse later, and every
     /// consumer relies on this function meaning "validated".
     pub fn decode_point(&self, bytes: &[u8]) -> Result<Point, String> {
+        let point = self.decode_point_unchecked(bytes)?;
+        self.validate(&point)?;
+        Ok(point)
+    }
+
+    /// Decode a SEC1 point **without validating it**: the identity's
+    /// single zero byte decodes to the identity, and an uncompressed point
+    /// need not be on the curve - only its coordinates must be field
+    /// elements, below `p`. A compressed point is necessarily on the curve,
+    /// since its `y` is a square root of the curve equation, and one whose
+    /// right-hand side has no root is refused.
+    ///
+    /// For arithmetic on points chosen rather than received: demonstrating
+    /// an invalid-curve attack, exploring a twist, checking a formula.
+    /// Anything that arrives from a peer goes through `decode_point`.
+    pub fn decode_point_unchecked(&self, bytes: &[u8]) -> Result<Point, String> {
         let width = self.field_bytes();
         if bytes.is_empty() {
             return Err("Empty point encoding.".to_string());
@@ -549,7 +565,11 @@ impl Curve {
             }
             other => return Err(format!("Unknown point encoding tag 0x{:02x}.", other)),
         };
-        self.validate(&point)?;
+        if let (Some(x), Some(y)) = (point.x(), point.y()) {
+            if x >= &self.p || y >= &self.p {
+                return Err("A point's coordinates must be below p.".to_string());
+            }
+        }
         Ok(point)
     }
 

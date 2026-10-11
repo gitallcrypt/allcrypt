@@ -300,15 +300,19 @@ pub fn verify(curve: &Curve, public: &Point, id: &[u8], message: &[u8],
 /// Starting the counter at 0 produces a keystream that is perfectly
 /// usable and wrong, and it round-trips against itself - so nothing but
 /// a foreign ciphertext can see it.
-pub fn kdf(shared: &[u8], length: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(length);
+///
+/// The output buffer comes from `kdf::output_buffer`, so a length past
+/// `kdf::MAX_OUTPUT_BYTES`, or one the allocator refuses, is an error
+/// rather than an abort.
+pub fn kdf(shared: &[u8], length: usize) -> Result<Vec<u8>, String> {
+    let mut out = crate::kdf::output_buffer(length, "SM2's KDF")?;
     let mut counter: u32 = 1;
     while out.len() < length {
         out.extend_from_slice(&sm3_of(&[shared, &counter.to_be_bytes()]));
         counter += 1;
     }
     out.truncate(length);
-    out
+    Ok(out)
 }
 
 /// True when every byte is zero.
@@ -351,7 +355,7 @@ pub fn encrypt_with_nonce(curve: &Curve, public: &Point, message: &[u8],
     let mut material = x2.to_bytes_be_padded(width)?;
     material.extend_from_slice(&y2.to_bytes_be_padded(width)?);
 
-    let t = kdf(&material, message.len());
+    let t = kdf(&material, message.len())?;
     // GB/T 32918.4 6.1 step A5: an all-zero KDF output must be rejected,
     // because C2 would then be the plaintext.
     if all_zero(&t) {
@@ -440,7 +444,7 @@ pub fn decrypt(curve: &Curve, private: &BigUint, ciphertext: &[u8])
     let mut material = x2.to_bytes_be_padded(width)?;
     material.extend_from_slice(&y2.to_bytes_be_padded(width)?);
 
-    let t = kdf(&material, c2.len());
+    let t = kdf(&material, c2.len())?;
     if all_zero(&t) {
         return Err("The KDF produced an all-zero key, which GB/T 32918.4 \
                     7.1 requires be rejected.".to_string());
@@ -876,15 +880,15 @@ mod tests {
     #[test]
     fn test_the_kdf_counter_starts_at_one() {
         let shared = b"shared value";
-        assert_eq!(&kdf(shared, 32), &sm3_of(&[shared, &1u32.to_be_bytes()]));
-        assert_ne!(&kdf(shared, 32), &sm3_of(&[shared, &0u32.to_be_bytes()]));
+        assert_eq!(&kdf(shared, 32).unwrap(), &sm3_of(&[shared, &1u32.to_be_bytes()]));
+        assert_ne!(&kdf(shared, 32).unwrap(), &sm3_of(&[shared, &0u32.to_be_bytes()]));
         // And it carries across blocks rather than restarting.
-        let long = kdf(shared, 64);
+        let long = kdf(shared, 64).unwrap();
         assert_eq!(&long[32..], &sm3_of(&[shared, &2u32.to_be_bytes()])[..]);
-        assert_eq!(&long[..32], &kdf(shared, 32)[..]);
+        assert_eq!(&long[..32], &kdf(shared, 32).unwrap()[..]);
         // A length that is not a multiple of 32 is cut, not padded.
-        assert_eq!(kdf(shared, 40).len(), 40);
-        assert_eq!(&kdf(shared, 40)[..32], &kdf(shared, 32)[..]);
+        assert_eq!(kdf(shared, 40).unwrap().len(), 40);
+        assert_eq!(&kdf(shared, 40).unwrap()[..32], &kdf(shared, 32).unwrap()[..]);
     }
 
     #[test]
@@ -959,7 +963,7 @@ mod tests {
         }
         // And the check is applied to the KDF output that is actually
         // used, at the length that is actually used.
-        assert!(!all_zero(&kdf(b"anything", 32)));
+        assert!(!all_zero(&kdf(b"anything", 32).unwrap()));
     }
 
     #[test]

@@ -57,16 +57,18 @@ same compression. Streebog kept the last two ideas.
     nobody. The default here is CryptoPro, because that is what the
     wire carries; the tests use both and say which.
 
-  * **The empty message has two answers in the wild.** This file, the
-    second reading in `scripts/diff_check.py` and today's gost-engine
-    compress a zero block for it, since the standard's step 2 runs for
-    any remainder of 256 bits or fewer and zero is one. Bouncy Castle,
-    gost89 and the gost engine that shipped with OpenSSL 1.0 compress
-    nothing when nothing is left, and their `981e5f3c...` (CryptoPro)
-    is the value usually published. Every non-empty message gets the
-    same digest from all of them. GOST 34.311-95 here follows the same
-    rule as the other two parameter sets, and `docs/pitfalls.md` says
-    so.
+  * **The empty message has two answers in the wild, and both are
+    here.** `EmptyMessage::ZeroBlock`, the default, compresses a zero
+    block for it, since the standard's step 2 runs for any remainder of
+    256 bits or fewer and zero is one; today's gost-engine and the
+    second reading in `scripts/diff_check.py` do the same.
+    `EmptyMessage::NoBlock` compresses nothing when nothing is left, as
+    Bouncy Castle, gost89 and the gost engine that shipped with OpenSSL
+    1.0 do; their `981e5f3c...` (CryptoPro) is the value usually
+    published. Every non-empty message gets the same digest under both,
+    for all three parameter sets. `vectors/gost94_readings.vec` holds
+    Bouncy Castle's and gost89's answers, and `docs/pitfalls.md` says
+    which programs read which way.
 
   * **`A` and `psi` shift in opposite directions.** `A` moves the low
     64 bit word out and a fresh one in at the top; `psi` moves the low
@@ -104,6 +106,18 @@ pub const TEST_PARAM_SET: &str = "id-GostR3411-94-TestParamSet";
 /// DKE, and is what Ukrainian signatures and key containers hash with.
 pub const DSTU_PARAM_SET: &str = crate::block_ciphers::gost::DSTU_PARAM_SET;
 
+/// What the empty message hashes to. Every other message hashes the
+/// same under both; see the note at the top of the file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EmptyMessage {
+    /// A block of zeros is compressed before the length and checksum, as
+    /// RFC 5831's step 2 reads and today's gost-engine computes.
+    ZeroBlock,
+    /// Nothing is compressed before the length and checksum, as Bouncy
+    /// Castle, gost89 and OpenSSL 1.0's gost engine compute.
+    NoBlock,
+}
+
 #[derive(Clone)]
 pub struct Gost94 {
     /// The running hash, in byte stream order.
@@ -130,6 +144,7 @@ pub struct Gost94 {
     /// leaves the substitution tables alone.
     cipher: GostCrypto,
     name: &'static str,
+    empty: EmptyMessage,
 }
 
 impl Default for Gost94 {
@@ -153,6 +168,12 @@ impl Gost94 {
     /// substituting one for the other would produce a digest that is
     /// wrong in a way nothing downstream can see.
     pub fn with_param_set(data: &[u8], name: &str) -> Result<Gost94, String> {
+        Gost94::with_reading(data, name, EmptyMessage::ZeroBlock)
+    }
+
+    /// With a named parameter set and a reading of the empty message.
+    pub fn with_reading(data: &[u8], name: &str, empty: EmptyMessage)
+                        -> Result<Gost94, String> {
         let (sbox, canonical) = match name {
             CRYPTOPRO_PARAM_SET => (GostCrypto::sbox_named(CRYPTOPRO_PARAM_SET)?,
                                     CRYPTOPRO_PARAM_SET),
@@ -173,6 +194,7 @@ impl Gost94 {
             pending_len: 0,
             cipher: GostCrypto::new_with_sbox(&[0; 32], &sbox)?,
             name: canonical,
+            empty,
         };
         hash.update(data);
         Ok(hash)
@@ -210,10 +232,14 @@ impl Gost94 {
         // still a block: the standard's step 2 runs for any remaining
         // length of 256 bits or fewer, and a message that ended on a
         // block boundary has zero left over. Skipping it here would
-        // make every message whose length is a multiple of 32 bytes -
-        // including the empty one - hash to something else.
-        Gost94::absorb(&mut h, &mut sigma, &mut length, &mut self.cipher, &last,
-                       self.pending_len as u64 * 8);
+        // make every message whose length is a multiple of 32 bytes
+        // hash to something else. `pending` holds one to thirty-two
+        // bytes once anything has been fed, so it is empty only for
+        // the empty message, and that is the one case `NoBlock` skips.
+        if self.pending_len > 0 || self.empty == EmptyMessage::ZeroBlock {
+            Gost94::absorb(&mut h, &mut sigma, &mut length, &mut self.cipher, &last,
+                           self.pending_len as u64 * 8);
+        }
 
         // Then the length, then the checksum, through the same step.
         h = chi(&length, &h, &mut self.cipher);
@@ -224,14 +250,18 @@ impl Gost94 {
 
 impl HashFunction for Gost94 {
     fn name(&self) -> String {
-        if self.name == TEST_PARAM_SET {
-            "gost94_test".to_string()
+        let base = if self.name == TEST_PARAM_SET {
+            "gost94_test"
         } else if self.name == DSTU_PARAM_SET {
-            "gost34311".to_string()
+            "gost34311"
         } else {
             // CRYPTOPRO_PARAM_SET, the only other one `with_param_set`
             // accepts.
-            "gost94".to_string()
+            "gost94"
+        };
+        match self.empty {
+            EmptyMessage::ZeroBlock => base.to_string(),
+            EmptyMessage::NoBlock => format!("{base}_bc"),
         }
     }
 

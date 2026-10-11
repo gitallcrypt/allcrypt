@@ -371,6 +371,31 @@ instead of once in 2^128. Both are offered because both exist in RFC 6655;
 sixteen, which would read the last eight bytes of every CCM_8 ciphertext
 as part of the tag.
 
+### A short tag is only as strong as the receiver's idea of its length
+
+**Status: mitigated for GCM and CCM; a short tag itself is accepted.**
+
+GCM's tag may be cut to any of SP 800-38D's lengths, the shortest 4
+bytes, and the cut tag is the full one's prefix. A receiver that takes
+the length from the message lets the sender pick it, and a forger then
+picks 4 and guesses: once in 2^32. So `"aes-gcm"` with no length named
+opens 12 to 16 bytes and nothing shorter, and `"aes-gcm-8"` opens 8
+bytes and nothing else (`GcmState::verify` and `verify_fixed`). The
+4 and 8 byte lengths are offered because protocols use them; SP 800-38D
+appendix C bounds the messages and failed attempts they tolerate, and
+counting those is the caller's.
+
+CCM writes its tag length into the first block it authenticates, so a
+shorter tag is not a prefix but the tag of another CCM - one a forger
+can still guess more cheaply. `ccm::decrypt` takes the length from the
+tag it is handed, which is right for a function told the length, and
+`AeadStream::open` used to hand it whatever arrived: an `"aes-ccm"`
+stream opened a 4 byte tag. It now requires the length its name gives,
+as the EAX, MGM and OCB streams already did. Every test had passed the
+tag the encryptor made, which is always the right length.
+`tests/test_api.rs`'s `test_aead_tag_lengths_by_name` offers every
+other length to every one.
+
 ### CCM cannot stream, and an interface that pretended otherwise would lie
 
 The MAC's first block encodes the plaintext's length, so nothing can be
@@ -395,10 +420,11 @@ small field - r falls out, and every later tag can be forged. There is no
 In ChaCha20-Poly1305 this cannot happen by accident: the key is the first
 32 bytes of a ChaCha block generated from the nonce at counter zero, so a
 fresh one exists per message, and the payload starts at counter one so the
-two never overlap. `mac::Poly1305` is also public, and a caller who keys it
-from something long-lived has the failure above. HMAC is the thing to reach
-for when a key has to be reused, and `src/mac/poly1305.rs` says so at the
-top.
+two never overlap. `mac::Poly1305` is also public, and so are
+`api::poly1305` and Python's `allcrypt.poly1305`; a caller who keys any of
+them from something long-lived has the failure above. HMAC is the thing to
+reach for when a key has to be reused, and `src/mac/poly1305.rs` and the
+Python documentation both say so.
 
 ### XTS is not authenticated, and cannot be
 
@@ -574,6 +600,15 @@ Tested in `src/ec/mod.rs` (off-curve and out-of-range points rejected) and
 `pytests/test_ec.py::test_invalid_peer_point_raises`, which also offers a
 P-256 point to a secp256k1 key — same field size, so only the on-curve check
 catches it.
+
+The arithmetic itself is reachable without the check, on purpose:
+`Curve::decode_point_unchecked` and the facade's `ec_point_add`,
+`ec_point_double`, `ec_point_negate` and `ec_point_multiply` take a point
+off the curve, and compute on the curve with the same `a` that it is on -
+which is the attack, for demonstrating it. **Accepted**: they are named
+for what they are, nothing that takes a peer's point goes through them,
+and `pytests/test_ec.py` checks them on the curve against
+python-cryptography and off it against affine arithmetic written there.
 
 In TLS there are two further ways to end up in a group you did not choose,
 and neither is caught by validating a point, because the point is perfectly
@@ -1510,6 +1545,29 @@ multiplicative, and `test_unpadded_rsa_edges` asserts both, since they
 are what the name promises. `pytests/test_rsa.py` checks it against
 Python's `pow`, and `tests/test_rsa_oaep.rs` against Wycheproof's
 ciphertexts.
+
+### Randomness the caller chooses
+
+OAEP's seed and PSS's salt are what make the same message encrypt, or the
+same digest sign, to different bytes each time. Both can be given rather
+than drawn: `encrypt_oaep_with_seed` and `sign_pss_with_salt` in Rust,
+`seed=` and `salt=` in Python.
+
+**Status: accepted.** A seed used twice for one message gives one
+ciphertext twice, which tells an observer the messages were equal; a
+salt used twice does the same for signatures, and an empty salt makes
+PSS as deterministic as PKCS#1 v1.5 while keeping its proof. Neither
+leaks the key. They exist for known-answer tests and for reproducing
+another implementation's bytes, and RSA Laboratories' PKCS #1 v2.1
+vectors - sixty of each, with the seeds and salts printed - are read out
+of `rfcs/` by `tests/test_rsa_pkcs1_vectors.rs` and reproduced byte for
+byte. When nothing is given, the drawn path is the default and is
+unchanged.
+
+`sign_pkcs1v15_raw` (Python: `sign_without_digest_info`) signs with no
+DigestInfo, which is TLS 1.0 and 1.1's `MD5 || SHA-1` form. A signature
+made that way over an ordinary digest names no hash, so no ordinary
+verifier accepts it - which is the safe direction.
 
 ### Signature forgery by parsing instead of comparing
 
@@ -4541,6 +4599,20 @@ algorithm here can be checked through a library and this one cannot.
 Signatures and ciphertexts are exchanged with the binary in both
 directions.
 
+### A nonce the caller chooses
+
+**Status: accepted.** Signing derives `k` as RFC 6979 does and encryption
+draws it, but both take a given `k` too (`sign_with_nonce` and
+`encrypt_with_nonce`; `k=` in Python), because that is how GB/T 32918's
+worked examples are reproduced and how a ciphertext is made to repeat on
+purpose. A signing `k` used twice, or known to anybody else, gives away
+the key in one line: `s = (1+d)^-1 (k - r d)` solves to
+`d = (k - s) / (s + r) mod n`, and `pytests/test_sm2.py` does exactly
+that against the key it signed with. The same tests recompute the
+signature and the ciphertext from the standard's equations in Python's
+integers, with SM3 from OpenSSL, and compare them byte for byte; OpenSSL
+decrypts the ciphertext.
+
 ### `Z_A` is what makes SM2 unlike ECDSA
 
     Z_A = SM3(ENTL_A || ID_A || a || b || x_G || y_G || x_A || y_A)
@@ -5512,6 +5584,17 @@ holds `p` and `g` together.
 It is here for **old PGP keyrings**: OpenPGP algorithm 16 is ElGamal
 encryption, and it was GnuPG's default encryption subkey for years.
 OpenSSL dropped it and `python-cryptography` never had it.
+
+### Textbook ElGamal is reachable
+
+**Status: accepted.** `encrypt_raw` and `decrypt_raw` are the scheme with
+no padding, on bytes: malleable (multiplying `c2` by `t` multiplies the
+plaintext by `t`) and homomorphic under component-wise multiplication,
+which `pytests/test_elgamal.py` demonstrates against Python's integers.
+Encryption refuses only what has no ciphertext - zero, a value not below
+`p`, input longer than the modulus - and decryption keeps the check on
+`c1` that `ElGamalPrivateKey::decrypt` always made, because `c1 = 1`
+puts the plaintext on the wire and `c1 = p-1` leaks the parity of `x`.
 
 ### There is no second implementation to check against
 
@@ -6577,12 +6660,19 @@ ten are checked for acceptance only. A wrong-length signature is
 `Ok(false)`, not `Err` - the doc comment on `verify_internal` used to say
 otherwise while the code did this, and now says what the code does.
 
-The Python bindings expose the external interface and not the internal
-one, deliberately: a signature made with the internal interface is not one
-another implementation's default verifier accepts, so the obvious thing to
-reach for should not be that one. `pytests/test_slh_dsa.py` reads NIST's
-vectors itself rather than round tripping, and skips the internal and
-hedged sections with a note saying why at the skip.
+The Python bindings expose both interfaces. `sign` and `verify` are the
+external one, because a signature made with the internal interface is
+not one another implementation's ordinary verifier accepts and the
+obvious names should be the interoperable ones; `sign_internal` and
+`verify_internal` are the other, and `opt_rand=` takes the randomness a
+hedged signature would draw. `pytests/test_slh_dsa.py` reads NIST's
+vectors itself rather than round tripping, and reaches every section at
+the fast parameter sets - external and internal, deterministic and
+hedged, and all twelve pre-hashes - checking too that neither
+interface's verifier accepts the other's signature. **Accepted**: the
+internal interface and a caller-chosen `opt_rand` are reachable; a
+repeated or predictable `opt_rand` costs the hedging and nothing more,
+since the deterministic mode is standard.
 
 ---
 
@@ -9687,18 +9777,20 @@ witnesses, which read the DKE their own ways.
 
 ### The empty message to GOST R 34.11-94 has two answers
 
-**Status: accepted.** This library, its second reading in
-`scripts/diff_check.py` and today's gost-engine compress a zero block
-for the empty message, since RFC 5831's step 2 runs for any remainder
-of 256 bits or fewer and zero is one. Bouncy Castle, gost89 and the
-gost engine that shipped with OpenSSL 1.0 compress nothing when nothing
-is left; their CryptoPro digest of the empty message, `981e5f3c...`, is
-the one usually published, and `ce85b99c...` under the test table. All
-of them agree on every non-empty message. The same holds for GOST
-34.311-95, and the vectors leave the empty message out rather than
-record a disagreement as a pass. A protocol that hashes an empty input
-and talks to Bouncy Castle or a Ukrainian implementation built on these
-older readings would see a different digest.
+**Status: mitigated.** Today's gost-engine and RFC 5831's step 2 read
+literally compress a zero block for the empty message, since the step
+runs for any remainder of 256 bits or fewer and zero is one. Bouncy
+Castle, gost89 and the gost engine that shipped with OpenSSL 1.0
+compress nothing when nothing is left; their CryptoPro digest of the
+empty message, `981e5f3c...`, is the one usually published, and
+`ce85b99c...` under the test table. All of them agree on every
+non-empty message, under all three S-boxes. Both readings are here:
+`gost94`, `gost94_test` and `gost34311` are the first, and the default;
+`gost94_bc`, `gost94_test_bc` and `gost34311_bc` are the second. A
+protocol that hashes an empty input picks the one its peer computes.
+`vectors/gost94_readings.vec` holds Bouncy Castle's and gost89's
+answers, and `tests/test_gost94_readings.rs` requires the `_bc` names to
+match every row and the plain names to differ on the empty one only.
 
 ### The MAC of one block or less has three answers
 
