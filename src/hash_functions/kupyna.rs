@@ -201,9 +201,108 @@ impl HashFunction for Kupyna {
     }
 }
 
+/// What follows `len` bytes of data to end them on a block of `block`
+/// bytes: `80`, zeros, and the length in bits as 96 bits little endian -
+/// a second block when the first has fewer than thirteen bytes left.
+fn padding(len: u128, block: usize) -> Vec<u8> {
+    let used = (len % block as u128) as usize;
+    let total = if used + 13 <= block { block - used } else { 2 * block - used };
+    let mut out = vec![0u8; total];
+    out[0] = 0x80;
+    out[total - 12..].copy_from_slice(&(len * 8).to_le_bytes()[..12]);
+    out
+}
+
+/// DSTU 7564's MAC: Kupyna of `pad(K) || M || pad(M) || ~K`, where each
+/// `pad` is the hash's own padding over that part alone - so the key
+/// fills whole blocks and the message's padding starts on a boundary -
+/// and the hash pads the whole once more. 256, 384 or 512 bits.
+///
+/// The standard's examples, and the reference implementation's MAC,
+/// take a key as long as the MAC; Bouncy Castle and cryptonite take any,
+/// and so does this. The key is held inverted until the end.
+#[derive(Clone)]
+pub struct KupynaMac {
+    hash: Kupyna,
+    inverted_key: Vec<u8>,
+    message_len: u128,
+}
+
+impl KupynaMac {
+    /// A MAC of `bits`, 256, 384 or 512, under `key`.
+    ///
+    /// # Errors
+    /// Any other size.
+    pub fn new(bits: usize, key: &[u8]) -> Result<KupynaMac, String> {
+        if !matches!(bits, 256 | 384 | 512) {
+            return Err(format!("Kupyna's MAC is 256, 384 or 512 bits, not {bits}."));
+        }
+        let mut hash = Kupyna::new(bits)?;
+        let block = hash.block_size();
+        hash.update(key);
+        hash.update(&padding(key.len() as u128, block));
+        Ok(KupynaMac { hash, inverted_key: key.iter().map(|b| !b).collect(), message_len: 0 })
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.hash.update(data);
+        self.message_len += data.len() as u128;
+    }
+
+    /// The MAC of everything so far; `update` can go on.
+    pub fn mac(&self) -> Vec<u8> {
+        let mut hash = self.hash.clone();
+        hash.update(&padding(self.message_len, hash.block_size()));
+        hash.update(&self.inverted_key);
+        hash.digest()
+    }
+
+    /// Whether `tag` is the MAC, compared in constant time.
+    pub fn verify(&self, tag: &[u8]) -> bool {
+        !crate::bignum::ct::bytes_differ(&self.mac(), tag)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The padding is the hash's own: hashing `data || padding(data)`
+    /// then nothing more is one compression per block of the two, and a
+    /// part padded this way always ends on a block boundary.
+    #[test]
+    fn test_the_mac_padding_ends_on_a_block() {
+        for block in [64usize, 128] {
+            for len in 0..3 * block {
+                let p = padding(len as u128, block);
+                assert_eq!((len + p.len()) % block, 0, "{block} {len}");
+                assert!(p.len() >= 13 && p.len() <= block + 12, "{block} {len}");
+                assert_eq!(p[0], 0x80);
+                assert_eq!(&p[p.len() - 12..p.len() - 4], &((len as u64) * 8).to_le_bytes());
+                assert!(p[1..p.len() - 12].iter().all(|&b| b == 0));
+            }
+        }
+    }
+
+    #[test]
+    fn test_the_mac_streams() {
+        let mut one = KupynaMac::new(384, b"key").unwrap();
+        one.update(&[7u8; 300]);
+        let mut pieces = KupynaMac::new(384, b"key").unwrap();
+        for chunk in [7u8; 300].chunks(13) {
+            pieces.update(chunk);
+        }
+        assert_eq!(one.mac(), pieces.mac());
+        assert!(one.verify(&pieces.mac()));
+        // mac() leaves the state where it was.
+        let first = one.mac();
+        assert_eq!(one.mac(), first);
+        one.update(b"more");
+        assert_ne!(one.mac(), first);
+        for bits in [0usize, 8, 128, 255, 257, 1024] {
+            assert!(KupynaMac::new(bits, b"key").is_err(), "{bits}");
+        }
+    }
 
     #[test]
     fn test_sizes() {

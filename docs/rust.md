@@ -520,8 +520,41 @@ the check block comes back zero, and `unwrap` and `unwrap_padded` are
 two functions so that a key is never stripped of bytes that only look
 like padding. The standard's examples, and rows from Bouncy Castle and
 PrivatBank's cryptonite, are in `vectors/kalyna.vec` and
-`vectors/kalyna_modes.vec`. It is not constant time; its CCM, GMAC and
-XTS are not here yet.
+`vectors/kalyna_modes.vec`. It is not constant time.
+
+The standard's GCM, GMAC, CCM and XTS are in
+`block_ciphers::kalyna_aead`, and GCM and CCM are AEADs in the catalogue,
+`kalyna-128-gcm` to `kalyna-512-ccm`, with a nonce of one block. None is
+NIST's mode run over Kalyna: the field is `GF(2^n)` at the block's width
+read little endian, GCM's tag is `E(B xor lengths)` **with no IV in it**,
+and CCM's header carries a flag byte and a length field of `Nb` bytes,
+which `kalyna_ccm_encrypt` takes and the catalogue fixes at 4.
+
+```rust
+use allcrypt::api;
+
+let key = [3u8; 64];
+let nonce = [5u8; 64];
+let (ct, tag) = api::aead_encrypt("kalyna-512-gcm", &key, &nonce, b"header", b"message")?;
+assert_eq!(tag.len(), 64);
+assert_eq!(api::aead_decrypt("kalyna-512-gcm", &key, &nonce, b"header", &ct, &tag)?,
+           b"message");
+// The tag does not cover the IV: another IV opens, to other bytes.
+let mut other = nonce;
+other[0] ^= 1;
+assert_ne!(api::aead_decrypt("kalyna-512-gcm", &key, &other, b"header", &ct, &tag)?,
+           b"message");
+
+let sealed = api::kalyna_ccm_encrypt("kalyna-512", &key, &nonce, b"", b"message", 64, 8)?;
+assert_eq!(api::kalyna_ccm_decrypt("kalyna-512", &key, &nonce, b"", &sealed, 64, 8)?,
+           b"message");
+let out = api::kalyna_xts_encrypt("kalyna-512", &key, &nonce, &[9u8; 100])?;
+assert_eq!(api::kalyna_xts_decrypt("kalyna-512", &key, &nonce, &out)?, vec![9u8; 100]);
+```
+
+Bouncy Castle and cryptonite agree on whole blocks; past that each
+row's source is recorded in `vectors/kalyna_aead.vec`, and
+`docs/pitfalls.md` says which reading each mode follows.
 
 ### Kupyna
 
@@ -543,8 +576,24 @@ assert!(Kupyna::new(520).is_err());
 ```
 
 The hash is the **last** bytes of the final state, and the length field
-is 96 bits of the message's length in bits. Its MAC from the standard is
-not here yet.
+is 96 bits of the message's length in bits.
+
+The standard's MAC, at 256, 384 or 512 bits, is `KupynaMac`: Kupyna of
+the key with the hash's padding, the message with its own, and the
+inverted key, which the hash then pads once more. The standard's
+examples use a key as long as the MAC; any length is taken.
+
+```rust
+use allcrypt::api;
+use allcrypt::hash_functions::kupyna::KupynaMac;
+
+let mut mac = KupynaMac::new(384, b"a key of any length")?;
+mac.update(b"a message, ");
+mac.update(b"in pieces");
+assert_eq!(mac.mac(), api::kupyna_mac(384, b"a key of any length",
+                                      b"a message, in pieces")?);
+assert!(KupynaMac::new(128, b"key").is_err());
+```
 
 ### RC6
 
@@ -569,6 +618,33 @@ assert!(Rc6::new(&[]).is_err());
 
 It is checked against Bouncy Castle over every key length from 1 to 64
 bytes and forty-one more up to 255, in `vectors/rc6.vec`.
+
+### MARS
+
+MARS, IBM's AES finalist, as every implementation since carries it: with
+the key schedule IBM revised for the second round. A 128 bit block and a
+key of 4 to 14 words, 16 to 56 bytes. Forward mixing, sixteen keyed core
+rounds and backward mixing; the core multiplies by key words and rotates
+by data, so the rotation amounts are data dependent as in RC5 and RC6,
+and both mixing layers index the S-box with bytes of the block.
+
+```rust
+use allcrypt::block_ciphers::mars::Mars;
+use allcrypt::block_ciphers::BlockCipher;
+
+// Crypto++'s published vector: zero key, zero block.
+let mut mars = Mars::new(&[0u8; 16])?;
+let mut out = Vec::new();
+mars.block_encrypt(&[0u8; 16], &mut out);
+assert_eq!(out[..4], [0xdc, 0xc0, 0x7b, 0x8d]);
+assert!(Mars::new(&[0u8; 56]).is_ok());
+assert!(Mars::new(&[0u8; 18]).is_err());
+```
+
+Crypto++ and Botan agree on every row of `vectors/mars.vec`: single
+blocks at all eleven key lengths and Monte Carlo tests of four million
+blocks each way, Crypto++'s six published ones among them. The S-box is
+derived from its SHA-1 construction at test time.
 
 ### RC2, and the parameter that weakens a key on purpose
 
@@ -2588,6 +2664,94 @@ references are a second reading of the standards rather than somebody
 else's code — the same position as SSLv3. Each algorithm is additionally
 pinned to its own standard's published vectors, and the constant tables
 were cross-checked between independent projects rather than transcribed.
+
+### DSTU 4145-2002
+
+Ukraine's signature standard, over binary curves `y^2 + xy = x^3 + a·x^2
++ b` in `GF(2^m)`. Ten named curves, `dstu4145-m163` to `dstu4145-m431`
+(`api::DSTU4145_CURVES`); a curve can also be given whole through
+`ec::dstu4145::Curve::custom`, as the standard's own example and some
+certificates do. The optimal-normal-basis forms are not here.
+
+It is not ECDSA over another field. The public key is **`Q = −d·G`**;
+the hash is read **little endian** and cut to `m` bits, and zero becomes
+one; `r` comes from multiplying the hash by `x(e·G)` in the field, cut
+to `bit_len(n) − 1` bits; and `s = (e + d·r) mod n`, with no inversion.
+
+```rust
+use allcrypt::api::{Dstu4145Key, Dstu4145PublicKey};
+
+let key = Dstu4145Key::generate("dstu4145-m257")?;
+let hash = [0x5au8; 32];                 // GOST 34.311's output, say
+
+// The signature is s || r, each big endian at the width of n.
+let signature = key.sign(&hash)?;
+assert_eq!(signature.len(), 64);
+let public = key.public_key();
+assert!(public.verify(&hash, &signature)?);
+
+// The standard's compression: x with its lowest bit replaced by the
+// trace of y/x. Both forms are read back.
+let packed = public.to_bytes(true)?;
+let again = Dstu4145PublicKey::from_bytes("dstu4145-m257", &packed)?;
+assert_eq!(again.to_bytes(false)?, public.to_bytes(false)?);
+
+// Diffie-Hellman: the shared point x || y, with or without the
+// cofactor, as cryptonite computes it.
+let peer = Dstu4145Key::generate("dstu4145-m257")?;
+assert_eq!(key.shared_point(&peer.public_key(), true)?,
+           peer.shared_point(&public, true)?);
+```
+
+Everything here is big endian. A certificate under the `dstu4145le`
+object identifier, which is what Ukrainian CAs issue, stores the
+compressed key and the signature with their bytes reversed, so the
+signature reads `r || s` there.
+
+#### Key containers
+
+The keys Ukrainian software issues come in three containers, which
+`dstu4145_keys_open` reads alike: IIT's `Key-6.dat`, a PKCS#8 encrypted
+with PBES2 (PBKDF2 with HMAC-GOST 34.311, and GOST 28147 in CFB mode
+under the DKE the parameters carry), and a plain PKCS#8, each as DER or
+PEM. A container usually holds two keys, one for signing and one for key
+agreement, the second in the first one's attributes; the signing key
+comes first. A key on a curve given whole is matched to the named curve
+it is.
+
+```rust
+use allcrypt::api::{self, Dstu4145Key};
+
+let signing = Dstu4145Key::generate("dstu4145-m257")?;
+let agreement = Dstu4145Key::generate("dstu4145-m431")?;
+
+// IIT's own form: GOST 28147 under a key hashed from the password, with
+// a MAC that refuses a wrong password by name.
+let key6 = api::dstu4145_key6(&signing, Some(&agreement), "пароль".as_bytes())?;
+let keys = api::dstu4145_keys_open(&key6, "пароль".as_bytes())?;
+assert_eq!(keys.len(), 2);
+assert_eq!(keys[1].curve_name(), "dstu4145-m431");
+assert!(api::dstu4145_keys_open(&key6, b"parol").is_err());
+
+// The PKCS#8 form, encrypted the way the CAs' software does it: 10,000
+// iterations and a 32-byte salt unless given.
+let info = signing.private_key_info(Some(&agreement))?;
+let sealed = api::encrypt_private_key(&info, "пароль".as_bytes(), "gost28147-cfb",
+                                      None, Some(1000), None, None)?;
+assert_eq!(api::dstu4145_keys_open(&sealed, "пароль".as_bytes())?.len(), 2);
+
+// The key identifier: GOST 34.311 over the compressed public key, as a
+// certificate's subject key identifier names the key.
+assert_eq!(keys[0].key_id()?, signing.public_key().key_id()?);
+```
+
+`x509::ua_key` is the layer underneath, for a key on a curve that is not
+one of the ten and for the container formats one at a time. The
+PKCS#12 and JKS stores that hold these keys are read and written by the
+key store example (`examples/products/keystore`), with HMAC-GOST 34.311
+as a PKCS#12 MAC and the zero padding PrivatBank's JKS files put after
+the key. Readers disagree on several details; the pitfalls guide has
+them under *Ukrainian key containers*.
 
 ## Post-quantum: SLH-DSA
 

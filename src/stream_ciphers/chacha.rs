@@ -619,7 +619,7 @@ mod tests {
             for rounds in [8usize, 12, 20] {
                 for before_wrap in [0u32, 1, 3, 6] {
                     let make = || {
-                        let mut c = Chacha::new(vec![5u8; 32], vec![6u8; nonce_len], rounds).unwrap();
+                        let mut c = Chacha::new(&[5u8; 32], &vec![6u8; nonce_len], rounds).unwrap();
                         c.set_counter(u32::MAX - before_wrap).unwrap();
                         c
                     };

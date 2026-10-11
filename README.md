@@ -27,7 +27,7 @@ description and test vectors.
 ## What is in it
 
 - **Block ciphers** - AES, ARIA, Blowfish, Camellia, CAST5, CAST-256, DES and 3DES,
-  GOST 28147-89, IDEA, Kalyna, Kuznyechik, Magma, RC2, RC5, RC6, Rijndael
+  GOST 28147-89, IDEA, Kalyna, Kuznyechik, Magma, MARS, RC2, RC5, RC6, Rijndael
   at every block size, SEED, Serpent, SM4,
   TEA, Twofish, XTEA - in the modes each one's block size allows: ECB,
   CBC, PCBC, CFB, OFB, CTR, ciphertext stealing, XTS, LRW, GCM, CCM,
@@ -43,8 +43,9 @@ description and test vectors.
   hashes, and the KDFs that particular formats and protocols define.
 - **Public key** - RSA (PKCS#1 v1.5, OAEP, PSS), DSA, Diffie-Hellman,
   ElGamal, ECDSA and ECDH on the NIST, secp256k1, SM2 and GOST curves,
-  X25519 and X448, Ed25519 and Ed448, GOST R 34.10, SM2. RSA, finite-
-  field Diffie-Hellman, ECDSA, EdDSA, X25519, X448, ML-KEM and ML-DSA keep
+  X25519 and X448, Ed25519 and Ed448, GOST R 34.10, SM2, and Ukraine's
+  DSTU 4145 over binary curves. RSA, finite-field Diffie-Hellman, ECDSA,
+  EdDSA, X25519, X448, DSTU 4145, ML-KEM and ML-DSA keep
   their secrets in fixed-width arithmetic, checked for constant time
   under valgrind; the leaks that remain elsewhere are named in
   [pitfalls.md](docs/pitfalls.md).

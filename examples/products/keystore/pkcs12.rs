@@ -52,13 +52,16 @@ pub const AES256_CBC: &str = "2.16.840.1.101.3.4.1.42";
 
 /// The hashes a MAC or a PRF may name, by OID: (dotted digest OID,
 /// dotted HMAC OID, the library's name).
-const HASHES: [(&str, &str, &str); 6] = [
+const HASHES: [(&str, &str, &str); 7] = [
     ("1.3.14.3.2.26", "1.2.840.113549.2.7", "sha1"),
     ("2.16.840.1.101.3.4.2.4", "1.2.840.113549.2.8", "sha224"),
     ("2.16.840.1.101.3.4.2.1", "1.2.840.113549.2.9", "sha256"),
     ("2.16.840.1.101.3.4.2.2", "1.2.840.113549.2.10", "sha384"),
     ("2.16.840.1.101.3.4.2.3", "1.2.840.113549.2.11", "sha512"),
     ("1.2.840.113549.2.5", "", "md5"),
+    // GOST 34.311-95 under the DSTU S-box, and HMAC over it: what
+    // Ukrainian PKCS#12 files MAC with and derive their keys with.
+    ("1.2.804.2.1.1.1.1.2.1", "1.2.804.2.1.1.1.1.1.2", "gost34311"),
 ];
 
 pub fn oid(dotted: &str) -> Vec<u8> {
@@ -267,7 +270,11 @@ fn describe(algorithm: &[u8]) -> String {
                 let Pbkdf2 { iterations, prf, .. } = pbkdf2_parameters(kdf.remaining())?;
                 let mut cipher = p.read_sequence()?;
                 let cipher = cipher.read_oid()?.to_string();
-                let cipher = if cipher == AES256_CBC { "AES-256-CBC".to_string() } else { cipher };
+                let cipher = match cipher.as_str() {
+                    AES256_CBC => "AES-256-CBC".to_string(),
+                    "1.2.804.2.1.1.1.1.1.1.3" => "GOST28147-CFB".to_string(),
+                    _ => cipher,
+                };
                 Ok(format!("{name}, PBKDF2-HMAC-{} x {iterations}, {cipher}",
                            prf.to_uppercase()))
             })();
@@ -459,7 +466,11 @@ pub fn seal(scheme: &str, iterations: u32, password: &[u8], data: &[u8])
         "3des" => ("pbe-sha1-3des", None, 8, 0),
         "rc2-40" => ("pbe-sha1-rc2-40", None, 8, 0),
         "aes-256" => ("aes-256-cbc", Some("sha256"), 16, 16),
-        other => return Err(format!("Unknown scheme {other}: aes-256, 3des, rc2-40 or none.")),
+        // What Ukrainian software writes: GOST 28147 CFB under PBKDF2
+        // with HMAC-GOST 34.311, a 32-byte salt.
+        "gost" => ("gost28147-cfb", Some("gost34311"), 32, 8),
+        other => return Err(format!("Unknown scheme {other}: aes-256, gost, 3des, rc2-40 or \
+                                     none.")),
     };
     let salt = allcrypt::api::random_bytes(salt_len)?;
     let iv = allcrypt::api::random_bytes(iv_len)?;
@@ -472,12 +483,13 @@ pub fn seal(scheme: &str, iterations: u32, password: &[u8], data: &[u8])
 }
 
 pub struct Options {
-    /// For shrouded keys: aes-256, 3des, rc2-40, or none for plain key bags.
+    /// For shrouded keys: aes-256, gost, 3des, rc2-40, or none for plain
+    /// key bags.
     pub key_scheme: String,
     /// For the certificates' safe: the same, none leaving it in the clear.
     pub cert_scheme: String,
-    /// sha1, sha256 (the PKCS#12 KDF), pbmac1 (PBKDF2 and HMAC-SHA-256),
-    /// or none.
+    /// sha1, sha256, gost34311 (the PKCS#12 KDF), pbmac1 (PBKDF2 and
+    /// HMAC-SHA-256), or none.
     pub mac: String,
     pub iterations: u32,
 }
@@ -673,14 +685,21 @@ pub fn write(bags: &[Bag], password: &[u8], options: &Options) -> Result<Vec<u8>
         return Err(e);
     }
     let (keys, others) = (keys.finish(), others.finish());
+    // A safe with no bags is left out, as OpenSSL's PKCS12_create does.
+    // Encrypted, the empty SafeContents is two bytes, and dstu-engine
+    // decrypts GOST 28147 CFB wrongly below one block.
+    let empty = |safe: &[u8]| safe == [0x30, 0x00];
     let mut safe = Writer::new();
     let mut sealed_others = None;
-    if options.cert_scheme != "none" {
+    if options.cert_scheme != "none" && !empty(&others) {
         sealed_others = Some(seal(&options.cert_scheme, options.iterations, password, &others)?);
     }
     safe.write_sequence(|w| {
-        data_info(w, &keys);
+        if !empty(&keys) {
+            data_info(w, &keys);
+        }
         match &sealed_others {
+            None if empty(&others) => {}
             None => data_info(w, &others),
             Some((algorithm, sealed)) => w.write_sequence(|w| {
                 w.write_oid(&oid(ENCRYPTED_DATA));
@@ -700,9 +719,10 @@ pub fn write(bags: &[Bag], password: &[u8], options: &Options) -> Result<Vec<u8>
     let content = safe.finish();
     let mac = match options.mac.as_str() {
         "none" => None,
-        "sha1" | "sha256" => {
+        "sha1" | "sha256" | "gost34311" => {
             let hash = options.mac.as_str();
-            let salt = allcrypt::api::random_bytes(8)?;
+            // Ukrainian files carry a 32-byte salt; OpenSSL's are 8.
+            let salt = allcrypt::api::random_bytes(if hash == "gost34311" { 32 } else { 8 })?;
             let text = std::str::from_utf8(password).map_err(|_| "The password is not UTF-8.")?;
             let length = allcrypt::api::AnyHash::new(hash)?.digest_len();
             let key = pkcs12_kdf(allcrypt::api::AnyHash::new(hash)?, &pkcs12_bmp_password(text),
@@ -759,7 +779,8 @@ pub fn write(bags: &[Bag], password: &[u8], options: &Options) -> Result<Vec<u8>
             });
             Some(w.finish())
         }
-        other => return Err(format!("Unknown MAC {other}: sha1, sha256, pbmac1 or none.")),
+        other => return Err(format!("Unknown MAC {other}: sha1, sha256, gost34311, pbmac1 \
+                                     or none.")),
     };
     let mut out = Writer::new();
     out.write_sequence(|w| {
@@ -1024,6 +1045,59 @@ mod tests {
             }
         }
         out
+    }
+
+    /// The gost schemes are what the Ukrainian CAs' software writes:
+    /// PBKDF2 over HMAC-GOST 34.311 with a 32-byte salt, and GOST 28147
+    /// CFB; and a 32-byte salt for the MAC.
+    #[test]
+    fn test_the_gost_schemes_are_the_cas() {
+        let (algorithm, sealed) = seal("gost", 3, b"pw", b"data").unwrap();
+        let mut w = Writer::new();
+        w.write_sequence(|w| {
+            w.write_raw(&algorithm);
+            w.write_octet_string(&sealed);
+        });
+        let p = encrypted_key::parameters(&w.finish()).unwrap();
+        assert_eq!((p.scheme, p.prf, p.iterations, p.salt.len(), p.iv.len()),
+                   ("gost28147-cfb", Some("gost34311"), 3, 32, 8));
+
+        let file = write(&sample_bags(), b"pw", &options("gost", "gost", "gost34311")).unwrap();
+        let (_, _, mac) = parts(&file);
+        let mac = mac.unwrap();
+        let mut mac_data = Reader::new(&mac).read_sequence().unwrap();
+        mac_data.read_raw().unwrap();
+        assert_eq!(mac_data.read_octet_string().unwrap().len(), 32);
+    }
+
+    /// A safe with no bags is left out, encrypted or not, and the store
+    /// reads back the same.
+    #[test]
+    fn test_an_empty_safe_is_left_out() {
+        let safes = |file: &[u8]| {
+            let (_, auth_safe, _) = parts(file);
+            let mut a = Reader::new(&auth_safe).read_sequence().unwrap();
+            a.read_oid().unwrap();
+            let content = Reader::new(a.read_tagged(Tag::context(0, true)).unwrap())
+                .read_octet_string().unwrap().to_vec();
+            let mut infos = Reader::new(&content).read_sequence().unwrap();
+            let mut count = 0;
+            while !infos.is_empty() {
+                infos.read_raw().unwrap();
+                count += 1;
+            }
+            count
+        };
+        let bags = sample_bags();
+        for cert_scheme in ["gost", "none"] {
+            let options = options("gost", cert_scheme, "gost34311");
+            for (some, expected) in [(&bags[..], 2), (&bags[..1], 1), (&bags[1..], 1),
+                                     (&[][..], 0)] {
+                let file = write(some, b"pw", &options).unwrap();
+                assert_eq!(safes(&file), expected, "{cert_scheme} {}", some.len());
+                assert_eq!(open(&file, b"pw").unwrap().0, some);
+            }
+        }
     }
 
     /// The safes inside a PFX are OCTET STRINGs whose content is a

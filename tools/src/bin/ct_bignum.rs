@@ -35,7 +35,7 @@ use allcrypt::bignum::{BigUint, Montgomery, Secret};
 use allcrypt::block_ciphers::aes::AesCrypto;
 use allcrypt::block_ciphers::ghash::Ghash;
 use allcrypt::block_ciphers::BlockCipher;
-use allcrypt::ec::{curves, eddsa, sm2, x25519, x448, xeddsa};
+use allcrypt::ec::{curves, dstu4145, eddsa, sm2, x25519, x448, xeddsa};
 use allcrypt::nacl;
 use allcrypt::hash_functions::sha2::SHA256;
 use allcrypt::hash_functions::streebog::Streebog;
@@ -341,6 +341,37 @@ fn run(case: &str) {
             let signature = curve.gost_sign(&private, &digest, Streebog::new_256(&[])).unwrap();
             publish(&signature.r);
             publish(&signature.s);
+        }
+
+        "dstu4145_sign" => {
+            // DSTU 4145's `s = e + d·r` gives `d` from `e` by one
+            // subtraction and one division, so both are secret. The key
+            // and the nonce are marked; e·G runs on the x-only ladder in
+            // GF(2^m), the products in the Montgomery domain over n. The
+            // curve is m257, which has cofactor 4 and a five-word field.
+            let curve = dstu4145::Curve::by_name("dstu4145-m257").unwrap();
+            let private = secret_hex(
+                "0d3f7b21c5d80a46f2e19b3c7d5a8064e1f2c3b4a5968778695a4b3c2d1e0f9a");
+            let nonce = secret_bytes32(
+                "05a6f2e19b3c7d5a8064e1f2c3b4a5968778695a4b3c2d1e0f9a0d3f7b21c5d8");
+            let (r, s) = curve.sign_with_nonce(&private, &[0x5au8; 32], &nonce).unwrap();
+            publish(&r);
+            publish(&s);
+        }
+
+        "dstu4145_dh" => {
+            // The private key multiplies the peer's point, with the
+            // cofactor folded into the scalar modulo n. The peer's key is
+            // made before anything is marked.
+            let curve = dstu4145::Curve::by_name("dstu4145-m257").unwrap();
+            let peer = curve.public_key(&BigUint::from_hex("1234567890abcdef").unwrap()).unwrap();
+            let private = secret_hex(
+                "0d3f7b21c5d80a46f2e19b3c7d5a8064e1f2c3b4a5968778695a4b3c2d1e0f9a");
+            let shared = curve.shared_point(&private, &peer, true).unwrap();
+            let dstu4145::Point::Affine(x, y) = shared else { panic!("the identity") };
+            declassify(&x);
+            declassify(&y);
+            println!("{:016x}{:016x}", x[0], y[0]);
         }
 
         "eddsa_sign" => {
@@ -929,6 +960,8 @@ const CASES: &[&str] = &[
     "rsa_oaep_decode",
     "ecdsa_sign",
     "gost_sign",
+    "dstu4145_sign",
+    "dstu4145_dh",
     "eddsa_sign",
     "ed448_sign",
     "xeddsa_sign",

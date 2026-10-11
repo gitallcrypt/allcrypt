@@ -575,14 +575,15 @@ fn test_aead_through_the_api() {
                         "xchacha20-poly1305", "aes-eax", "twofish-eax", "serpent-eax", "camellia-eax",
                         "sm4-eax", "des-eax", "3des-eax", "blowfish-eax",
                         "tea-eax", "xtea-eax", "rc5-eax", "aria-eax", "rc6-eax",
-                        "cast256-eax", "kuznyechik-mgm", "magma-mgm", "aes-mgm",
+                        "cast256-eax", "mars-eax", "kuznyechik-mgm", "magma-mgm", "aes-mgm",
                         "twofish-mgm", "serpent-mgm", "camellia-mgm",
                         "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
                         "blowfish-mgm", "tea-mgm", "xtea-mgm", "rc5-mgm", "rc6-mgm",
-                        "cast256-mgm", "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
+                        "cast256-mgm", "mars-mgm", "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
                         "aria-ocb", "sm4-ocb", "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
-                        "cast256-ocb", "aes-128-cbc-hmac-sha256", "aes-192-cbc-hmac-sha384",
-                        "aes-256-cbc-hmac-sha512"]);
+                        "cast256-ocb", "mars-ocb", "aes-128-cbc-hmac-sha256", "aes-192-cbc-hmac-sha384",
+                        "aes-256-cbc-hmac-sha512", "kalyna-128-gcm", "kalyna-256-gcm",
+                        "kalyna-512-gcm", "kalyna-128-ccm", "kalyna-256-ccm", "kalyna-512-ccm"]);
 
     // Every AEAD, over every key length it takes. ChaCha20-Poly1305 has
     // exactly one; AES has three.
@@ -603,7 +604,7 @@ fn test_aead_through_the_api() {
         ("des-eax", 8), ("3des-eax", 24), ("blowfish-eax", 16),
         ("tea-eax", 16), ("xtea-eax", 16), ("rc5-eax", 16),
         ("aria-eax", 16), ("aria-eax", 32), ("rc6-eax", 16), ("rc6-eax", 32),
-        ("cast256-eax", 20),
+        ("cast256-eax", 20), ("mars-eax", 40),
         // MGM, the same way: the standard's own two ciphers first, then
         // one of each block size from the rest. MGM's field polynomial
         // differs between a 64 and a 128 bit block, so the two sizes
@@ -614,15 +615,21 @@ fn test_aead_through_the_api() {
         ("camellia-mgm", 16), ("sm4-mgm", 16), ("aria-mgm", 32),
         ("des-mgm", 8), ("3des-mgm", 24), ("blowfish-mgm", 16),
         ("tea-mgm", 16), ("xtea-mgm", 16), ("rc5-mgm", 16), ("rc6-mgm", 24), ("cast256-mgm", 32),
+        ("mars-mgm", 56),
         // OCB, 128 bit blocks only.
         ("aes-ocb", 16), ("aes-ocb", 24), ("aes-ocb", 32),
         ("camellia-ocb", 16), ("twofish-ocb", 32), ("serpent-ocb", 32),
         ("aria-ocb", 16), ("sm4-ocb", 16), ("seed-ocb", 16),
         ("kuznyechik-ocb", 32), ("rc6-ocb", 16), ("cast256-ocb", 28),
+        ("mars-ocb", 20),
         // AES-CBC with HMAC: one key size each, the MAC key and the AES
         // key together.
         ("aes-128-cbc-hmac-sha256", 32), ("aes-192-cbc-hmac-sha384", 48),
         ("aes-256-cbc-hmac-sha512", 64),
+        // DSTU 7624's own GCM and CCM at each Kalyna block size, and
+        // both key lengths where the block has two.
+        ("kalyna-128-gcm", 16), ("kalyna-256-gcm", 64), ("kalyna-512-gcm", 64),
+        ("kalyna-128-ccm", 32), ("kalyna-256-ccm", 32), ("kalyna-512-ccm", 64),
     ];
 
     // The list above must cover the catalogue. Without this, adding an
@@ -641,7 +648,10 @@ fn test_aead_through_the_api() {
         // block, with the top bit clear, because that bit separates its
         // two counter chains. Built here rather than listed, so a new
         // AEAD with its own rule is a compile-time decision.
-        let nonce: Vec<u8> = if let Some(cipher) = aead.strip_suffix("-mgm") {
+        let nonce: Vec<u8> = if aead.starts_with("kalyna-") {
+            // DSTU 7624's GCM and CCM take a whole block.
+            vec![0x2bu8; aead["kalyna-".len()..aead.len() - 4].parse::<usize>().unwrap() / 8]
+        } else if let Some(cipher) = aead.strip_suffix("-mgm") {
             use allcrypt::api::AnyBlockCipher;
             let block = AnyBlockCipher::new(cipher, &key, None).unwrap().blocksize();
             let mut value = vec![0x2bu8; block];
@@ -685,7 +695,9 @@ fn test_aead_through_the_api() {
         let expected_tag = if aead.ends_with("-8") {
             8
         } else if let Some(cipher) = aead.strip_suffix("-eax")
-                                        .or_else(|| aead.strip_suffix("-mgm")) {
+                                        .or_else(|| aead.strip_suffix("-mgm"))
+                                        .or_else(|| aead.strip_prefix("kalyna-")
+                                                         .map(|_| &aead[..aead.len() - 4])) {
             use allcrypt::api::AnyBlockCipher;
             AnyBlockCipher::new(cipher, &key, None).unwrap().blocksize()
         } else if aead.contains("-cbc-hmac-") {
@@ -708,7 +720,17 @@ fn test_aead_through_the_api() {
         wrong_tag[expected_tag - 1] ^= 1;
         assert!(aead_decrypt(aead, &key, &nonce, aad, &ciphertext, &wrong_tag).is_err());
         assert!(aead_decrypt(aead, &key, &nonce, b"other", &ciphertext, &tag).is_err());
-        assert!(aead_decrypt(aead, &key, &other_nonce, aad, &ciphertext, &tag).is_err());
+        if aead.starts_with("kalyna-") && aead.ends_with("-gcm") {
+            // **Except DSTU 7624's GCM, whose tag does not cover the
+            // IV**: it is E(B xor lengths), and the IV reaches only the
+            // keystream. Another IV opens with the same tag and returns
+            // a different plaintext. Both witnesses and the standard's
+            // examples agree; docs/pitfalls.md, 7zzp.
+            let other = aead_decrypt(aead, &key, &other_nonce, aad, &ciphertext, &tag).unwrap();
+            assert_ne!(other, message, "{}", aead);
+        } else {
+            assert!(aead_decrypt(aead, &key, &other_nonce, aad, &ciphertext, &tag).is_err());
+        }
 
         // Feeding it in pieces must equal the one-shot, in both
         // directions. `finish` and `open` rather than `tag` and `verify`,
@@ -728,7 +750,9 @@ fn test_aead_through_the_api() {
         // `buffers_everything` is what says so honestly either way.
         let expected_to_buffer = aead.ends_with("-ccm") || aead.ends_with("-ccm-8")
             || aead.ends_with("-eax") || aead.ends_with("-mgm") || aead.ends_with("-ocb")
-            || aead.contains("-cbc-hmac-");
+            || aead.contains("-cbc-hmac-")
+            // Kalyna's GCM is one-shot here, as EAX is.
+            || aead.starts_with("kalyna-");
         assert_eq!(buffers, expected_to_buffer,
                    "{} disagrees about whether it buffers", aead);
         if buffers {
@@ -1334,12 +1358,14 @@ fn test_aead_tag_lengths_by_name() {
         assert!(aead_decrypt("aes-gcm", &key, &[1; 12], b"", &ciphertext, &tag[..n]).is_err());
     }
 
-    // GCM and CCM need a 128 bit block, and Kalyna's are DSTU 7624's own.
+    // GCM and CCM need a 128 bit block. Kalyna's are DSTU 7624's own
+    // (tests/test_kalyna_aead.rs), whose nonce is a whole block, so the
+    // twelve bytes NIST's modes take are refused rather than read.
     assert!(AeadStream::new("des-gcm", &[0; 8], &[1; 12], b"", false).is_err());
     assert!(AeadStream::new("blowfish-ccm", &[0; 16], &[1; 12], b"", false).is_err());
     for name in ["kalyna-128-gcm", "kalyna-128-ccm", "kalyna-128-gcm-16"] {
-        let refusal = AeadStream::new(name, &[0; 16], &[1; 12], b"", false).err().unwrap();
-        assert!(refusal.contains("DSTU 7624"), "{name}: {refusal}");
+        let refusal = aead_encrypt(name, &[0; 16], &[1; 12], b"", b"m").err().unwrap();
+        assert!(refusal.contains("one block"), "{name}: {refusal}");
     }
 }
 

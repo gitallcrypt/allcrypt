@@ -293,6 +293,40 @@ CASES = [
      "open and belongs to the hash. The signing equation and the nonce's "
      "magnitude are gone from the list."),
 
+    # DSTU 4145-2002 over GF(2^m): the key and the nonce in fixed-width
+    # Secrets, e*G on the x-only ladder in `ec::gf2m` - every field
+    # operation masked, the ladder's two special endings chosen by mask -
+    # and `s = e + d*r` in the Montgomery domain over n.
+    ("dstu4145_sign", {
+        # The range tests of the key and of the nonce, each folded into
+        # one mask before the one branch on it, and the `unmask` it goes
+        # through when that is not inlined: the verdict is what leaves.
+        "allcrypt::ec::dstu4145::Curve::check_scalar", "unmask",
+        # The publication boundary for e*G: whether the ladder's result
+        # is the identity, which for e in [1, n) it never is.
+        "allcrypt::ec::dstu4145::publish",
+        # r and s becoming `BigUint`s, which normalises them: half the
+        # signature each, published. `UnknownInlinedFun` is the same
+        # normalisation with the frame's name lost, as on the rsa_private
+        # row, and as weak a handle there as here.
+        "allcrypt::ec::dstu4145::publish_integer",
+        "normalise", "UnknownInlinedFun",
+     },
+     "the key's and the nonce's range verdicts, whether e*G is the "
+     "identity, and r and s as they are published. The ladder, the "
+     "field arithmetic, the cut of r to bit_len(n) - 1 bits and the "
+     "signing equation are not in the list."),
+    ("dstu4145_dh", {
+        "allcrypt::ec::dstu4145::Curve::check_scalar", "unmask",
+        # The shared point is returned to the caller as a `Point`, and
+        # whether it is the identity is the branch: never, for a key in
+        # range and a peer that passed validation.
+        "allcrypt::ec::dstu4145::publish",
+     },
+     "the key's range verdict and whether the shared point is the "
+     "identity. The ladder over the peer's point and the cofactor's "
+     "multiplication modulo n are not in the list."),
+
     # ---- ML-KEM ------------------------------------------------------
     #
     # The secret parts of `dk` - `dk_pke` and `z` - are marked, and for
@@ -726,7 +760,7 @@ def self_test():
 #: its chain.
 CONSTANT_TIME_SOURCES = re.compile(
     r"(^|/)src/(bignum/(ct|montgomery|fixed)"
-    r"|ec/(fixed|ct|field25519|field448|edwards|x25519|x448|eddsa|xeddsa|ecdsa)"
+    r"|ec/(fixed|ct|field25519|field448|edwards|x25519|x448|eddsa|xeddsa|ecdsa|gf2m|dstu4145)"
     r"|mac/poly1305|stream_ciphers/(chacha|chacha_simd|salsa20|chacha20poly1305)"
     r"|block_ciphers/(aes|aes_ni|ghash|gcm|ocb|mgm|lrw|acpkm)|nacl"
     r"|pq/ml_(kem|dsa)(/[a-z_0-9]+)?"

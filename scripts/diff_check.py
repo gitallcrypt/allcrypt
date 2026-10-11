@@ -3401,6 +3401,25 @@ _OID_EQUIVALENTS = {
     # under both, which `scripts/check_keystore.py` reads.
     "JKS_KEY_PROTECTOR":   None,
     "JCE_KEY_PROTECTOR":   None,
+    # Ukraine's arc, by OpenSSL's long names.
+    "DSTU_GOST28147_CFB":  "openssl:DSTU Gost 28147-2009 CFB mode",
+    "HMAC_GOST34311":      "openssl:HMAC DSTU Gost 34311-95",
+    "GOST34311":           "openssl:DSTU Gost 34311-95",
+    "DSTU4145_LE":         "openssl:DSTU 4145-2002 little endian",
+    "DSTU4145_BE":         "openssl:DSTU 4145-2002 big endian",
+    # The arc itself has no name; OpenSSL names its ten children
+    # `uacurve0` to `uacurve9`, which `tests/test_ua_keys.rs` reads
+    # as curve OIDs in the fixtures dstu-engine opens.
+    "DSTU4145_NAMED_CURVES": None,
+    # IIT's private arc: in no table and no RFC. dstu-engine's keylib
+    # reads the container and the second key's two attributes; the
+    # identifiers are checked against their definition in
+    # `tests/test_ua_keys.rs`.
+    "IIT_KEY_STORE":       None,
+    "IIT_KEY_ID":          None,
+    "IIT_SECOND_CURVE":    None,
+    "IIT_SECOND_KEY":      None,
+    "IIT_SECOND_KEY_ID":   None,
     "PBES2":               "openssl:PBES2",
     "HMAC_WITH_SHA1":      "openssl:hmacWithSHA1",
     "HMAC_WITH_SHA224":    "openssl:hmacWithSHA224",
@@ -3747,6 +3766,18 @@ _OID_IN_RFCS = {
     # Sun's arc; no RFC assigns either.
     "JKS_KEY_PROTECTOR":   None,
     "JCE_KEY_PROTECTOR":   None,
+    # Ukraine's arc and IIT's: national standards and a vendor, in no RFC.
+    "DSTU_GOST28147_CFB":  None,
+    "HMAC_GOST34311":      None,
+    "GOST34311":           None,
+    "DSTU4145_LE":         None,
+    "DSTU4145_BE":         None,
+    "DSTU4145_NAMED_CURVES": None,
+    "IIT_KEY_STORE":       None,
+    "IIT_KEY_ID":          None,
+    "IIT_SECOND_CURVE":    None,
+    "IIT_SECOND_KEY":      None,
+    "IIT_SECOND_KEY_ID":   None,
     "PBES2":               "id-PBES2",
     "HMAC_WITH_SHA1":      "id-hmacWithSHA1",
     "HMAC_WITH_SHA224":    "id-hmacWithSHA224",

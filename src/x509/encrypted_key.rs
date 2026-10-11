@@ -84,6 +84,9 @@ enum CipherKind {
     /// key length and is carried in the parameters.
     Rc2 { effective_bits: u32 },
     Rc4,
+    /// DSTU GOST 28147:2009 in its 64-bit CFB, under the S-box the
+    /// parameters carry as a DKE. A stream: no padding.
+    Gost28147Cfb,
 }
 
 /// Decrypt an `EncryptedPrivateKeyInfo`, returning the `PrivateKeyInfo`
@@ -193,10 +196,10 @@ fn pbes2(parameters: &[u8], ciphertext: &[u8], password: &[u8])
     let recipe = pbes2_cipher(cipher_oid.as_bytes())
         .ok_or_else(|| format!("PBES2 with cipher {}, which this library does \
                                 not know.", dotted(&cipher_oid)))?;
-    let (recipe, iv) = pbes2_cipher_parameters(recipe, cipher_parameters)?;
+    let (recipe, iv, dke) = pbes2_cipher_parameters(recipe, cipher_parameters)?;
 
     let key = pbkdf2_from_parameters(kdf_parameters, password, recipe.key_len)?;
-    decipher(&recipe, &key, &iv, ciphertext)
+    decipher(&recipe, &key, &iv, dke.as_deref(), ciphertext)
 }
 
 /// ```text
@@ -264,6 +267,10 @@ fn derive_pbkdf2(hash_name: &str, password: &[u8], salt: &[u8], iterations: u32,
         "sha512" => pbkdf2(sha2::SHA512::new(&[], 512), password, salt, iterations, length),
         "sha512_224" => pbkdf2(sha2::SHA512::new(&[], 224), password, salt, iterations, length),
         "sha512_256" => pbkdf2(sha2::SHA512::new(&[], 256), password, salt, iterations, length),
+        // GOST 34.311-95 under the DSTU S-box, with HMAC on its 32-byte
+        // block: what Ukrainian key containers derive their keys with.
+        "gost34311" => pbkdf2(crate::api::AnyHash::new("gost34311")?, password, salt,
+                              iterations, length),
         other => Err(format!("No PBKDF2 PRF for {}.", other)),
     }
 }
@@ -277,6 +284,7 @@ fn hmac_prf(oid: &[u8]) -> Option<&'static str> {
         o if o == oids::HMAC_WITH_SHA512 => "sha512",
         o if o == oids::HMAC_WITH_SHA512_224 => "sha512_224",
         o if o == oids::HMAC_WITH_SHA512_256 => "sha512_256",
+        o if o == oids::HMAC_GOST34311 => "gost34311",
         _ => return None,
     })
 }
@@ -299,22 +307,44 @@ fn pbes2_cipher(oid: &[u8]) -> Option<Recipe> {
             // version means 32 effective bits (RFC 8018 B.2.3), not 128.
             Recipe { key_len: 16, iv_len: 8,
                      cipher: CipherKind::Rc2 { effective_bits: 128 } },
+        o if o == oids::DSTU_GOST28147_CFB =>
+            Recipe { key_len: 32, iv_len: 8, cipher: CipherKind::Gost28147Cfb },
         _ => return None,
     })
 }
 
-/// Pull the IV out of a PBES2 encryption scheme's parameters, and for
-/// RC2 the key length too.
+/// The recipe, the IV and, for GOST 28147, the DKE.
+type CipherParameters = (Recipe, Vec<u8>, Option<Vec<u8>>);
+
+/// Pull the IV out of a PBES2 encryption scheme's parameters, for RC2
+/// the key length too, and for DSTU GOST 28147 the S-box.
 ///
 /// ```text
 /// RC2-CBC-Parameter ::= SEQUENCE {
 ///   rc2ParameterVersion  INTEGER OPTIONAL,
 ///   iv                   OCTET STRING (SIZE(8)) }
+///
+/// GOST28147Parameters ::= SEQUENCE {
+///   iv                   OCTET STRING (SIZE(8)),
+///   dke                  OCTET STRING (SIZE(64)) }
 /// ```
 /// Everything else carries a bare `OCTET STRING` IV.
 fn pbes2_cipher_parameters(recipe: Recipe, parameters: &[u8])
-                           -> Result<(Recipe, Vec<u8>), String> {
+                           -> Result<CipherParameters, String> {
     let mut reader = Reader::new(parameters);
+    if let CipherKind::Gost28147Cfb = recipe.cipher {
+        let mut sequence = reader.read_sequence()?;
+        reader.finish()?;
+        let iv = sequence.read_octet_string()?.to_vec();
+        let dke = sequence.read_octet_string()?.to_vec();
+        sequence.finish()?;
+        if iv.len() != 8 || dke.len() != 64 {
+            return Err(format!("GOST 28147 CFB's parameters are an 8-byte IV and a \
+                                64-byte DKE; these are {} and {} bytes.", iv.len(),
+                               dke.len()));
+        }
+        return Ok((recipe, iv, Some(dke)));
+    }
     if let CipherKind::Rc2 { .. } = recipe.cipher {
         let mut sequence = reader.read_sequence()?;
         reader.finish()?;
@@ -330,7 +360,7 @@ fn pbes2_cipher_parameters(recipe: Recipe, parameters: &[u8])
         };
         let key_len = effective_bits.div_ceil(8) as usize;
         return Ok((Recipe { key_len, iv_len: 8,
-                            cipher: CipherKind::Rc2 { effective_bits } }, iv));
+                            cipher: CipherKind::Rc2 { effective_bits } }, iv, None));
     }
     let iv = reader.read_octet_string()?.to_vec();
     reader.finish()?;
@@ -338,7 +368,7 @@ fn pbes2_cipher_parameters(recipe: Recipe, parameters: &[u8])
         return Err(format!("The IV is {} bytes, but this cipher takes {}.",
                            iv.len(), recipe.iv_len));
     }
-    Ok((recipe, iv))
+    Ok((recipe, iv, None))
 }
 
 /// RC2's parameter version, RFC 8018 B.2.3.
@@ -424,7 +454,7 @@ fn pbes1(parameters: &[u8], ciphertext: &[u8], password: &[u8],
                      cipher: CipherKind::Rc2 { effective_bits: 64 } },
         other => return Err(format!("PBES1 cannot use {:?}.", other)),
     };
-    decipher(&recipe, &derived[..8], &derived[8..16], ciphertext)
+    decipher(&recipe, &derived[..8], &derived[8..16], None, ciphertext)
 }
 
 // ---------------------------------------------------------- PKCS#12 PBE ---
@@ -495,7 +525,7 @@ fn pkcs12_pbe(parameters: &[u8], ciphertext: &[u8], password: &[u8], recipe: Rec
             pkcs12_kdf(SHA1::new(&[]), &bmp, salt, Pkcs12Purpose::Iv,
                        iterations, recipe.iv_len)?
         };
-        match decipher(&recipe, &key, &iv, ciphertext) {
+        match decipher(&recipe, &key, &iv, None, ciphertext) {
             Ok(plain) => return Ok(plain),
             Err(reason) => last = reason,
         }
@@ -513,13 +543,21 @@ fn pkcs12_pbe(parameters: &[u8], ciphertext: &[u8], password: &[u8], recipe: Rec
 /// only signal that anything is wrong is that those bytes do not end in
 /// valid PKCS#7 padding. That catches a wrong password about 255 times
 /// out of 256; the parse that follows catches almost all of the rest.
-fn decipher(recipe: &Recipe, key: &[u8], iv: &[u8], ciphertext: &[u8])
+fn decipher(recipe: &Recipe, key: &[u8], iv: &[u8], dke: Option<&[u8]>, ciphertext: &[u8])
             -> Result<Vec<u8>, String> {
     if ciphertext.is_empty() {
         return Err("The encrypted key is empty.".to_string());
     }
 
     let plain = match recipe.cipher {
+        CipherKind::Gost28147Cfb => {
+            // A stream, like RC4: no padding, and the DER parse of what
+            // comes out is the only check a wrong password meets.
+            let mut gost = gost_with_dke(key, dke)?;
+            let mut out = Vec::with_capacity(ciphertext.len());
+            gost.cfb_decrypt(ciphertext, &mut out, iv)?;
+            return Ok(out);
+        }
         CipherKind::Rc4 => {
             use crate::stream_ciphers::StreamCipher;
             let mut rc4 = crate::stream_ciphers::rc4::RC4::new(key)?;
@@ -550,8 +588,16 @@ fn recipe_block_size(recipe: &Recipe) -> usize {
     match recipe.cipher {
         CipherKind::Aes => 16,
         CipherKind::TripleDes | CipherKind::Des | CipherKind::Rc2 { .. } => 8,
-        CipherKind::Rc4 => 1,
+        CipherKind::Rc4 | CipherKind::Gost28147Cfb => 1,
     }
+}
+
+/// GOST 28147 under a DKE's S-box; the parameters always carry one.
+fn gost_with_dke(key: &[u8], dke: Option<&[u8]>)
+                 -> Result<crate::block_ciphers::gost::GostCrypto, String> {
+    use crate::block_ciphers::gost::GostCrypto;
+    let dke = dke.ok_or("GOST 28147 CFB without its S-box.")?;
+    GostCrypto::new_with_sbox(key, &GostCrypto::sbox_from_dke(dke)?)
 }
 
 fn cbc_decrypt<C: BlockCipher>(mut cipher: C, iv: &[u8], ciphertext: &[u8])
@@ -615,6 +661,10 @@ const SCHEMES: &[Named] = &[
             recipe: recipe(8, 8, CipherKind::Rc2 { effective_bits: 64 }) },
     Named { name: "rc2-40-cbc", family: Family::Pbes2, oid: oids::RC2_CBC,
             recipe: recipe(5, 8, CipherKind::Rc2 { effective_bits: 40 }) },
+    // What Ukrainian key containers write: PBKDF2 over HMAC-GOST 34.311
+    // and GOST 28147 CFB, the default DKE in the parameters.
+    Named { name: "gost28147-cfb", family: Family::Pbes2, oid: oids::DSTU_GOST28147_CFB,
+            recipe: recipe(32, 8, CipherKind::Gost28147Cfb) },
     Named { name: "pbe-md2-des", family: Family::Pbes1("md2"), oid: oids::PBE_MD2_DES,
             recipe: recipe(8, 8, CipherKind::Des) },
     Named { name: "pbe-md2-rc2-64", family: Family::Pbes1("md2"), oid: oids::PBE_MD2_RC2,
@@ -656,6 +706,7 @@ fn prf_oid(hash: &str) -> Option<&'static [u8]> {
         "sha512" => oids::HMAC_WITH_SHA512,
         "sha512_224" => oids::HMAC_WITH_SHA512_224,
         "sha512_256" => oids::HMAC_WITH_SHA512_256,
+        "gost34311" => oids::HMAC_GOST34311,
         _ => return None,
     })
 }
@@ -699,7 +750,10 @@ pub fn encrypt(plain: &[u8], password: &[u8], scheme: &str, prf: Option<&str>,
     let mut w = crate::asn1::Writer::new();
     let (key, iv) = match named.family {
         Family::Pbes2 => {
-            let hash = prf.unwrap_or("sha256");
+            // GOST's cipher is written with GOST's PRF unless asked
+            // otherwise, as everything that writes it does.
+            let gost = recipe.cipher == CipherKind::Gost28147Cfb;
+            let hash = prf.unwrap_or(if gost { "gost34311" } else { "sha256" });
             let prf_oid = prf_oid(hash).ok_or_else(|| format!("No PBKDF2 PRF for {hash}."))?;
             if iv.len() != recipe.iv_len {
                 return Err(format!("{scheme} takes a {}-byte IV, not {}.", recipe.iv_len,
@@ -730,6 +784,12 @@ pub fn encrypt(plain: &[u8], password: &[u8], scheme: &str, prf: Option<&str>,
                             w.write_sequence(|w| {
                                 w.write_u32(rc2_bits_to_version(effective_bits));
                                 w.write_octet_string(iv);
+                            });
+                        } else if gost {
+                            w.write_sequence(|w| {
+                                w.write_octet_string(iv);
+                                w.write_octet_string(
+                                    &crate::block_ciphers::gost::DSTU4145_DEFAULT_DKE);
                             });
                         } else {
                             w.write_octet_string(iv);
@@ -816,6 +876,13 @@ fn encipher(recipe: &Recipe, key: &[u8], iv: &[u8], plain: &[u8]) -> Result<Vec<
         crate::stream_ciphers::rc4::RC4::new(key)?.crypt(plain, &mut out);
         return Ok(out);
     }
+    if let CipherKind::Gost28147Cfb = recipe.cipher {
+        let mut gost = gost_with_dke(key,
+                                     Some(&crate::block_ciphers::gost::DSTU4145_DEFAULT_DKE))?;
+        let mut out = Vec::with_capacity(plain.len());
+        gost.cfb_encrypt(plain, &mut out, iv)?;
+        return Ok(out);
+    }
     let padded = crate::api::pad_pkcs7(plain, recipe_block_size(recipe))?;
     let mut out = Vec::with_capacity(padded.len());
     match recipe.cipher {
@@ -827,7 +894,7 @@ fn encipher(recipe: &Recipe, key: &[u8], iv: &[u8], plain: &[u8]) -> Result<Vec<
         CipherKind::Rc2 { effective_bits } =>
             RC2::with_effective_bits(key, effective_bits as usize)?
                 .cbc_encrypt(&padded, &mut out, iv)?,
-        CipherKind::Rc4 => unreachable!("handled above"),
+        CipherKind::Rc4 | CipherKind::Gost28147Cfb => unreachable!("handled above"),
     }
     Ok(out)
 }
@@ -887,7 +954,7 @@ pub fn parameters(der: &[u8]) -> Result<Parameters, String> {
     let cipher = encryption.read_oid()?;
     let recipe = pbes2_cipher(cipher.as_bytes())
         .ok_or_else(|| format!("PBES2 cipher {}.", dotted(&cipher)))?;
-    let (recipe, iv) = pbes2_cipher_parameters(recipe, encryption.remaining())?;
+    let (recipe, iv, _) = pbes2_cipher_parameters(recipe, encryption.remaining())?;
     let named = SCHEMES.iter()
         .find(|n| matches!(n.family, Family::Pbes2) && n.oid == cipher.as_bytes()
               && n.recipe.cipher == recipe.cipher)
@@ -986,7 +1053,7 @@ pub fn jdk_pbe_md5_3des_decrypt(password: &[u8], salt: &[u8], iterations: u32,
     let (key, iv) = crate::kdf::password::jdk_pbe_md5_3des_key(
         jdk_ascii(password)?, salt, iterations)?;
     let recipe = Recipe { key_len: 24, iv_len: 8, cipher: CipherKind::TripleDes };
-    decipher(&recipe, &key, &iv, ciphertext)
+    decipher(&recipe, &key, &iv, None, ciphertext)
 }
 
 /// An OID as its dotted form when the library knows it, and as hex when
@@ -1118,5 +1185,31 @@ mod tests {
             assert_eq!(jdk_pbe_md5_3des_decrypt(b"pw", &salt, 10, &sealed).unwrap(), plain);
         }
         assert!(jdk_pbe_md5_3des_encrypt("pä".as_bytes(), &salt, 1, b"x").is_err());
+    }
+
+    /// GOST 28147 CFB decrypts under the DKE its parameters carry, not
+    /// under the default one: the default's rows in another order make
+    /// another valid S-box, and the file written under it reads back
+    /// only through it.
+    #[test]
+    fn test_gost_cfb_takes_the_dke_from_its_parameters() {
+        use crate::block_ciphers::gost::{GostCrypto, DSTU4145_DEFAULT_DKE};
+        let (plain, salt, iv) = (b"thirty-three bytes of private key".to_vec(), [5u8; 32], [6u8; 8]);
+        let der = encrypt(&plain, b"pw", "gost28147-cfb", None, 2, &salt, &iv).unwrap();
+        assert_eq!(decrypt(&der, b"pw").unwrap(), plain);
+
+        let other: Vec<u8> = DSTU4145_DEFAULT_DKE.chunks(8).rev().flatten().copied().collect();
+        let at = der.windows(64).position(|w| w == DSTU4145_DEFAULT_DKE).unwrap();
+        let mut moved = der.clone();
+        moved[at..at + 64].copy_from_slice(&other);
+        assert_ne!(decrypt(&moved, b"pw").unwrap(), plain);
+
+        let key = derive_pbkdf2("gost34311", b"pw", &salt, 2, 32).unwrap();
+        let mut sealed = Vec::new();
+        GostCrypto::new_with_sbox(&key, &GostCrypto::sbox_from_dke(&other).unwrap()).unwrap()
+            .cfb_encrypt(&plain, &mut sealed, &iv).unwrap();
+        let end = moved.len();
+        moved[end - plain.len()..].copy_from_slice(&sealed);
+        assert_eq!(decrypt(&moved, b"pw").unwrap(), plain);
     }
 }

@@ -2,7 +2,9 @@
 //! `vectors/pkcs12_kdf.vec` by `scripts/make_pkcs12_kdf_vectors.py` and
 //! read here offline, through the facade Python calls. The rows cross
 //! the hash's block in the salt and password and its output in the
-//! length, over five hashes and all three IDs.
+//! length, over five hashes and all three IDs. `vectors/pkcs12_kdf_gost.vec`
+//! (`scripts/make_pkcs12_kdf_gost_vectors.py`) does the same over GOST
+//! 34.311-95, whose 32-byte block is the KDF's `v`.
 
 use std::collections::HashMap;
 
@@ -17,7 +19,18 @@ fn unhex(s: &str) -> Vec<u8> {
 
 #[test]
 fn test_pkcs12_kdf_against_openssl() {
-    let text = include_str!("../vectors/pkcs12_kdf.vec");
+    assert!(check(include_str!("../vectors/pkcs12_kdf.vec")) >= 40);
+}
+
+/// GOST 34.311's `v` is its 32-byte block. With 64, the floor MD2 needs,
+/// every row here was wrong while every row of the file above was right,
+/// because no hash in it has a block under 64 bytes.
+#[test]
+fn test_pkcs12_kdf_over_gost_34311() {
+    assert!(check(include_str!("../vectors/pkcs12_kdf_gost.vec")) >= 50);
+}
+
+fn check(text: &str) -> usize {
     let declared: usize = text.lines().find_map(|l| l.strip_prefix("# rows: "))
         .expect("the header's row count").parse().unwrap();
     let mut checked = 0;
@@ -43,5 +56,5 @@ fn test_pkcs12_kdf_against_openssl() {
         checked += 1;
     }
     assert_eq!(checked, declared);
-    assert!(checked >= 40);
+    checked
 }

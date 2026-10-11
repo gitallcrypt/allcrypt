@@ -1,7 +1,9 @@
 #!/bin/sh
-# Builds /opt/cryptonite: the DSTU 7624 (Kalyna) part of PrivatBank's
+# Builds /opt/cryptonite: the DSTU 7624 (Kalyna), DSTU 7564 (Kupyna),
+# GOST 28147-89 / 34.311-95 and DSTU 4145-2002 parts of PrivatBank's
 # cryptonite, a C library of the Ukrainian standards, with driver.c over
-# its modes. The 30 files it needs come from src/cryptonite/c in its
+# them. The 54 files it needs come from
+# src/cryptonite/c in its
 # GitHub repository, each checked against cryptonite.sha256. shim/
 # stands in for the one header the repository keeps elsewhere
 # (pthread_internal.h).

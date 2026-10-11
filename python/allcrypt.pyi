@@ -72,6 +72,7 @@ aeads_available: List[str]
 #: The NaCl box constructions, for the ``construction`` arguments below.
 box_constructions_available: List[str]
 curves_available: List[str]
+dstu4145_curves_available: List[str]
 #: Every cipher suite in the registry, implemented or not - the catalogue
 #: of what TLS has, rather than of what this library has.
 tls_suites_available: List[str]
@@ -446,6 +447,67 @@ class EcPublicKey:
     def curve(self) -> str: ...
     @property
     def key_size(self) -> int: ...
+
+class Dstu4145Key:
+    """A DSTU 4145-2002 key pair on one of ``dstu4145_curves_available``.
+    Integers and field elements are big endian; a ``dstu4145le``
+    certificate stores the key and the signature byte-reversed."""
+
+    @staticmethod
+    def generate(curve: str) -> "Dstu4145Key": ...
+    @staticmethod
+    def from_private(curve: str, private: BytesLike) -> "Dstu4145Key":
+        """``d``, big endian, in ``[1, n)``. The public key is ``-d*G``."""
+
+    def private_bytes(self) -> bytes: ...
+    def public_key(self) -> "Dstu4145PublicKey": ...
+    def sign(self, hash: BytesLike) -> bytes:
+        """``s || r``, each at the width of ``n``. The hash is read little
+        endian, any length."""
+
+    def sign_with_nonce(self, hash: BytesLike, e: BytesLike) -> bytes:
+        """With a given ``e``, as the standard's example does. A reused or
+        non-uniform ``e`` gives the private key away."""
+
+    def shared_point(self, peer: "Dstu4145PublicKey", cofactor: bool = True) -> bytes:
+        """``x || y`` of ``d*Q``, or of ``(h*d mod n)*Q`` with the cofactor."""
+
+    def key_id(self) -> bytes:
+        """GOST 34.311 of the DER OCTET STRING of the compressed public key,
+        little endian: a certificate's subject key identifier."""
+
+    def private_key_info(self, second: Optional["Dstu4145Key"] = None) -> bytes:
+        """The key as the Ukrainian software stores it (DER), the
+        key-agreement key ``second`` in IIT's attributes."""
+
+    @property
+    def curve(self) -> str: ...
+
+class Dstu4145PublicKey:
+    """A DSTU 4145-2002 public key."""
+
+    def __init__(self, curve: str, encoded: BytesLike) -> None:
+        """The standard's compressed form or ``x || y``. Raises for a point
+        that is not on the curve or not of order ``n``."""
+
+    def public_bytes(self, compressed: bool = False) -> bytes: ...
+    def verify(self, hash: BytesLike, signature: BytesLike) -> bool:
+        """``s || r``. False for a wrong signature; raises for odd length."""
+
+    def key_id(self) -> bytes:
+        """As ``Dstu4145Key.key_id``."""
+
+    @property
+    def curve(self) -> str: ...
+
+def dstu4145_keys_open(data: BytesLike, password: BytesLike) -> List[Dstu4145Key]:
+    """The DSTU 4145 keys in a Ukrainian container - IIT's ``Key-6.dat``,
+    an encrypted PKCS#8, or a plain key, DER or PEM - the signing key
+    first."""
+
+def dstu4145_key6(key: Dstu4145Key, password: BytesLike,
+                  second: Optional[Dstu4145Key] = None) -> bytes:
+    """Seal a key, and the key-agreement key beside it, into a ``Key-6.dat``."""
 
 class RsaKey:
     """An RSA private key, with its public half alongside."""
@@ -2003,6 +2065,28 @@ def kalyna_key_unwrap(cipher: str, kek: BytesLike, wrapped: BytesLike) -> bytes:
     """The inverse of ``kalyna_key_wrap`` for data of whole blocks."""
 def kalyna_key_unwrap_padded(cipher: str, kek: BytesLike, wrapped: BytesLike) -> bytes:
     """The inverse of ``kalyna_key_wrap`` for data that was padded."""
+def kupyna_mac(bits: int, key: BytesLike, data: BytesLike) -> bytes:
+    """DSTU 7564's MAC over Kupyna: ``bits`` of 256, 384 or 512, any key -
+    Kupyna of the padded key, the message, its padding and the inverted
+    key."""
+def kalyna_gmac(cipher: str, key: BytesLike, data: BytesLike, tag_len: int) -> bytes:
+    """DSTU 7624's GMAC over Kalyna: GCM's tag over ``data``, ``tag_len``
+    bytes from 8 to the block. A short last block is padded with zeros,
+    Bouncy Castle's reading; cryptonite's differs."""
+def kalyna_ccm_encrypt(cipher: str, key: BytesLike, nonce: BytesLike, aad: BytesLike,
+                       message: BytesLike, tag_len: int, nb: int = 4) -> bytes:
+    """DSTU 7624's CCM over Kalyna: the ciphertext followed by the
+    encrypted MAC of ``tag_len`` bytes (8, 16, 32, 48 or 64, no more than
+    the block), with a length field of ``nb`` bytes. The nonce is one
+    block. The ``kalyna-*-ccm`` AEADs are this with ``nb`` = 4."""
+def kalyna_ccm_decrypt(cipher: str, key: BytesLike, nonce: BytesLike, aad: BytesLike,
+                       sealed: BytesLike, tag_len: int, nb: int = 4) -> bytes:
+    """The inverse of ``kalyna_ccm_encrypt``; raises unless the MAC checks."""
+def kalyna_xts_encrypt(cipher: str, key: BytesLike, iv: BytesLike, data: BytesLike) -> bytes:
+    """DSTU 7624's XTS over Kalyna: one key, an IV of one block, data of at
+    least one block, a short last block by ciphertext stealing."""
+def kalyna_xts_decrypt(cipher: str, key: BytesLike, iv: BytesLike, data: BytesLike) -> bytes:
+    """The inverse of ``kalyna_xts_encrypt``."""
 def cms_rc2_key_wrap(kek: BytesLike, effective_bits: int, cek: BytesLike,
                      pad: Optional[BytesLike] = None, iv: Optional[BytesLike] = None) -> bytes:
     """RFC 3217's RC2 key wrap, the key-encryption key at ``effective_bits``."""

@@ -852,6 +852,21 @@ $ python3 scripts/make_rc6_vectors.py           # rewrites vectors/rc6.vec
 $ python3 scripts/make_cast256_vectors.py       # rewrites vectors/cast256.vec
 ```
 
+**MARS** has two witnesses, and a row is written only where both agree:
+Crypto++ 8.9.0's `mars.cpp` with the handful of library files it links
+against, and Botan 1.10.17's, the last Botan with MARS, compiled against
+a small shim of the Botan interface it uses. `scripts/witness/mars/build.sh`
+fetches both once, checks every file against its SHA-256, and requires
+both to reproduce Crypto++'s published MARS vectors - Monte Carlo tests
+included - before it reports success. Both drivers call the key schedule
+directly, so every length MARS defines reaches both, not only the ones
+each library's interface admits.
+
+```console
+$ scripts/witness/mars/build.sh                 # builds /opt/mars
+$ python3 scripts/make_mars_vectors.py          # rewrites vectors/mars.vec
+```
+
 **Rijndael's wider blocks** have two witnesses, and a row is written
 only where both agree: Bouncy Castle's `RijndaelEngine` through the same
 driver, and phpseclib 1.0.23's pure-PHP `Crypt_Rijndael`, whose two
@@ -863,18 +878,23 @@ $ scripts/witness/rijndaelphp/build.sh          # builds /opt/rijndaelphp
 $ python3 scripts/make_rijndael_vectors.py      # rewrites vectors/rijndael.vec
 ```
 
-**Ukraine's GOST** has two witnesses as well: Bouncy Castle's GOST
+**Ukraine's GOST** has three witnesses: Bouncy Castle's GOST
 classes, given the S-box as its DSTU 4145 code expands a DKE (the
-`UaWitness` driver beside `BlockWitness`), and gost89, the JavaScript
+`UaWitness` driver beside `BlockWitness`), gost89, the JavaScript
 behind the dstucrypt tools, four of whose files
 `scripts/witness/gost89/build.sh` fetches once and checks against
-their SHA-256. It runs under Node with nothing installed. The script
-checks first that both carry the same default DKE.
+their SHA-256 (it runs under Node with nothing installed), and
+cryptonite's `gost28147` and `gost34_311`, built with its Kalyna parts
+below. The script checks first that all three carry the same default
+DKE. `scripts/make_gost94_vectors.py` uses the same three for the two
+readings of GOST R 34.11-94's empty message.
 
 ```console
 $ scripts/witness/bcwitness/build.sh            # builds /opt/bcwitness
 $ scripts/witness/gost89/build.sh               # builds /opt/gost89
+$ scripts/witness/cryptonite/build.sh           # builds /opt/cryptonite
 $ python3 scripts/make_dstu_gost_vectors.py     # rewrites vectors/dstu_gost.vec
+$ PYTHONPATH=python python3 scripts/make_gost94_vectors.py
 ```
 
 **Kalyna** is checked against the reference implementation by its
@@ -891,15 +911,77 @@ $ python3 scripts/make_kalyna_vectors.py        # rewrites vectors/kalyna.vec
 
 **Kalyna's DSTU 7624 modes** - counter mode, MAC, key wrap, and the
 generic CBC, CFB and OFB - against Bouncy Castle's mode classes and
-PrivatBank's cryptonite, a C library of the Ukrainian standards. 30 of
+PrivatBank's cryptonite, a C library of the Ukrainian standards. 54 of
 its files, pinned in `scripts/witness/cryptonite/cryptonite.sha256`,
-build its DSTU 7624 part with a stdin driver. The standard's examples
+build its DSTU 7624, DSTU 7564, GOST and DSTU 4145 parts with a stdin
+driver. The standard's examples
 come from Bouncy Castle's `DSTU7624Test.java`, fetched once and
 SHA-256 checked, and both witnesses must reproduce every one.
 
 ```console
 $ scripts/witness/cryptonite/build.sh           # builds /opt/cryptonite
 $ python3 scripts/make_kalyna_mode_vectors.py   # rewrites vectors/kalyna_modes.vec
+```
+
+Kalyna's GCM, GMAC, CCM and XTS go through the same two witnesses -
+Bouncy Castle's `KGCMBlockCipher`, `KGMac`, `KCCMBlockCipher` and
+`KXTSBlockCipher`, and cryptonite's - with examples from cryptonite's
+acceptance tests (`atest_dstu7624.c`), fetched once and SHA-256
+checked, each of which cryptonite and, where it takes the input, Bouncy
+Castle must reproduce. cryptonite's GMAC is driven through its GCM,
+because its own GMAC update XORs the first block in again where the
+second belongs.
+
+```console
+$ python3 scripts/make_kalyna_aead_vectors.py   # rewrites vectors/kalyna_aead.vec
+```
+
+**Kupyna's MAC** has all three: Bouncy Castle's `DSTU7564Mac`,
+cryptonite (the build fetches its `dstu7564.c` with the rest), and the
+reference's `KupynaKmac` through the same driver with `kmac`. The
+examples come from cryptonite's `atest_dstu7564.c` and Bouncy Castle's
+`DSTU7564Test.java`, both fetched once and SHA-256 checked.
+
+```console
+$ python3 scripts/make_kupyna_mac_vectors.py    # rewrites vectors/kupyna_mac.vec
+```
+
+**DSTU 4145-2002** against Bouncy Castle's `DSTU4145Signer`,
+`DSTU4145PointEncoder` and EC agreements (through `UaWitness`) and
+cryptonite's `dstu4145`. Bouncy Castle signs with an `e` handed to it
+through its random source, which is how its own tests reproduce the
+standard's example; cryptonite draws its own, so it verifies every
+signature instead. The examples come from Bouncy Castle's
+`DSTU4145Test.java` and cryptonite's `atest_dstu4145.c` and
+`utest_dstu4145.c`, fetched once and SHA-256 checked, and the named
+curves' sizes from `src/ec/dstu4145_params.rs`, which
+`scripts/make_dstu4145_params.py` writes from the two libraries' tables.
+
+```console
+$ python3 scripts/make_dstu4145_params.py       # rewrites src/ec/dstu4145_params.rs
+$ python3 scripts/make_dstu4145_vectors.py      # rewrites vectors/dstu4145.vec
+```
+
+**dstu-engine** (an OpenSSL engine for the Ukrainian standards, with
+keylib, which opens IIT's Key-6.dat, PKCS#12 and JKS key containers):
+44 source files, each checked against
+`scripts/witness/dstuengine/dstuengine.sha256`, built against the
+system's OpenSSL into an engine module and a driver that loads it. The
+PKCS#12 key derivation over GOST 34.311 is OpenSSL's own, through the
+engine's hash. The key containers are keylib's: the driver prints each
+key it finds as numbers and each certificate's SHA-256.
+`scripts/check_ua_keys.py` takes its other inputs from two directories:
+dstu-engine's `tests/` and jkurwa's `test/data/`
+(github.com/dstucrypt/jkurwa), each file checked against its git blob
+ID; it needs the Python module and a release build of the key store
+example.
+
+```console
+$ scripts/witness/dstuengine/build.sh           # builds /opt/dstuengine
+$ python3 scripts/make_pkcs12_kdf_gost_vectors.py   # rewrites vectors/pkcs12_kdf_gost.vec
+$ python3 scripts/check_ua_keys.py --dstu-engine DIR --jkurwa DIR --record
+                                                # rewrites tests/keys/ua/, vectors/ua_keys.vec
+                                                # and examples/products/fixtures/keystore-ua*
 ```
 
 **Kupyna** the same way: its authors' reference implementation, fetched

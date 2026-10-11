@@ -600,7 +600,7 @@ mod tests {
         };
         for key_len in [16, 24, 32] {
             let key: Vec<u8> = (0..key_len).map(|_| next()).collect();
-            let mut aes = AesCrypto::new(key).unwrap();
+            let mut aes = AesCrypto::new(&key).unwrap();
             assert!(aes.schedule.hardware.is_some());
             for blocks in [1, 7, 8, 9, 16, 17, 33] {
                 let data: Vec<u8> = (0..16 * blocks).map(|_| next()).collect();

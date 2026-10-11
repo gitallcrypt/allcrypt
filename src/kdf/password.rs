@@ -263,9 +263,15 @@ pub fn pkcs12_bmp_password(password: &str) -> Vec<u8> {
 /// SHA-256 and 128 for SHA-384/512 - **and 64 for MD2**, by the table in
 /// Appendix B.2, even though MD2's compression function takes 16 byte
 /// blocks (which is what `block_size()` reports, correctly, for HMAC).
-/// So `v` is the block size with a floor of 64 bytes, and
-/// `pkcs12_kdf(Md2::new(&[]), ..)` is the RFC's construction rather
+/// So `pkcs12_kdf(Md2::new(&[]), ..)` is the RFC's construction rather
 /// than a self-consistent one that agrees with nobody.
+///
+/// **That exception is MD2's alone.** GOST R 34.11-94 and GOST 34.311-95
+/// compress 32-byte blocks, and `v` is 32 for them: it is what OpenSSL
+/// computes through a GOST engine and what Ukrainian PKCS#12 files are
+/// MACed with. A floor of 64 for every hash, which this was, gave both
+/// hashes a KDF nobody else computes; `vectors/pkcs12_kdf_gost.vec`
+/// holds OpenSSL's answers.
 ///
 /// # Errors
 /// Zero iterations, an output past `kdf::MAX_OUTPUT_BYTES`, or a hash
@@ -280,7 +286,12 @@ pub fn pkcs12_kdf<H: HashFunction + Clone>(hash: H, password: &[u8], salt: &[u8]
     if u == 0 {
         return Err("The PKCS#12 KDF needs a hash with a fixed output length.".to_string());
     }
-    let v = hash.block_size().max(64);      // the RFC's v, with the MD2 floor
+    // The RFC's v: the block, except MD2's 16 bytes, which the RFC's
+    // table raises to 64. MD2 is the only hash here with a 16-byte block.
+    let v = match hash.block_size() {
+        16 => 64,
+        block => block,
+    };
     if length == 0 {
         return Ok(Vec::new());
     }

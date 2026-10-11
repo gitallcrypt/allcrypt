@@ -1,7 +1,8 @@
 # GOST 28147-89 and GOST 34.311-95 under the DSTU 4145 default DKE,
 # and the DSTU key wrap. Written by scripts/make_dstu_gost_vectors.py;
-# do not edit. Bouncy Castle 1.77 and gost89 agree on every row except
-# gost-cnt (Bouncy Castle's alone) and wrap (gost89's alone).
+# do not edit. Bouncy Castle 1.77, gost89 and cryptonite agree on every
+# row except gost-cnt (Bouncy Castle's and cryptonite's) and wrap
+# (gost89's alone).
 dke value=a9d6eb45f13c708280c4967b231f5eadf658eba4c037291d38d96bf025ca4e17f8e9720dc615b43a28975f0bc1dea36438b564ea2c179fd0123e6db8fac57904
 gost-ecb key=0000000000000000000000000000000000000000000000000000000000000000 pt=0000000000000000 ct=970cd7cf057aa0b7
 gost-ecb key=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff pt=ffffffffffffffff ct=efd61d8e980af15b

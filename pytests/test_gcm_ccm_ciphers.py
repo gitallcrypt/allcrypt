@@ -229,7 +229,8 @@ def test_a_named_gcm_tag_length_opens_that_length_only():
 
 @pytest.mark.parametrize("name", ["aes-gcm-5", "aes-gcm-17", "aes-ccm-7", "aes-ccm-2",
                                   "aes-eax-0", "aes-ocb-17", "aes-mgm-3",
-                                  "des-gcm", "kalyna-128-gcm", "chacha20-poly1305-8"])
+                                  "des-gcm", "kalyna-128-gcm-7", "kalyna-128-ccm-12",
+                                  "chacha20-poly1305-8"])
 def test_a_tag_length_a_mode_does_not_have_is_refused(name):
     with pytest.raises(allcrypt.CryptoError):
         allcrypt.Aead(bytes(16 if not name.startswith("des") else 8), name)

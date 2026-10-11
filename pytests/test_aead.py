@@ -669,7 +669,8 @@ def test_every_aead_in_the_catalogue_round_trips():
         # Up to 64: AES-256-CBC-HMAC-SHA512's key is its MAC key and
         # its AES key together.
         for key_len in range(5, 65):
-            for nonce_len in (8, 12, 16, 24):
+            # 32 and 64: Kalyna's GCM and CCM take a nonce of one block.
+            for nonce_len in (8, 12, 16, 24, 32, 64):
                 key = bytes(key_len)
                 # MGM's top bit is the domain separator, so a nonce of
                 # zeros is a legal one for every AEAD here.

@@ -2005,6 +2005,157 @@ impl PyEcPublicKey {
     }
 }
 
+// ------------------------------------------------------------ DSTU 4145 ---
+
+/// A DSTU 4145-2002 key pair on one of the standard's named curves.
+/// Translation only: everything is in `api::Dstu4145Key`.
+#[pyclass(name = "Dstu4145Key", module = "allcrypt")]
+pub struct PyDstu4145Key {
+    inner: api::Dstu4145Key,
+}
+
+#[pymethods]
+impl PyDstu4145Key {
+    /// A fresh key pair from the OS random source.
+    #[staticmethod]
+    fn generate(py: Python<'_>, curve: &str) -> PyResult<PyDstu4145Key> {
+        let inner = py.allow_threads(|| api::Dstu4145Key::generate(curve)).map_err(err)?;
+        Ok(PyDstu4145Key { inner })
+    }
+
+    /// Import a private key `d`, big endian, in `[1, n)`.
+    #[staticmethod]
+    fn from_private(py: Python<'_>, curve: &str, private: Bytes) -> PyResult<PyDstu4145Key> {
+        let inner = py.allow_threads(|| api::Dstu4145Key::from_private(curve, &private))
+            .map_err(err)?;
+        Ok(PyDstu4145Key { inner })
+    }
+
+    /// `d`, big endian, at the width of `n`.
+    fn private_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.private_bytes().map_err(err)?))
+    }
+
+    fn public_key(&self) -> PyDstu4145PublicKey {
+        PyDstu4145PublicKey { inner: self.inner.public_key() }
+    }
+
+    /// Sign a hash: `s || r`, each big endian at the width of `n`. The
+    /// hash is read little endian, any length.
+    fn sign<'py>(&self, py: Python<'py>, hash: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.sign(&hash)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// Sign with a given `e`, big endian, as the standard's example does.
+    /// Reusing an `e`, or choosing one that is not uniform, gives the
+    /// private key away.
+    fn sign_with_nonce<'py>(&self, py: Python<'py>, hash: Bytes, e: Bytes)
+                            -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.sign_with_nonce(&hash, &e)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// GOST 34.311 of the DER OCTET STRING of the compressed public key,
+    /// little endian: the identifier a certificate and a container use.
+    fn key_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.key_id().map_err(err)?))
+    }
+
+    /// The key as the Ukrainian software stores it (a PrivateKeyInfo,
+    /// DER), with `second` - the key-agreement key - in IIT's attributes.
+    #[pyo3(signature = (second = None))]
+    fn private_key_info<'py>(&self, py: Python<'py>, second: Option<&PyDstu4145Key>)
+                             -> PyResult<Bound<'py, PyBytes>> {
+        let out = self.inner.private_key_info(second.map(|k| &k.inner)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// The shared point with a peer's key, `x || y` big endian: `d·Q`, or
+    /// `(h·d mod n)·Q` with `cofactor=True`.
+    #[pyo3(signature = (peer, cofactor = true))]
+    fn shared_point<'py>(&self, py: Python<'py>, peer: &PyDstu4145PublicKey, cofactor: bool)
+                         -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.shared_point(&peer.inner, cofactor))
+            .map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    #[getter]
+    fn curve(&self) -> &'static str {
+        self.inner.curve_name()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<allcrypt.Dstu4145Key {}>", self.inner.curve_name())
+    }
+}
+
+/// A DSTU 4145-2002 public key.
+#[pyclass(name = "Dstu4145PublicKey", module = "allcrypt")]
+pub struct PyDstu4145PublicKey {
+    inner: api::Dstu4145PublicKey,
+}
+
+#[pymethods]
+impl PyDstu4145PublicKey {
+    /// Import the standard's compressed form or `x || y`, big endian. The
+    /// point is checked to be on the curve and of order `n`.
+    #[new]
+    fn py_new(py: Python<'_>, curve: &str, encoded: Bytes) -> PyResult<PyDstu4145PublicKey> {
+        let inner = py.allow_threads(|| api::Dstu4145PublicKey::from_bytes(curve, &encoded))
+            .map_err(err)?;
+        Ok(PyDstu4145PublicKey { inner })
+    }
+
+    /// The compressed form, or `x || y`, big endian.
+    #[pyo3(signature = (compressed = false))]
+    fn public_bytes<'py>(&self, py: Python<'py>, compressed: bool)
+                         -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.to_bytes(compressed).map_err(err)?))
+    }
+
+    /// The key identifier, as `Dstu4145Key.key_id`.
+    fn key_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.key_id().map_err(err)?))
+    }
+
+    /// Verify `s || r` over a hash. False for a wrong signature; raises
+    /// for one of odd length.
+    fn verify(&self, py: Python<'_>, hash: Bytes, signature: Bytes) -> PyResult<bool> {
+        py.allow_threads(|| self.inner.verify(&hash, &signature)).map_err(err)
+    }
+
+    #[getter]
+    fn curve(&self) -> &'static str {
+        self.inner.curve_name()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<allcrypt.Dstu4145PublicKey {}>", self.inner.curve_name())
+    }
+}
+
+/// The DSTU 4145 keys in a Ukrainian container: `Key-6.dat`, an
+/// encrypted PKCS#8, or a plain key, DER or PEM.
+#[pyfunction]
+fn dstu4145_keys_open(py: Python<'_>, data: Bytes, password: Bytes)
+                      -> PyResult<Vec<PyDstu4145Key>> {
+    let keys = py.allow_threads(|| api::dstu4145_keys_open(&data, &password)).map_err(err)?;
+    Ok(keys.into_iter().map(|inner| PyDstu4145Key { inner }).collect())
+}
+
+/// Seal a key, and the key-agreement key beside it, into a `Key-6.dat`.
+#[pyfunction]
+#[pyo3(signature = (key, password, second = None))]
+fn dstu4145_key6<'py>(py: Python<'py>, key: &PyDstu4145Key, password: Bytes,
+                      second: Option<&PyDstu4145Key>) -> PyResult<Bound<'py, PyBytes>> {
+    let second = second.map(|k| &k.inner);
+    let out = py.allow_threads(|| api::dstu4145_key6(&key.inner, second, &password))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 // -------------------------------------------------------------------- RSA ---
 
 /// An RSA private key.
@@ -2860,6 +3011,65 @@ fn kalyna_key_unwrap<'py>(py: Python<'py>, cipher: &str, kek: Bytes, wrapped: By
 fn kalyna_key_unwrap_padded<'py>(py: Python<'py>, cipher: &str, kek: Bytes, wrapped: Bytes)
                                  -> PyResult<Bound<'py, PyBytes>> {
     let out = py.allow_threads(|| api::kalyna_key_unwrap_padded(cipher, &kek, &wrapped))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// DSTU 7564's MAC over Kupyna: `bits` of 256, 384 or 512.
+#[pyfunction]
+fn kupyna_mac<'py>(py: Python<'py>, bits: usize, key: Bytes, data: Bytes)
+                   -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kupyna_mac(bits, &key, &data)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// DSTU 7624's GMAC over Kalyna: GCM's tag over `data`, `tag_len` bytes
+/// from 8 to the block.
+#[pyfunction]
+fn kalyna_gmac<'py>(py: Python<'py>, cipher: &str, key: Bytes, data: Bytes, tag_len: usize)
+                    -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_gmac(cipher, &key, &data, tag_len)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// DSTU 7624's CCM over Kalyna with a length field of `nb` bytes: the
+/// ciphertext followed by the encrypted MAC.
+#[pyfunction]
+#[pyo3(signature = (cipher, key, nonce, aad, message, tag_len, nb = 4))]
+#[allow(clippy::too_many_arguments)]
+fn kalyna_ccm_encrypt<'py>(py: Python<'py>, cipher: &str, key: Bytes, nonce: Bytes, aad: Bytes,
+                           message: Bytes, tag_len: usize, nb: usize)
+                           -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_ccm_encrypt(cipher, &key, &nonce, &aad, &message,
+                                                          tag_len, nb)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// The inverse of `kalyna_ccm_encrypt`.
+#[pyfunction]
+#[pyo3(signature = (cipher, key, nonce, aad, sealed, tag_len, nb = 4))]
+#[allow(clippy::too_many_arguments)]
+fn kalyna_ccm_decrypt<'py>(py: Python<'py>, cipher: &str, key: Bytes, nonce: Bytes, aad: Bytes,
+                           sealed: Bytes, tag_len: usize, nb: usize)
+                           -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_ccm_decrypt(cipher, &key, &nonce, &aad, &sealed,
+                                                          tag_len, nb)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// DSTU 7624's XTS over Kalyna: one key, an IV of one block.
+#[pyfunction]
+fn kalyna_xts_encrypt<'py>(py: Python<'py>, cipher: &str, key: Bytes, iv: Bytes, data: Bytes)
+                           -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_xts_encrypt(cipher, &key, &iv, &data))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+#[pyfunction]
+fn kalyna_xts_decrypt<'py>(py: Python<'py>, cipher: &str, key: Bytes, iv: Bytes, data: Bytes)
+                           -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::kalyna_xts_decrypt(cipher, &key, &iv, &data))
         .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
@@ -6020,6 +6230,10 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDsaKey>()?;
     m.add_class::<PyDsaPublicKey>()?;
     m.add_class::<PyEcPublicKey>()?;
+    m.add_class::<PyDstu4145Key>()?;
+    m.add_class::<PyDstu4145PublicKey>()?;
+    m.add_function(wrap_pyfunction!(dstu4145_keys_open, m)?)?;
+    m.add_function(wrap_pyfunction!(dstu4145_key6, m)?)?;
     m.add_class::<PyRsaKey>()?;
     m.add_class::<PyRsaPublicKey>()?;
     m.add_class::<PyDhGroup>()?;
@@ -6206,6 +6420,12 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(kalyna_key_wrap, m)?)?;
     m.add_function(wrap_pyfunction!(kalyna_key_unwrap, m)?)?;
     m.add_function(wrap_pyfunction!(kalyna_key_unwrap_padded, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_gmac, m)?)?;
+    m.add_function(wrap_pyfunction!(kupyna_mac, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_ccm_encrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_ccm_decrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_xts_encrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(kalyna_xts_decrypt, m)?)?;
     m.add_function(wrap_pyfunction!(dstu_gost_key_unwrap, m)?)?;
     m.add_function(wrap_pyfunction!(cms_3des_key_unwrap, m)?)?;
     m.add_function(wrap_pyfunction!(cms_rc2_key_wrap, m)?)?;
@@ -6252,6 +6472,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("aeads_available", api::AEADS.to_vec())?;
     m.add("box_constructions_available", api::BOX_CONSTRUCTIONS.to_vec())?;
     m.add("curves_available", api::CURVES.to_vec())?;
+    m.add("dstu4145_curves_available", api::DSTU4145_CURVES.to_vec())?;
     m.add("tls_suites_available", api::tls_suites_known())?;
     m.add_function(wrap_pyfunction!(tls_suite_names, m)?)?;
     m.add_function(wrap_pyfunction!(tls_signature_schemes, m)?)?;

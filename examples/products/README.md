@@ -49,7 +49,7 @@ $ printf '%s\n' "$PW" | cargo run --release --example age -- decrypt in.age out 
 | PDF (the standard security handler, revisions 2 to 6) | `pdf/` | `info`, `decrypt`, `encrypt` (40 and 128-bit RC4, AES-128, AES-256 at revisions 5 and 6): user and owner passwords, crypt filters, object and cross-reference streams | qpdf 11.9.0 and pdftk-java 3.3.3: 41 of qpdf's test files decrypted as qpdf decrypts them, files qpdf and pdftk encrypted decrypted, ours opened by both, and qpdf's test files re-encrypted under every scheme, 425 of 425; 72 documents replayed offline |
 | Office documents (`.docx`, `.xlsx`, `.pptx`, `.doc`, `.xls`; [MS-OFFCRYPTO]) | `office/` | `info`, `decrypt`, `encrypt`: agile encryption (AES-128/192/256, SHA-1/256/384/512, the data-integrity HMAC) and standard encryption (AES-128/192/256), in a compound file the example reads and writes; `.doc` and `.xls` decrypted from RC4, RC4 CryptoAPI and (`.xls`) XOR obfuscation | Office's own documents, LibreOffice 24.2 and msoffcrypto-tool, both directions for OOXML: 134 of 134; 23 documents replayed offline |
 | OpenDocument (`.odt`, `.ods`, `.odp`; ODF 1.2 part 3, LibreOffice's ODF 1.4 extension) | `odf/` | `info`, `decrypt`, `encrypt`: AES-256-CBC with PBKDF2 (ODF 1.2 on), Blowfish CFB (ODF 1.0 and 1.1), and AES-256-GCM over the whole package under Argon2id | LibreOffice 24.2 both directions, all three schemes, with a second decryption written from the manifest: 85 of 85; 6 documents replayed offline |
-| Key stores (PKCS#12 `.p12`/`.pfx`, Java's JKS and JCEKS) | `keystore/` | `list` (`--canonical` for comparison), `convert` between the three: PKCS#12 with PBES2/PBKDF2 AES-256, PBE-SHA1-3DES and 40-bit RC2, MACs HMAC-SHA-1/256 and PBMAC1, plain and shrouded keys, certificates, CRLs and Java's secret keys; BER as NSS writes it; JKS's key protector and JCEKS's PBEWithMD5AndTripleDES, with a JCEKS secret key's Java serialization | OpenSSL 3.0 and 3.5 (command line and, for a NULL password, its API), python-cryptography, NSS's pk12util, keytool and Java's KeyStore API (JDK 21), both directions: 121 of 121; 27 stores replayed offline |
+| Key stores (PKCS#12 `.p12`/`.pfx`, Java's JKS and JCEKS) | `keystore/` | `list` (`--canonical` for comparison), `convert` between the three: PKCS#12 with PBES2/PBKDF2 AES-256, PBE-SHA1-3DES and 40-bit RC2, MACs HMAC-SHA-1/256 and PBMAC1, plain and shrouded keys, certificates, CRLs and Java's secret keys; BER as NSS writes it; JKS's key protector and JCEKS's PBEWithMD5AndTripleDES, with a JCEKS secret key's Java serialization; the Ukrainian stores: PKCS#12 under GOST 28147 CFB with PBKDF2-HMAC-GOST 34.311 and an HMAC-GOST 34.311 MAC, and PrivatBank's JKS | OpenSSL 3.0 and 3.5 (command line and, for a NULL password, its API), python-cryptography, NSS's pk12util, keytool and Java's KeyStore API (JDK 21), both directions: 121 of 121; 27 stores replayed offline. dstu-engine's keylib for the Ukrainian stores, both directions (`scripts/check_ua_keys.py`); 6 replayed offline |
 | JOSE (JWK, JWS, JWE: RFC 7515 to 7518, 7638, 7797, 8037, 8812) | `jose/` | `keygen`, `public`, `thumbprint`, `sign`, `verify`, `encrypt`, `decrypt`: every JWS algorithm of RFC 7518 with ES256K, EdDSA and the fully-specified `Ed25519` and `Ed448`, `none` on request; every JWE key management algorithm (RSA1_5, RSA-OAEP, RSA-OAEP-256, AES key wrap, AES-GCM key wrap, PBES2, `dir`, ECDH-ES and ECDH-ES with key wrap over P-256/384/521, X25519 and X448) with every content encryption; compact, general and flattened JSON, several signers and recipients, unencoded payloads, `zip`, AAD | jwcrypto 1.6.1 both directions, every algorithm and serialization, and PyJWT 2.12.1 for compact JWS: 802 of 802; the examples of RFC 7515, 7516, 7518, 7638, 7797 and 8037 read out of the documents; 137 jwcrypto outputs replayed offline |
 | CMS and S/MIME (RFC 5652, RFC 8551; PKCS#7) | `cms/` | `sign`, `verify` (chain to given roots), `encrypt`, `decrypt`, `info`: SignedData with RSA PKCS#1 v1.5 and PSS, ECDSA, DSA, Ed25519 and Ed448, with or without signed attributes, attached or detached, by issuer and serial or key identifier, several signers; EnvelopedData to RSA (PKCS#1 v1.5, OAEP), EC (ECDH with every X9.63 KDF), password (PWRI) and shared-key recipients, with AES, 3DES, DES and RC2; AES-GCM AuthEnvelopedData; EncryptedData, DigestedData, CompressedData; BER, PEM and S/MIME in both forms | OpenSSL 3.0 and 3.5, python-cryptography 46 and NSS's cmsutil both directions: 552 of 552; RFC 4134's examples and RFC 3211's and RFC 3217's vectors read out of the documents; 121 messages replayed offline |
 | Kerberos 5 (MIT keytabs and credential caches; RFC 3961, 3962, 4757, 6803, 8009) | `kerberos/` | `string2key`, `encrypt`, `decrypt`, `checksum`, `prf` for all twelve encryption types - single DES (CRC, MD4, MD5), Triple DES, AES with HMAC-SHA1 and with HMAC-SHA2, RC4-HMAC and its 40-bit export variant, Camellia - and every DES checksum; `keytab list`, `keytab add`; `ccache list`; `ticket` (every ticket in a cache opened with the service's keys, its session key checked against the cache's) | MIT Kerberos 1.21.3 and 1.17.2 (single DES) both directions through libk5crypto, `ktutil`, `klist` and a KDC on loopback for every type, credential caches of versions 3 and 4: 34,383 of 34,383; RFC 3961, 3962, 6803 and 8009's vectors read out of the documents; 342 answers, 2 keytabs and 6 caches replayed offline |
@@ -956,8 +956,9 @@ much Java serialization as a JCEKS secret key needs) and
   RFC 9579's PBMAC1. `convert` writes the keys in one plain safe of
   shrouded bags and everything else in a second, encrypted, safe - the
   layout OpenSSL writes - under `--key-scheme` and `--cert-scheme`
-  (`aes-256`, `3des`, `rc2-40` or `none`) and `--mac` (`sha256`,
-  `sha1`, `pbmac1` or `none`).
+  (`aes-256`, `gost`, `3des`, `rc2-40` or `none`) and `--mac`
+  (`sha256`, `sha1`, `gost34311`, `pbmac1` or `none`). A safe with no
+  bags is left out, as OpenSSL leaves it out.
 - **JKS**: each key protected by Sun's own SHA-1 keystream with a
   SHA-1 check, the store by a SHA-1 over the password, the words
   "Mighty Aphrodite" and the store. **JCEKS**: the same frame, keys
@@ -971,6 +972,13 @@ much Java serialization as a JCEKS secret key needs) and
   each as keytool writes it. The other way, a key takes the
   certificates that share its ID as its chain, and every other
   certificate becomes a trusted one.
+- **Ukrainian stores**: PKCS#12 with the keys shrouded by PBES2 under
+  GOST 28147 CFB and PBKDF2-HMAC-GOST 34.311 (`--key-scheme gost`,
+  a 32-byte salt), and MACed with HMAC-GOST 34.311 over the PKCS#12 KDF
+  (`--mac gost34311`); and JKS as PrivatBank issues it, with
+  certificates of type `X509` and each key zero-padded inside the
+  protector. The DSTU 4145 keys in them are the library's
+  (`dstu4145_keys_open`).
 
 ```console
 $ cargo run --release --example keystore -- list server.p12 --password-stdin
@@ -978,6 +986,7 @@ $ cargo run --release --example keystore -- convert server.p12 server.jks --pass
 $ cargo run --release --example keystore -- convert old.p12 new.p12 --password-stdin --format pkcs12 --key-scheme aes-256 --mac pbmac1
 $ cargo test --example keystore
 $ python3 scripts/check_keystore.py
+$ python3 scripts/check_ua_keys.py --dstu-engine DIR --jkurwa DIR
 ```
 
 Checked (`scripts/check_keystore.py`), with RSA, P-256, P-384, Ed25519
@@ -1001,13 +1010,20 @@ and DSA keys:
   JCEKS that keytool lists and moves to PKCS#12 with the same keys, and
   a JCEKS and a PKCS#12 secret key that keytool unseals to the same key
   - the PKCS#12 one byte for byte the bag keytool writes. 121 of 121.
+- `scripts/check_ua_keys.py`, against dstu-engine's keylib: its test
+  PKCS#12 and PrivatBank's JKS list here to the keys and certificates
+  keylib finds, and ours converted from them to GOST PKCS#12 and to JKS
+  open in keylib to the same. keylib refuses any JKS with a trusted
+  certificate entry, so that is checked with key entries only.
 - `cargo test` opens 27 of those stores (`fixtures/keystore/`) to the
   entries the witnesses agreed on, refuses a wrong password, converts
   each to every format and back, and holds two things to keytool's own
   bytes: the serialized `SealedObjectForKeyProtector` and
   `SecretKeySpec` of its JCEKS secret key, and its PKCS#12 secret bag.
   The PKCS#12 identifiers are read out of `rfcs/rfc7292.txt` and
-  `rfcs/rfc8018.txt`.
+  `rfcs/rfc8018.txt`. It opens the 6 Ukrainian stores
+  (`fixtures/keystore-ua/`) to their entries and to the DSTU 4145 keys
+  keylib found, and takes each through GOST PKCS#12 and back.
 
 Not here: PKCS#12 protected by a public key (a signed authenticated
 safe or an enveloped one), Java's BCFKS and Bouncy Castle's UBER, and

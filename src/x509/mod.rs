@@ -52,6 +52,7 @@ pub mod name_constraints;
 pub mod ocsp;
 pub mod oids;
 pub mod private_key;
+pub mod ua_key;
 pub mod verify;
 
 #[cfg(test)]

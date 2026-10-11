@@ -119,7 +119,17 @@ pub fn unprotect(epki: &[u8], password: &[u8]) -> Result<Vec<u8>, String> {
     let mut algorithm = outer.read_sequence()?;
     let scheme = algorithm.read_oid()?.to_string();
     match scheme.as_str() {
-        JKS_KEY_PROTECTOR => encrypted_key::decrypt(epki, password),
+        // The SHA-1 check has judged the password, and covers the zeros
+        // PrivatBank's stores pad their DSTU 4145 keys with to whole
+        // blocks; they are dropped.
+        JKS_KEY_PROTECTOR => {
+            let plain = encrypted_key::decrypt(epki, password)?;
+            let key = match Reader::new(&plain).read_raw() {
+                Ok(element) if plain[element.len()..].iter().all(|&b| b == 0) => element,
+                _ => &plain[..],
+            };
+            crate::pkcs12::key_info(key)
+        }
         // Nothing but the CBC padding checks the password, which a wrong
         // one passes about one time in 256; Java then fails to parse the
         // key, and so does this.
@@ -181,7 +191,10 @@ impl Cursor<'_> {
     fn certificate(&mut self, version: u32) -> Result<Vec<u8>, String> {
         if version == 2 {
             let kind = self.utf()?;
-            if kind != "X.509" {
+            // The JDK writes "X.509". The key stores PrivatBank issues
+            // for DSTU 4145 keys write "X509", and hold X.509
+            // certificates under it; refusing the spelling refused them.
+            if kind != "X.509" && kind != "X509" {
                 return Err(format!("A certificate of type {kind}."));
             }
         }

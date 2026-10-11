@@ -1,13 +1,15 @@
 //! GOST R 34.11-94's two readings of the empty message, against Bouncy
-//! Castle 1.77 and gost89 in `vectors/gost94_readings.vec`
+//! Castle 1.77, gost89 and cryptonite in `vectors/gost94_readings.vec`
 //! (`scripts/make_gost94_vectors.py`), read offline.
 //!
-//! The `_bc` names are those witnesses' reading and match every row,
-//! the empty message included. The plain names are RFC 5831's step 2
-//! read literally, as today's gost-engine computes it
-//! (`tests/test_gost_engine_vectors.rs` holds the engine's empty
-//! message): they match every non-empty row and must differ on the
-//! empty one, or the file would not be separating anything.
+//! The `_bc` names are Bouncy Castle's and gost89's reading and match
+//! every `gost94` row, the empty message included. The plain names are
+//! RFC 5831's step 2 read literally, as today's gost-engine
+//! (`tests/test_gost_engine_vectors.rs` holds the engine's empty message)
+//! and cryptonite compute it: they match every non-empty row and
+//! cryptonite's `gost94-zero` rows for the empty message, and must differ
+//! from the other reading's, or the file would not be separating
+//! anything.
 
 use std::collections::HashMap;
 
@@ -35,7 +37,7 @@ fn test_both_readings_against_bouncy_castle_and_gost89() {
     let names = HashMap::from([("id-GostR3411-94-CryptoProParamSet", "gost94"),
                                ("id-GostR3411-94-TestParamSet", "gost94_test"),
                                ("dstu4145-default-dke", "gost34311")]);
-    let (mut checked, mut empty) = (0, 0);
+    let (mut checked, mut empty, mut zero) = (0, 0, 0);
     for line in text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
         let fields: HashMap<&str, &str> = line.split(' ').skip(1)
             .map(|w| w.split_once('=').unwrap()).collect();
@@ -43,6 +45,14 @@ fn test_both_readings_against_bouncy_castle_and_gost89() {
         let (message, expected) = (unhex(fields["msg"]), unhex(fields["digest"]));
 
         let bc = format!("{name}_bc");
+        if line.starts_with("gost94-zero ") {
+            assert!(message.is_empty(), "{line}");
+            assert_eq!(digest(name, &message), expected, "{line}");
+            assert_ne!(digest(&bc, &message), expected, "{line}");
+            zero += 1;
+            checked += 1;
+            continue;
+        }
         assert_eq!(digest(&bc, &message), expected, "{line}");
         assert_eq!(AnyHash::new(&bc).unwrap().name(), bc);
         if message.is_empty() {
@@ -53,7 +63,7 @@ fn test_both_readings_against_bouncy_castle_and_gost89() {
         }
         checked += 1;
     }
-    assert_eq!((checked, empty), (declared, 3));
+    assert_eq!((checked, empty, zero), (declared, 3, 3));
 }
 
 /// The difference is the one block, for the empty message alone: an

@@ -5,8 +5,9 @@
 //!             [--key-password PW] [--canonical]
 //!     cargo run --release --example keystore -- convert IN OUT --password PW
 //!             --format pkcs12|jks|jceks [--key-password PW] [--out-password PW]
-//!             [--key-scheme aes-256|3des|rc2-40|none] [--cert-scheme aes-256|3des|rc2-40|none]
-//!             [--mac sha256|sha1|pbmac1|none] [--iterations N]
+//!             [--key-scheme aes-256|gost|3des|rc2-40|none]
+//!             [--cert-scheme aes-256|gost|3des|rc2-40|none]
+//!             [--mac sha256|sha1|gost34311|pbmac1|none] [--iterations N]
 //!
 //! `--password-stdin` reads the store password from standard input; the
 //! key password is the store password unless given. `--out-password`
@@ -334,7 +335,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::{dir, field, records, unhex};
+    use crate::fixtures::{dir, field, hex, records, unhex};
 
     type Opened = (String, Store, Vec<u8>, Vec<String>);
 
@@ -497,6 +498,57 @@ mod tests {
                              |n| matches!(n.entry, jks::Entry::Certificate(_))),
                         "{name}: the key password is the keys'");
             }
+        }
+    }
+
+    /// A DSTU 4145 key as `keystore-ua.vec` has it: `m:d:qx:qy`.
+    fn dstu_numbers(key: &allcrypt::api::Dstu4145Key) -> String {
+        let m: usize = key.curve_name().rsplit('m').next().unwrap().parse().unwrap();
+        let width = m.div_ceil(8);
+        let d = key.private_bytes().unwrap();
+        let q = key.public_key().to_bytes(false).unwrap();
+        let pad = |b: &[u8]| format!("{}{}", "00".repeat(width - b.len()), hex(b));
+        format!("{m}:{}:{}:{}", pad(&d), pad(&q[..q.len() / 2]), pad(&q[q.len() / 2..]))
+    }
+
+    /// The Ukrainian stores - dstu-engine's PKCS#12, PrivatBank's JKS,
+    /// and ours converted from them, which dstu-engine's keylib read -
+    /// open to the entries and the DSTU 4145 keys keylib agreed on,
+    /// refuse another password, and survive a round trip through
+    /// PKCS#12 under the GOST schemes.
+    #[test]
+    fn test_ukrainian_stores_open_to_what_keylib_found() {
+        let records = records("keystore-ua.vec", "store");
+        assert_eq!(records.len(), 6);
+        for record in &records {
+            let name = field(record, "name");
+            let data = std::fs::read(dir().join("keystore-ua").join(name)).unwrap();
+            let (password, key_password) = (password(record), unhex(field(record, "key-password")));
+            let store = open(&data, &password, &key_password)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let entries: Vec<String> = record.iter().filter(|(k, _)| k == "entry")
+                .map(|(_, v)| v.clone()).collect();
+            assert_eq!(summary(&store), entries, "{name}");
+
+            let keys: Vec<String> = canonical(&store).iter()
+                .filter(|line| line.starts_with("key "))
+                .flat_map(|line| allcrypt::api::dstu4145_keys_open(
+                    &unhex(line.rsplit(' ').next().unwrap()), b"").unwrap())
+                .map(|key| dstu_numbers(&key)).collect();
+            let recorded: Vec<String> = record.iter().filter(|(k, _)| k == "dstu")
+                .map(|(_, v)| v.clone()).collect();
+            assert_eq!(keys, recorded, "{name}");
+
+            assert!(open(&data, b"wrong", b"wrong").is_err(), "{name}");
+
+            let bags = to_bags(&store).unwrap();
+            let options = pkcs12::Options { key_scheme: "gost".to_string(),
+                                            cert_scheme: "gost".to_string(),
+                                            mac: "gost34311".to_string(), iterations: 3 };
+            let written = pkcs12::write(&bags, "пароль".as_bytes(), &options).unwrap();
+            let Store::Pkcs12(back, _) = open(&written, "пароль".as_bytes(), b"").unwrap()
+            else { panic!() };
+            assert!(views(&back) == views(&bags), "{name}");
         }
     }
 }

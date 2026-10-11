@@ -47,12 +47,14 @@ against that software's own tools.
 |DES|✓|✓|
 |3DES (EDE2, EDE3)|✓|✓|
 |GOST 28147-89|✓|✓|
-|GOST 28147-89 under the DSTU 4145 default DKE (DSTU GOST 28147:2009, `dstu4145-default-dke`)|✓|Bouncy Castle 1.77 and gost89 agree on ECB, CFB and the MAC, and on the table itself; counter mode Bouncy Castle's alone; `vectors/dstu_gost.vec`|
+|GOST 28147-89 under the DSTU 4145 default DKE (DSTU GOST 28147:2009, `dstu4145-default-dke`)|✓|Bouncy Castle 1.77, gost89 and cryptonite agree on ECB, CFB and the MAC, and on the table itself; counter mode Bouncy Castle's and cryptonite's; `vectors/dstu_gost.vec`|
 |IDEA|✓|✓|
 |Kalyna (DSTU 7624:2014), all five variants (`kalyna-128`, `kalyna-256`, `kalyna-512`)|✓|the standard's ten examples; the authors' reference implementation and Bouncy Castle 1.77 agree on 75 more inputs and on the S-boxes; `vectors/kalyna.vec`|
+|Kalyna's DSTU 7624 GCM, GMAC, CCM and XTS (`kalyna-128-gcm` to `kalyna-512-ccm`, `kalyna_gmac`, `kalyna_ccm_*`, `kalyna_xts_*`)|✓|the standard's examples, which Bouncy Castle 1.77 and cryptonite both reproduce, and six more with short blocks from cryptonite's tests; 357 rows on which the two agree, all whole blocks; then each alone: Bouncy Castle for GCM and GMAC with a short last block, which the two pad differently, and CCM past 255 bytes; cryptonite for CCM with short or empty parts and XTS's ciphertext stealing; `vectors/kalyna_aead.vec`|
 |Kalyna's DSTU 7624 counter mode (`ctr` on a `kalyna-` name), MAC and key wrap|✓|the standard's examples, which Bouncy Castle 1.77 and cryptonite both reproduce; 165 rows on which they agree, and each alone where the other stops (short MACs, padded and long wraps); `vectors/kalyna_modes.vec`|
 |Kuznyechik (GOST R 34.12-2015)|✓|✓|
 |Magma (GOST R 34.12-2015)|✓|✓|
+|MARS (AES finalist, tweaked key schedule)|✓|Crypto++ 8.9.0 and Botan 1.10.17 agree on 682 blocks over all eleven key lengths, 16 to 56 bytes, and on Monte Carlo tests of four million blocks at each length and direction; Crypto++'s published vectors and Monte Carlo tests; the S-box derived from its SHA-1 construction; `vectors/mars.vec`|
 |RC2 (RFC 2268)|✓|✓|
 |RC5 (RFC 2040)|✓|spec reference; RFC 2040's vectors|
 |Rijndael, 160 to 256 bit blocks (`rijndael-160` to `rijndael-256`)|✓|Bouncy Castle 1.77 and phpseclib 1.0.23 agree on 275 inputs, eleven for each of the 25 block and key sizes; `vectors/rijndael.vec`|
@@ -169,7 +171,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |HKDF (RFC 5869)|✓|✓|
 |SP 800-108 KBKDF, counter and feedback modes, HMAC or CMAC|✓|✓|
 |SP 800-56C one-step (Concat KDF) and ANSI X9.63 KDF|✓|✓|
-|PKCS#12 KDF (RFC 7292 appendix B)|✓|OpenSSL's encrypted key files, both ways; OpenSSL's PKCS12KDF over five hashes, `vectors/pkcs12_kdf.vec`|
+|PKCS#12 KDF (RFC 7292 appendix B)|✓|OpenSSL's encrypted key files, both ways; OpenSSL's PKCS12KDF over five hashes, `vectors/pkcs12_kdf.vec`; OpenSSL with dstu-engine over GOST 34.311, whose 32-byte block is `v`, `vectors/pkcs12_kdf_gost.vec`|
 |PBEWithMD5AndTripleDES (the JDK's)|✓|keytool's JCEKS files|
 |OpenPGP S2K: simple, salted, iterated and salted (RFC 9580 §3.7.1)|✓|✓|
 |RFC 3961 n-fold, DR/DK, DES string-to-key, DES/3DES random-to-key|✓|RFC 3961 appendix A; MIT Kerberos, through the Kerberos example|
@@ -206,12 +208,13 @@ for a tag. Key wrap authenticates without one. Both are in
 |BLAKE2b, BLAKE2s (RFC 7693), keyed, salted and personalised|✓|✓; the parameter block against hashlib|
 |RIPEMD-160|✓|✓|
 |SM3 (GB/T 32905-2016)|✓|✓|
+|Kupyna's MAC (DSTU 7564:2014), 256, 384 and 512 bits, `kupyna_mac`|✓|the standard's three examples and Bouncy Castle's three more, up to 1024 bytes; Bouncy Castle 1.77, cryptonite and the authors' reference implementation agree on 27 inputs, the first two on 108 more over other key lengths and messages of several blocks, and Bouncy Castle alone on keys past one block; `vectors/kupyna_mac.vec`|
 |Kupyna (DSTU 7564:2014), any multiple of 8 bits to 512; `kupyna256`, `kupyna384`, `kupyna512`|✓|the standard's 15 byte-aligned examples; the authors' reference implementation and Bouncy Castle 1.77 agree on 19 messages at each of the three named sizes; the reference alone at ten other sizes; `vectors/kupyna.vec`|
 |Whirlpool (ISO/IEC 10118-3)|✓|✓|
 |Streebog-256 and -512 (GOST R 34.11-2012)|✓|✓|
 |GOST R 34.11-94 (RFC 5831, RFC 4357 parameters)|✓|✓|
-|GOST 34.311-95 (Ukraine; GOST R 34.11-94 under the DSTU 4145 default DKE)|✓|Bouncy Castle 1.77 and gost89 agree on 14 messages, `vectors/dstu_gost.vec`|
-|GOST R 34.11-94 and GOST 34.311-95 with the other reading of the empty message (`_bc` names)|✓|Bouncy Castle 1.77 and gost89 under all three S-boxes, the empty message included, `vectors/gost94_readings.vec`; see [pitfalls 7zzo](pitfalls.md#7zzo-ukraines-gost)|
+|GOST 34.311-95 (Ukraine; GOST R 34.11-94 under the DSTU 4145 default DKE)|✓|Bouncy Castle 1.77, gost89 and cryptonite agree on 14 messages, `vectors/dstu_gost.vec`; the empty message is cryptonite's and gost-engine's reading, `vectors/gost94_readings.vec`|
+|GOST R 34.11-94 and GOST 34.311-95 with the other reading of the empty message (`_bc` names)|✓|Bouncy Castle 1.77 and gost89 under all three S-boxes, the empty message included, with cryptonite on every message but the empty one, `vectors/gost94_readings.vec`; see [pitfalls 7zzo](pitfalls.md#7zzo-ukraines-gost)|
 |RIPEMD-128, RIPEMD-256, RIPEMD-320|✓|libtomcrypt, Bouncy Castle, Crypto++ and RustCrypto (and GNU Crypto for RIPEMD-128), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |HAS-160 (TTA.KO-12.0011/R2)|✓|RHash, Botan 1.10 and GNU Crypto, agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |Whirlpool-0, Whirlpool-T|✓|sphlib and GNU Crypto (and Crypto++ 5.2.1 for Whirlpool-T), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
@@ -230,6 +233,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |Montgomery multiplication|✓|✓|
 |Fixed-width secrets (`bignum::ct`) and fixed-size arithmetic (`bignum::fixed`)|✓|✓|
 |Constant-time point arithmetic (`ec::fixed`, `ec::ct`)|✓|✓|
+|Binary fields GF(2^m) in a polynomial basis (`ec::gf2m`), masked throughout|✓|through DSTU 4145, below|
 |Fixed-limb Curve25519 and Curve448 fields, Edwards arithmetic|✓|✓|
 |Miller-Rabin primality|✓|✓|
 
@@ -248,6 +252,10 @@ for a tag. Key wrap authenticates without one. Both are in
 |XEdDSA, both forms (Signal's identity-key signatures)|✓|libsignal-protocol-c's bytes and verdicts; OpenSSL verifies|
 |GOST R 34.10-2012 signatures|✓|✓|
 |VKO key agreement (RFC 7836)|✓|✓|
+|DSTU 4145-2002 signatures, the ten named curves and curves given whole|✓|the standard's worked example; Bouncy Castle 1.77 signs with a given `e` and it and cryptonite verify, over 32-byte hashes on all ten curves and four more, `vectors/dstu4145.vec`; other hash lengths Bouncy Castle's alone|
+|DSTU 4145-2002 public keys and point compression|✓|Bouncy Castle 1.77 and cryptonite agree, both directions, `vectors/dstu4145.vec`|
+|DSTU 4145-2002 Diffie-Hellman, with and without the cofactor|✓|cryptonite's whole point, Bouncy Castle's x, `vectors/dstu4145.vec`|
+|DSTU 4145-2002 key containers (`dstu4145_keys_open`, `dstu4145_key6`)|✓|under "Certificates and keys" below|
 |SM2 signatures (GB/T 32918.2)|✓|✓|
 |SM2 public key encryption (GB/T 32918.4)|✓|✓|
 |SM2 key exchange (GB/T 32918.3)|||
@@ -256,6 +264,9 @@ for a tag. Key wrap authenticates without one. Both are in
 **Curves:** P-256, P-384, P-521, secp256k1, sm2p256v1 (GB/T 32918.5),
 the seven GOST curves of RFC 4357 and RFC 7836, Curve25519 and
 Curve448 for X25519 and X448, and edwards25519 and edwards448 for EdDSA.
+DSTU 4145-2002's ten binary curves, `dstu4145-m163` to `dstu4145-m431`,
+in a polynomial basis; the standard's optimal-normal-basis forms are not
+here.
 The Weierstrass parameters are not trusted on sight: a unit test checks
 that G is on the curve and that n*G is the identity, which pins down
 every parameter, and `scripts/diff_check.py` compares scalar
@@ -344,6 +355,7 @@ do. [post-quantum.md](post-quantum.md) has the detail.
 |Private keys: PKCS#8, SEC1, PKCS#1; X25519 and X448 (RFC 8410)|✓|✓|
 |Encrypted private keys (PBES2, PBES1, PKCS#12 PBE), reading and writing|✓|✓|
 |Java's key protectors (JKS, JCEKS)|✓|keytool's files|
+|Ukrainian private keys and containers: DSTU 4145 PKCS#8 with the second key in the attributes, IIT's `Key-6.dat`, PBES2 under GOST 28147 CFB and HMAC-GOST 34.311, reading and writing|✓|dstu-engine's keylib reads the same keys from IIT's and jkurwa's files and from ours, on all ten curves; the certificates' subject key identifiers; `vectors/ua_keys.vec`|
 |The operating system's trust store|✓|✓|
 
 ## TLS

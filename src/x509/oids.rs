@@ -167,6 +167,27 @@ oids! {
     JKS_KEY_PROTECTOR     = "1.3.6.1.4.1.42.2.17.1.1";
     JCE_KEY_PROTECTOR     = "1.3.6.1.4.1.42.2.19.1";
 
+    // Ukraine's arc (1.2.804.2.1.1.1): DSTU GOST 28147's CFB as PBES2
+    // names it, HMAC over GOST 34.311-95 as a PBKDF2 PRF, the hash
+    // itself, DSTU 4145-2002's keys in their two byte orders, and the
+    // arc of its ten named curves, whose number is the last arc.
+    DSTU_GOST28147_CFB    = "1.2.804.2.1.1.1.1.1.1.3";
+    HMAC_GOST34311        = "1.2.804.2.1.1.1.1.1.2";
+    GOST34311             = "1.2.804.2.1.1.1.1.2.1";
+    DSTU4145_LE           = "1.2.804.2.1.1.1.1.3.1.1";
+    DSTU4145_BE           = "1.2.804.2.1.1.1.1.3.1.1.1.1";
+    DSTU4145_NAMED_CURVES = "1.2.804.2.1.1.1.1.3.1.1.2";
+
+    // IIT's private arc (1.3.6.1.4.1.19398): its Key-6.dat container,
+    // and the attributes its private keys carry - the key's identifier,
+    // and a second key (the one for key agreement) with its curve and
+    // identifier.
+    IIT_KEY_STORE         = "1.3.6.1.4.1.19398.1.1.1.2";
+    IIT_KEY_ID            = "1.3.6.1.4.1.19398.1.1.2.1";
+    IIT_SECOND_CURVE      = "1.3.6.1.4.1.19398.1.1.2.2";
+    IIT_SECOND_KEY        = "1.3.6.1.4.1.19398.1.1.2.3";
+    IIT_SECOND_KEY_ID     = "1.3.6.1.4.1.19398.1.1.2.5";
+
     // Symmetric ciphers, as PBES2 names them.
     DES_CBC               = "1.3.14.3.2.7";
     DES_EDE3_CBC          = "1.2.840.113549.3.7";

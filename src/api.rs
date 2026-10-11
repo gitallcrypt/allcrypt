@@ -27,7 +27,7 @@ use crate::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 
 pub const BLOCK_CIPHERS: &[&str] =
     &["aes", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des", "gost",
-      "idea", "kalyna-128", "kalyna-256", "kalyna-512", "kuznyechik", "magma", "rc2", "rc5", "rc6",
+      "idea", "kalyna-128", "kalyna-256", "kalyna-512", "kuznyechik", "magma", "mars", "rc2", "rc5", "rc6",
       "rijndael-128", "rijndael-160", "rijndael-192", "rijndael-224", "rijndael-256",
       "seed", "serpent", "sm4", "tea", "twofish", "xtea"];
 
@@ -67,7 +67,8 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              // with a standard that names them: ARIA (RFC
                              // 6209), Camellia (RFC 6367), SM4 (RFC
                              // 8998). Any 128 bit cipher here works by
-                             // the same naming, Kalyna excepted.
+                             // the same naming, except Kalyna, whose
+                             // names are DSTU 7624's own modes (below).
                              "aria-gcm", "camellia-gcm", "sm4-gcm",
                              "aria-ccm", "camellia-ccm", "sm4-ccm",
                              "chacha20-poly1305", "xchacha20-poly1305",
@@ -87,7 +88,7 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              // two produce 8 byte tags**. See
                              // `aead_tag_len`.
                              "tea-eax", "xtea-eax", "rc5-eax", "aria-eax",
-                             "rc6-eax", "cast256-eax",
+                             "rc6-eax", "cast256-eax", "mars-eax",
                              // MGM (RFC 9058), named the same way. The
                              // first two are the ones the standard is
                              // written for and the ones RFC 9367's TLS
@@ -98,19 +99,25 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "twofish-mgm", "serpent-mgm", "camellia-mgm",
                              "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
                              "blowfish-mgm", "tea-mgm", "xtea-mgm",
-                             "rc5-mgm", "rc6-mgm", "cast256-mgm",
+                             "rc5-mgm", "rc6-mgm", "cast256-mgm", "mars-mgm",
                              // OCB (RFC 7253), which is defined for 128
                              // bit blocks only. OpenPGP's AEAD packets
                              // default to it.
                              "aes-ocb", "camellia-ocb", "twofish-ocb",
                              "serpent-ocb", "aria-ocb", "sm4-ocb",
                              "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
-                             "cast256-ocb",
+                             "cast256-ocb", "mars-ocb",
                              // AES-CBC and HMAC-SHA-2 as one AEAD (RFC
                              // 7518 5.2): JWE's A128CBC-HS256 and its two
                              // siblings. The nonce is the 16-byte IV.
                              "aes-128-cbc-hmac-sha256", "aes-192-cbc-hmac-sha384",
-                             "aes-256-cbc-hmac-sha512"];
+                             "aes-256-cbc-hmac-sha512",
+                             // DSTU 7624:2014's own GCM and CCM over
+                             // Kalyna: not NIST's modes, and the nonce
+                             // is one block. CCM's length field is four
+                             // bytes here; `kalyna_ccm_encrypt` takes any.
+                             "kalyna-128-gcm", "kalyna-256-gcm", "kalyna-512-gcm",
+                             "kalyna-128-ccm", "kalyna-256-ccm", "kalyna-512-ccm"];
 pub const HASHES: &[&str] = &[
     // MD2 and MD4 are here for what still uses them rather than for
     // what they protect: `md2WithRSAEncryption` on old root
@@ -126,7 +133,8 @@ pub const HASHES: &[&str] = &[
     // Ukraine's: the same construction under the DSTU 4145 default DKE.
     // The `_bc` names are the same three hashes under the other reading
     // of the empty message - Bouncy Castle's, gost89's and OpenSSL 1.0's
-    // gost engine's - and agree with them on every other message.
+    // gost engine's; today's gost-engine and cryptonite read it as the
+    // plain names do - and agree with them on every other message.
     "gost94", "gost94_test", "gost34311", "gost94_bc", "gost94_test_bc", "gost34311_bc",
     "blake2b", "blake2s", "ripemd128", "ripemd160", "ripemd256", "ripemd320",
     "sm3", "whirlpool", "whirlpool_0", "whirlpool_t", "has160",
@@ -253,6 +261,9 @@ pub enum AnyBlockCipher {
     /// CAST-256 (RFC 2612): a 128 bit block and a key of 16, 20, 24, 28
     /// or 32 bytes.
     Cast256(crate::block_ciphers::cast256::Cast256),
+    /// MARS, an AES finalist, with the second round's key schedule: a
+    /// 128 bit block and a key of 16 to 56 bytes, a multiple of 4.
+    Mars(crate::block_ciphers::mars::Mars),
     /// Rijndael at any of its five block sizes, 16 to 32 bytes, with a
     /// key of 16, 20, 24, 28 or 32 bytes. The 16 byte block is AES.
     Rijndael(crate::block_ciphers::rijndael::Rijndael),
@@ -295,6 +306,8 @@ impl AnyBlockCipher {
                                 param.unwrap_or(GostCrypto::DEFAULT_PARAM_SET))?)),
             "cast256" => Ok(AnyBlockCipher::Cast256(
                 crate::block_ciphers::cast256::Cast256::new(key)?)),
+            "mars" => Ok(AnyBlockCipher::Mars(
+                crate::block_ciphers::mars::Mars::new(key)?)),
             "rc6" => Ok(AnyBlockCipher::Rc6(
                 crate::block_ciphers::rc6::Rc6::new(key)?)),
             // Named by block size in bits; the key's length picks the
@@ -417,6 +430,7 @@ impl AnyBlockCipher {
             AnyBlockCipher::Rc5(_) => "rc5",
             AnyBlockCipher::Rc6(_) => "rc6",
             AnyBlockCipher::Cast256(_) => "cast256",
+            AnyBlockCipher::Mars(_) => "mars",
             AnyBlockCipher::Kalyna(k) => match k.block_bytes() {
                 16 => "kalyna-128",
                 32 => "kalyna-256",
@@ -458,6 +472,7 @@ macro_rules! dispatch {
             AnyBlockCipher::Rc5($inner) => $body,
             AnyBlockCipher::Rc6($inner) => $body,
             AnyBlockCipher::Cast256($inner) => $body,
+            AnyBlockCipher::Mars($inner) => $body,
             AnyBlockCipher::Rijndael($inner) => $body,
             AnyBlockCipher::Kalyna($inner) => $body,
             AnyBlockCipher::Aria($inner) => $body,
@@ -624,6 +639,18 @@ enum AeadInner {
         aad: Vec<u8>,
         buffered: Vec<u8>,
     },
+    /// DSTU 7624's GCM and CCM over Kalyna (`kalyna_aead`). **Buffers.**
+    /// CCM has to, as NIST's does; GCM could stream and is written as a
+    /// one-shot here. CCM's length field is four bytes this way;
+    /// `kalyna_ccm_encrypt` takes any.
+    Kalyna {
+        cipher: crate::block_ciphers::kalyna::Kalyna,
+        ccm: bool,
+        nonce: Vec<u8>,
+        aad: Vec<u8>,
+        buffered: Vec<u8>,
+        tag_len: usize,
+    },
 }
 
 impl AeadStream {
@@ -636,6 +663,23 @@ impl AeadStream {
         let inner = match base {
             "gcm" | "ccm" => return AeadStream::new(&format!("aes-{lower}"), key, nonce, aad,
                                                     decrypting),
+            other if other.starts_with("kalyna-")
+                && (other.ends_with("-gcm") || other.ends_with("-ccm")) => {
+                let cipher = kalyna_named(&other[..other.len() - 4], key)?;
+                let tag_len = tag_len.unwrap_or(cipher.blocksize());
+                let ccm = other.ends_with("-ccm");
+                // The tag length is checked here, where a name like
+                // "kalyna-128-gcm-4" is read, rather than at the end.
+                if ccm {
+                    crate::block_ciphers::kalyna_aead::check_ccm_params(
+                        tag_len, 4, cipher.blocksize())?;
+                } else {
+                    crate::block_ciphers::kalyna_aead::check_gcm_tag_len(
+                        tag_len, cipher.blocksize())?;
+                }
+                AeadInner::Kalyna { cipher, ccm, nonce: nonce.to_vec(), aad: aad.to_vec(),
+                                    buffered: Vec::new(), tag_len }
+            }
             other if other.ends_with("-gcm") => {
                 let mut cipher = AnyBlockCipher::new(sp800_38_cipher(other)?, key, None)?;
                 if let Some(n) = tag_len {
@@ -751,7 +795,7 @@ impl AeadStream {
             AeadInner::ChaChaPoly(state) => state.update(input, out),
             AeadInner::Ccm { buffered, .. } | AeadInner::Eax { buffered, .. }
             | AeadInner::Mgm { buffered, .. } | AeadInner::Ocb { buffered, .. }
-            | AeadInner::CbcHmac { buffered, .. } => {
+            | AeadInner::CbcHmac { buffered, .. } | AeadInner::Kalyna { buffered, .. } => {
                 buffered.extend_from_slice(input);
                 Ok(())
             }
@@ -782,6 +826,7 @@ impl AeadStream {
             AeadInner::Mgm { mgm, .. } => mgm.tag_len(),
             AeadInner::Ocb { ocb, .. } => ocb.tag_len(),
             AeadInner::CbcHmac { aead, .. } => aead.tag_len(),
+            AeadInner::Kalyna { tag_len, .. } => *tag_len,
         }
     }
 
@@ -791,7 +836,7 @@ impl AeadStream {
     pub fn buffers_everything(&self) -> bool {
         matches!(self.inner, AeadInner::Ccm { .. } | AeadInner::Eax { .. }
                              | AeadInner::Mgm { .. } | AeadInner::Ocb { .. }
-                             | AeadInner::CbcHmac { .. })
+                             | AeadInner::CbcHmac { .. } | AeadInner::Kalyna { .. })
     }
 
     /// Finish a CCM encryption: the ciphertext, which `update` could not
@@ -830,6 +875,19 @@ impl AeadStream {
             AeadInner::CbcHmac { aead, nonce, aad, buffered } => {
                 let (ciphertext, tag) = aead.encrypt(nonce, aad, buffered)?;
                 out.extend_from_slice(&ciphertext);
+                Ok(tag)
+            }
+            AeadInner::Kalyna { cipher, ccm: false, nonce, aad, buffered, tag_len } => {
+                let (ciphertext, tag) = crate::block_ciphers::kalyna_aead::gcm_encrypt(
+                    cipher, nonce, aad, buffered, *tag_len)?;
+                out.extend_from_slice(&ciphertext);
+                Ok(tag)
+            }
+            AeadInner::Kalyna { cipher, ccm: true, nonce, aad, buffered, tag_len } => {
+                let mut sealed = crate::block_ciphers::kalyna_aead::ccm_encrypt(
+                    cipher, nonce, aad, buffered, *tag_len, 4)?;
+                let tag = sealed.split_off(sealed.len() - *tag_len);
+                out.extend_from_slice(&sealed);
                 Ok(tag)
             }
             _ => self.tag(),
@@ -880,6 +938,25 @@ impl AeadStream {
                 out.extend_from_slice(&plaintext);
                 Ok(())
             }
+            AeadInner::Kalyna { cipher, ccm: false, nonce, aad, buffered, tag_len } => {
+                let plaintext = crate::block_ciphers::kalyna_aead::gcm_decrypt(
+                    cipher, nonce, aad, buffered, tag, *tag_len)?;
+                out.extend_from_slice(&plaintext);
+                Ok(())
+            }
+            AeadInner::Kalyna { cipher, ccm: true, nonce, aad, buffered, tag_len } => {
+                // The tag's length is part of what CCM authenticates.
+                if tag.len() != *tag_len {
+                    return Err(format!("This Kalyna CCM tag is {} bytes; got {}.",
+                                       tag_len, tag.len()));
+                }
+                let mut sealed = std::mem::take(buffered);
+                sealed.extend_from_slice(tag);
+                let plaintext = crate::block_ciphers::kalyna_aead::ccm_decrypt(
+                    cipher, nonce, aad, &sealed, *tag_len, 4)?;
+                out.extend_from_slice(&plaintext);
+                Ok(())
+            }
             _ => self.verify(tag),
         }
     }
@@ -916,6 +993,9 @@ impl AeadStream {
             AeadInner::CbcHmac { .. } => Err(
                 "CBC-HMAC is one-shot here; call finish() with a buffer for \
                  the ciphertext.".to_string()),
+            AeadInner::Kalyna { .. } => Err(
+                "Kalyna's GCM and CCM are one-shot here; call finish() with a \
+                 buffer for the ciphertext.".to_string()),
         }
     }
 
@@ -959,6 +1039,9 @@ impl AeadStream {
             AeadInner::CbcHmac { .. } => Err(
                 "CBC-HMAC releases its plaintext only once the tag checks; call \
                  open() with a buffer for it.".to_string()),
+            AeadInner::Kalyna { .. } => Err(
+                "Kalyna's GCM and CCM release their plaintext only once the tag \
+                 checks; call open() with a buffer for it.".to_string()),
         }
     }
 }
@@ -981,9 +1064,10 @@ fn split_tag_len(name: &str) -> Result<(&str, Option<usize>), String> {
 
 /// The block cipher under `"<cipher>-gcm"` or `"<cipher>-ccm"`.
 ///
-/// Kalyna is refused by name: DSTU 7624:2014 defines its own GCM and
-/// CCM, which are not SP 800-38D's over a different cipher, and
-/// `"kalyna-128-gcm"` would be read as that standard's mode.
+/// Kalyna never reaches this: `"kalyna-128-gcm"` is DSTU 7624:2014's
+/// own GCM, which is not SP 800-38D's over a different cipher, and
+/// `AeadStream::new` sends it to `kalyna_aead` first. The refusal stays
+/// so that a caller reaching this another way gets the reason.
 fn sp800_38_cipher(name: &str) -> Result<&str, String> {
     let cipher = &name[..name.len() - 4];
     if cipher.starts_with("kalyna") {
@@ -2815,6 +2899,205 @@ impl EcPublicKey {
     }
 }
 
+pub use crate::ec::dstu4145::NAMES as DSTU4145_CURVES;
+
+/// A DSTU 4145-2002 key pair on one of the standard's named curves,
+/// `dstu4145-m163` to `dstu4145-m431`.
+///
+/// Separate from `EcKey` because the curves are over binary fields and
+/// nothing about the arithmetic is shared. Integers and field elements
+/// are big endian throughout; a certificate under the `dstu4145le`
+/// object identifier stores the public key and the signature with their
+/// bytes reversed.
+pub struct Dstu4145Key {
+    curve: dstu4145::Curve,
+    private: BigUint,
+    public: dstu4145::Point,
+}
+
+/// A DSTU 4145-2002 public key.
+pub struct Dstu4145PublicKey {
+    curve: dstu4145::Curve,
+    point: dstu4145::Point,
+}
+
+use crate::ec::dstu4145;
+
+impl Dstu4145Key {
+    /// A fresh key pair from the OS random source.
+    pub fn generate(curve_name: &str) -> Result<Dstu4145Key, String> {
+        let curve = dstu4145::Curve::by_name(curve_name)?;
+        let (private, public) = curve.generate()?;
+        Ok(Dstu4145Key { curve, private, public })
+    }
+
+    /// Import a private key `d`, big endian, in `[1, n)`. The public key
+    /// is `−d·G`.
+    pub fn from_private(curve_name: &str, private: &[u8]) -> Result<Dstu4145Key, String> {
+        let curve = dstu4145::Curve::by_name(curve_name)?;
+        let private = BigUint::from_bytes_be(private);
+        let public = curve.public_key(&private)?;
+        Ok(Dstu4145Key { curve, private, public })
+    }
+
+    pub fn curve_name(&self) -> &'static str {
+        self.curve.name().expect("a facade key is on a named curve")
+    }
+
+    /// `d`, big endian, at the width of `n`.
+    pub fn private_bytes(&self) -> Result<Vec<u8>, String> {
+        self.private.to_bytes_be_padded(self.curve.order().bit_len().div_ceil(8))
+    }
+
+    pub fn public_key(&self) -> Dstu4145PublicKey {
+        Dstu4145PublicKey { curve: self.curve.clone(), point: self.public.clone() }
+    }
+
+    /// Sign a hash: the standard's signature, `s || r`, each big endian at
+    /// the width of `n`. The hash is read little endian, as the standard
+    /// reads GOST 34.311's output; any length is taken.
+    pub fn sign(&self, hash: &[u8]) -> Result<Vec<u8>, String> {
+        let (r, s) = self.curve.sign(&self.private, hash)?;
+        self.encode(&r, &s)
+    }
+
+    /// Sign with a given `e`, big endian, as the standard's worked
+    /// example does. An `e` not drawn uniformly from `[1, n)` for this one
+    /// signature gives the private key away: `d = (s − e)/r`.
+    pub fn sign_with_nonce(&self, hash: &[u8], e: &[u8]) -> Result<Vec<u8>, String> {
+        let (r, s) = self.curve.sign_with_nonce(&self.private, hash, e)?;
+        self.encode(&r, &s)
+    }
+
+    fn encode(&self, r: &BigUint, s: &BigUint) -> Result<Vec<u8>, String> {
+        let width = self.curve.order().bit_len().div_ceil(8);
+        Ok([s.to_bytes_be_padded(width)?, r.to_bytes_be_padded(width)?].concat())
+    }
+
+    /// The key's identifier: GOST 34.311 of the DER OCTET STRING of the
+    /// compressed public key, little endian - a certificate's subject key
+    /// identifier, and what a container names the key by.
+    pub fn key_id(&self) -> Result<Vec<u8>, String> {
+        crate::x509::ua_key::key_id(&self.curve, &self.public)
+    }
+
+    /// The key as the Ukrainian software stores it: a PrivateKeyInfo with
+    /// `d` little endian, the curve given whole with the default DKE, its
+    /// identifier, and `second` - the key for key agreement - in IIT's
+    /// attributes when given. What `dstu4145_key6` and
+    /// `encrypt_private_key` seal.
+    pub fn private_key_info(&self, second: Option<&Dstu4145Key>) -> Result<Vec<u8>, String> {
+        crate::x509::ua_key::write_private_key(&self.ua_key(),
+                                               second.map(|s| s.ua_key()).as_ref())
+    }
+
+    fn ua_key(&self) -> crate::x509::ua_key::UaKey {
+        crate::x509::ua_key::UaKey { curve: self.curve.clone(), d: self.private.clone(),
+                                     dke: None }
+    }
+
+    /// The shared point of a Diffie-Hellman exchange, `x || y` big endian:
+    /// `d·Q`, or `(h·d mod n)·Q` with the cofactor, as cryptonite's
+    /// `dstu4145_dh` computes it. The peer's key must be on the same
+    /// curve.
+    pub fn shared_point(&self, peer: &Dstu4145PublicKey, cofactor: bool)
+                        -> Result<Vec<u8>, String> {
+        if peer.curve.number() != self.curve.number() {
+            return Err(format!("The peer's key is on {}, not {}.", peer.curve_name(),
+                               self.curve_name()));
+        }
+        let z = self.curve.shared_point(&self.private, &peer.point, cofactor)?;
+        dstu4145_point_bytes(&self.curve, &z, false)
+    }
+}
+
+fn dstu4145_point_bytes(curve: &dstu4145::Curve, p: &dstu4145::Point, compressed: bool)
+                        -> Result<Vec<u8>, String> {
+    if compressed {
+        return curve.compress(p);
+    }
+    let dstu4145::Point::Affine(x, y) = p else {
+        return Err("The point at infinity has no encoding.".to_string());
+    };
+    Ok([curve.field().to_bytes(x), curve.field().to_bytes(y)].concat())
+}
+
+impl Dstu4145PublicKey {
+    /// Import a public key: the standard's compressed form (one field
+    /// element) or `x || y` (two), big endian. The point is checked to be
+    /// on the curve and of order `n`.
+    pub fn from_bytes(curve_name: &str, bytes: &[u8]) -> Result<Dstu4145PublicKey, String> {
+        let curve = dstu4145::Curve::by_name(curve_name)?;
+        let len = curve.field().byte_len();
+        let point = if bytes.len() == len {
+            curve.decompress(bytes)?
+        } else if bytes.len() == 2 * len {
+            let f = curve.field();
+            let point = dstu4145::Point::Affine(f.from_bytes(&bytes[..len])?,
+                                                f.from_bytes(&bytes[len..])?);
+            curve.validate(&point)?;
+            point
+        } else {
+            return Err(format!("A {curve_name} public key is {len} bytes compressed or {} \
+                                as x || y, not {}.", 2 * len, bytes.len()));
+        };
+        Ok(Dstu4145PublicKey { curve, point })
+    }
+
+    /// The compressed form, or `x || y`, big endian.
+    pub fn to_bytes(&self, compressed: bool) -> Result<Vec<u8>, String> {
+        dstu4145_point_bytes(&self.curve, &self.point, compressed)
+    }
+
+    /// The key's identifier, as `Dstu4145Key::key_id`.
+    pub fn key_id(&self) -> Result<Vec<u8>, String> {
+        crate::x509::ua_key::key_id(&self.curve, &self.point)
+    }
+
+    pub fn curve_name(&self) -> &'static str {
+        self.curve.name().expect("a facade key is on a named curve")
+    }
+
+    /// Verify `s || r` over a hash. The halves are read big endian at
+    /// whatever width the signature has, as Bouncy Castle reads them; a
+    /// signature of odd length is an error, a wrong one is `false`.
+    pub fn verify(&self, hash: &[u8], signature: &[u8]) -> Result<bool, String> {
+        if signature.is_empty() || !signature.len().is_multiple_of(2) {
+            return Err(format!("A DSTU 4145 signature is two halves of equal length; this \
+                                one is {} bytes.", signature.len()));
+        }
+        let (s, r) = signature.split_at(signature.len() / 2);
+        self.curve.verify(&self.point, hash, &BigUint::from_bytes_be(r),
+                          &BigUint::from_bytes_be(s))
+    }
+}
+
+/// The DSTU 4145 keys in a Ukrainian key container: IIT's `Key-6.dat`,
+/// an encrypted PKCS#8 (PBES2 with GOST 28147 CFB, or any scheme
+/// `encrypt_private_key` knows), or a plain private key, as DER or PEM.
+/// The signing key first, and the key-agreement key the IIT software
+/// stores beside it when there is one.
+///
+/// # Errors
+/// None of those, a wrong password, or a key on a curve that is not one
+/// of the standard's ten (`x509::ua_key` reads those).
+pub fn dstu4145_keys_open(data: &[u8], password: &[u8]) -> Result<Vec<Dstu4145Key>, String> {
+    crate::x509::ua_key::open(data, password)?.into_iter().map(|key| {
+        let number = key.curve.matching_named().ok_or(
+            "The key's curve is not one of DSTU 4145's ten; x509::ua_key reads it.")?;
+        let curve = dstu4145::Curve::named(number)?;
+        let public = curve.public_key(&key.d)?;
+        Ok(Dstu4145Key { curve, private: key.d, public })
+    }).collect()
+}
+
+/// Seal a key, and the key-agreement key beside it, into a `Key-6.dat`
+/// under `password`.
+pub fn dstu4145_key6(key: &Dstu4145Key, second: Option<&Dstu4145Key>, password: &[u8])
+                     -> Result<Vec<u8>, String> {
+    crate::x509::ua_key::key6_seal(&key.private_key_info(second)?, password)
+}
+
 /// An EdDSA key pair, held as the seed plus its derived public key.
 ///
 /// Separate from `EcKey` rather than a curve under it, because almost
@@ -3428,6 +3711,52 @@ pub fn kalyna_key_unwrap(cipher: &str, kek: &[u8], wrapped: &[u8]) -> Result<Vec
 pub fn kalyna_key_unwrap_padded(cipher: &str, kek: &[u8], wrapped: &[u8])
                                 -> Result<Vec<u8>, String> {
     crate::block_ciphers::kalyna_modes::unwrap_padded(&mut kalyna_named(cipher, kek)?, wrapped)
+}
+
+/// DSTU 7624's GMAC over Kalyna: GCM's tag over `data`, `tag_len` bytes
+/// from 8 to the block. A short last block is padded with zeros, which
+/// is Bouncy Castle's reading and not cryptonite's (`kalyna_aead`).
+/// DSTU 7564's MAC over Kupyna: `bits` of 256, 384 or 512, any key.
+pub fn kupyna_mac(bits: usize, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut mac = crate::hash_functions::kupyna::KupynaMac::new(bits, key)?;
+    mac.update(data);
+    Ok(mac.mac())
+}
+
+pub fn kalyna_gmac(cipher: &str, key: &[u8], data: &[u8], tag_len: usize)
+                   -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_aead::gmac(&mut kalyna_named(cipher, key)?, data, tag_len)
+}
+
+/// DSTU 7624's CCM over Kalyna with a length field of `nb` bytes: the
+/// ciphertext followed by the encrypted MAC of `tag_len` bytes (8, 16,
+/// 32, 48 or 64, no more than the block). The `"kalyna-*-ccm"` AEADs
+/// are this with `nb` = 4.
+pub fn kalyna_ccm_encrypt(cipher: &str, key: &[u8], nonce: &[u8], aad: &[u8], message: &[u8],
+                          tag_len: usize, nb: usize) -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_aead::ccm_encrypt(&mut kalyna_named(cipher, key)?, nonce, aad,
+                                                   message, tag_len, nb)
+}
+
+/// The inverse of `kalyna_ccm_encrypt`; nothing comes back unless the
+/// MAC checks.
+pub fn kalyna_ccm_decrypt(cipher: &str, key: &[u8], nonce: &[u8], aad: &[u8], sealed: &[u8],
+                          tag_len: usize, nb: usize) -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_aead::ccm_decrypt(&mut kalyna_named(cipher, key)?, nonce, aad,
+                                                   sealed, tag_len, nb)
+}
+
+/// DSTU 7624's XTS over Kalyna: one key, an IV of one block, data of at
+/// least one block, a short last block by ciphertext stealing.
+pub fn kalyna_xts_encrypt(cipher: &str, key: &[u8], iv: &[u8], data: &[u8])
+                          -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_aead::xts_encrypt(&mut kalyna_named(cipher, key)?, iv, data)
+}
+
+/// The inverse of `kalyna_xts_encrypt`.
+pub fn kalyna_xts_decrypt(cipher: &str, key: &[u8], iv: &[u8], data: &[u8])
+                          -> Result<Vec<u8>, String> {
+    crate::block_ciphers::kalyna_aead::xts_decrypt(&mut kalyna_named(cipher, key)?, iv, data)
 }
 
 /// RFC 3217's RC2 key wrap, the key-encryption key at `effective_bits`.
@@ -4554,17 +4883,29 @@ pub fn encrypt_private_key(key: &[u8], password: &[u8], scheme: &str, prf: Optio
                            iterations: Option<u32>, salt: Option<&[u8]>, iv: Option<&[u8]>)
                            -> Result<Vec<u8>, String> {
     let der = der_of(key, &["PRIVATE KEY"])?;
-    crate::x509::private_key::pkcs8(&der).map_err(|reason| {
-        format!("Only a PKCS#8 PrivateKeyInfo is encrypted this way, and this is not one \
-                 ({reason}).")
-    })?;
+    if let Err(reason) = crate::x509::private_key::pkcs8(&der) {
+        // A Ukrainian DSTU 4145 key is a PrivateKeyInfo of its own shape.
+        crate::x509::ua_key::read_private_key(&der).map_err(|_| {
+            format!("Only a PKCS#8 PrivateKeyInfo is encrypted this way, and this is not \
+                     one ({reason}).")
+        })?;
+    }
     let pbes2 = !scheme.starts_with("pbe-");
+    // GOST's scheme takes GOST's PRF, and by default the 32-byte salt and
+    // ten thousand rounds the Ukrainian software writes.
+    let gost = scheme == "gost28147-cfb";
     let iterations = iterations.unwrap_or_else(|| {
-        if pbes2 { pbkdf2_recommended_iterations(prf.unwrap_or("sha256")) } else { 2048 }
+        if gost {
+            10_000
+        } else if pbes2 {
+            pbkdf2_recommended_iterations(prf.unwrap_or("sha256"))
+        } else {
+            2048
+        }
     });
     let salt = match salt {
         Some(salt) => salt.to_vec(),
-        None => random_bytes(if pbes2 { 16 } else { 8 })?,
+        None => random_bytes(if gost { 32 } else if pbes2 { 16 } else { 8 })?,
     };
     let iv = match iv {
         Some(iv) => iv.to_vec(),
@@ -4574,7 +4915,8 @@ pub fn encrypt_private_key(key: &[u8], password: &[u8], scheme: &str, prf: Optio
         }
         None => Vec::new(),
     };
-    let prf = if pbes2 { Some(prf.unwrap_or("sha256")) } else { prf };
+    let prf = if pbes2 { Some(prf.unwrap_or(if gost { "gost34311" } else { "sha256" })) }
+              else { prf };
     crate::x509::encrypted_key::encrypt(&der, password, scheme, prf, iterations, &salt, &iv)
 }
 

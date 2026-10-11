@@ -363,8 +363,9 @@ fn test_reencrypting_openssls_files_reproduces_them() {
 
 /// Every scheme round-trips, including the ones no fixture has - the
 /// PKCS#12 two-key Triple DES and 128-bit RC2 and 40-bit RC4, PBES1 with
-/// MD2, and PBES2 with 40- and 64-bit RC2 - at lengths either side of a
-/// block, and a wrong password does not give the key back.
+/// MD2, and PBES2 with 40- and 64-bit RC2 and GOST 28147 CFB - at
+/// lengths either side of a block, and a wrong password does not give
+/// the key back.
 #[test]
 fn test_every_scheme_round_trips() {
     use allcrypt::x509::encrypted_key::{decrypt, encrypt, parameters, scheme_names};
@@ -375,9 +376,9 @@ fn test_every_scheme_round_trips() {
             _ => 8,
         };
         let prf = if scheme.starts_with("pbe-") { None } else { Some("sha512") };
-        // An empty RC4 ciphertext is refused on reading as no key at
-        // all, so the stream cipher starts at one byte.
-        let shortest = usize::from(scheme.contains("rc4"));
+        // An empty ciphertext without padding - RC4's, GOST CFB's - is
+        // refused on reading as no key at all, so those start at one byte.
+        let shortest = usize::from(scheme.contains("rc4") || scheme.contains("cfb"));
         for length in [0usize, 1, 15, 16, 17, 100].into_iter().filter(|&l| l >= shortest) {
             let plain: Vec<u8> = (0..length).map(|i| (i * 7) as u8).collect();
             let der = encrypt(&plain, "pä".as_bytes(), scheme, prf, 3, &[9; 8],
@@ -389,7 +390,7 @@ fn test_every_scheme_round_trips() {
             }
         }
     }
-    assert_eq!(scheme_names().len(), 20);
+    assert_eq!(scheme_names().len(), 21);
 }
 
 #[test]

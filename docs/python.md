@@ -133,6 +133,18 @@ assert allcrypt.new("kupyna256").hexdigest().startswith("cd5101d1")
 assert allcrypt.new("kupyna512").digest_size == 64
 ```
 
+Its MAC, DSTU 7564's own construction rather than HMAC, is
+`kupyna_mac(bits, key, data)` at 256, 384 or 512 bits:
+
+```python
+import allcrypt
+
+# The standard's first example.
+assert allcrypt.kupyna_mac(256, bytes.fromhex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100"),
+                           bytes.fromhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e")).hex() \
+    == "b60594d56fa79ba210314c72c2495087ccd0a99fc04acfe2a39ef669925d98ee"
+```
+
 The standard allows any multiple of 8 bits up to 512, and every one of
 them has a name: `"kupyna8"` to `"kupyna512"`.
 
@@ -447,6 +459,38 @@ odd = allcrypt.kalyna_key_wrap("kalyna-128", key, b"18 bytes of a key.")
 assert allcrypt.kalyna_key_unwrap_padded("kalyna-128", key, odd) == b"18 bytes of a key."
 ```
 
+The standard's GCM and CCM are AEADs named `"kalyna-128-gcm"` to
+`"kalyna-512-ccm"`, with a nonce of one block and a tag of the block by
+default (a length can follow, as in `"kalyna-256-gcm-16"`). They are
+DSTU 7624's own modes, not NIST's run over Kalyna: a different field,
+a different header, and **a GCM tag that does not cover the IV**, so a
+wrong IV opens with the same tag and returns other bytes. GMAC, CCM
+with another length field, and XTS are functions:
+
+```python
+import allcrypt
+
+# The standard's first GCM example.
+aead = allcrypt.Aead(bytes.fromhex("000102030405060708090a0b0c0d0e0f"), "kalyna-128-gcm")
+sealed = aead.encrypt(bytes.fromhex("101112131415161718191a1b1c1d1e1f"), bytes.fromhex("303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f"),
+                      bytes.fromhex("202122232425262728292a2b2c2d2e2f"))
+assert sealed[-16:].hex() == "c8310571cd60f9584b45c1b4ece179af"
+
+key = bytes(32)
+tag = allcrypt.kalyna_gmac("kalyna-256", key, b"data to authenticate", 32)
+sealed = allcrypt.kalyna_ccm_encrypt("kalyna-256", key, bytes(32), b"header", b"message", 32, nb=6)
+assert allcrypt.kalyna_ccm_decrypt("kalyna-256", key, bytes(32), b"header", sealed, 32,
+                                   nb=6) == b"message"
+# XTS takes one key and steals ciphertext for a short last block.
+out = allcrypt.kalyna_xts_encrypt("kalyna-256", key, bytes(32), bytes(40))
+assert allcrypt.kalyna_xts_decrypt("kalyna-256", key, bytes(32), out) == bytes(40)
+```
+
+Where Bouncy Castle and cryptonite part, these follow one of them and
+say which: a short last block in GCM and GMAC is zero-padded, as Bouncy
+Castle does; CCM with a short block, or with no associated data or no
+message, is cryptonite's. `docs/pitfalls.md`, 7zzp, has the details.
+
 RC6 is the AES finalist from the same family as RC5: a 128 bit block, twenty
 rounds and a key of 1 to 255 bytes. It takes every mode a 128 bit
 cipher takes, including `rc6-eax`, `rc6-mgm` and `rc6-ocb`:
@@ -456,6 +500,20 @@ import allcrypt
 
 assert allcrypt.Cipher("rc6", bytes(16)).encrypt("ecb", bytes(16)).hex() \
     == "8fc3a53656b1f778c129df4e9848a41e"
+```
+
+MARS, IBM's AES finalist, with the key schedule IBM revised for the
+second round: a 128 bit block and a key of 16 to 56 bytes, a multiple of
+4. It takes every mode a 128 bit cipher takes, including `mars-eax`,
+`mars-mgm` and `mars-ocb`:
+
+```python
+import allcrypt
+
+# Crypto++'s published vector: zero key, zero block.
+assert allcrypt.Cipher("mars", bytes(16)).encrypt("ecb", bytes(16)).hex() \
+    == "dcc07b8dfb0738d6e30a22dfcf27e886"
+assert allcrypt.Cipher("mars", bytes(56)).block_size == 16
 ```
 
 RC5 (RFC 2040) is `RC5-32/r/b`: a 64 bit block, a round count, and a key
@@ -683,9 +741,9 @@ except allcrypt.CryptoError:
 
 GCM and CCM are modes, and run over any 128 bit block cipher here by
 the same naming: `"camellia-gcm"`, `"sm4-ccm"` (RFC 8998's TLS suites),
-`"aria-gcm"`, `"serpent-gcm"`. Kalyna is the exception and is refused,
-because DSTU 7624 defines a GCM and a CCM of its own and the name would
-mean the wrong one.
+`"aria-gcm"`, `"serpent-gcm"`. Kalyna is the exception: DSTU 7624
+defines a GCM and a CCM of its own, so `"kalyna-128-gcm"` is that
+standard's mode, with a nonce of one block - not NIST's over Kalyna.
 
 A tag length in bytes can follow GCM, CCM, EAX, MGM or OCB, and each
 mode's own rules decide which lengths exist: GCM's are SP 800-38D's 4,
@@ -2197,6 +2255,76 @@ caller hashing a large message itself or checking another
 implementation step by step; `allcrypt.sm2_kdf(shared, length)` is the
 encryption's KDF on its own.
 
+## DSTU 4145-2002
+
+Ukraine's signature standard, over binary curves:
+`allcrypt.dstu4145_curves_available` lists the ten, `dstu4145-m163` to
+`dstu4145-m431`. Its own classes, `Dstu4145Key` and `Dstu4145PublicKey`,
+because nothing about the arithmetic is shared with `EcKey`.
+
+It is not ECDSA over another field: the public key is `-d*G`, the hash
+is read **little endian**, and the signature is `s || r`, each big
+endian at the width of the group order.
+
+```python
+import allcrypt
+
+key = allcrypt.Dstu4145Key.generate("dstu4145-m257")
+hash_ = bytes(32)                       # GOST 34.311's output, say
+signature = key.sign(hash_)
+assert len(signature) == 64
+public = key.public_key()
+assert public.verify(hash_, signature)
+
+# The standard's compressed form, read back.
+packed = public.public_bytes(compressed=True)
+assert allcrypt.Dstu4145PublicKey("dstu4145-m257", packed).public_bytes() == \
+    public.public_bytes()
+
+# Diffie-Hellman: the shared point, x || y; the cofactor is on by default.
+peer = allcrypt.Dstu4145Key.generate("dstu4145-m257")
+assert key.shared_point(peer.public_key()) == peer.shared_point(public)
+```
+
+Everything is big endian. A certificate under the `dstu4145le` object
+identifier stores the compressed key and the signature byte-reversed, so
+`signature[::-1]` is what goes in one and what comes out of one.
+`sign_with_nonce(hash, e)` takes a given `e`, as the standard's worked
+example does; reusing one gives the private key away.
+
+### Key containers
+
+`allcrypt.dstu4145_keys_open(data, password)` reads the keys out of what
+Ukrainian software issues: IIT's `Key-6.dat`, a PKCS#8 encrypted with
+PBES2 under GOST 28147 CFB and HMAC-GOST 34.311, or a plain PKCS#8, DER
+or PEM. It returns a list, because a container usually holds a signing
+key and, in the first key's attributes, a key-agreement key; the
+signing key is first.
+
+```python
+import allcrypt
+
+signing = allcrypt.Dstu4145Key.generate("dstu4145-m257")
+agreement = allcrypt.Dstu4145Key.generate("dstu4145-m431")
+password = "пароль".encode()
+
+key6 = allcrypt.dstu4145_key6(signing, password, second=agreement)
+keys = allcrypt.dstu4145_keys_open(key6, password)
+assert [k.curve for k in keys] == ["dstu4145-m257", "dstu4145-m431"]
+
+# The PKCS#8 form, and encrypted the CAs' way: 10,000 iterations and a
+# 32-byte salt unless given.
+info = signing.private_key_info(second=agreement)
+sealed = allcrypt.encrypt_private_key(info, password, "gost28147-cfb", iterations=1000)
+assert len(allcrypt.dstu4145_keys_open(sealed, password)) == 2
+
+# What a certificate's subject key identifier holds for this key.
+assert keys[0].key_id() == signing.public_key().key_id()
+```
+
+A wrong password is refused by the `Key-6.dat` MAC, which says so; a
+PBES2 container has no MAC, and fails on what the wrong key decrypts to.
+
 ## DSA
 
 `allcrypt.DsaKey` is FIPS 186-4's DSA with RFC 6979's deterministic
@@ -3339,7 +3467,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.3.0"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.4.0"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and

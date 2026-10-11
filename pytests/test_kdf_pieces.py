@@ -94,10 +94,12 @@ def test_pbkdf1_against_hashlib(hash_name):
         allcrypt.pbkdf1(hash_name, b"pw", b"saltsalt", 1, len(t) + 1)
 
 
-def test_pkcs12_kdf_against_openssl():
-    rows = [line for line in (ROOT / "vectors" / "pkcs12_kdf.vec").read_text().splitlines()
+@pytest.mark.parametrize("name,count", [("pkcs12_kdf.vec", 45), ("pkcs12_kdf_gost.vec", 55)])
+def test_pkcs12_kdf_against_openssl(name, count):
+    """The second file is GOST 34.311, whose 32-byte block is the KDF's v."""
+    rows = [line for line in (ROOT / "vectors" / name).read_text().splitlines()
             if line and not line.startswith("#")]
-    assert len(rows) == 45
+    assert len(rows) == count
     for row in rows:
         f = dict(field.split("=", 1) for field in row.split())
         password = b"" if f["password"] == "-" else bytes.fromhex(f["password"])

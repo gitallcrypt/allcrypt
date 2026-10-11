@@ -107,6 +107,9 @@ to be someone's CVE.**
 - [7zzo. Ukraine's GOST](#7zzo-ukraines-gost)
 - [7zzp. Kalyna](#7zzp-kalyna)
 - [7zzq. Kupyna](#7zzq-kupyna)
+- [7zzr. MARS](#7zzr-mars)
+- [7zzs. DSTU 4145-2002](#7zzs-dstu-4145-2002)
+- [7zzt. Ukrainian key containers](#7zzt-ukrainian-key-containers)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -9762,7 +9765,8 @@ and the AEAD catalogue has no `rijndael-` names.
 `src/block_ciphers/gost.rs` (the `dstu4145-default-dke` table),
 `src/hash_functions/gost94.rs` (GOST 34.311-95) and
 `src/block_ciphers/cms_wrap.rs` (the DSTU key wrap). Checked against
-Bouncy Castle 1.77 and gost89, `vectors/dstu_gost.vec`.
+Bouncy Castle 1.77, gost89 and PrivatBank's cryptonite,
+`vectors/dstu_gost.vec`.
 
 ### A DKE is packed row by row, not as RFC 4357 prints a table
 
@@ -9772,14 +9776,17 @@ RFC 4357 prints its tables column by column, `K[2j]` and `K[2j+1]` of
 one input in a byte. Either unpacking of either format gives eight
 valid permutations and a cipher that encrypts and decrypts, so a mix-up
 shows only as disagreement with everyone else. `sbox_from_dke` is the
-one place a DKE is read, and the vectors pin it against both
-witnesses, which read the DKE their own ways.
+one place a DKE is read, and the vectors pin it against all three
+witnesses, which read the DKE their own ways; cryptonite also carries
+the table built in, as its "DKE No. 1", and that must be the same 64
+bytes.
 
 ### The empty message to GOST R 34.11-94 has two answers
 
-**Status: mitigated.** Today's gost-engine and RFC 5831's step 2 read
-literally compress a zero block for the empty message, since the step
-runs for any remainder of 256 bits or fewer and zero is one. Bouncy
+**Status: mitigated.** Today's gost-engine, PrivatBank's cryptonite and
+RFC 5831's step 2 read literally compress a zero block for the empty
+message, since the step runs for any remainder of 256 bits or fewer and
+zero is one. Bouncy
 Castle, gost89 and the gost engine that shipped with OpenSSL 1.0
 compress nothing when nothing is left; their CryptoPro digest of the
 empty message, `981e5f3c...`, is the one usually published, and
@@ -9789,8 +9796,12 @@ non-empty message, under all three S-boxes. Both readings are here:
 `gost94_bc`, `gost94_test_bc` and `gost34311_bc` are the second. A
 protocol that hashes an empty input picks the one its peer computes.
 `vectors/gost94_readings.vec` holds Bouncy Castle's and gost89's
-answers, and `tests/test_gost94_readings.rs` requires the `_bc` names to
-match every row and the plain names to differ on the empty one only.
+answers, with cryptonite's wherever there is a message and its other
+reading of the empty one in `gost94-zero` rows, and
+`tests/test_gost94_readings.rs` requires the `_bc` names to match the
+first, the plain names the second, and the two to differ on the empty
+message only. So each reading has a Ukrainian implementation behind it:
+gost89 for one, cryptonite for the other.
 
 ### The MAC of one block or less has three answers
 
@@ -9798,7 +9809,21 @@ match every row and the plain names to differ on the empty one only.
 blocks or more. For less, this library pads to two blocks, as
 gost-engine does; Bouncy Castle MACs the one block as it is; gost89
 adds a zero block to an exact 8-byte message and not to a shorter one.
-Longer messages agree everywhere, and the DSTU key wrap MACs 32 bytes.
+Longer messages agree everywhere, cryptonite's included, and the DSTU
+key wrap MACs 32 bytes.
+
+### PKCS#12's KDF takes GOST 34.311's 32-byte block
+
+**Status: mitigated.** RFC 7292's key derivation works in blocks of the
+hash's input size, `v`, and its table raises MD2's 16 bytes to 64. This
+library applied that as a floor of 64 for every hash, which reached two
+more: GOST R 34.11-94 and GOST 34.311-95 compress 32-byte blocks, and
+OpenSSL through a GOST engine - and so every Ukrainian PKCS#12 file's
+MAC - takes `v = 32`. The floor is MD2's alone now;
+`vectors/pkcs12_kdf_gost.vec` holds 55 of OpenSSL's answers through
+dstu-engine, and the old floor fails all of them while passing every row
+of `vectors/pkcs12_kdf.vec`, whose hashes all have 64-byte blocks or
+more.
 
 ### The key wrap has one outside opinion
 
@@ -9837,7 +9862,7 @@ IV and counts little endian, and that is what `ctr` does on a `kalyna-`
 name, as `ctr` on `gost` is GOST's gamma; a NIST counter over Kalyna
 would be a mode no Ukrainian implementation reads. `ctr-le` is still the
 plain little-endian counter. The standard's MAC and key wrap are in
-`kalyna_modes`; its CCM, GMAC and XTS are listed to be done.
+`kalyna_modes`, and its GCM, GMAC, CCM and XTS in `kalyna_aead`.
 
 ### On a short last block, CFB has two readings
 
@@ -9863,6 +9888,69 @@ agree up to 20 blocks of data, which covers every key, and this library
 follows Bouncy Castle beyond. cryptonite's unwrap also never checks the
 zero block; this one refuses unless it is zero, compared in constant
 time.
+
+### Kalyna's GCM tag does not cover the IV
+
+**Status: accepted** (it is the mode as the standard's examples and both
+implementations have it). DSTU 7624's GCM tag is `E(B ⊕ L)`: the
+polynomial hash of the associated data and the ciphertext, the two
+lengths, and one encryption. The IV reaches the keystream and nothing
+else, where NIST's GCM masks the tag with the encrypted IV. So a
+ciphertext opened under the **wrong IV passes the tag check** and
+returns other bytes, and two messages with the same associated data and
+ciphertext under different IVs carry the same tag. A protocol over this
+mode has to bind the IV some other way. `test_aead_through_the_api` and
+`test_gcm_tag_does_not_cover_the_iv` pin the behaviour, so a change
+that started authenticating the IV - and stopped matching every other
+implementation - would fail.
+
+### A short last block in GCM and GMAC has two readings
+
+**Status: accepted.** Bouncy Castle and cryptonite agree whenever the
+associated data and the message are whole blocks, and part when either
+ends short, and the standard's examples, as both projects' tests carry
+them, are all whole blocks. Bouncy Castle hashes a short block padded
+with zeros; cryptonite pads the message with `80 00 ... 00` - as the
+standard's MAC does - and its reading of short associated data depends
+on memory it never initialised. **This library zero-pads, following
+Bouncy Castle**, and that is a choice between implementations rather
+than the standard's text. Bouncy Castle's own reading is incomplete:
+it reads the padding from past the end of its buffer, so on decryption
+it takes the tag's bytes and **cannot open its own output** when the
+message ends short, and at some lengths of short associated data it
+throws instead of answering. Data from another Ukrainian implementation
+with a short last block may not open here; whole blocks interoperate
+everywhere. The rows tagged `bouncycastle` in `vectors/kalyna_aead.vec`
+are this reading, and the script that writes them requires both of the
+other behaviours above, so they stay on record.
+
+### Kalyna's CCM: three readings settled by one implementation
+
+**Status: accepted.** Bouncy Castle's KCCM takes whole blocks with at
+least one block of associated data, and adds one to the **first byte**
+of its counter without a carry - Kalyna's counter mode and cryptonite
+carry. cryptonite writes both lengths in a single byte. Within what both
+handle - whole blocks, associated data present, counters clear of a
+carry, messages under 256 bytes - they agree on every row. Outside it
+this library follows cryptonite, whose tests include an example with a
+short block: the message present bit (bit 7 of the flag) is set when
+there is a message, short associated data is preceded by a length block
+**cut short** so that the data ends on a block boundary, and a short
+message is padded with `80 00 ... 00` for the MAC. Lengths are written
+in full, little endian - the message's in `Nb` bytes, the associated
+data's as many as fit - which agrees with Bouncy Castle at any length
+and with cryptonite below 256. The tag lengths are those the flag byte
+has a code for: 8, 16, 32, 48 and 64 bytes.
+
+### Kalyna's XTS takes one key, and steals ciphertext like IEEE 1619
+
+**Status: mitigated.** DSTU 7624's XTS is not XTS-AES over Kalyna: one
+key, the tweak `E(IV)` doubled before every block - the first block
+already uses `2·E(IV)` - and the field of the block's own width, little
+endian. Bouncy Castle takes whole blocks; for a short last block this
+library steals ciphertext as cryptonite and IEEE 1619 do, and
+cryptonite's tests carry five such examples, which pass. Data shorter
+than one block is refused, as by both.
 
 ---
 
@@ -9890,6 +9978,256 @@ the named sizes, which both witnesses check.
 **Status: accepted.** The standard hashes bit strings, and four of its
 examples are 1, 33, 510 and 655 bits long. This library hashes bytes,
 like every hash here, so those examples are not in the vectors.
+
+### The MAC's three witnesses each stop somewhere
+
+**Status: mitigated.** The MAC is Kupyna over the padded key, the
+message, the message's padding and the inverted key. The authors'
+reference implementation takes a key exactly as long as the MAC and
+sizes its buffer as though the message had no whole block - it adds the
+key's whole-block count where the message's belongs - so for any longer
+message it hashes a truncated buffer; it is a witness only below one
+block. cryptonite counts the padded key as one block whatever its
+length, so it is a witness only for keys that leave room for the
+padding in one. Bouncy Castle takes any key and any message. Between
+them every row of `vectors/kupyna_mac.vec` has at least one, and 135
+have two or three. The standard's own examples all use a key as long as
+the MAC; this library takes any length, as Bouncy Castle and cryptonite
+do, and a key past one block has Bouncy Castle's word alone.
+
+---
+
+## 7zzr. MARS
+
+`src/block_ciphers/mars.rs`: MARS with the key schedule IBM revised in
+August 1999. Checked against Crypto++ 8.9.0 and Botan 1.10.17, which
+agree on every row of `vectors/mars.vec`, and against Crypto++'s
+published vectors and Monte Carlo tests.
+
+### Not constant time
+
+**Status: accepted.** Both mixing layers index the S-box with bytes of
+the block, and the core rotates by amounts taken from the data and from
+a product of the data with a key word. The cipher is not on
+`scripts/ct_check.py`'s list. It is a property of the cipher, not of
+this implementation.
+
+### The first-round key schedule is a different cipher
+
+**Status: accepted.** MARS as first submitted expanded the key
+differently; the August 1999 revision replaced that schedule, and the
+revision is what Crypto++, Botan and this module implement. Vectors
+from the first round, and anything encrypted under its schedule, belong
+to a cipher that is not here.
+
+### Neither witness library takes every key length
+
+**Status: accepted.** The revised schedule defines keys of 4 to 14 words,
+and this module takes all eleven lengths. Crypto++'s `SetKey` admits 16
+to 56 bytes in steps of 8, and Botan's 16 to 32 in steps of 4, so a key
+of 20, 28, 36, 44 or 52 bytes, or any above 32, has no route through one
+or both of their public interfaces: data encrypted under it here cannot
+be decrypted there without the same bypass. Both witnesses reach every
+length by calling the key schedule directly, which is the code their
+own `SetKey` runs, so `vectors/mars.vec` has rows at all eleven.
+
+### The multiplication keys are fixed after the schedule
+
+**Status: mitigated.** The sixteen key words the core multiplies by are
+forced to end in two ones, and every bit strictly inside a run of ten or
+more equal bits, from bit 2 up, is XORed with a rotation of one of four
+fixed S-box words. The mask is computed here from that definition, and a
+test compares it with the shift-and-AND form both witnesses use over
+every planted run and a hundred thousand other words. A breakage sweep
+of the module caught every change but one: an upper bound of bit 30 on
+the mask, which was redundant - bit 31 always ends its run - and has
+been removed.
+
+### The S-box is derived, not trusted
+
+**Status: mitigated.** The table is copied from Crypto++, which Botan
+matches, and `test_the_s_box_is_its_construction` rebuilds it from
+SHA-1 over `5i, c1, c2, c3` with the nine entries the designers fixed -
+the first of each pair in one half agreeing in two or more bytes, times
+three. A table with one entry wrong, or the halves swapped, fails it.
+
+---
+
+## 7zzs. DSTU 4145-2002
+
+`src/ec/dstu4145.rs` over `src/ec/gf2m.rs`: Ukraine's signature
+standard on its ten named binary curves and on curves given whole.
+Checked against the standard's worked example, Bouncy Castle 1.77 and
+cryptonite, `vectors/dstu4145.vec`.
+
+### Four conventions that differ from ECDSA, each silent when wrong
+
+**Status: mitigated.** The public key is `−d·G`, not `d·G`. The hash is
+read little endian - its bytes reversed - and cut to `m` bits, not to
+the order's. `r` is the field product of that hash and `x(e·G)`, cut to
+`bit_len(n) − 1` bits, not reduced modulo `n`. And the compressed point
+keeps `x` and replaces its lowest bit with the trace of `y/x`, which is
+recoverable because every point of order `n` has `Tr(x) = a`. A
+library that gets any of them wrong agrees with itself. The vectors
+pin each: Bouncy Castle and cryptonite agree on every public key,
+compression and verdict, and Bouncy Castle's signatures under a given
+`e` are reproduced byte for byte.
+
+### The secret path, and what it still shows
+
+**Status: mitigated.** `scripts/ct_check.py`'s `dstu4145_sign` and
+`dstu4145_dh` rows. The key and the nonce are fixed-width `Secret`s;
+`e·G` and `d·Q` run on the x-only ladder, every step the same, the two
+points swapped under a mask; the field's multiplication, squaring,
+inversion and reduction are masked or fixed in shape; the ladder's two
+special endings (the identity, and `−P`) are chosen by mask; `r` is cut
+to its width at byte positions that depend on `n` alone; and `s = e +
+d·r` runs in the Montgomery domain over `n`. What the rows name is the
+range verdict for the key and for the nonce, whether the ladder's result
+is the identity (never, for a scalar in range and a point of order
+`n`), and `r` and `s` as they become public. The standard's "take
+another `e` if `x(e·G)` is zero" has no test behind it: `e·G` has odd
+order and the point with `x = 0` has order two, so it cannot happen.
+Verification, validation and decompression are variable time, on public
+values.
+
+### Only one witness reads hashes that are not 32 bytes
+
+**Status: accepted.** cryptonite verifies a 32-byte hash - GOST
+34.311's - and refuses any other length, so signatures over the empty
+hash and over 1, 20, 64 and 77 bytes, and the examples in Bouncy
+Castle's tests over 22 and 26, are Bouncy Castle's word alone. The 32
+bytes are longer than the four smallest fields and shorter than the
+others, so both truncation and its absence have two witnesses.
+cryptonite also takes an odd total length of `r` and `s`, as byte
+arrays, for a failed signature; the script hands it both at the width
+of `n`.
+
+### The empty hash signs as the hash 01
+
+**Status: accepted.** A hash whose first `m` bits are zero is a zero
+field element, which the standard replaces with one, so the empty hash
+and the one-byte hash `01` give the same signatures. That is the
+standard, and both witnesses agree; a protocol that hashes first never
+meets it.
+
+### A peer's key is checked for the subgroup
+
+**Status: mitigated.** The cofactor is 2 or 4, so a point of order 2 or
+4 on the curve would give away the private key modulo it in an
+exchange. A public key from outside must be on the curve, have `x ≠ 0`,
+not vanish when doubled as often as the cofactor's two-power, and give
+the identity under exactly `n` - the ladder is run on `n` itself, not on
+`n` reduced. cryptonite's own exchange checks only that `h·Q` is not
+the identity, which a point of order `2n` passes.
+`test_points_from_outside_are_checked` builds one.
+
+### The signature has three encodings in circulation
+
+**Status: accepted.** The standard's is a bit string with `r` in the
+low half and `s` in the high half, at a width set by `n`; big endian,
+that is `s || r`, and it is what `Dstu4145Key::sign` returns. A
+certificate under `dstu4145le`, which is what Ukrainian CAs issue,
+stores the same bytes reversed, `r || s` little endian. Bouncy Castle's
+JCA signer writes each half at the width of Java's `toByteArray`, which
+adds a byte when the top bit is set, so its signatures vary in length.
+Verification here splits any even length in half, so it reads all of
+those; signing writes the standard's width.
+
+### The optimal normal basis is not here
+
+**Status: accepted.** The standard also defines five curves over an
+optimal normal basis, which older certificates use. Their names are not
+in the catalogue at all rather than aliased to the polynomial-basis
+curves of the same degree, which are different curves.
+
+---
+
+## 7zzt. Ukrainian key containers
+
+IIT's `Key-6.dat`, PBES2 under GOST 28147 CFB and HMAC-GOST 34.311, and
+the PKCS#12 and JKS stores the CAs issue (`x509::ua_key`,
+`examples/products/keystore`). The witness is dstu-engine's keylib,
+which read every container in `tests/keys/ua/` and
+`examples/products/fixtures/keystore-ua/`; the files from dstu-engine and
+jkurwa are what IIT's and the CAs' software wrote. This is an area
+where implementations differ, and the sections below are where.
+
+### Nobody else checks the Key-6.dat MAC
+
+**Status: mitigated.** A `Key-6.dat` carries a four-byte GOST MAC of
+the plain key, and neither keylib nor the dstucrypt tools read it: a
+wrong password gives them noise in the shape of a key, refused or not
+by whatever parses it next. Here the MAC is checked first, so a wrong
+password is refused by name. dstu-engine's test file has a correct one,
+so the files the IIT software writes are not refused for it.
+
+### The password, in four readings
+
+**Status: accepted.** keylib passes the password's bytes as given, UTF-8
+for any modern caller, and OpenSSL's HMAC hashes one longer than GOST
+34.311's 32-byte block first, as HMAC requires; that is what is done
+here, and `ours-m431-*-long` pins it at 48 bytes. gost89, which jkurwa
+builds on, differs twice: its PBKDF2 XORs the password into a 32-byte
+pad and drops the rest, and a password given as a JavaScript string is
+read as Latin-1, a byte per character, so Cyrillic loses its high byte.
+A container gost89 sealed under a long or non-Latin-1 password opens
+here only if that password, cut or narrowed the same way, is given.
+
+The empty password is a third difference. `Key-6.dat`'s key starts as
+GOST 34.311 of the password, and of the empty message there are two
+readings (7zzo); keylib takes the one `gost34311` takes here, and
+`ours-m163-key6-empty` pins that. Bouncy Castle and gost89 take the
+other, so an empty-password `Key-6.dat` from them does not open here.
+PBES2 never hashes the empty message - HMAC pads the key - so its empty
+password is the same everywhere.
+
+PKCS#12's MAC turns the password into a BMPString with a trailing NUL,
+under its own KDF with `v` of 32 for GOST 34.311 (7zzo); that agrees
+with OpenSSL under dstu-engine.
+
+### d above the order
+
+**Status: accepted.** jkurwa's `KeyE54B.cer`, as some CA software wrote
+it, stores a private key larger than the group order. keylib keeps it
+as it is; here it is reduced mod `n`, which signs and agrees the same,
+and the key identifier, from the public point, is the same either way.
+
+### The second key is in the first one's attributes, big endian
+
+**Status: mitigated.** IIT's software puts the key-agreement key in
+attributes on its own arc: its `d` as a BIT STRING whose bits run from
+the least significant, and its curve big endian whatever the first
+key's byte order. Read in the wrong order it is a different, valid key.
+The identifiers in the attributes are checked against the keys read, so
+a wrong order is refused rather than returned. The pentanomial's three
+exponents appear in either order and are sorted.
+
+### PrivatBank's JKS files bend the format twice
+
+**Status: mitigated.** Their certificates are of type `X509` where Java
+writes `X.509`, and the key inside the JKS protector is padded with
+zeros to whole blocks. The protector's SHA-1 check covers the padding,
+so it is dropped there; PKCS#12 and JCEKS keys must still be exactly
+one PrivateKeyInfo, because there trailing bytes are what a wrong
+password leaves.
+
+### keylib's own gaps
+
+**Status: accepted.** Three things keylib does not read, so the checks
+went around them. Its JKS reader handles a trusted
+certificate entry without skipping the alias and date before it, so any
+JKS with one is refused; the example's JKS output was checked with key
+entries only. And dstu-engine's GOST 28147 CFB does not compute the
+first keystream block when OpenSSL's PBE code sets the key after the IV,
+so a payload shorter than one block decrypts wrongly - which an empty
+certificate safe, two bytes encrypted, is. The example leaves empty
+safes out, as OpenSSL's `PKCS12_create` does, so a store of keys alone
+reads there. The same cipher resets its S-box to the default whenever
+it is keyed, so a DKE in the PBES2 parameters other than the default is
+ignored there; gost89 honours it, and so does this library. No
+container under another DKE was to hand, so that path has a unit test
+(`test_gost_cfb_takes_the_dke_from_its_parameters`) and no witness.
 
 ---
 
