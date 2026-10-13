@@ -3689,7 +3689,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.4.0"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.5.0"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and
