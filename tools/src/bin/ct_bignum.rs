@@ -359,6 +359,19 @@ fn run(case: &str) {
             publish(&s);
         }
 
+        "dstu4145_sign_onb" => {
+            // The same on a curve in a normal basis: h·x(e·G) goes to the
+            // normal basis, under masks, before r is cut from it.
+            let curve = dstu4145::Curve::by_name("dstu4145-m233-onb").unwrap();
+            let private = secret_hex(
+                "0d3f7b21c5d80a46f2e19b3c7d5a8064e1f2c3b4a5968778695a4b3c");
+            let nonce = secret_bytes32(
+                "05a6f2e19b3c7d5a8064e1f2c3b4a5968778695a4b3c2d1e0f9a0d3f");
+            let (r, s) = curve.sign_with_nonce(&private, &[0x5au8; 32], &nonce).unwrap();
+            publish(&r);
+            publish(&s);
+        }
+
         "dstu4145_dh" => {
             // The private key multiplies the peer's point, with the
             // cofactor folded into the scalar modulo n. The peer's key is
@@ -636,6 +649,91 @@ fn run(case: &str) {
             publish_bytes(&data);
         }
 
+        "khazad_blocks" => {
+            // The key schedule and both directions, secret key and data:
+            // the S-box is computed from its mini boxes by masked scans,
+            // and theta doubles with a mask.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let mut khazad = allcrypt::block_ciphers::khazad::Khazad::new(&key[..16]).unwrap();
+            let mut out = Vec::new();
+            khazad.block_encrypt(&data[..8], &mut out);
+            let mut back = Vec::new();
+            khazad.block_decrypt(&out, &mut back);
+            publish_bytes(&out);
+            publish_bytes(&back);
+        }
+
+        "anubis_blocks" => {
+            // The key schedule at the longest key and one block each way,
+            // secret key and data: Khazad's S-box, multiplications by
+            // constants through masked doubling.
+            let key = secret_bytes32(AES_XTS_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let mut anubis = allcrypt::block_ciphers::anubis::Anubis::new(&key[..40]).unwrap();
+            let mut out = Vec::new();
+            anubis.block_encrypt(&data[..16], &mut out);
+            let mut back = Vec::new();
+            anubis.block_decrypt(&out, &mut back);
+            publish_bytes(&out);
+            publish_bytes(&back);
+        }
+
+        "noekeon_blocks" => {
+            // Both key modes - the indirect one encrypts the key itself -
+            // and a block each way, secret key and data.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            use allcrypt::block_ciphers::noekeon::Noekeon;
+            for mut noekeon in [Noekeon::new(&key[..16]).unwrap(),
+                                Noekeon::new_indirect(&key[16..]).unwrap()] {
+                let mut out = Vec::new();
+                noekeon.block_encrypt(&data[..16], &mut out);
+                let mut back = Vec::new();
+                noekeon.block_decrypt(&out, &mut back);
+                publish_bytes(&out);
+                publish_bytes(&back);
+            }
+        }
+
+        "shacal2_blocks" => {
+            // The key schedule at a 64-byte key and a block each way,
+            // secret key and data: SHA-256's round, words only.
+            let key = secret_bytes32(AES_XTS_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let mut shacal = allcrypt::block_ciphers::shacal2::Shacal2::new(&key[..64]).unwrap();
+            let mut out = Vec::new();
+            shacal.block_encrypt(&data[..32], &mut out);
+            let mut back = Vec::new();
+            shacal.block_decrypt(&out, &mut back);
+            publish_bytes(&out);
+            publish_bytes(&back);
+        }
+
+        "strumok_keystream" => {
+            // A 64-byte key, a public IV, and 300 bytes of keystream:
+            // the initialisation and whole and partial words.
+            let key = secret_bytes32(AES_XTS_KEY);
+            let mut strumok =
+                allcrypt::stream_ciphers::strumok::Strumok::new(&key[..64], &[0x5a; 32]).unwrap();
+            let mut z = vec![0u8; 300];
+            strumok.apply_keystream(&mut z);
+            publish_bytes(&z);
+        }
+
+        "dstu9041_public_key" => {
+            // e·P on both curves under a secret e: the range check by
+            // constant-time comparison, the fixed window with its masked
+            // table reads, the inversion by a public exponent.
+            let key = secret_bytes32(AES_XTS_KEY);
+            for (name, width) in [("dstu9041-e256-1", 32), ("dstu9041-e512-1", 64)] {
+                let mut e = key[..width].to_vec();
+                e[0] &= 0x1f;
+                let curve = allcrypt::ec::dstu9041::Curve::by_name(name).unwrap();
+                publish_bytes(&curve.public_key(&e).unwrap());
+            }
+        }
+
         "aes_block_table" => {
             let key = secret_bytes32(AES_KEY);
             let data = secret_bytes32(AES_DATA);
@@ -899,6 +997,9 @@ fn classify_ml_kem_dk(set: &ml_kem::Parameters, dk: &[u8]) {
 /// on every secret in the program regardless of the operation under test.
 fn publish(value: &BigUint) {
     declassify(value.limbs());
+    // The value's length too: a normalised `BigUint`'s limb count is
+    // computed from its value, and printing it reads the count.
+    declassify(std::slice::from_ref(value));
     let text = value.to_hex();
     println!("{}", &text[..text.len().min(16)]);
 }
@@ -961,6 +1062,7 @@ const CASES: &[&str] = &[
     "ecdsa_sign",
     "gost_sign",
     "dstu4145_sign",
+    "dstu4145_sign_onb",
     "dstu4145_dh",
     "eddsa_sign",
     "ed448_sign",
@@ -987,6 +1089,12 @@ const CASES: &[&str] = &[
     "to_bytes",
     "aes_blocks",
     "aes_block_table",
+    "khazad_blocks",
+    "anubis_blocks",
+    "noekeon_blocks",
+    "shacal2_blocks",
+    "strumok_keystream",
+    "dstu9041_public_key",
     "aes_gcm_seal",
     "aes_xts",
     "aes_ctr_cbc_decrypt",

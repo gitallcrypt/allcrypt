@@ -1,6 +1,8 @@
 """DSTU 4145-2002 through Python, against the named-curve rows of
 `vectors/dstu4145.vec` (Bouncy Castle 1.77 and cryptonite, written by
-`scripts/make_dstu4145_vectors.py`), and the facade's encodings and
+`scripts/make_dstu4145_vectors.py`) and of `vectors/dstu4145_onb.vec`
+(the curves in a normal basis, cryptonite and li0ard, written by
+`scripts/make_dstu4145_onb_vectors.py`), and the facade's encodings and
 refusals."""
 
 import pathlib
@@ -9,14 +11,21 @@ import pytest
 
 import allcrypt
 
-LINES = [line for line in (pathlib.Path(__file__).resolve().parent.parent / "vectors"
-                           / "dstu4145.vec").read_text().splitlines()
-         if line and not line.startswith("#")]
+VECTORS = pathlib.Path(__file__).resolve().parent.parent / "vectors"
 
 
-def rows(kind):
+def lines(name):
+    return [line for line in (VECTORS / name).read_text().splitlines()
+            if line and not line.startswith("#")]
+
+
+LINES = lines("dstu4145.vec")
+ONB_LINES = lines("dstu4145_onb.vec")
+
+
+def rows(kind, source=None):
     out = []
-    for line in LINES:
+    for line in source or LINES:
         if line.split()[0] == kind:
             row = dict(field.split("=", 1) for field in line.split()[1:])
             if row["curve"].startswith("dstu4145-"):
@@ -33,9 +42,41 @@ def width(curve):
     return len(allcrypt.Dstu4145Key.from_private(curve, b"\x01").private_bytes())
 
 
-def test_the_curves_are_the_standards_ten():
+def test_the_curves_are_the_standards_fifteen():
     assert allcrypt.dstu4145_curves_available == [
-        f"dstu4145-m{m}" for m in (163, 167, 173, 179, 191, 233, 257, 307, 367, 431)]
+        f"dstu4145-m{m}" for m in (163, 167, 173, 179, 191, 233, 257, 307, 367, 431)] + [
+        f"dstu4145-m{m}-onb" for m in (173, 179, 191, 233, 431)]
+
+
+def test_the_normal_basis_curves():
+    """Every row of the normal-basis file through the key classes: the
+    encodings are in the normal basis, and nothing else changes."""
+    for row in rows("pub", ONB_LINES):
+        key = allcrypt.Dstu4145Key.from_private(row["curve"], unhex(row["d"]))
+        assert key.public_key().public_bytes() == unhex(row["qx"]) + unhex(row["qy"])
+    for row in rows("compress", ONB_LINES):
+        key = allcrypt.Dstu4145PublicKey(row["curve"], unhex(row["packed"]))
+        assert key.public_bytes() == unhex(row["qx"]) + unhex(row["qy"])
+        assert key.public_bytes(compressed=True) == unhex(row["packed"])
+    signs = rows("sign", ONB_LINES)
+    assert len(signs) == 20
+    for row in signs:
+        key = allcrypt.Dstu4145Key.from_private(row["curve"], unhex(row["d"]))
+        n = width(row["curve"])
+        expected = int(row["s"], 16).to_bytes(n, "big") + int(row["r"], 16).to_bytes(n, "big")
+        assert key.sign_with_nonce(unhex(row["hash"]), unhex(row["e"])) == expected
+    for row in rows("verify", ONB_LINES):
+        key = allcrypt.Dstu4145PublicKey(row["curve"], unhex(row["qx"]) + unhex(row["qy"]))
+        n = width(row["curve"])
+        signature = int(row["s"], 16).to_bytes(n, "big") + int(row["r"], 16).to_bytes(n, "big")
+        assert key.verify(unhex(row["hash"]), signature) == (row["ok"] == "1")
+    for row in rows("dh", ONB_LINES):
+        key = allcrypt.Dstu4145Key.from_private(row["curve"], unhex(row["d"]))
+        peer = allcrypt.Dstu4145PublicKey(row["curve"], unhex(row["qx"]) + unhex(row["qy"]))
+        assert key.shared_point(peer, cofactor=row["cofactor"] == "1") == \
+            unhex(row["zx"]) + unhex(row["zy"])
+    with pytest.raises(ValueError):
+        allcrypt.Dstu4145Key.from_private("dstu4145-m173-onb", b"\x07").private_key_info()
 
 
 def test_public_keys_and_compression():

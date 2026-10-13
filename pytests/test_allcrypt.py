@@ -530,19 +530,23 @@ def test_catalogue_entries_all_work():
             except allcrypt.CryptoError:
                 pass
         assert sizes, f"{name} constructs at no key length"
-        # Rijndael and Kalyna are the families named by block size;
-        # every other cipher is a 64 or 128 bit block.
+        # Rijndael and Kalyna are the families named by block size, and
+        # SHACAL-2's block is SHA-256's 256 bit state; every other cipher
+        # is a 64 or 128 bit block.
         if name.startswith(("rijndael-", "kalyna-")):
             allowed = {int(name.split("-")[1]) // 8}
+        elif name == "shacal2":
+            allowed = {32}
         else:
             allowed = {8, 16}
         assert set(sizes) <= allowed, f"{name} reports {set(sizes)}"
     # The nonce each stream cipher takes, which they do not agree on:
     # RC4 has none, Salsa20 wants exactly 8 bytes, ChaCha 12, XChaCha20 and
-    # XSalsa20 24. Spelled out rather than assumed, so a cipher with a different
-    # nonce fails here loudly instead of being handed the wrong length.
+    # XSalsa20 24, Strumok's IV 32. Spelled out rather than assumed, so a cipher
+    # with a different nonce fails here loudly instead of being handed the
+    # wrong length.
     nonce_length = {"rc4": None, "zipcrypto": None, "salsa20": 8, "salsa12": 8, "salsa8": 8,
-                    "xchacha20": 24, "xsalsa20": 24}
+                    "strumok": 32, "xchacha20": 24, "xsalsa20": 24}
     for name in allcrypt.stream_ciphers_available:
         size = nonce_length.get(name, 12)
         nonce = None if size is None else bytes(size)

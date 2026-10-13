@@ -169,14 +169,21 @@ oids! {
 
     // Ukraine's arc (1.2.804.2.1.1.1): DSTU GOST 28147's CFB as PBES2
     // names it, HMAC over GOST 34.311-95 as a PBKDF2 PRF, the hash
-    // itself, DSTU 4145-2002's keys in their two byte orders, and the
-    // arc of its ten named curves, whose number is the last arc.
+    // itself, DSTU 4145-2002's keys in their two byte orders (each also
+    // its signature algorithm over GOST 34.311-95), and the arc of its
+    // ten named curves, whose number is the last arc.
     DSTU_GOST28147_CFB    = "1.2.804.2.1.1.1.1.1.1.3";
     HMAC_GOST34311        = "1.2.804.2.1.1.1.1.1.2";
     GOST34311             = "1.2.804.2.1.1.1.1.2.1";
     DSTU4145_LE           = "1.2.804.2.1.1.1.1.3.1.1";
     DSTU4145_BE           = "1.2.804.2.1.1.1.1.3.1.1.1.1";
     DSTU4145_NAMED_CURVES = "1.2.804.2.1.1.1.1.3.1.1.2";
+    // DSTU 4145-2002 signatures over Kupyna (DSTU 7564:2014), each in
+    // the polynomial basis: the certificate signature algorithms of the
+    // accredited centres since Kupyna replaced GOST 34.311-95.
+    DSTU4145_KUPYNA256    = "1.2.804.2.1.1.1.1.3.6.1.1";
+    DSTU4145_KUPYNA384    = "1.2.804.2.1.1.1.1.3.6.2.1";
+    DSTU4145_KUPYNA512    = "1.2.804.2.1.1.1.1.3.6.3.1";
 
     // IIT's private arc (1.3.6.1.4.1.19398): its Key-6.dat container,
     // and the attributes its private keys carry - the key's identifier,

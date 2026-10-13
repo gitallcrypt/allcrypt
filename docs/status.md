@@ -48,12 +48,17 @@ against that software's own tools.
 |3DES (EDE2, EDE3)|✓|✓|
 |GOST 28147-89|✓|✓|
 |GOST 28147-89 under the DSTU 4145 default DKE (DSTU GOST 28147:2009, `dstu4145-default-dke`)|✓|Bouncy Castle 1.77, gost89 and cryptonite agree on ECB, CFB and the MAC, and on the table itself; counter mode Bouncy Castle's and cryptonite's; `vectors/dstu_gost.vec`|
+|GOST 28147-89 under Ukraine's other nine tables, DKE No. 1 from supplements 2 to 10 to instruction 114 (`dstu-dke-2` to `dstu-dke-10`; `dstu-dke-1` is the default)|✓|cryptonite and li0ard agree on the ten tables; under each of the nine, Bouncy Castle 1.77, gost89 and cryptonite agree on ECB, CFB and the MAC, Bouncy Castle and cryptonite on the counter mode; `vectors/dstu_dke.vec`|
 |IDEA|✓|✓|
 |Kalyna (DSTU 7624:2014), all five variants (`kalyna-128`, `kalyna-256`, `kalyna-512`)|✓|the standard's ten examples; the authors' reference implementation and Bouncy Castle 1.77 agree on 75 more inputs and on the S-boxes; `vectors/kalyna.vec`|
 |Kalyna's DSTU 7624 GCM, GMAC, CCM and XTS (`kalyna-128-gcm` to `kalyna-512-ccm`, `kalyna_gmac`, `kalyna_ccm_*`, `kalyna_xts_*`)|✓|the standard's examples, which Bouncy Castle 1.77 and cryptonite both reproduce, and six more with short blocks from cryptonite's tests; 357 rows on which the two agree, all whole blocks; then each alone: Bouncy Castle for GCM and GMAC with a short last block, which the two pad differently, and CCM past 255 bytes; cryptonite for CCM with short or empty parts and XTS's ciphertext stealing; `vectors/kalyna_aead.vec`|
 |Kalyna's DSTU 7624 counter mode (`ctr` on a `kalyna-` name), MAC and key wrap|✓|the standard's examples, which Bouncy Castle 1.77 and cryptonite both reproduce; 165 rows on which they agree, and each alone where the other stops (short MACs, padded and long wraps); `vectors/kalyna_modes.vec`|
 |Kuznyechik (GOST R 34.12-2015)|✓|✓|
 |Magma (GOST R 34.12-2015)|✓|✓|
+|Anubis (NESSIE submission, tweaked), constant time|✓|libtomcrypt 1.18.2, the Linux kernel's `crypto/anubis.c` and the designers' reference code agree on 2,090 blocks at all seven key lengths, 16 to 40 bytes, and 14 iterated runs: the published tests libtomcrypt and the kernel carry, every single-bit key at every length; `vectors/anubis.vec`|
+|SHACAL-2 (NESSIE selection), constant time|✓|Crypto++ 8.9.0 and Bouncy Castle 1.77 agree on 1,367 blocks and 10 iterated runs at every key length from 16 to 64 bytes, among them the NESSIE submission's 1,024 vectors and Botan's tests; `vectors/shacal2.vec`|
+|Noekeon (NESSIE submission), direct and indirect key modes, constant time|✓|direct: libtomcrypt 1.18.2 and Bouncy Castle 1.77 agree on 584 blocks and 16 iterated runs, with libtomcrypt's published tests; indirect: Botan 1.10.17 and Bouncy Castle under the mode's definition agree on 587, with Botan's from the NESSIE reference code; `vectors/noekeon.vec`|
+|Khazad (NESSIE finalist, tweaked), constant time|✓|libtomcrypt 1.18.2 and the Linux kernel's `crypto/khazad.c` agree on 523 blocks and 17 iterated runs: the published tests both carry, every single-bit key and block, every byte repeated; the S-box built from its mini boxes; `vectors/khazad.vec`|
 |MARS (AES finalist, tweaked key schedule)|✓|Crypto++ 8.9.0 and Botan 1.10.17 agree on 682 blocks over all eleven key lengths, 16 to 56 bytes, and on Monte Carlo tests of four million blocks at each length and direction; Crypto++'s published vectors and Monte Carlo tests; the S-box derived from its SHA-1 construction; `vectors/mars.vec`|
 |RC2 (RFC 2268)|✓|✓|
 |RC5 (RFC 2040)|✓|spec reference; RFC 2040's vectors|
@@ -139,6 +144,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |RC4|✓|spec reference; RFC 6229's vectors|
 |Salsa20 (20, 12 and 8 rounds)|✓|spec reference|
 |XSalsa20 and HSalsa20 ("Extending the Salsa20 nonce")|✓|NaCl's own values; libsodium 1.0.18 and golang.org/x/crypto, `vectors/nacl.vec`|
+|Strumok (DSTU 8845:2019), 256 and 512-bit keys, `strumok`|✓|the standard's eight Annex D examples, UAPKI's self-test and the conformance letter's two; UAPKI's `dstu8845.c` and uacrypt's `hazmat/strumok.rs` agree on every single-bit key and IV at both key lengths, 30 random keystreams and two of 1 MiB; `vectors/strumok.vec`. Not constant time: table lookups, as in the standard|
 |ZipCrypto (PKWARE traditional ZIP encryption)|✓|✓|
 |WEP (RC4 with the per-frame IV; IEEE 802.11)|✓|spec reference|
 |TKIP per-packet key mixing and frame encryption (WPA; IEEE 802.11)|✓|spec reference; frames against python-cryptography's RC4 and zlib's CRC-32|
@@ -156,6 +162,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |CBC-MAC (ISO/IEC 9797-1 algorithm 1; DES-MAC, X9.9)|✓|✓|
 |Poly1305|✓|✓|
 |UMAC (RFC 4418), 32 to 128 bit tags|✓|✓|
+|SipHash at any round counts, 64 and 128 bit; HalfSipHash, 32 and 64 bit|✓|the designers' 256 vectors (`rfcs/siphash-vectors.h`); their reference, OpenSSL 3.5 and Bouncy Castle 1.77 agree on SipHash at 1-3, 2-4, 3-5 and 4-8 over 46 messages and two keys; HalfSipHash at the same counts from the reference alone: `vectors/siphash.vec`|
 |Michael (TKIP's MIC; IEEE 802.11)|✓|spec reference; the Linux kernel's vectors|
 |ACPKM re-keying, CTR-ACPKM (RFC 8645)|✓|✓|
 
@@ -205,7 +212,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |SHA3-224/256/384/512 (FIPS 202)|✓|✓|
 |SHAKE128, SHAKE256 (FIPS 202)|✓|✓|
 |Keccak-224/256/384/512 (pre-standard)|✓|spec reference; Ethereum's function selectors|
-|BLAKE2b, BLAKE2s (RFC 7693), keyed, salted and personalised|✓|✓; the parameter block against hashlib|
+|BLAKE2b, BLAKE2s (RFC 7693), keyed, salted and personalised, and the named lengths BLAKE2b-128, -160, -256, -384 and BLAKE2s-128, -160|✓|✓; the parameter block against hashlib; the named lengths against hashlib, OpenSSL 3.5 and, for BLAKE2b, b2sum, `vectors/blake2_named.vec`|
 |RIPEMD-160|✓|✓|
 |SM3 (GB/T 32905-2016)|✓|✓|
 |Kupyna's MAC (DSTU 7564:2014), 256, 384 and 512 bits, `kupyna_mac`|✓|the standard's three examples and Bouncy Castle's three more, up to 1024 bytes; Bouncy Castle 1.77, cryptonite and the authors' reference implementation agree on 27 inputs, the first two on 108 more over other key lengths and messages of several blocks, and Bouncy Castle alone on keys past one block; `vectors/kupyna_mac.vec`|
@@ -214,13 +221,28 @@ for a tag. Key wrap authenticates without one. Both are in
 |Streebog-256 and -512 (GOST R 34.11-2012)|✓|✓|
 |GOST R 34.11-94 (RFC 5831, RFC 4357 parameters)|✓|✓|
 |GOST 34.311-95 (Ukraine; GOST R 34.11-94 under the DSTU 4145 default DKE)|✓|Bouncy Castle 1.77, gost89 and cryptonite agree on 14 messages, `vectors/dstu_gost.vec`; the empty message is cryptonite's and gost-engine's reading, `vectors/gost94_readings.vec`|
+|GOST 34.311-95 under the other nine tables, `gost34311_dke2` to `gost34311_dke10`|✓|Bouncy Castle 1.77, gost89 and cryptonite agree on three messages under each, `vectors/dstu_dke.vec`|
 |GOST R 34.11-94 and GOST 34.311-95 with the other reading of the empty message (`_bc` names)|✓|Bouncy Castle 1.77 and gost89 under all three S-boxes, the empty message included, with cryptonite on every message but the empty one, `vectors/gost94_readings.vec`; see [pitfalls 7zzo](pitfalls.md#7zzo-ukraines-gost)|
 |RIPEMD-128, RIPEMD-256, RIPEMD-320|✓|libtomcrypt, Bouncy Castle, Crypto++ and RustCrypto (and GNU Crypto for RIPEMD-128), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |HAS-160 (TTA.KO-12.0011/R2)|✓|RHash, Botan 1.10 and GNU Crypto, agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |Whirlpool-0, Whirlpool-T|✓|sphlib and GNU Crypto (and Crypto++ 5.2.1 for Whirlpool-T), agreeing on 317 inputs: `vectors/legacy_hashes.vec`|
 |LM hash, NT hash|✓|see [key derivation](#key-derivation)|
 |MD6 (unkeyed, default mode, whole-byte sizes to 512 bits)|✓|the MIT reference implementation and Jacksum's Java port of it, agreeing on 317 inputs at nine sizes: `vectors/legacy_hashes.vec`. The port is a translation of the reference, not a second design|
-|ssdeep / CTPH fuzzy hashing|||
+|Tiger at 128, 160 and 192 bits after three or more passes, `tiger` and PHP's `tiger128_3` to `tiger192_4`; Tiger2|✓|PHP, sphlib, RHash and Botan 1.10.17 agree on `tiger` over 30 messages; PHP and Botan on PHP's five other lengths and pass counts; sphlib and RHash on `tiger2`; Botan alone at five and six passes: `vectors/tiger_haval_snefru.vec`. mhash writes Tiger's words the other way round; see [pitfalls 7zzzd](pitfalls.md#7zzzd-tiger-haval-and-snefru)|
+|HAVAL, all fifteen: `haval128_3` to `haval256_5`|✓|PHP, sphlib and mhash agree on 30 messages at each: `vectors/tiger_haval_snefru.vec`|
+|Snefru-128 and Snefru-256, eight passes|✓|RHash and mhash, and PHP on Snefru-256, agree on 30 messages: `vectors/tiger_haval_snefru.vec`. The S-boxes come from RHash, PHP and mhash, which agree on every word|
+|BLAKE-224, -256, -384 and -512, the SHA-3 finalist as finally submitted (not BLAKE2); `blake224` to `blake512`|✓|sphlib and dchest's Go, and the BLAKE team's reference at 256 and 512 bits, agree on 34 messages; sphlib and the reference on the counter past 32 bits, at lengths no message reaches, through a context told it has taken them: `vectors/sha3_finalists.vec`|
+|Grøstl-224, -256, -384 and -512, the SHA-3 finalist as finally submitted (the tweaked round-3 version); `groestl224` to `groestl512`|✓|sphlib and the Grøstl team's 32 bit code agree on 34 messages: `vectors/sha3_finalists.vec`|
+|JH-224, -256, -384 and -512, the SHA-3 finalist as finally submitted (42 rounds); `jh224` to `jh512`|✓|sphlib and the designer's bitsliced code (as SUPERCOP carries it, with the starting values for 224 and 384 bits derived as the specification says and checked against the code's own for 256 and 512) agree on 34 messages: `vectors/sha3_finalists.vec`|
+|Skein 1.3, the SHA-3 finalist as finally submitted, on Threefish-256, -512 and -1024 at any whole number of bytes out; `skein256_128` to `skein1024_1024` as the submission names its sizes, `skeinSTATE_BITS` for any other|✓|the Skein team's code and Bouncy Castle 1.77 agree on 34 messages at the 13 named sizes and at three more - one byte, and outputs of several blocks - and sphlib on Skein-512 from 224 bits: `vectors/sha3_finalists.vec`|
+|BLAKE3: hash, keyed and key derivation modes, any length of output from any offset; `blake3`|✓|the BLAKE3 team's 35 test vectors in all three modes (`rfcs/blake3-test-vectors.json`); their C and reference implementations and Bouncy Castle 1.77 agree on 504 outputs over 28 messages to 129 KB, around every chunk and tree boundary; offsets past 2^32 output blocks from the C implementation alone: `vectors/blake3.vec`|
+|LSH (KS X 3262), LSH-256 and LSH-512 at any whole number of bytes out; `lsh256_224`, `lsh256_256`, `lsh512_224` to `lsh512_512` as the standard names them, `lshWIDTH_BITS` for any other|✓|KISA's reference implementation and Crypto++ 8.9.0 agree on 23 messages to 1000 bytes at the six named sizes and five others, and RyuaNerin's go-krypto at the six: `vectors/lsh.vec`. The step constants come from KISA's reference and Crypto++, which agree on every one|
+|ssdeep, digests (libfuzzy 2.14.1's streaming form) and scores|✓|libfuzzy and ppdeep agree on 56 digests, among them inputs to 3 MB and every edge of the block size; libfuzzy's scores, which ppdeep's unit-cost edit distance matches on 139 of 184: `vectors/ssdeep.vec`|
+|CTPH, as ctph.js 0.0.5 and CyberChef compute it, and its similarity|✓|ctph.js, which defines it and has no second implementation, on the same 56 inputs and 175 comparisons: `vectors/ssdeep.vec`|
+|CRC-32 (IEEE 802.3, zlib's) and CRC-32C (Castagnoli), as numbers that continue across calls and by name as `crc32` and `crc32c`, outside the hash catalogue|✓|PHP, Go, java.util.zip, and zlib on CRC-32 and the SSE 4.2 instruction on CRC-32C, agree on 31 messages to 100 KB, among them the CRC catalogue's check input: `vectors/checksums.vec`|
+|Adler-32 (RFC 1950, zlib's), as a number that continues across calls and by name as `adler32`, outside the hash catalogue|✓|PHP, Go, java.util.zip and zlib agree on 31 messages, among them runs of 0xff either side of the 5552 bytes its sums can take between reductions and one of 100 KB: `vectors/checksums.vec`|
+|Fletcher-16, -32 and -64, on bytes and on 16 and 32 bit little endian words with the last padded with zeros; `fletcher16`, `fletcher32`, `fletcher64`, outside the hash catalogue|✓|the C of the R package fletcher, hashlib-additional and the fletcher crate agree on 31 messages, among them every length modulo the word and a run of 100 KB of 0xff: `vectors/checksums.vec`|
+|FNV-0, FNV-1 and FNV-1a (RFC 9923) at 32, 64, 128, 256, 512 and 1024 bits; `fnv0_32` to `fnv1a_1024`, and PHP's `fnv132` to `fnv1a64`, outside the hash catalogue|✓|fnv-es and fnv-plus agree on FNV-1 and FNV-1a over 31 messages at every size, with PHP and Go where they have it and hashlib-additional except at 512 bits; fnv-es and hashlib-additional on FNV-0: `vectors/checksums.vec`. The primes are found by the rule that defines them, and Landon Curt Noll's C, libfnv and fnv-es carry the same|
 
 ## Public key
 
@@ -255,7 +277,9 @@ for a tag. Key wrap authenticates without one. Both are in
 |DSTU 4145-2002 signatures, the ten named curves and curves given whole|✓|the standard's worked example; Bouncy Castle 1.77 signs with a given `e` and it and cryptonite verify, over 32-byte hashes on all ten curves and four more, `vectors/dstu4145.vec`; other hash lengths Bouncy Castle's alone|
 |DSTU 4145-2002 public keys and point compression|✓|Bouncy Castle 1.77 and cryptonite agree, both directions, `vectors/dstu4145.vec`|
 |DSTU 4145-2002 Diffie-Hellman, with and without the cofactor|✓|cryptonite's whole point, Bouncy Castle's x, `vectors/dstu4145.vec`|
-|DSTU 4145-2002 key containers (`dstu4145_keys_open`, `dstu4145_key6`)|✓|under "Certificates and keys" below|
+|DSTU 4145-2002 on the five curves in an optimal normal basis (`dstu4145-m173-onb` to `dstu4145-m431-onb`): keys, compression, signatures, Diffie-Hellman|✓|parameters from cryptonite and li0ard, which agree; on every curve cryptonite and li0ard agree on six public keys and their compressions, li0ard signs with a given `e` and both verify (li0ard alone for a hash that is not 32 bytes), both refuse changed signatures, and cryptonite's shared point has li0ard's x; `vectors/dstu4145_onb.vec`. Not in key containers, whose parameters are in a polynomial basis|
+|DSTU 4145-2002 key containers (`dstu4145_keys_open`, `dstu4145_key6`) and certificates|✓|under "Certificates and keys" below|
+|DSTU 9041:2020 encryption over twisted Edwards curves, E256/1 and E512/1 (`dstu9041-e256-1`, `dstu9041-e512-1`)|✓|the standard's worked examples Г.1 and Г.3; uacrypt and li0ard agree on 24 public keys and 86 ciphertexts, every whole number of bytes on both curves, and each decrypts the other's; 14 messages counted in bits, uacrypt's ciphertexts and li0ard's decryptions; 20 ciphertexts both refuse; curve parameters from both, `vectors/dstu9041.vec`. The 384 and 768-bit curves are not here|
 |SM2 signatures (GB/T 32918.2)|✓|✓|
 |SM2 public key encryption (GB/T 32918.4)|✓|✓|
 |SM2 key exchange (GB/T 32918.3)|||
@@ -355,6 +379,7 @@ do. [post-quantum.md](post-quantum.md) has the detail.
 |Private keys: PKCS#8, SEC1, PKCS#1; X25519 and X448 (RFC 8410)|✓|✓|
 |Encrypted private keys (PBES2, PBES1, PKCS#12 PBE), reading and writing|✓|✓|
 |Java's key protectors (JKS, JCEKS)|✓|keytool's files|
+|DSTU 4145-2002 certificates: keys in either byte order with the curve named or given whole and the DKE, signatures over GOST 34.311-95 under the issuer's DKE and over Kupyna-256, -384 and -512, reading, verifying and issuing|✓|three root certificates of Ukraine's central certifying authority (GOST 34.311-95, under the default DKE and under its own; Kupyna-256); dstu-engine and li0ard verify ours on all ten curves and in chains, dstu-engine reads every key, `vectors/dstu4145_x509.vec`|
 |Ukrainian private keys and containers: DSTU 4145 PKCS#8 with the second key in the attributes, IIT's `Key-6.dat`, PBES2 under GOST 28147 CFB and HMAC-GOST 34.311, reading and writing|✓|dstu-engine's keylib reads the same keys from IIT's and jkurwa's files and from ours, on all ten curves; the certificates' subject key identifiers; `vectors/ua_keys.vec`|
 |The operating system's trust store|✓|✓|
 

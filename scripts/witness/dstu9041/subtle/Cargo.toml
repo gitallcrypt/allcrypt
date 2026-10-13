@@ -1,0 +1,18 @@
+# subtle 2.6.1 (dalek-cryptography/subtle), its one source file fetched
+# by build.sh to ../../src/subtle/lib.rs. Its own manifest's dev-dependencies
+# would need the registry; nothing else in it is needed.
+[package]
+name = "subtle"
+version = "2.6.1"
+edition = "2018"
+
+[lib]
+path = "../../src/subtle/lib.rs"
+
+[features]
+default = ["std", "i128"]
+std = []
+i128 = []
+const-generics = []
+core_hint_black_box = []
+nightly = []

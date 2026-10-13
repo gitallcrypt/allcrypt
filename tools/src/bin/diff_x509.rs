@@ -66,6 +66,9 @@ fn emit(label: &str, signer: &str, der: &[u8]) {
         // such a certificate. `x509::verify`'s own tests cover it, with
         // certificates this library signs.
         PublicKey::Gost { curve, .. } => format!("gost-{}", curve),
+        // Nor a DSTU 4145 one, for the same reason;
+        // `tests/test_dstu4145_x509.rs` reads real ones.
+        PublicKey::Dstu4145 { .. } => "dstu4145".to_string(),
         // A curve we do not implement. The corpus cannot contain one, since
         // the comparison needs both sides to describe the same key - which
         // is exactly why a gap in curve support is invisible here and had to

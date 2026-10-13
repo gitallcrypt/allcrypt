@@ -238,6 +238,10 @@ pub fn verify_signed(signed: &[u8], algorithm: SignatureAlgorithm,
     if algorithm == SignatureAlgorithm::Gost2001 {
         return verify_gost_2001(signed, signature, key, policy);
     }
+    // DSTU 4145 likewise: GOST 34.311-95's S-box is the key's.
+    if let SignatureAlgorithm::Dstu4145(hash) = algorithm {
+        return verify_dstu4145(signed, signature, key, hash);
+    }
 
     // EdDSA next, and for the same reason as GOST: there is no digest
     // to compute. RFC 8032 hashes the message inside the scheme, with a
@@ -506,6 +510,52 @@ fn verify_gost_2001(signed: &[u8], signature: &[u8], key: &PublicKey<'_>,
     }
 }
 
+/// A DSTU 4145-2002 signature on a certificate.
+///
+/// The signature is an OCTET STRING inside the BIT STRING: `s || r`,
+/// each at the width of `n`, big endian under a `dstu4145be` key and
+/// the whole reversed under a `dstu4145le` one - which is `r || s` with
+/// each half little endian. The digest goes to the curve as it comes
+/// out of the hash, which reads it little endian. GOST 34.311-95 runs
+/// under the **issuer's** DKE: the S-box is part of the signer's key.
+fn verify_dstu4145(signed: &[u8], signature: &[u8], key: &PublicKey<'_>,
+                   hash: &'static str) -> Result<(), String> {
+    let PublicKey::Dstu4145 { curve, point, dke, little_endian } = key else {
+        return Err(format!("Issuer's key ({}) cannot verify a DSTU 4145 signature.",
+                           describe_key(key)));
+    };
+    let mut inner = crate::asn1::Reader::new(signature);
+    let mut value = inner.read_octet_string()?.to_vec();
+    inner.finish()?;
+    let width = curve.order().bit_len().div_ceil(8);
+    if value.len() != 2 * width {
+        return Err(format!("A DSTU 4145 signature on this curve is {} bytes, s and r; \
+                            got {}.", 2 * width, value.len()));
+    }
+    if *little_endian {
+        value.reverse();
+    }
+    let (s, r) = value.split_at(width);
+    let digest = dstu4145_digest(hash, dke.as_deref(), signed)?;
+    if curve.verify(point, &digest, &BigUint::from_bytes_be(r), &BigUint::from_bytes_be(s))? {
+        Ok(())
+    } else {
+        Err("Signature does not verify against the issuer's DSTU 4145 key.".to_string())
+    }
+}
+
+/// The digest a DSTU 4145 signature covers: Kupyna by name, or GOST
+/// 34.311-95 under `dke` (the standard's default when there is none).
+pub(crate) fn dstu4145_digest(hash: &str, dke: Option<&[u8]>, data: &[u8])
+                              -> Result<Vec<u8>, String> {
+    use crate::hash_functions::gost94::{Gost94, DSTU_PARAM_SET};
+    match (hash, dke) {
+        ("gost34311", Some(dke)) => Ok(Gost94::with_dke(data, dke)?.digest()),
+        ("gost34311", None) => Ok(Gost94::with_param_set(data, DSTU_PARAM_SET)?.digest()),
+        _ => digest_of(hash, data),
+    }
+}
+
 pub(crate) fn describe_key(key: &PublicKey<'_>) -> String {
     match key {
         PublicKey::Rsa { n, .. } => format!("RSA {} bits", n.bit_len()),
@@ -517,11 +567,21 @@ pub(crate) fn describe_key(key: &PublicKey<'_>) -> String {
         PublicKey::Gost { curve, legacy: true, .. } =>
             format!("GOST R 34.10-2001 {}", curve),
         PublicKey::Gost { curve, .. } => format!("GOST R 34.10-2012 {}", curve),
+        PublicKey::Dstu4145 { curve, .. } => format!("DSTU 4145-2002 {}", dstu4145_curve(curve)),
         PublicKey::UnsupportedCurve { oid, family } =>
             format!("a {} key on unsupported parameter set {}", family, oid),
         PublicKey::Unsupported { algorithm } =>
             format!("unsupported algorithm {}", oids::name_of(algorithm)
                     .unwrap_or("of unknown type")),
+    }
+}
+
+/// A DSTU 4145 curve by its name when it is one of the standard's,
+/// whichever way the certificate gave it.
+pub(crate) fn dstu4145_curve(curve: &crate::ec::dstu4145::Curve) -> String {
+    match curve.matching_named().and_then(|n| crate::ec::dstu4145::NAMES.get(n)) {
+        Some(name) => name.to_string(),
+        None => format!("a custom curve over GF(2^{})", curve.field().degree()),
     }
 }
 

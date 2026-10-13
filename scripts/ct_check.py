@@ -311,11 +311,25 @@ CASES = [
         # row, and as weak a handle there as here.
         "allcrypt::ec::dstu4145::publish_integer",
         "normalise", "UnknownInlinedFun",
+        # Whether r is zero, the standard's reason for another e: r goes
+        # into the signing equation at n's width from its bytes, and this
+        # is the one test on it before it is published.
+        "allcrypt::ec::dstu4145::r_is_zero",
      },
      "the key's and the nonce's range verdicts, whether e*G is the "
-     "identity, and r and s as they are published. The ladder, the "
-     "field arithmetic, the cut of r to bit_len(n) - 1 bits and the "
-     "signing equation are not in the list."),
+     "identity, whether r is zero, and r and s as they are published. "
+     "The ladder, the field arithmetic, the cut of r to bit_len(n) - 1 "
+     "bits and the signing equation are not in the list."),
+    ("dstu4145_sign_onb", {
+        "allcrypt::ec::dstu4145::Curve::check_scalar", "unmask",
+        "allcrypt::ec::dstu4145::publish",
+        "allcrypt::ec::dstu4145::publish_integer",
+        "normalise", "UnknownInlinedFun",
+        "allcrypt::ec::dstu4145::r_is_zero",
+     },
+     "dstu4145_sign on m233 in an optimal normal basis, the same sites: "
+     "the change of basis of h*x(e*G) before r is cut from it adds rows "
+     "under masks, and is not in the list."),
     ("dstu4145_dh", {
         "allcrypt::ec::dstu4145::Curve::check_scalar", "unmask",
         # The shared point is returned to the caller as a `Point`, and
@@ -432,6 +446,37 @@ CASES = [
      "Documented in block_ciphers/aes.rs and docs/pitfalls.md, and the "
      "control for the AES rows: the same key and data through the "
      "bitsliced path must come back clean."),
+    ("khazad_blocks", CLEAN,
+     "Khazad's key schedule and one block each way, secret key and data: "
+     "the S-box computed from its two 4-bit boxes by masked scans, theta "
+     "by doubling with a mask."),
+    ("anubis_blocks", CLEAN,
+     "Anubis's key schedule at a 40-byte key and one block each way, secret "
+     "key and data: Khazad's S-box by masked scans, every multiplication by "
+     "a constant through masked doubling."),
+    ("noekeon_blocks", CLEAN,
+     "Noekeon in both key modes and a block each way, secret key and data: "
+     "bitsliced by design, words, rotations and Boolean operations only."),
+    ("shacal2_blocks", CLEAN,
+     "SHACAL-2's key schedule at a 64-byte key and a block each way, secret "
+     "key and data: SHA-256's round, additions, rotations and Boolean "
+     "functions of words."),
+    ("strumok_keystream", {"alpha", "alpha_inv", "t"},
+     "Strumok's initialisation and keystream under a secret 64-byte key. "
+     "The three table lookups the standard defines and both witnesses "
+     "use: the multiplications by alpha and its inverse, and T, Kalyna's "
+     "S-boxes and MDS column as eight tables. Documented in "
+     "stream_ciphers/strumok.rs and docs/pitfalls.md; the additions, "
+     "shifts and the register around them must stay out of the list."),
+    ("dstu9041_public_key", {"allcrypt::ec::dstu9041::Engine<_>::scalar"},
+     "DSTU 9041's e·P on E256/1 and E512/1 under a secret e. The one site "
+     "is the range check's verdict - 2 <= e <= n - 2, compared by "
+     "Secret::ct_lt and folded into one mask, then branched on once, as "
+     "dstu4145's check_scalar is. The multiplication - a fixed four-bit "
+     "window over every limb, the table read whole under masks, Annex "
+     "Б.4's addition for doubling too - and the inversion by a public "
+     "exponent are clean. Decryption is not here: Kalyna and Kupyna under "
+     "the secret are tables."),
     ("aes_gcm_seal", CLEAN,
      "AES-GCM encryption through api::aead_encrypt: H and the tag mask "
      "from encrypt_blocks, the batched keystream, and GHASH by integer "

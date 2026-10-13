@@ -6,8 +6,21 @@ polynomial basis, `a` zero or one, with a base point `G` of prime order
 `n` and a cofactor of 2 or 4. The standard names ten, `m` from 163 to
 431 (`dstu4145-m163` to `dstu4145-m431`, numbered 0 to 9 as the last arc
 of their object identifiers); a curve can also be given whole, as the
-standard's own worked example and some certificates do. Its other
-representation, the optimal normal basis, is not here.
+standard's own worked example and some certificates do.
+
+## The optimal normal basis
+
+The standard names five more curves in an optimal normal basis,
+`dstu4145-m173-onb` to `dstu4145-m431-onb` (numbered 10 to 14 here).
+The arithmetic is the same polynomial-basis code: such a curve carries
+the change of basis, built from its normal element `β` and inverted by
+elimination over GF(2), and every field element crosses it where it
+meets the outside - the parameters, the hash, `r`, public keys,
+compressed points and shared points are all written in the normal
+basis. Bit `p` of such an element is the coefficient of `β^(2^(m-1-p))`,
+as cryptonite and li0ard number them, so squaring rotates the bits by
+one. The crossing runs on secret values (`h·x(e·G)`), so it adds rows
+under masks.
 
 ## The signature
 
@@ -50,15 +63,20 @@ certificate stores them reversed.
 
 `src/ec/dstu4145_params.rs` is written by
 `scripts/make_dstu4145_params.py` from Bouncy Castle's and cryptonite's
-tables, which agree on every value. `vectors/dstu4145.vec`, written by
+tables, which agree on every value, and for the normal-basis curves from
+cryptonite's and li0ard's. `vectors/dstu4145_onb.vec`, written by
+`scripts/make_dstu4145_onb_vectors.py`, holds those curves' keys,
+compressions, signatures and shared points, on which cryptonite and
+li0ard agree. `vectors/dstu4145.vec`, written by
 `scripts/make_dstu4145_vectors.py`, holds the standard's worked example,
 public keys, compressions and signatures from Bouncy Castle 1.77 and
 cryptonite, and both checking this library's own signatures.
 */
 
 use crate::bignum::{BigUint, Montgomery, Secret};
-use crate::ec::dstu4145_params::CURVES;
-use crate::ec::gf2m::{Fe, Field};
+use crate::bignum::ct::opaque;
+use crate::ec::dstu4145_params::{CURVES, ONB_CURVES};
+use crate::ec::gf2m::{Fe, Field, LIMBS};
 
 /// A point: the identity, or affine coordinates.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,13 +95,90 @@ pub struct Curve {
     h: u32,
     g: Point,
     number: Option<usize>,
+    /// The change of basis for a curve the standard gives in an optimal
+    /// normal basis; `None` in a polynomial basis.
+    basis: Option<Basis>,
 }
 
-/// The names of the standard's curves, by number.
-pub const NAMES: [&str; 10] = ["dstu4145-m163", "dstu4145-m167", "dstu4145-m173",
+/// The names of the standard's curves, by number: the ten in a
+/// polynomial basis, 0 to 9, then the five in an optimal normal basis,
+/// 10 to 14.
+pub const NAMES: [&str; 15] = ["dstu4145-m163", "dstu4145-m167", "dstu4145-m173",
                                "dstu4145-m179", "dstu4145-m191", "dstu4145-m233",
                                "dstu4145-m257", "dstu4145-m307", "dstu4145-m367",
-                               "dstu4145-m431"];
+                               "dstu4145-m431", "dstu4145-m173-onb", "dstu4145-m179-onb",
+                               "dstu4145-m191-onb", "dstu4145-m233-onb", "dstu4145-m431-onb"];
+
+/// The change between an optimal normal basis and the polynomial basis
+/// the arithmetic is done in. Bit `p` of a normal-basis element, counted
+/// from the least significant, is the coefficient of `β^(2^(m-1-p))`,
+/// `β` the normal element: so the most significant bit is `β`'s own, as
+/// cryptonite and li0ard number them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Basis {
+    /// `to_pb[p]`: the polynomial-basis element that bit `p` stands for.
+    to_pb: Vec<Fe>,
+    /// `to_onb[j]`: `x^j` in the normal basis.
+    to_onb: Vec<Fe>,
+}
+
+/// Bit `i` of `x`.
+fn bit(x: &Fe, i: usize) -> u64 {
+    (x[i / 64] >> (i % 64)) & 1
+}
+
+/// The sum of `rows[i]` over the set bits `i` of `x`, under masks: the
+/// conversions run on secret values (`h·x(e·G)` before it is cut to
+/// `r`).
+fn combine(rows: &[Fe], x: &Fe) -> Fe {
+    let mut out = [0u64; LIMBS];
+    for (i, row) in rows.iter().enumerate() {
+        let mask = opaque(bit(x, i)).wrapping_neg();
+        for (o, r) in out.iter_mut().zip(row) {
+            *o ^= r & mask;
+        }
+    }
+    out
+}
+
+impl Basis {
+    /// The basis `β, β^2, β^4, ...` for the normal element `root`, and
+    /// its inverse by Gauss-Jordan elimination over GF(2).
+    ///
+    /// # Errors
+    /// A `root` whose conjugates are not a basis.
+    fn new(field: &Field, root: &Fe) -> Result<Basis, String> {
+        let m = field.degree();
+        let mut powers = vec![*root];
+        for i in 1..m {
+            powers.push(field.square(&powers[i - 1]));
+        }
+        let to_pb: Vec<Fe> = (0..m).map(|p| powers[m - 1 - p]).collect();
+        // Row p of [A | I] is (to_pb[p], e_p); reducing A to the identity
+        // leaves A's inverse on the right, whose row j is x^j's
+        // coordinates.
+        let mut rows: Vec<(Fe, Fe)> = to_pb.iter().enumerate().map(|(p, row)| {
+            let mut unit = [0u64; LIMBS];
+            unit[p / 64] |= 1 << (p % 64);
+            (*row, unit)
+        }).collect();
+        for column in 0..m {
+            let pivot = (column..m).find(|&r| bit(&rows[r].0, column) == 1)
+                .ok_or("The normal element's conjugates are not a basis.")?;
+            rows.swap(column, pivot);
+            let (left, right) = rows[column];
+            for (r, row) in rows.iter_mut().enumerate() {
+                if r != column && bit(&row.0, column) == 1 {
+                    for w in 0..LIMBS {
+                        row.0[w] ^= left[w];
+                        row.1[w] ^= right[w];
+                    }
+                }
+            }
+        }
+        Ok(Basis { to_pb, to_onb: rows.into_iter().map(|(_, inverse)| inverse).collect() })
+    }
+}
 
 /// Where a ladder's result stops being secret: it is returned to the
 /// caller as a point, and whether it is the identity is a branch here.
@@ -105,6 +200,17 @@ fn publish_integer(bytes: &[u8]) -> BigUint {
     BigUint::from_bytes_be(bytes)
 }
 
+/// `r` zero, which the standard answers with another `e`, as an error:
+/// the verdict on a value about to be published, the one branch on it.
+/// Not inlined, for the same reason as `publish`.
+#[inline(never)]
+fn r_is_zero(r: &Secret) -> Result<(), String> {
+    if crate::bignum::montgomery::unmask(r.ct_is_zero()) {
+        return Err("r is zero; the standard takes another e.".to_string());
+    }
+    Ok(())
+}
+
 fn hex_fe(field: &Field, hex: &str) -> Result<Fe, String> {
     field.from_bytes(&BigUint::from_hex(hex)?.to_bytes_be())
 }
@@ -115,13 +221,25 @@ impl Curve {
     /// # Errors
     /// Any other number.
     pub fn named(number: usize) -> Result<Curve, String> {
+        if let Some(p) = number.checked_sub(CURVES.len()).and_then(|i| ONB_CURVES.get(i)) {
+            let field = Field::new(p.m, p.terms)?;
+            let basis = Basis::new(&field, &hex_fe(&field, p.root)?)?;
+            let mut curve = Curve { a: p.a, b: field.zero(), n: BigUint::from_hex(p.n)?,
+                                    h: u32::from(p.h), g: Point::Infinity, field,
+                                    number: Some(number), basis: Some(basis) };
+            curve.b = curve.element_from_bytes(&BigUint::from_hex(p.b)?.to_bytes_be())?;
+            curve.g = Point::Affine(
+                curve.element_from_bytes(&BigUint::from_hex(p.gx)?.to_bytes_be())?,
+                curve.element_from_bytes(&BigUint::from_hex(p.gy)?.to_bytes_be())?);
+            return Ok(curve);
+        }
         let p = CURVES.get(number).ok_or_else(|| format!(
-            "DSTU 4145's named curves are numbered 0 to 9, not {number}."))?;
+            "DSTU 4145's named curves are numbered 0 to {}, not {number}.", NAMES.len() - 1))?;
         let field = Field::new(p.m, p.terms)?;
         let b = hex_fe(&field, p.b)?;
         let g = Point::Affine(hex_fe(&field, p.gx)?, hex_fe(&field, p.gy)?);
         Ok(Curve { a: p.a, b, n: BigUint::from_hex(p.n)?, h: u32::from(p.h), g, field,
-                   number: Some(number) })
+                   number: Some(number), basis: None })
     }
 
     /// A named curve by its name, `dstu4145-m163` to `dstu4145-m431`.
@@ -175,7 +293,8 @@ impl Curve {
         let h = BigUint::one().shl(m).add(&n.shr(1)).div(n)?;
         let h = u32::try_from(h.to_u64().ok_or("The cofactor is too large.")?)
             .map_err(|_| "The cofactor is too large.".to_string())?;
-        Ok(Curve { field, a, b, n: n.clone(), h, g: Point::Infinity, number: None })
+        Ok(Curve { field, a, b, n: n.clone(), h, g: Point::Infinity, number: None,
+                   basis: None })
     }
 
     /// The standard's number for this curve when it is one of the ten,
@@ -223,6 +342,42 @@ impl Curve {
 
     pub fn name(&self) -> Option<&'static str> {
         self.number.map(|i| NAMES[i])
+    }
+
+    /// Whether the standard gives this curve in an optimal normal basis,
+    /// in which its field elements are then written.
+    pub fn is_normal_basis(&self) -> bool {
+        self.basis.is_some()
+    }
+
+    /// A field element as the curve writes it: the polynomial basis's
+    /// bits, or the normal basis's for a curve given in one.
+    fn to_external(&self, x: &Fe) -> Fe {
+        match &self.basis {
+            Some(basis) => combine(&basis.to_onb, x),
+            None => *x,
+        }
+    }
+
+    fn to_internal(&self, x: &Fe) -> Fe {
+        match &self.basis {
+            Some(basis) => combine(&basis.to_pb, x),
+            None => *x,
+        }
+    }
+
+    /// A field element's big-endian bytes in the curve's basis: what a
+    /// public key, a compressed point or a shared point is written in.
+    pub fn element_to_bytes(&self, x: &Fe) -> Vec<u8> {
+        self.field.to_bytes(&self.to_external(x))
+    }
+
+    /// The inverse of `element_to_bytes`.
+    ///
+    /// # Errors
+    /// Bytes that are no element of the field.
+    pub fn element_from_bytes(&self, bytes: &[u8]) -> Result<Fe, String> {
+        Ok(self.to_internal(&self.field.from_bytes(bytes)?))
     }
 
     fn a_fe(&self) -> Fe {
@@ -467,7 +622,8 @@ impl Curve {
     }
 
     /// The hash as a field element: its bytes reversed, the bits at and
-    /// above `m` dropped, and zero made one.
+    /// above `m` dropped, and zero made one. In a normal basis the bits
+    /// are the element's normal-basis coordinates.
     pub fn hash_to_field(&self, hash: &[u8]) -> Fe {
         let f = &self.field;
         let mut out = f.zero();
@@ -479,22 +635,26 @@ impl Curve {
                 }
             }
         }
+        let out = self.to_internal(&out);
         if f.is_zero(&out) { f.one() } else { out }
     }
 
     /// `r` from `y = h·x(e·G)`: the integer of `y`'s bits cut to
-    /// `bit_len(n) − 1`. The cut is on the bytes, at positions that depend
-    /// on `n` alone, and then `r` is half the signature and public.
-    fn truncate(&self, y: &Fe) -> BigUint {
-        let mut bytes = self.field.to_bytes(y);
+    /// `bit_len(n) − 1`, as big-endian bytes of a length that depends on
+    /// `n` alone. The cut is on the bytes, at positions that depend on
+    /// `n` alone.
+    fn truncate_bytes(&self, y: &Fe) -> Vec<u8> {
+        let bytes = self.element_to_bytes(y);
         let bits = self.n.bit_len() - 1;
         let keep = bits.div_ceil(8);
-        let drop = bytes.len() - keep;
-        for byte in &mut bytes[..drop] {
-            *byte = 0;
-        }
-        bytes[drop] &= 0xff >> (8 * keep - bits);
-        publish_integer(&bytes)
+        let mut kept = bytes[bytes.len() - keep..].to_vec();
+        kept[0] &= 0xff >> (8 * keep - bits);
+        kept
+    }
+
+    /// `r` as an integer, where it is half the signature and public.
+    fn truncate(&self, y: &Fe) -> BigUint {
+        publish_integer(&self.truncate_bytes(y))
     }
 
     /// Sign with an explicit `e`, big endian, as the standard's worked
@@ -528,15 +688,14 @@ impl Curve {
         let Point::Affine(fe, _) = self.mul_secret(e, &self.g) else {
             return Err("e·G is the identity.".to_string());
         };
-        let r = self.truncate(&f.mul(&self.hash_to_field(hash), &fe));
-        if r.is_zero() {
-            return Err("r is zero; the standard takes another e.".to_string());
-        }
+        let r_bytes = self.truncate_bytes(&f.mul(&self.hash_to_field(hash), &fe));
         // s = e + d·r mod n, both products on secrets in the Montgomery
-        // domain, as `ec::gost3410` does it.
+        // domain, as `ec::gost3410` does it. `r` goes in from its bytes,
+        // at n's width: below 2^(bit_len(n) − 1), it fits.
         let order = Montgomery::new(&self.n)?;
         let width = order.limbs();
-        let r_s = Secret::from_biguint(&r, width)?;
+        let r_s = Secret::from_bytes_be(&r_bytes, width)?;
+        r_is_zero(&r_s)?;
         // Both are below n, so the limbs dropped are zero; the widths
         // are public.
         let d_w = Secret::from_limbs(d.limbs()[..width].to_vec());
@@ -545,7 +704,7 @@ impl Curve {
         if s.is_zero() {
             return Err("s is zero; the standard takes another e.".to_string());
         }
-        Ok((r, s))
+        Ok((publish_integer(&r_bytes), s))
     }
 
     /// Sign a hash with the private key `d`: `(r, s)`.
@@ -620,8 +779,8 @@ impl Curve {
         Ok(self.mul_secret(&scalar, peer))
     }
 
-    /// The standard's compression: `x`, big endian, its lowest bit the
-    /// trace of `y/x`.
+    /// The standard's compression: `x`, big endian in the curve's basis,
+    /// its lowest bit the trace of `y/x`.
     ///
     /// # Errors
     /// The identity, which has no compression.
@@ -630,7 +789,7 @@ impl Curve {
         let Point::Affine(x, y) = p else {
             return Err("The point at infinity has no compressed form.".to_string());
         };
-        let mut bytes = f.to_bytes(x);
+        let mut bytes = self.element_to_bytes(x);
         let last = bytes.len() - 1;
         if !f.is_zero(x) {
             let bit = f.trace(&f.mul(y, &f.invert(x))) as u8;
@@ -646,11 +805,13 @@ impl Curve {
     pub fn decompress(&self, bytes: &[u8]) -> Result<Point, String> {
         let f = &self.field;
         let k = u64::from(bytes.last().copied().unwrap_or(0) & 1);
-        let mut x = f.from_bytes(bytes)?;
+        let mut x = self.element_from_bytes(bytes)?;
         // Every point of order n has Tr(x) = a; that is how the stored
-        // bit's place in x is recovered.
+        // bit's place in x is recovered. The lowest bit stands for 1 in a
+        // polynomial basis and for a conjugate of the normal element in a
+        // normal one, and both have trace 1 for odd m.
         if f.trace(&x) != u64::from(self.a) {
-            x[0] ^= 1;
+            x = f.add(&x, &self.to_internal(&f.one()));
         }
         let point = if f.is_zero(&x) {
             Point::Affine(x, f.sqrt(&self.b))
@@ -693,8 +854,37 @@ mod tests {
             assert!(diff.bit_len() <= c.field.degree() / 2 + 2, "{number}");
             assert_eq!(Curve::by_name(name).unwrap().number(), Some(number));
         }
-        assert!(Curve::named(10).is_err());
+        assert!(Curve::named(15).is_err());
         assert!(Curve::by_name("dstu4145-m164").is_err());
+    }
+
+    /// The normal bases: the change of basis inverts, 1 is all ones,
+    /// and squaring is a rotation by one place - the property that makes
+    /// a basis normal, and that fixes which bit is which.
+    #[test]
+    fn test_the_normal_bases() {
+        for number in 10..15 {
+            let c = Curve::named(number).unwrap();
+            assert!(c.is_normal_basis());
+            let f = &c.field;
+            let m = f.degree();
+            let mut ones = f.zero();
+            for i in 0..m {
+                ones[i / 64] |= 1 << (i % 64);
+            }
+            assert_eq!(c.to_internal(&ones), f.one(), "{number}");
+            let mut x = c.hash_to_field(&[0x5a; 64]);
+            for _ in 0..20 {
+                assert_eq!(c.to_internal(&c.to_external(&x)), x);
+                let outside = c.to_external(&x);
+                let squared = c.to_external(&f.square(&x));
+                for p in 0..m {
+                    assert_eq!(bit(&squared, p), bit(&outside, (p + 1) % m), "{number} bit {p}");
+                }
+                x = f.add(&f.mul(&x, &x), &c.b);
+            }
+        }
+        assert!(!Curve::named(2).unwrap().is_normal_basis());
     }
 
     /// The ladder against repeated affine addition, and the group law's

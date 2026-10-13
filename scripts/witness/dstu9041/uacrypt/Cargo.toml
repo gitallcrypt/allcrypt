@@ -1,0 +1,24 @@
+# uacrypt's DSTU 9041 (crates/dstu-core/src/hazmat/dstu9041) with the
+# modules it uses - Kalyna, its key wrap, Kupyna and their tables - and
+# nothing else of the crate, through src/main.rs. build.sh puts the
+# fetched sources at ../../src/uacrypt, where src/main.rs's #[path]
+# attributes find them.
+[package]
+name = "dstu9041-uacrypt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+subtle = { path = "../subtle", default-features = false }
+zeroize = { path = "../zeroize" }
+
+# The source tests for this feature (a smaller-table Kalyna uacrypt
+# offers); declared so the build is quiet, and left off.
+[features]
+small-tables = []
+
+# uacrypt's sources carry Kani proofs under cfg(kani).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[workspace]

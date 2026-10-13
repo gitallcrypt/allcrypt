@@ -3411,6 +3411,13 @@ _OID_EQUIVALENTS = {
     # `uacurve0` to `uacurve9`, which `tests/test_ua_keys.rs` reads
     # as curve OIDs in the fixtures dstu-engine opens.
     "DSTU4145_NAMED_CURVES": None,
+    # DSTU 4145 over Kupyna: OpenSSL has no name for them. UAPKI's
+    # `oids.h` spells them `OID_DSTU4145_WITH_DSTU7564_{256,384,512}_PB`;
+    # the 256 bit one is read out of a real certificate by
+    # `tests/test_dstu4145_x509.rs`.
+    "DSTU4145_KUPYNA256":  None,
+    "DSTU4145_KUPYNA384":  None,
+    "DSTU4145_KUPYNA512":  None,
     # IIT's private arc: in no table and no RFC. dstu-engine's keylib
     # reads the container and the second key's two attributes; the
     # identifiers are checked against their definition in
@@ -3773,6 +3780,9 @@ _OID_IN_RFCS = {
     "DSTU4145_LE":         None,
     "DSTU4145_BE":         None,
     "DSTU4145_NAMED_CURVES": None,
+    "DSTU4145_KUPYNA256":  None,
+    "DSTU4145_KUPYNA384":  None,
+    "DSTU4145_KUPYNA512":  None,
     "IIT_KEY_STORE":       None,
     "IIT_KEY_ID":          None,
     "IIT_SECOND_CURVE":    None,

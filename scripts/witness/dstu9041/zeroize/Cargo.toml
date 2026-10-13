@@ -1,0 +1,11 @@
+# A stand-in for the zeroize crate, which the witnesses cannot fetch:
+# `Zeroizing` holds its value and clears nothing, and the derives (in
+# derive/) expand to nothing. Clearing memory changes no output, which
+# is all a witness is asked for.
+[package]
+name = "zeroize"
+version = "1.8.0"
+edition = "2021"
+
+[dependencies]
+zeroize_derive = { path = "derive" }

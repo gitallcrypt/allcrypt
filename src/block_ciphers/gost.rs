@@ -51,8 +51,17 @@ pub const DSTU4145_DEFAULT_DKE: [u8; 64] = [
     0x38, 0xb5, 0x64, 0xea, 0x2c, 0x17, 0x9f, 0xd0, 0x12, 0x3e, 0x6d, 0xb8, 0xfa, 0xc5, 0x79, 0x04,
 ];
 
+/// The names of Ukraine's ten tables: `dstu-dke-n` is "DKE No. 1 from
+/// supplement `n` to instruction 114", as cryptonite and li0ard carry
+/// them (`src/block_ciphers/dstu_dke.rs`). The first is the default DKE,
+/// so `dstu-dke-1` is `dstu4145-default-dke` by another name.
+pub const DSTU_DKE_NAMES: [&str; 10] = ["dstu-dke-1", "dstu-dke-2", "dstu-dke-3", "dstu-dke-4",
+                                        "dstu-dke-5", "dstu-dke-6", "dstu-dke-7", "dstu-dke-8",
+                                        "dstu-dke-9", "dstu-dke-10"];
+
 lazy_static! {
-static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
+static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = {
+    let mut table = HashMap::from([
     (DSTU_PARAM_SET.to_string(),
      GostCrypto::sbox_from_dke(&DSTU4145_DEFAULT_DKE).expect("64 bytes")),
     ("id-Gost28147-89-TestParamSet".to_string(),
@@ -138,6 +147,11 @@ static ref SBOXES: HashMap<String, Vec<Vec<u8>>> = HashMap::from([
          vec![4, 0, 14, 1, 5, 11, 8, 3, 12, 2, 9, 7, 6, 10, 13, 15],
          vec![7, 14, 12, 13, 9, 4, 8, 15, 10, 2, 6, 0, 3, 11, 5, 1]]),
     ]);
+    for (name, dke) in DSTU_DKE_NAMES.iter().zip(crate::block_ciphers::dstu_dke::DSTU_DKE.iter()) {
+        table.insert(name.to_string(), GostCrypto::sbox_from_dke(dke).expect("64 bytes"));
+    }
+    table
+};
  }
 
  impl GostCrypto {

@@ -196,10 +196,11 @@ fn test_shared_points() {
     assert_eq!(seen["both"], 28, "{seen:?}");
 }
 
-/// Every named curve has rows of every kind.
+/// Every named curve in a polynomial basis has rows of every kind; the
+/// five in a normal basis are `tests/test_dstu4145_onb.rs`'s.
 #[test]
 fn test_every_named_curve_is_covered() {
-    for name in NAMES {
+    for name in &NAMES[..10] {
         for kind in ["pub", "compress", "sign", "verify", "dh"] {
             assert!(VECTORS.lines().any(|l| l.starts_with(&format!("{kind} curve={name} "))),
                     "{kind} {name}");

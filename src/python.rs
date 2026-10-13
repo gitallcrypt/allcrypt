@@ -682,9 +682,9 @@ pub struct PyStreamCipher {
 #[pymethods]
 impl PyStreamCipher {
     /// RC4 and ZipCrypto take no nonce; the ChaCha variants take 8 or 12
-    /// bytes. ZipCrypto's key is the password. `counter` is the block
-    /// counter to start at, for ChaCha and Salsa20 - RFC 8439's AEAD
-    /// starts its payload at 1.
+    /// bytes, Strumok its 32 byte IV. ZipCrypto's key is the password.
+    /// `counter` is the block counter to start at, for ChaCha and Salsa20 -
+    /// RFC 8439's AEAD starts its payload at 1.
     #[new]
     #[pyo3(signature = (name, key, nonce = None, counter = 0))]
     fn py_new(name: &str, key: Bytes, nonce: Option<Bytes>, counter: u64) -> PyResult<Self> {
@@ -1016,6 +1016,28 @@ fn blake2s(py: Python<'_>, data: Option<Bytes>, digest_size: usize, key: Option<
     Hash::blake2(py, "blake2s", data, digest_size, key, salt, person)
 }
 
+/// BLAKE3 with the `blake3` package's parameters: a 32 byte key for its
+/// keyed mode, or a context string for its key derivation mode.
+#[pyfunction]
+#[pyo3(signature = (data = None, *, key = None, derive_key_context = None))]
+fn blake3(py: Python<'_>, data: Option<Bytes>, key: Option<Bytes>,
+          derive_key_context: Option<&str>) -> PyResult<Hash> {
+    let inner = AnyHash::blake3(key.as_deref(), derive_key_context).map_err(err)?;
+    Hash::fed(py, inner, data)
+}
+
+/// Any length of BLAKE3's output, from any offset.
+#[pyfunction]
+#[pyo3(signature = (data, length, *, key = None, derive_key_context = None, seek = 0))]
+fn blake3_xof<'py>(py: Python<'py>, data: Bytes, length: usize, key: Option<Bytes>,
+                   derive_key_context: Option<&str>, seek: u64)
+                   -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| {
+        api::blake3_xof(&data, length, key.as_deref(), derive_key_context, seek)
+    }).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 /// SP 800-108 counter mode; `prf` is "hmac-<hash>" or "cmac-<cipher>".
 #[pyfunction]
 #[pyo3(signature = (prf, key, length, label = None, context = None))]
@@ -1222,6 +1244,65 @@ fn bitlocker_decrypt_sector<'py>(py: Python<'py>, method: &str, key: Bytes, byte
         || api::bitlocker_decrypt_sector(method, &key, byte_offset, &sector))
         .map_err(err)?;
     Ok(PyBytes::new(py, &out))
+}
+
+// ----------------------------------------------------------- fuzzy hashes ---
+
+/// ssdeep in progress: `update`, then `digest`, the
+/// `blocksize:string:string` text libfuzzy gives.
+#[pyclass(name = "Ssdeep", module = "allcrypt")]
+pub struct Ssdeep {
+    inner: api::Ssdeep,
+}
+
+#[pymethods]
+impl Ssdeep {
+    #[new]
+    #[pyo3(signature = (data = None))]
+    fn py_new(py: Python<'_>, data: Option<Bytes>) -> Self {
+        let mut inner = api::Ssdeep::new();
+        if let Some(d) = data {
+            py.allow_threads(|| inner.update(&d));
+        }
+        Ssdeep { inner }
+    }
+
+    fn update(&mut self, py: Python<'_>, data: Bytes) {
+        py.allow_threads(|| self.inner.update(&data));
+    }
+
+    fn digest(&self) -> PyResult<String> {
+        self.inner.digest().map_err(err)
+    }
+
+    fn copy(&self) -> Ssdeep {
+        Ssdeep { inner: self.inner.clone() }
+    }
+}
+
+/// The ssdeep digest of `data`.
+#[pyfunction]
+#[pyo3(name = "ssdeep")]
+fn ssdeep_digest(py: Python<'_>, data: Bytes) -> PyResult<String> {
+    py.allow_threads(|| api::ssdeep(&data)).map_err(err)
+}
+
+/// libfuzzy's score for two ssdeep digests, 0 to 100.
+#[pyfunction]
+fn ssdeep_compare(a: &str, b: &str) -> PyResult<u32> {
+    api::ssdeep_compare(a, b).map_err(err)
+}
+
+/// The CTPH digest ctph.js 0.0.5 gives `data`, which is CyberChef's.
+#[pyfunction]
+fn ctph(py: Python<'_>, data: Bytes) -> PyResult<String> {
+    py.allow_threads(|| api::ctph(&data)).map_err(err)
+}
+
+/// ctph.js's similarity of two CTPH digests, 0 to 100, or NaN.
+#[pyfunction]
+fn ctph_similarity(a: &str, b: &str) -> PyResult<f64> {
+    api::ctph_similarity(a, b).map_err(err)
 }
 
 /// The NT hash of a password: MD4 of it as UTF-16 little endian.
@@ -2156,6 +2237,117 @@ fn dstu4145_key6<'py>(py: Python<'py>, key: &PyDstu4145Key, password: Bytes,
     Ok(PyBytes::new(py, &out))
 }
 
+// -------------------------------------------------------------- DSTU 9041 ---
+
+/// A DSTU 9041:2020 key pair on `dstu9041-e256-1` or `dstu9041-e512-1`.
+#[pyclass(name = "Dstu9041Key", module = "allcrypt")]
+pub struct PyDstu9041Key {
+    inner: api::Dstu9041Key,
+}
+
+#[pymethods]
+impl PyDstu9041Key {
+    /// A fresh key pair from the OS random source.
+    #[staticmethod]
+    fn generate(py: Python<'_>, curve: &str) -> PyResult<PyDstu9041Key> {
+        let inner = py.allow_threads(|| api::Dstu9041Key::generate(curve)).map_err(err)?;
+        Ok(PyDstu9041Key { inner })
+    }
+
+    /// Import a private key `e`, big endian, from 2 to `n - 2`.
+    #[staticmethod]
+    fn from_private(py: Python<'_>, curve: &str, private: Bytes) -> PyResult<PyDstu9041Key> {
+        let inner = py.allow_threads(|| api::Dstu9041Key::from_private(curve, &private))
+            .map_err(err)?;
+        Ok(PyDstu9041Key { inner })
+    }
+
+    /// `e`, big endian at the field's width.
+    fn private_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.private_bytes())
+    }
+
+    fn public_key(&self) -> PyDstu9041PublicKey {
+        PyDstu9041PublicKey { inner: self.inner.public_key() }
+    }
+
+    /// Decrypt `r || t`: the message's bytes. Raises one error for every
+    /// way the ciphertext can be wrong.
+    fn decrypt<'py>(&self, py: Python<'py>, ciphertext: Bytes) -> PyResult<Bound<'py, PyBytes>> {
+        let out = py.allow_threads(|| self.inner.decrypt(&ciphertext)).map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// Decrypt to the message's bytes, right aligned, and its length in
+    /// bits.
+    fn decrypt_bits<'py>(&self, py: Python<'py>, ciphertext: Bytes)
+                         -> PyResult<(Bound<'py, PyBytes>, usize)> {
+        let (out, bits) = py.allow_threads(|| self.inner.decrypt_bits(&ciphertext))
+            .map_err(err)?;
+        Ok((PyBytes::new(py, &out), bits))
+    }
+
+    #[getter]
+    fn curve(&self) -> &'static str {
+        self.inner.curve_name()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<allcrypt.Dstu9041Key {}>", self.inner.curve_name())
+    }
+}
+
+/// A DSTU 9041:2020 public key, `x || y`.
+#[pyclass(name = "Dstu9041PublicKey", module = "allcrypt")]
+pub struct PyDstu9041PublicKey {
+    inner: api::Dstu9041PublicKey,
+}
+
+#[pymethods]
+impl PyDstu9041PublicKey {
+    /// Import `x || y`, big endian; raises for a point that is not of
+    /// order `n` on the curve.
+    #[new]
+    fn py_new(py: Python<'_>, curve: &str, encoded: Bytes) -> PyResult<PyDstu9041PublicKey> {
+        let inner = py.allow_threads(|| api::Dstu9041PublicKey::from_bytes(curve, &encoded))
+            .map_err(err)?;
+        Ok(PyDstu9041PublicKey { inner })
+    }
+
+    fn public_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.to_bytes())
+    }
+
+    /// Encrypt `message`. `bits` is its length in bits when that is not
+    /// `8 * len(message)` - the message right aligned, the bits above it
+    /// zero - and `epsilon` the one-time key, big endian, for a known
+    /// answer; leave it out otherwise.
+    #[pyo3(signature = (message, bits = None, epsilon = None))]
+    fn encrypt<'py>(&self, py: Python<'py>, message: Bytes, bits: Option<usize>,
+                    epsilon: Option<Bytes>) -> PyResult<Bound<'py, PyBytes>> {
+        let bits = bits.unwrap_or(8 * message.len());
+        let out = py.allow_threads(|| self.inner.encrypt_bits(&message, bits,
+                                                                epsilon.as_deref()))
+            .map_err(err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// The longest message, in bits: 200 on E256/1, 424 on E512/1.
+    #[getter]
+    fn max_message_bits(&self) -> usize {
+        self.inner.max_message_bits()
+    }
+
+    #[getter]
+    fn curve(&self) -> &'static str {
+        self.inner.curve_name()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<allcrypt.Dstu9041PublicKey {}>", self.inner.curve_name())
+    }
+}
+
 // -------------------------------------------------------------------- RSA ---
 
 /// An RSA private key.
@@ -2856,6 +3048,34 @@ fn gmac<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, data: Bytes, cipher: &st
 #[pyfunction]
 fn poly1305<'py>(py: Python<'py>, key: Bytes, message: Bytes) -> PyResult<Bound<'py, PyBytes>> {
     let out = py.allow_threads(|| api::poly1305(&key, &message)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// CRC-32C of `data`, continuing from `value`, as zlib's `crc32` does
+/// for CRC-32.
+#[pyfunction]
+#[pyo3(signature = (data, value = 0))]
+fn crc32c(py: Python<'_>, data: Bytes, value: u32) -> u32 {
+    py.allow_threads(|| api::crc32c(&data, value))
+}
+
+/// SipHash, 2-4 and 8 bytes unless asked otherwise.
+#[pyfunction]
+#[pyo3(signature = (key, data, *, c_rounds = 2, d_rounds = 4, size = 8))]
+fn siphash<'py>(py: Python<'py>, key: Bytes, data: Bytes, c_rounds: usize, d_rounds: usize,
+                size: usize) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::siphash(&key, &data, c_rounds, d_rounds, size))
+        .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// HalfSipHash, 2-4 and 4 bytes unless asked otherwise.
+#[pyfunction]
+#[pyo3(signature = (key, data, *, c_rounds = 2, d_rounds = 4, size = 4))]
+fn halfsiphash<'py>(py: Python<'py>, key: Bytes, data: Bytes, c_rounds: usize,
+                    d_rounds: usize, size: usize) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::halfsiphash(&key, &data, c_rounds, d_rounds, size))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -6219,6 +6439,11 @@ impl PyTlsServer {
 #[pymodule]
 fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Hash>()?;
+    m.add_class::<Ssdeep>()?;
+    m.add_function(wrap_pyfunction!(ssdeep_digest, m)?)?;
+    m.add_function(wrap_pyfunction!(ssdeep_compare, m)?)?;
+    m.add_function(wrap_pyfunction!(ctph, m)?)?;
+    m.add_function(wrap_pyfunction!(ctph_similarity, m)?)?;
     m.add_class::<Cipher>()?;
     m.add_class::<Encryptor>()?;
     m.add_class::<Aead>()?;
@@ -6234,6 +6459,8 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDstu4145PublicKey>()?;
     m.add_function(wrap_pyfunction!(dstu4145_keys_open, m)?)?;
     m.add_function(wrap_pyfunction!(dstu4145_key6, m)?)?;
+    m.add_class::<PyDstu9041Key>()?;
+    m.add_class::<PyDstu9041PublicKey>()?;
     m.add_class::<PyRsaKey>()?;
     m.add_class::<PyRsaPublicKey>()?;
     m.add_class::<PyDhGroup>()?;
@@ -6317,6 +6544,8 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tkip_msdu_mic, m)?)?;
     m.add_function(wrap_pyfunction!(blake2b, m)?)?;
     m.add_function(wrap_pyfunction!(blake2s, m)?)?;
+    m.add_function(wrap_pyfunction!(blake3, m)?)?;
+    m.add_function(wrap_pyfunction!(blake3_xof, m)?)?;
     m.add_function(wrap_pyfunction!(umac, m)?)?;
     m.add_function(wrap_pyfunction!(pbkdf2_hmac, m)?)?;
     m.add_function(wrap_pyfunction!(shake, m)?)?;
@@ -6386,6 +6615,9 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ghash, m)?)?;
     m.add_function(wrap_pyfunction!(gmac, m)?)?;
     m.add_function(wrap_pyfunction!(poly1305, m)?)?;
+    m.add_function(wrap_pyfunction!(siphash, m)?)?;
+    m.add_function(wrap_pyfunction!(crc32c, m)?)?;
+    m.add_function(wrap_pyfunction!(halfsiphash, m)?)?;
     m.add_function(wrap_pyfunction!(poly1305_verify, m)?)?;
     m.add_function(wrap_pyfunction!(x448_generate, m)?)?;
     m.add_function(wrap_pyfunction!(x448_public_key, m)?)?;
@@ -6466,6 +6698,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // guessing. These come straight from the Rust constants, and
     // tests/test_api.rs asserts every name in them actually constructs.
     m.add("algorithms_available", api::HASHES.to_vec())?;
+    m.add("checksums_available", api::CHECKSUMS.to_vec())?;
     m.add("block_ciphers_available", api::BLOCK_CIPHERS.to_vec())?;
     m.add("stream_ciphers_available", api::STREAM_CIPHERS.to_vec())?;
     m.add("modes_available", api::MODES.to_vec())?;
@@ -6473,6 +6706,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("box_constructions_available", api::BOX_CONSTRUCTIONS.to_vec())?;
     m.add("curves_available", api::CURVES.to_vec())?;
     m.add("dstu4145_curves_available", api::DSTU4145_CURVES.to_vec())?;
+    m.add("dstu9041_curves_available", api::DSTU9041_CURVES.to_vec())?;
     m.add("tls_suites_available", api::tls_suites_known())?;
     m.add_function(wrap_pyfunction!(tls_suite_names, m)?)?;
     m.add_function(wrap_pyfunction!(tls_signature_schemes, m)?)?;

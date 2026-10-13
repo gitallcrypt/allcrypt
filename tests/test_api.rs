@@ -161,6 +161,7 @@ fn stream_nonce(name: &str) -> Vec<u8> {
         "rc4" | "zipcrypto" => vec![],
         "salsa20" | "salsa12" | "salsa8" => iv(8),
         "xchacha20" | "xsalsa20" => iv(24),
+        "strumok" => iv(32),
         _ => iv(12),
     }
 }
@@ -575,13 +576,17 @@ fn test_aead_through_the_api() {
                         "xchacha20-poly1305", "aes-eax", "twofish-eax", "serpent-eax", "camellia-eax",
                         "sm4-eax", "des-eax", "3des-eax", "blowfish-eax",
                         "tea-eax", "xtea-eax", "rc5-eax", "aria-eax", "rc6-eax",
-                        "cast256-eax", "mars-eax", "kuznyechik-mgm", "magma-mgm", "aes-mgm",
+                        "cast256-eax", "mars-eax", "khazad-eax", "anubis-eax", "noekeon-eax",
+                        "noekeon-indirect-eax", "kuznyechik-mgm", "magma-mgm", "aes-mgm",
                         "twofish-mgm", "serpent-mgm", "camellia-mgm",
                         "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
                         "blowfish-mgm", "tea-mgm", "xtea-mgm", "rc5-mgm", "rc6-mgm",
-                        "cast256-mgm", "mars-mgm", "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
+                        "cast256-mgm", "mars-mgm", "khazad-mgm", "anubis-mgm", "noekeon-mgm",
+                        "noekeon-indirect-mgm", "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
                         "aria-ocb", "sm4-ocb", "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
-                        "cast256-ocb", "mars-ocb", "aes-128-cbc-hmac-sha256", "aes-192-cbc-hmac-sha384",
+                        "cast256-ocb", "mars-ocb", "anubis-ocb", "noekeon-ocb",
+                        "noekeon-indirect-ocb", "aes-128-cbc-hmac-sha256",
+                        "aes-192-cbc-hmac-sha384",
                         "aes-256-cbc-hmac-sha512", "kalyna-128-gcm", "kalyna-256-gcm",
                         "kalyna-512-gcm", "kalyna-128-ccm", "kalyna-256-ccm", "kalyna-512-ccm"]);
 
@@ -604,7 +609,8 @@ fn test_aead_through_the_api() {
         ("des-eax", 8), ("3des-eax", 24), ("blowfish-eax", 16),
         ("tea-eax", 16), ("xtea-eax", 16), ("rc5-eax", 16),
         ("aria-eax", 16), ("aria-eax", 32), ("rc6-eax", 16), ("rc6-eax", 32),
-        ("cast256-eax", 20), ("mars-eax", 40),
+        ("cast256-eax", 20), ("mars-eax", 40), ("khazad-eax", 16), ("anubis-eax", 40),
+        ("noekeon-eax", 16), ("noekeon-indirect-eax", 16),
         // MGM, the same way: the standard's own two ciphers first, then
         // one of each block size from the rest. MGM's field polynomial
         // differs between a 64 and a 128 bit block, so the two sizes
@@ -615,13 +621,15 @@ fn test_aead_through_the_api() {
         ("camellia-mgm", 16), ("sm4-mgm", 16), ("aria-mgm", 32),
         ("des-mgm", 8), ("3des-mgm", 24), ("blowfish-mgm", 16),
         ("tea-mgm", 16), ("xtea-mgm", 16), ("rc5-mgm", 16), ("rc6-mgm", 24), ("cast256-mgm", 32),
-        ("mars-mgm", 56),
+        ("mars-mgm", 56), ("khazad-mgm", 16), ("anubis-mgm", 20),
+        ("noekeon-mgm", 16), ("noekeon-indirect-mgm", 16),
         // OCB, 128 bit blocks only.
         ("aes-ocb", 16), ("aes-ocb", 24), ("aes-ocb", 32),
         ("camellia-ocb", 16), ("twofish-ocb", 32), ("serpent-ocb", 32),
         ("aria-ocb", 16), ("sm4-ocb", 16), ("seed-ocb", 16),
         ("kuznyechik-ocb", 32), ("rc6-ocb", 16), ("cast256-ocb", 28),
-        ("mars-ocb", 20),
+        ("mars-ocb", 20), ("anubis-ocb", 32), ("noekeon-ocb", 16),
+        ("noekeon-indirect-ocb", 16),
         // AES-CBC with HMAC: one key size each, the MAC key and the AES
         // key together.
         ("aes-128-cbc-hmac-sha256", 32), ("aes-192-cbc-hmac-sha384", 48),
@@ -1666,6 +1674,7 @@ fn test_stream_cipher_seek() {
     for name in ["rc4", "zipcrypto"] {
         assert!(AnyStreamCipher::new(name, &key, &[]).unwrap().seek(0).is_err(), "{name}");
     }
+    assert!(AnyStreamCipher::new("strumok", &key, &[0; 32]).unwrap().seek(0).is_err());
 }
 
 /// The raw primitives, each composed back into the construction it comes

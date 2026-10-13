@@ -1,0 +1,11 @@
+# A stand-in for the zeroize crate, which the witness cannot fetch: its
+# two derives expand to nothing. Clearing memory on drop changes no
+# output, which is all the witness is asked for.
+[package]
+name = "zeroize"
+version = "1.8.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+path = "src/lib.rs"

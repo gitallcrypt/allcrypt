@@ -385,6 +385,7 @@ fn clone_key<'a>(key: &PublicKey<'a>) -> PublicKey<'a> {
         PublicKey::Gost { curve, x, y, param_set, algorithm_id, legacy } => PublicKey::Gost {
             curve, x: x.clone(), y: y.clone(), param_set: *param_set, algorithm_id,
             legacy: *legacy },
+        PublicKey::Dstu4145 { .. } => key.clone(),
     }
 }
 

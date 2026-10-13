@@ -26,10 +26,11 @@ use crate::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 // ------------------------------------------------------------- catalogue ---
 
 pub const BLOCK_CIPHERS: &[&str] =
-    &["aes", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des", "gost",
-      "idea", "kalyna-128", "kalyna-256", "kalyna-512", "kuznyechik", "magma", "mars", "rc2", "rc5", "rc6",
+    &["aes", "anubis", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des", "gost",
+      "idea", "kalyna-128", "kalyna-256", "kalyna-512", "khazad", "kuznyechik", "magma", "mars",
+      "noekeon", "noekeon-indirect", "rc2", "rc5", "rc6",
       "rijndael-128", "rijndael-160", "rijndael-192", "rijndael-224", "rijndael-256",
-      "seed", "serpent", "sm4", "tea", "twofish", "xtea"];
+      "seed", "serpent", "shacal2", "sm4", "tea", "twofish", "xtea"];
 
 /// The catalogue name (`BLOCK_CIPHERS`) for any spelling
 /// `AnyBlockCipher::new` accepts, or `None` for a name it would refuse.
@@ -56,7 +57,7 @@ pub fn block_cipher_name(name: &str) -> Option<&'static str> {
 }
 pub const STREAM_CIPHERS: &[&str] =
     &["chacha20", "chacha12", "chacha8", "xchacha20", "rc4", "salsa20", "salsa12", "salsa8",
-      "xsalsa20", "zipcrypto"];
+      "strumok", "xsalsa20", "zipcrypto"];
 pub const MODES: &[&str] = &["ecb", "cbc", "pcbc", "cfb", "ofb", "ctr", "ctr-le",
                               "cbc-cs1", "cbc-cs2", "cbc-cs3"];
 /// Authenticated modes, which are not in `MODES` because they do not
@@ -88,7 +89,8 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              // two produce 8 byte tags**. See
                              // `aead_tag_len`.
                              "tea-eax", "xtea-eax", "rc5-eax", "aria-eax",
-                             "rc6-eax", "cast256-eax", "mars-eax",
+                             "rc6-eax", "cast256-eax", "mars-eax", "khazad-eax",
+                             "anubis-eax", "noekeon-eax", "noekeon-indirect-eax",
                              // MGM (RFC 9058), named the same way. The
                              // first two are the ones the standard is
                              // written for and the ones RFC 9367's TLS
@@ -100,13 +102,16 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
                              "blowfish-mgm", "tea-mgm", "xtea-mgm",
                              "rc5-mgm", "rc6-mgm", "cast256-mgm", "mars-mgm",
+                             "khazad-mgm", "anubis-mgm", "noekeon-mgm",
+                             "noekeon-indirect-mgm",
                              // OCB (RFC 7253), which is defined for 128
                              // bit blocks only. OpenPGP's AEAD packets
                              // default to it.
                              "aes-ocb", "camellia-ocb", "twofish-ocb",
                              "serpent-ocb", "aria-ocb", "sm4-ocb",
                              "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
-                             "cast256-ocb", "mars-ocb",
+                             "cast256-ocb", "mars-ocb", "anubis-ocb",
+                             "noekeon-ocb", "noekeon-indirect-ocb",
                              // AES-CBC and HMAC-SHA-2 as one AEAD (RFC
                              // 7518 5.2): JWE's A128CBC-HS256 and its two
                              // siblings. The nonce is the 16-byte IV.
@@ -134,10 +139,42 @@ pub const HASHES: &[&str] = &[
     // The `_bc` names are the same three hashes under the other reading
     // of the empty message - Bouncy Castle's, gost89's and OpenSSL 1.0's
     // gost engine's; today's gost-engine and cryptonite read it as the
-    // plain names do - and agree with them on every other message.
+    // plain names do - and agree with them on every other message. The
+    // `_dke` names are GOST 34.311-95 under Ukraine's other nine tables,
+    // `dstu-dke-2` to `dstu-dke-10`.
     "gost94", "gost94_test", "gost34311", "gost94_bc", "gost94_test_bc", "gost34311_bc",
-    "blake2b", "blake2s", "ripemd128", "ripemd160", "ripemd256", "ripemd320",
+    "gost34311_dke2", "gost34311_dke3", "gost34311_dke4", "gost34311_dke5", "gost34311_dke6",
+    "gost34311_dke7", "gost34311_dke8", "gost34311_dke9", "gost34311_dke10",
+    // BLAKE2 at its full lengths, then the shorter ones that have names of
+    // their own (BLAKE2b-256 and the rest): each length is a function of
+    // its own, with the length in the parameter block. Any other whole
+    // number of bytes is reachable as `blake2b_<bits>`, unlisted.
+    "blake2b", "blake2s",
+    "blake2b_128", "blake2b_160", "blake2b_256", "blake2b_384", "blake2s_128", "blake2s_160",
+    "ripemd128", "ripemd160", "ripemd256", "ripemd320",
     "sm3", "whirlpool", "whirlpool_0", "whirlpool_t", "has160",
+    // Tiger as everybody means it (192 bits, three passes), PHP's other
+    // five lengths and pass counts, and Tiger2; HAVAL's fifteen, with
+    // PHP's names; Snefru at both lengths.
+    "tiger", "tiger128_3", "tiger160_3", "tiger128_4", "tiger160_4", "tiger192_4", "tiger2",
+    "haval128_3", "haval160_3", "haval192_3", "haval224_3", "haval256_3",
+    "haval128_4", "haval160_4", "haval192_4", "haval224_4", "haval256_4",
+    "haval128_5", "haval160_5", "haval192_5", "haval224_5", "haval256_5",
+    "snefru128", "snefru256",
+    // The SHA-3 finalists as their teams finally submitted them.
+    "blake224", "blake256", "blake384", "blake512",
+    "groestl224", "groestl256", "groestl384", "groestl512",
+    "jh224", "jh256", "jh384", "jh512",
+    // Skein-STATE-BITS as the Skein submission named its sizes; any
+    // other whole number of bytes out is reachable by name too.
+    "skein256_128", "skein256_160", "skein256_224", "skein256_256",
+    "skein512_128", "skein512_160", "skein512_224", "skein512_256", "skein512_384",
+    "skein512_512", "skein1024_384", "skein1024_512", "skein1024_1024",
+    // BLAKE3 at its default 32 bytes; `blake3_xof` gives any length.
+    "blake3",
+    // LSH (KS X 3262) at the six sizes the standard names; any other whole
+    // number of bytes up to the width is reachable by name.
+    "lsh256_224", "lsh256_256", "lsh512_224", "lsh512_256", "lsh512_384", "lsh512_512",
     // Kupyna, DSTU 7564:2014, Ukraine's hash after GOST 34.311-95, at
     // the three sizes the standard names.
     "kupyna256", "kupyna384", "kupyna512",
@@ -264,6 +301,20 @@ pub enum AnyBlockCipher {
     /// MARS, an AES finalist, with the second round's key schedule: a
     /// 128 bit block and a key of 16 to 56 bytes, a multiple of 4.
     Mars(crate::block_ciphers::mars::Mars),
+    /// Khazad, a NESSIE finalist in its tweaked form: a 64 bit block and
+    /// a 128 bit key.
+    Khazad(crate::block_ciphers::khazad::Khazad),
+    /// Anubis, a NESSIE submission in its tweaked form: a 128 bit block
+    /// and a key of 16 to 40 bytes, a multiple of 4.
+    Anubis(crate::block_ciphers::anubis::Anubis),
+    /// Noekeon, a NESSIE submission: a 128 bit block and key, in its
+    /// direct-key mode (`noekeon`) or its indirect-key mode
+    /// (`noekeon-indirect`), which first encrypts the key under the zero
+    /// key.
+    Noekeon(crate::block_ciphers::noekeon::Noekeon),
+    /// SHACAL-2, SHA-256's compression function as a cipher: a 256 bit
+    /// block and a key of 16 to 64 bytes, zero-padded to 64.
+    Shacal2(crate::block_ciphers::shacal2::Shacal2),
     /// Rijndael at any of its five block sizes, 16 to 32 bytes, with a
     /// key of 16, 20, 24, 28 or 32 bytes. The 16 byte block is AES.
     Rijndael(crate::block_ciphers::rijndael::Rijndael),
@@ -308,6 +359,16 @@ impl AnyBlockCipher {
                 crate::block_ciphers::cast256::Cast256::new(key)?)),
             "mars" => Ok(AnyBlockCipher::Mars(
                 crate::block_ciphers::mars::Mars::new(key)?)),
+            "khazad" => Ok(AnyBlockCipher::Khazad(
+                crate::block_ciphers::khazad::Khazad::new(key)?)),
+            "anubis" => Ok(AnyBlockCipher::Anubis(
+                crate::block_ciphers::anubis::Anubis::new(key)?)),
+            "noekeon" => Ok(AnyBlockCipher::Noekeon(
+                crate::block_ciphers::noekeon::Noekeon::new(key)?)),
+            "noekeon-indirect" => Ok(AnyBlockCipher::Noekeon(
+                crate::block_ciphers::noekeon::Noekeon::new_indirect(key)?)),
+            "shacal2" => Ok(AnyBlockCipher::Shacal2(
+                crate::block_ciphers::shacal2::Shacal2::new(key)?)),
             "rc6" => Ok(AnyBlockCipher::Rc6(
                 crate::block_ciphers::rc6::Rc6::new(key)?)),
             // Named by block size in bits; the key's length picks the
@@ -431,6 +492,11 @@ impl AnyBlockCipher {
             AnyBlockCipher::Rc6(_) => "rc6",
             AnyBlockCipher::Cast256(_) => "cast256",
             AnyBlockCipher::Mars(_) => "mars",
+            AnyBlockCipher::Khazad(_) => "khazad",
+            AnyBlockCipher::Anubis(_) => "anubis",
+            AnyBlockCipher::Noekeon(n) if n.is_indirect() => "noekeon-indirect",
+            AnyBlockCipher::Noekeon(_) => "noekeon",
+            AnyBlockCipher::Shacal2(_) => "shacal2",
             AnyBlockCipher::Kalyna(k) => match k.block_bytes() {
                 16 => "kalyna-128",
                 32 => "kalyna-256",
@@ -473,6 +539,10 @@ macro_rules! dispatch {
             AnyBlockCipher::Rc6($inner) => $body,
             AnyBlockCipher::Cast256($inner) => $body,
             AnyBlockCipher::Mars($inner) => $body,
+            AnyBlockCipher::Khazad($inner) => $body,
+            AnyBlockCipher::Anubis($inner) => $body,
+            AnyBlockCipher::Noekeon($inner) => $body,
+            AnyBlockCipher::Shacal2($inner) => $body,
             AnyBlockCipher::Rijndael($inner) => $body,
             AnyBlockCipher::Kalyna($inner) => $body,
             AnyBlockCipher::Aria($inner) => $body,
@@ -1241,6 +1311,9 @@ pub enum AnyStreamCipher {
     Chacha(Chacha),
     Rc4(RC4),
     Salsa20(crate::stream_ciphers::salsa20::Salsa20),
+    /// Strumok, DSTU 8845:2019: a 32 or 64 byte key, the 32 byte IV as
+    /// the nonce.
+    Strumok(crate::stream_ciphers::strumok::Strumok),
     /// PKWARE's traditional ZIP encryption. Its keys absorb the
     /// plaintext, so it has a direction: `encrypt` and `decrypt` work and
     /// `update` refuses.
@@ -1287,6 +1360,8 @@ impl AnyStreamCipher {
                 }
                 Ok(AnyStreamCipher::Rc4(RC4::new(key)?))
             }
+            "strumok" => Ok(AnyStreamCipher::Strumok(
+                crate::stream_ciphers::strumok::Strumok::new(key, nonce)?)),
             // The key is the password, of any length, the empty one
             // included.
             "zipcrypto" => {
@@ -1354,6 +1429,10 @@ impl AnyStreamCipher {
                 c.crypt(input, out);
                 Ok(())
             }
+            AnyStreamCipher::Strumok(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
             AnyStreamCipher::ZipCrypto(_) => Err(
                 "ZipCrypto has no keystream independent of the data.".to_string()),
         }
@@ -1363,9 +1442,9 @@ impl AnyStreamCipher {
     /// next byte `update` transforms is the one at that offset.
     ///
     /// ChaCha and Salsa20 compute any block directly from its counter, so
-    /// this costs one block at most. RC4 and ZipCrypto have no counter -
-    /// their state is everything that came before - and refuse. With a
-    /// 12 byte nonce ChaCha's counter is 32 bits, so an offset of
+    /// this costs one block at most. RC4, Strumok and ZipCrypto have no
+    /// counter - their state is everything that came before - and refuse.
+    /// With a 12 byte nonce ChaCha's counter is 32 bits, so an offset of
     /// 256 GiB or more is refused there.
     pub fn seek(&mut self, offset: u64) -> Result<(), String> {
         self.seek_block(offset / 64)?;
@@ -1385,10 +1464,11 @@ impl AnyStreamCipher {
                 c.seek_block(block);
                 Ok(())
             }
-            AnyStreamCipher::Rc4(_) | AnyStreamCipher::ZipCrypto(_) => Err(
-                "RC4 and ZipCrypto cannot seek: their state is everything that \
-                 came before, not a counter. Start a new one and discard up to \
-                 the offset.".to_string()),
+            AnyStreamCipher::Rc4(_) | AnyStreamCipher::Strumok(_)
+            | AnyStreamCipher::ZipCrypto(_) => Err(
+                "RC4, Strumok and ZipCrypto cannot seek: their state is everything \
+                 that came before, not a counter. Start a new one and discard up \
+                 to the offset.".to_string()),
         }
     }
 
@@ -1454,6 +1534,33 @@ pub fn gmac(cipher: &str, key: &[u8], nonce: &[u8], data: &[u8], tag_len: Option
 /// Poly1305 derives a fresh key per message, from a cipher's keystream.
 pub fn poly1305(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
     Ok(poly1305_over(key, message)?.tag().to_vec())
+}
+
+/// SipHash-`c_rounds`-`d_rounds` of `data` under a 16 byte key, 8 or 16
+/// bytes out. SipHash-2-4 is the designers' choice; SipHash-1-3 is what
+/// Rust's and Python's hash tables run.
+///
+/// # Errors
+/// A key that is not 16 bytes, no rounds of either kind, or another
+/// output length.
+pub fn siphash(key: &[u8], data: &[u8], c_rounds: usize, d_rounds: usize, size: usize)
+               -> Result<Vec<u8>, String> {
+    let key = key.try_into().map_err(|_| format!("A SipHash key is 16 bytes, not {}.",
+                                                   key.len()))?;
+    crate::mac::siphash::siphash(key, data, c_rounds, d_rounds, size)
+}
+
+/// HalfSipHash-`c_rounds`-`d_rounds` of `data` under an 8 byte key, 4 or
+/// 8 bytes out: SipHash on 32 bit words, for where SipHash is too slow.
+///
+/// # Errors
+/// A key that is not 8 bytes, no rounds of either kind, or another
+/// output length.
+pub fn halfsiphash(key: &[u8], data: &[u8], c_rounds: usize, d_rounds: usize, size: usize)
+                   -> Result<Vec<u8>, String> {
+    let key = key.try_into().map_err(|_| format!("A HalfSipHash key is 8 bytes, not {}.",
+                                                   key.len()))?;
+    crate::mac::siphash::halfsiphash(key, data, c_rounds, d_rounds, size)
 }
 
 /// Check a Poly1305 tag in constant time. `false` for a tag of the
@@ -1687,6 +1794,35 @@ pub enum AnyHash {
     Ripemd(crate::hash_functions::ripemd::Ripemd),
     /// HAS-160, the Korean standard hash KCDSA signs with.
     Has160(crate::hash_functions::has160::Has160),
+    /// Tiger and Tiger2, at the lengths and pass counts PHP names.
+    Tiger(crate::hash_functions::tiger::Tiger),
+    /// HAVAL, all fifteen: 128 to 256 bits after 3, 4 or 5 passes.
+    Haval(crate::hash_functions::haval::Haval),
+    /// Snefru at 128 and 256 bits, eight passes.
+    Snefru128(crate::hash_functions::snefru::Snefru128),
+    Snefru256(crate::hash_functions::snefru::Snefru256),
+    /// BLAKE-224 and BLAKE-256, the SHA-3 finalist (not BLAKE2).
+    BlakeSmall(crate::hash_functions::blake::BlakeSmall),
+    /// BLAKE-384 and BLAKE-512.
+    BlakeBig(crate::hash_functions::blake::BlakeBig),
+    /// Grøstl-224 and Grøstl-256, the SHA-3 finalist.
+    GroestlSmall(crate::hash_functions::groestl::GroestlSmall),
+    /// Grøstl-384 and Grøstl-512.
+    GroestlBig(crate::hash_functions::groestl::GroestlBig),
+    /// JH, the SHA-3 finalist, at 224, 256, 384 and 512 bits.
+    Jh(crate::hash_functions::jh::Jh),
+    /// Skein, the SHA-3 finalist, on each of Threefish's three widths.
+    Skein256(crate::hash_functions::skein::Skein256),
+    Skein512(crate::hash_functions::skein::Skein512),
+    Skein1024(crate::hash_functions::skein::Skein1024),
+    /// BLAKE3, in any of its three modes.
+    Blake3(crate::hash_functions::blake3::Blake3),
+    /// LSH-256 at 1 to 32 bytes out.
+    Lsh256(crate::hash_functions::lsh::Lsh256),
+    /// LSH-512 at 1 to 64 bytes out.
+    Lsh512(crate::hash_functions::lsh::Lsh512),
+    /// A checksum: one of `CHECKSUMS`.
+    Checksum(crate::checksum::Checksum),
     /// MD6, any whole-byte digest size up to 512 bits.
     Md6(crate::hash_functions::md6::Md6),
     /// SM3, GB/T 32905-2016. The hash SM2 is defined against and the
@@ -1733,6 +1869,16 @@ impl AnyHash {
         }
     }
 
+    /// BLAKE3 in its keyed mode, with a 32 byte `key`, or its key
+    /// derivation mode, with a `context` - a fixed string naming the
+    /// application and the purpose - or, with neither, its hash mode.
+    ///
+    /// # Errors
+    /// A key of any other length, or both a key and a context.
+    pub fn blake3(key: Option<&[u8]>, context: Option<&str>) -> Result<Self, String> {
+        Ok(AnyHash::Blake3(blake3_hasher(key, context)?))
+    }
+
     pub fn new(name: &str) -> Result<Self, String> {
         // **The built-in names first, then the registry.** An OID a
         // caller has given a meaning to can be used as a hash name
@@ -1750,7 +1896,8 @@ impl AnyHash {
             Some(algorithm) if !HASHES.contains(&name) => algorithm,
             _ => name.to_string(),
         };
-        match name.to_ascii_lowercase().replace('-', "_").as_str() {
+        // A comma is PHP's separator in `tiger192,3` and `haval256,5`.
+        match name.to_ascii_lowercase().replace(['-', ','], "_").as_str() {
             "md2" => Ok(AnyHash::Md2(
                 crate::hash_functions::md2::Md2::new(&[]))),
             "md4" => Ok(AnyHash::Md4(
@@ -1795,6 +1942,13 @@ impl AnyHash {
                 Ok(AnyHash::Gost94(
                     crate::hash_functions::gost94::Gost94::with_param_set(
                         &[], crate::hash_functions::gost94::DSTU_PARAM_SET)?)),
+            dke if dke.strip_prefix("gost34311_dke")
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| (2..=10).contains(&n) && dke == format!("gost34311_dke{n}")) => {
+                let n: usize = dke["gost34311_dke".len()..].parse().expect("checked");
+                Ok(AnyHash::Gost94(crate::hash_functions::gost94::Gost94::with_param_set(
+                    &[], crate::block_ciphers::gost::DSTU_DKE_NAMES[n - 1])?))
+            }
             "streebog512" | "gostr341112_512" | "gost34.11_512" =>
                 Ok(AnyHash::Streebog(
                     crate::hash_functions::streebog::Streebog::new(&[]))),
@@ -1838,6 +1992,87 @@ impl AnyHash {
             }
             "has160" | "has_160" => Ok(AnyHash::Has160(
                 crate::hash_functions::has160::Has160::new(&[]))),
+            // Tiger at 192 bits and three passes is what everybody means
+            // (and `tiger192_3`, by the arm after next); PHP names five
+            // more, and Tiger2 differs in its padding byte.
+            "tiger" => Ok(AnyHash::Tiger(
+                crate::hash_functions::tiger::Tiger::new(192, 3)?)),
+            "tiger2" => Ok(AnyHash::Tiger(crate::hash_functions::tiger::Tiger::tiger2())),
+            other if other.starts_with("tiger") && other[5..].split_once('_')
+                .is_some_and(|(bits, passes)| bits.parse::<usize>().is_ok()
+                             && passes.parse::<usize>().is_ok()) => {
+                let (bits, passes) = other[5..].split_once('_').expect("checked");
+                Ok(AnyHash::Tiger(crate::hash_functions::tiger::Tiger::new(
+                    bits.parse().expect("checked"), passes.parse().expect("checked"))?))
+            }
+            other if other.starts_with("haval") && other[5..].split_once('_')
+                .is_some_and(|(bits, passes)| bits.parse::<usize>().is_ok()
+                             && passes.parse::<usize>().is_ok()) => {
+                let (bits, passes) = other[5..].split_once('_').expect("checked");
+                Ok(AnyHash::Haval(crate::hash_functions::haval::Haval::new(
+                    bits.parse().expect("checked"), passes.parse().expect("checked"))?))
+            }
+            "snefru128" => Ok(AnyHash::Snefru128(
+                crate::hash_functions::snefru::Snefru128::new(&[]))),
+            // PHP's `snefru` is the 256 bit one.
+            "snefru256" | "snefru" => Ok(AnyHash::Snefru256(
+                crate::hash_functions::snefru::Snefru256::new(&[]))),
+            // BLAKE, the SHA-3 finalist: not BLAKE2, which is `blake2b`
+            // and `blake2s`.
+            "blake224" => Ok(AnyHash::BlakeSmall(
+                crate::hash_functions::blake::BlakeSmall::blake224())),
+            "blake256" => Ok(AnyHash::BlakeSmall(
+                crate::hash_functions::blake::BlakeSmall::blake256())),
+            "blake384" => Ok(AnyHash::BlakeBig(
+                crate::hash_functions::blake::BlakeBig::blake384())),
+            "blake512" => Ok(AnyHash::BlakeBig(
+                crate::hash_functions::blake::BlakeBig::blake512())),
+            "groestl224" => Ok(AnyHash::GroestlSmall(
+                crate::hash_functions::groestl::GroestlSmall::groestl224())),
+            "groestl256" => Ok(AnyHash::GroestlSmall(
+                crate::hash_functions::groestl::GroestlSmall::groestl256())),
+            "groestl384" => Ok(AnyHash::GroestlBig(
+                crate::hash_functions::groestl::GroestlBig::groestl384())),
+            "groestl512" => Ok(AnyHash::GroestlBig(
+                crate::hash_functions::groestl::GroestlBig::groestl512())),
+            jh @ ("jh224" | "jh256" | "jh384" | "jh512") => Ok(AnyHash::Jh(
+                crate::hash_functions::jh::Jh::new(jh[2..].parse().expect("digits"))?)),
+            // skeinSTATE_BITS, with BITS a whole number of bytes. A bare
+            // `skein256` is refused: some software means Skein-256-256
+            // by it and some Skein-512-256.
+            other if other.starts_with("skein") => {
+                let sizes = other[5..].split_once('_')
+                    .and_then(|(state, bits)| Some((state.parse::<usize>().ok()?,
+                                                    bits.parse::<usize>().ok()?)))
+                    .filter(|&(_, bits)| bits > 0 && bits.is_multiple_of(8));
+                use crate::hash_functions::skein::{Skein1024, Skein256, Skein512};
+                match sizes {
+                    Some((256, bits)) => Ok(AnyHash::Skein256(Skein256::new(bits / 8)?)),
+                    Some((512, bits)) => Ok(AnyHash::Skein512(Skein512::new(bits / 8)?)),
+                    Some((1024, bits)) => Ok(AnyHash::Skein1024(Skein1024::new(bits / 8)?)),
+                    _ => Err(format!("Skein is named skeinSTATE_BITS, STATE 256, 512 or 1024 and \
+                                      BITS a whole number of bytes, as in skein512_256; not \
+                                      {other:?}.")),
+                }
+            }
+            "blake3" => Ok(AnyHash::Blake3(crate::hash_functions::blake3::Blake3::new())),
+            // lshWIDTH_BITS, with BITS a whole number of bytes; the
+            // standard's LSH-WIDTH-BITS too.
+            other if other.starts_with("lsh") => {
+                use crate::hash_functions::lsh::{Lsh256, Lsh512};
+                let rest = other[3..].strip_prefix('_').unwrap_or(&other[3..]);
+                let sizes = rest.split_once('_')
+                    .and_then(|(width, bits)| Some((width.parse::<usize>().ok()?,
+                                                    bits.parse::<usize>().ok()?)))
+                    .filter(|&(_, bits)| bits.is_multiple_of(8));
+                match sizes {
+                    Some((256, bits)) => Ok(AnyHash::Lsh256(Lsh256::new(bits / 8)?)),
+                    Some((512, bits)) => Ok(AnyHash::Lsh512(Lsh512::new(bits / 8)?)),
+                    _ => Err(format!("LSH is named lshWIDTH_BITS, WIDTH 256 or 512 and BITS a \
+                                      whole number of bytes up to it, as in lsh512_256; not \
+                                      {other:?}.")),
+                }
+            }
             "ripemd128" | "ripemd_128" | "rmd128" => Ok(AnyHash::Ripemd(
                 crate::hash_functions::ripemd::Ripemd::ripemd128(&[]))),
             "ripemd256" | "ripemd_256" | "rmd256" => Ok(AnyHash::Ripemd(
@@ -1900,7 +2135,11 @@ impl AnyHash {
                 Ok(AnyHash::Keccak(
                     crate::hash_functions::keccak::Keccak::shake(security, bits / 8)?))
             }
-            other => Err(format!("Unknown hash {:?}. Known: {}.", other, HASHES.join(", "))),
+            other => match crate::checksum::Checksum::from_name(other) {
+                Some(checksum) => Ok(AnyHash::Checksum(checksum)),
+                None => Err(format!("Unknown hash {:?}. Known: {}, and the checksums {}.", other,
+                                    HASHES.join(", "), CHECKSUMS.join(", "))),
+            },
         }
     }
 
@@ -1931,6 +2170,22 @@ macro_rules! dispatch_hash {
             AnyHash::Ripemd160($inner) => $body,
             AnyHash::Ripemd($inner) => $body,
             AnyHash::Has160($inner) => $body,
+            AnyHash::Tiger($inner) => $body,
+            AnyHash::Haval($inner) => $body,
+            AnyHash::Snefru128($inner) => $body,
+            AnyHash::Snefru256($inner) => $body,
+            AnyHash::BlakeSmall($inner) => $body,
+            AnyHash::BlakeBig($inner) => $body,
+            AnyHash::GroestlSmall($inner) => $body,
+            AnyHash::GroestlBig($inner) => $body,
+            AnyHash::Jh($inner) => $body,
+            AnyHash::Skein256($inner) => $body,
+            AnyHash::Skein512($inner) => $body,
+            AnyHash::Skein1024($inner) => $body,
+            AnyHash::Blake3($inner) => $body,
+            AnyHash::Lsh256($inner) => $body,
+            AnyHash::Lsh512($inner) => $body,
+            AnyHash::Checksum($inner) => $body,
             AnyHash::Md6($inner) => $body,
             AnyHash::Sm3($inner) => $body,
             AnyHash::Kupyna($inner) => $body,
@@ -2238,6 +2493,23 @@ pub fn bitlocker_decrypt_sector(method: &str, key: &[u8], byte_offset: u64, sect
     Ok(out)
 }
 
+// Checksums: not cryptographic, so not in `HASHES`, but `AnyHash::new`
+// takes their names, and the value comes out big endian, as PHP's `hash`
+// and Go's `Sum` give it.
+pub const CHECKSUMS: &[&str] = crate::checksum::NAMES;
+
+/// CRC-32C of `data`, continuing from `value`, the CRC-32C of what came
+/// before it (0 to start), as zlib's `crc32` takes and gives CRC-32.
+pub fn crc32c(data: &[u8], value: u32) -> u32 {
+    !crate::checksum::crc32c_update(!value, data)
+}
+
+// Fuzzy hashes: ssdeep, as libfuzzy computes and compares it, and the
+// CTPH of ctph.js, which is CyberChef's. Text digests of no fixed length,
+// so not in `HASHES`; `Ssdeep` streams.
+pub use crate::hash_functions::ssdeep::{compare as ssdeep_compare, ctph, ctph_similarity, ssdeep,
+                                        Ssdeep};
+
 /// The NT hash of a password (MS-NLMP NTOWFv1): MD4 of the password as
 /// UTF-16 little endian. It is what NTLM and Kerberos's RC4-HMAC use as
 /// the user's key.
@@ -2476,6 +2748,35 @@ pub fn shake(name: &str, data: &[u8], length: usize) -> Result<Vec<u8>, String> 
     use crate::hash_functions::HashFunction;
     sponge.update(data);
     sponge.try_squeeze(length)
+}
+
+/// `length` bytes of BLAKE3's output from byte `seek`, in its hash mode,
+/// its keyed mode (a 32 byte `key`) or its key derivation mode (a
+/// `context`, with `data` the key material). A longer output extends a
+/// shorter one.
+///
+/// # Errors
+/// As `AnyHash::blake3`.
+pub fn blake3_xof(data: &[u8], length: usize, key: Option<&[u8]>, context: Option<&str>,
+                  seek: u64) -> Result<Vec<u8>, String> {
+    use crate::hash_functions::HashFunction;
+    let mut hasher = blake3_hasher(key, context)?;
+    hasher.update(data);
+    Ok(hasher.xof(length, seek))
+}
+
+fn blake3_hasher(key: Option<&[u8]>, context: Option<&str>)
+                 -> Result<crate::hash_functions::blake3::Blake3, String> {
+    use crate::hash_functions::blake3::Blake3;
+    match (key, context) {
+        (None, None) => Ok(Blake3::new()),
+        (Some(key), None) => Ok(Blake3::keyed(key.try_into().map_err(|_| {
+            format!("A BLAKE3 key is 32 bytes, not {}.", key.len())
+        })?)),
+        (None, Some(context)) => Ok(Blake3::derive_key(context.as_bytes())),
+        (Some(_), Some(_)) => Err("BLAKE3 takes a key or a key derivation context, not \
+                                   both.".to_string()),
+    }
 }
 
 /// scrypt (RFC 7914). `n` is a power of two greater than one.
@@ -2986,7 +3287,18 @@ impl Dstu4145Key {
     /// identifier, and `second` - the key for key agreement - in IIT's
     /// attributes when given. What `dstu4145_key6` and
     /// `encrypt_private_key` seal.
+    ///
+    /// # Errors
+    /// A key on a curve in a normal basis, which a container's parameters,
+    /// written in a polynomial basis, cannot carry.
     pub fn private_key_info(&self, second: Option<&Dstu4145Key>) -> Result<Vec<u8>, String> {
+        for key in std::iter::once(self).chain(second) {
+            if key.curve.is_normal_basis() {
+                return Err(format!("{} is in an optimal normal basis, which the key \
+                                    container's parameters cannot describe.",
+                                   key.curve_name()));
+            }
+        }
         crate::x509::ua_key::write_private_key(&self.ua_key(),
                                                second.map(|s| s.ua_key()).as_ref())
     }
@@ -3019,7 +3331,7 @@ fn dstu4145_point_bytes(curve: &dstu4145::Curve, p: &dstu4145::Point, compressed
     let dstu4145::Point::Affine(x, y) = p else {
         return Err("The point at infinity has no encoding.".to_string());
     };
-    Ok([curve.field().to_bytes(x), curve.field().to_bytes(y)].concat())
+    Ok([curve.element_to_bytes(x), curve.element_to_bytes(y)].concat())
 }
 
 impl Dstu4145PublicKey {
@@ -3032,9 +3344,8 @@ impl Dstu4145PublicKey {
         let point = if bytes.len() == len {
             curve.decompress(bytes)?
         } else if bytes.len() == 2 * len {
-            let f = curve.field();
-            let point = dstu4145::Point::Affine(f.from_bytes(&bytes[..len])?,
-                                                f.from_bytes(&bytes[len..])?);
+            let point = dstu4145::Point::Affine(curve.element_from_bytes(&bytes[..len])?,
+                                                curve.element_from_bytes(&bytes[len..])?);
             curve.validate(&point)?;
             point
         } else {
@@ -3096,6 +3407,129 @@ pub fn dstu4145_keys_open(data: &[u8], password: &[u8]) -> Result<Vec<Dstu4145Ke
 pub fn dstu4145_key6(key: &Dstu4145Key, second: Option<&Dstu4145Key>, password: &[u8])
                      -> Result<Vec<u8>, String> {
     crate::x509::ua_key::key6_seal(&key.private_key_info(second)?, password)
+}
+
+pub use crate::ec::dstu9041::NAMES as DSTU9041_CURVES;
+
+/// A DSTU 9041:2020 key pair on `dstu9041-e256-1` or `dstu9041-e512-1`:
+/// the private key `e` and the public key `e·P`, both big endian at the
+/// field's width. It decrypts; `Dstu9041PublicKey` encrypts.
+pub struct Dstu9041Key {
+    curve: crate::ec::dstu9041::Curve,
+    private: Vec<u8>,
+    public: Vec<u8>,
+}
+
+/// A DSTU 9041:2020 public key, `x || y`.
+pub struct Dstu9041PublicKey {
+    curve: crate::ec::dstu9041::Curve,
+    public: Vec<u8>,
+}
+
+/// A scalar in `2 ..= n − 2` from the OS random source, by rejection
+/// below `2^bit_len(n)` (clause 6.4).
+fn dstu9041_scalar(curve: &crate::ec::dstu9041::Curve) -> Result<Vec<u8>, String> {
+    let bits = curve.order().bit_len();
+    let width = curve.field_bytes();
+    loop {
+        let mut bytes = crate::random::bytes(width)?;
+        let excess = 8 * width - bits;
+        for byte in bytes.iter_mut().take(excess / 8) {
+            *byte = 0;
+        }
+        bytes[excess / 8] &= 0xff >> (excess % 8);
+        if curve.public_key(&bytes).is_ok() {
+            return Ok(bytes);
+        }
+    }
+}
+
+impl Dstu9041Key {
+    /// A fresh key pair from the OS random source.
+    pub fn generate(curve_name: &str) -> Result<Dstu9041Key, String> {
+        let curve = crate::ec::dstu9041::Curve::by_name(curve_name)?;
+        let private = dstu9041_scalar(&curve)?;
+        Dstu9041Key::from_private(curve.name(), &private)
+    }
+
+    /// Import a private key `e`, big endian, from 2 to `n − 2`.
+    pub fn from_private(curve_name: &str, private: &[u8]) -> Result<Dstu9041Key, String> {
+        let curve = crate::ec::dstu9041::Curve::by_name(curve_name)?;
+        // `public_key` refuses a key wider than the field.
+        let public = curve.public_key(private)?;
+        let mut padded = vec![0u8; curve.field_bytes() - private.len()];
+        padded.extend_from_slice(private);
+        Ok(Dstu9041Key { curve, private: padded, public })
+    }
+
+    pub fn curve_name(&self) -> &'static str {
+        self.curve.name()
+    }
+
+    /// `e`, big endian at the field's width.
+    pub fn private_bytes(&self) -> Vec<u8> {
+        self.private.clone()
+    }
+
+    pub fn public_key(&self) -> Dstu9041PublicKey {
+        Dstu9041PublicKey { curve: self.curve.clone(), public: self.public.clone() }
+    }
+
+    /// Decrypt `r || t` to the message's bytes, the message right aligned
+    /// in them; `decrypt_bits` gives its length in bits as well.
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(self.decrypt_bits(ciphertext)?.0)
+    }
+
+    /// Decrypt, with the message's length in bits.
+    pub fn decrypt_bits(&self, ciphertext: &[u8]) -> Result<(Vec<u8>, usize), String> {
+        self.curve.decrypt(&self.private, ciphertext)
+    }
+}
+
+impl Dstu9041PublicKey {
+    /// Import `x || y`, big endian, checked to be a point of order `n`.
+    pub fn from_bytes(curve_name: &str, bytes: &[u8]) -> Result<Dstu9041PublicKey, String> {
+        let curve = crate::ec::dstu9041::Curve::by_name(curve_name)?;
+        curve.check_public_key(bytes)?;
+        Ok(Dstu9041PublicKey { curve, public: bytes.to_vec() })
+    }
+
+    /// `x || y`, big endian.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.public.clone()
+    }
+
+    pub fn curve_name(&self) -> &'static str {
+        self.curve.name()
+    }
+
+    /// The longest message, in bits: 200 on E256/1, 424 on E512/1.
+    pub fn max_message_bits(&self) -> usize {
+        self.curve.max_message_bits()
+    }
+
+    /// Encrypt `message`, a whole number of bytes, under a one-time key
+    /// from the OS random source.
+    pub fn encrypt(&self, message: &[u8]) -> Result<Vec<u8>, String> {
+        self.encrypt_bits(message, 8 * message.len(), None)
+    }
+
+    /// Encrypt a message of `bits` bits, right aligned in `⌈bits/8⌉`
+    /// bytes with the bits above it zero, under the one-time key
+    /// `epsilon` (big endian, 2 to `n − 2`) or a random one.
+    pub fn encrypt_bits(&self, message: &[u8], bits: usize, epsilon: Option<&[u8]>)
+                        -> Result<Vec<u8>, String> {
+        let random;
+        let epsilon = match epsilon {
+            Some(e) => e,
+            None => {
+                random = dstu9041_scalar(&self.curve)?;
+                &random
+            }
+        };
+        self.curve.encrypt(&self.public, message, bits, epsilon)
+    }
 }
 
 /// An EdDSA key pair, held as the seed plus its derived public key.
@@ -4727,6 +5161,8 @@ impl Certificate {
             x509::PublicKey::Gost { curve, .. } =>
                 (format!("GOST R 34.10-2012 {}", curve), 0),
             x509::PublicKey::Eddsa { curve, .. } => (format!("EdDSA {}", curve), 0),
+            x509::PublicKey::Dstu4145 { curve, .. } =>
+                (format!("DSTU 4145-2002 {}", x509::verify::dstu4145_curve(curve)), 0),
             x509::PublicKey::MlDsa { parameter_set, .. } => (parameter_set.to_string(), 0),
             x509::PublicKey::Dsa { parameters, .. } => ("DSA".to_string(),
                 parameters.as_ref().map_or(0, |(p, _, _)| p.bit_len())),

@@ -110,6 +110,21 @@ to be someone's CVE.**
 - [7zzr. MARS](#7zzr-mars)
 - [7zzs. DSTU 4145-2002](#7zzs-dstu-4145-2002)
 - [7zzt. Ukrainian key containers](#7zzt-ukrainian-key-containers)
+- [7zzu. Khazad](#7zzu-khazad)
+- [7zzv. Anubis](#7zzv-anubis)
+- [7zzw. Noekeon](#7zzw-noekeon)
+- [7zzx. SHACAL-2](#7zzx-shacal-2)
+- [7zzy. Strumok](#7zzy-strumok)
+- [7zzz. DSTU 9041](#7zzz-dstu-9041)
+- [7zzza. DSTU 4145 in an optimal normal basis](#7zzza-dstu-4145-in-an-optimal-normal-basis)
+- [7zzzb. DSTU 4145 in certificates](#7zzzb-dstu-4145-in-certificates)
+- [7zzzc. Fuzzy hashes](#7zzzc-fuzzy-hashes)
+- [7zzzd. Tiger, HAVAL and Snefru](#7zzzd-tiger-haval-and-snefru)
+- [7zzze. The SHA-3 finalists](#7zzze-the-sha-3-finalists)
+- [7zzzf. BLAKE3](#7zzzf-blake3)
+- [7zzzg. SipHash](#7zzzg-siphash)
+- [7zzzh. LSH](#7zzzh-lsh)
+- [7zzzi. Checksums](#7zzzi-checksums)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -10229,6 +10244,578 @@ ignored there; gost89 honours it, and so does this library. No
 container under another DKE was to hand, so that path has a unit test
 (`test_gost_cfb_takes_the_dke_from_its_parameters`) and no witness.
 
+---
+
+## 7zzu. Khazad
+
+### Two Khazads, and this is the second
+
+**Status: accepted.** Khazad as first submitted to NESSIE had a
+pseudo-random S-box; the tweak replaced it with one built from two 4-bit
+boxes, which is the version NESSIE evaluated and the only one libtomcrypt
+and the Linux kernel carry. That is the one here. The first version's
+S-box is a different table, and no implementation of it was found to
+check one against, so it is not offered.
+
+### The field is Whirlpool's, not AES's
+
+**Status: mitigated.** `θ` multiplies over GF(2^8) modulo 0x11d. Taking
+AES's 0x11b gives a cipher that still inverts - a Hadamard matrix whose
+entries sum to one is an involution over either field, so the check that
+`θ` is its own inverse passes too - and agrees with nobody. Only the
+vectors pin the field.
+
+### The last round has no θ, and decryption is not the rounds reversed
+
+**Status: mitigated.** Encryption ends with `γ` and the key alone. So
+decryption runs the same function under keys that are the encryption
+keys reversed with the middle seven passed through `θ` - the first and
+last unchanged. Passing all nine through `θ`, or none, decrypts to
+something else; both directions of every row are checked.
+
+### The S-box is a table everywhere else
+
+**Status: mitigated.** Both witnesses, as the designers' code, look up
+eight 2 KB tables indexed by state bytes, which leaks the key through
+the cache. Here the S-box is computed from its two 4-bit boxes by masked
+scans of all sixteen entries, and `θ` doubles with a mask, so nothing
+indexes memory by secret data; `scripts/ct_check.py`'s `khazad_blocks`
+case checks it.
+
+---
+
+## 7zzv. Anubis
+
+### Two Anubises, and libtomcrypt builds the first by default
+
+**Status: accepted.** As with Khazad, the tweak replaced Anubis's
+S-box, here with Khazad's, and the tweaked cipher is the one NESSIE
+evaluated, the Linux kernel carries and the designers' last reference
+code implements. That is the one here. libtomcrypt carries both and
+builds the **original** unless `LTC_ANUBIS_TWEAK` is defined, so a
+libtomcrypt user's "anubis" is probably not this one; the two agree on
+nothing. The original is not offered: libtomcrypt is its only
+implementation found.
+
+### The key schedule's permutation wraps over N rows, not four
+
+**Status: mitigated.** Each step of the key evolution moves column `j`
+of the `N`×4 key state down by `j` rows, cyclically over all `N` -
+not over four, as the block's own transposition would suggest. With a
+128 bit key the two readings are the same, so only the longer keys
+tell them apart; every single-bit key at every length is in the
+vectors.
+
+### A round key is taken before the state evolves
+
+**Status: mitigated.** `Kʳ` is extracted from the key state `κʳ`, and
+only then is `κʳ⁺¹` computed; the last state evolved is `κᴿ`, and it is
+never evolved again. Extracting after the step shifts every round key
+by one and still decrypts; the vectors pin it.
+
+### The S-box and the multiplications are the secret path
+
+**Status: mitigated.** The witnesses use six 1 KB tables indexed by
+state and key bytes. Here the S-box is Khazad's masked one and every
+multiplication by a constant goes through masked doubling; the case
+`anubis_blocks` checks both directions and the key schedule at a 40
+byte key.
+
+---
+
+## 7zzw. Noekeon
+
+### Two key modes, and nothing says which
+
+**Status: accepted.** The specification defines one cipher and two
+ways to take the key: directly, or encrypted first under the all-zero
+key. The two give unrelated ciphertexts, the libraries split -
+libtomcrypt and Bouncy Castle direct, Botan indirect - and nothing in a
+ciphertext or a key says which was meant. Both are here under their own
+names, `noekeon` and `noekeon-indirect`, rather than one picked as
+"Noekeon". A file written by Botan needs the second.
+
+### The round constants come from AES's field
+
+**Status: mitigated.** The seventeen constants start at `80` and double
+modulo 0x11b, AES's polynomial, where Khazad and Anubis use 0x11d. They
+are computed from that rule here and checked against it; a wrong
+polynomial already changes the second constant, and the vectors catch
+it.
+
+### Decryption is not the rounds reversed under the same key
+
+**Status: mitigated.** Decryption runs the rounds backwards with the
+constant XORed after `Θ` instead of before, under the working key passed
+through `Θ` with a zero key - and only then the final `Θ` and the first
+constant. Both directions of every row are checked.
+
+---
+
+## 7zzx. SHACAL-2
+
+### A short key is the long key with zeros, and the libraries disagree on lengths
+
+**Status: accepted.** SHACAL-2's key is SHA-256's 512-bit message block,
+and a shorter key is defined as that block with zeros after it. So a 16
+byte key and the same 16 bytes padded to 64 are one key; nothing about
+the length is mixed into the schedule. The libraries admit different
+lengths - Crypto++ every byte from 16 to 64, Botan multiples of 4,
+Bouncy Castle multiples of 8 - but compute the same cipher wherever two
+admit a length. This one takes every length from 16 to 64, as Crypto++
+does; a key of 17 bytes here will not load in Bouncy Castle, though the
+same key padded to 64 bytes will, and gives the same blocks.
+
+### It is SHA-256 without the feed-forward
+
+**Status: mitigated.** SHA-256's compression function adds the input
+chaining value to the output; SHACAL-2 does not, which is what makes it
+invertible. A cipher built by reusing a hash's compression function
+inherits that addition unless it is taken out, and then encrypts
+without being able to decrypt and agrees with no published vector.
+Here the rounds are written out, and every row is checked both ways.
+
+## 7zzy. Strumok
+
+### The standard prints words, and there are three ways to make them bytes
+
+**Status: accepted.** DSTU 8845:2019 gives keys, IVs and keystream as
+64-bit words, the key and IV from the most significant word down (K3..K0,
+IV3..IV0), and says nothing that fixes a byte encoding. UAPKI and
+uacrypt read and write each word little endian with word 0 first, and so
+does this library. li0ard's TypeScript `dstu` takes the words in the
+same order but each one big endian. The conformance letter uacrypt
+carries prints the key and IV as one byte string with byte 0 last and
+the keystream as words each with its most significant byte first. The
+same key therefore gives three different keystreams as bytes, or the
+same keystream reads as wrong. Interoperating with another
+implementation means finding out which of these it uses;
+`scripts/witness/strumok/published.py` converts each published form,
+and `tests/test_strumok.rs` checks that the standard's examples and
+UAPKI's come out as the same eight.
+
+### Not constant time
+
+**Status: accepted.** The multiplications by α and α⁻¹ and the state
+machine's `T` are tables indexed by the state, as the standard defines
+them and as both witnesses compute them; `T` is Kalyna's round on one
+column, and Kalyna here is tables too. A cache-timing attacker sharing
+the machine sees indices derived from the key. `scripts/ct_check.py`'s
+case `strumok_keystream` names the three functions and fails if a leak
+turns up anywhere else.
+
+
+## 7zzz. DSTU 9041
+
+### The worked examples decide three details the text leaves open
+
+**Status: accepted.** Read on its own, clause 11 wraps `M'` - one field
+element - with Kalyna's key wrap, and takes `l_H` bits of the hash
+without saying which end. The standard's own worked examples, and both
+implementations here, wrap **`M'` followed by a block of zeros** and
+keep the hash's **last** bytes; wrapping `M'` alone, or keeping the
+first bytes, gives a different, shorter ciphertext that neither
+decrypts. And every number in Annex Г is hexadecimal, small ones too:
+the example's private key "25" is 37. This library follows the examples,
+which `vectors/dstu9041.vec` holds.
+
+### Г.1's printed ciphertext is a digit short
+
+**Status: accepted.** The standard's printed `t` for E256/1 lacks one
+hexadecimal digit, a `0` between `...B3CE` and `F710...`; uacrypt
+restores it, and with it the example agrees with both implementations
+and this one. A transcription from the printed page will not match by
+one nibble, with everything after it shifted.
+
+### The group has points of order 2 and 4
+
+**Status: mitigated.** The curves' groups have order `4n`. Clause 12's
+checks on `r` let `r = p − 1` through to the point `(p − 1, 0)` of order
+2, and other values reach points outside the group of order `n`;
+multiplying such a point by the private key gives away `e` modulo 2 or
+4 through whether the result decrypts. Here, as in both witnesses,
+`R'` must have order `n` before `e` touches it, and a public key the
+same; `vectors/dstu9041.vec` has those ciphertexts among the ones both
+refuse.
+
+### Messages are counted in bits
+
+**Status: accepted.** `l(M)` is in bits and goes into the hash, so a
+13-bit message and the same two bytes as 16 bits are different
+plaintexts with different ciphertexts. `encrypt` counts whole bytes;
+`encrypt_bits` takes the length, the message right aligned with the
+bits above it zero, which is refused otherwise; decryption gives the
+length back. li0ard encrypts only whole bytes, and the rows in bits are
+uacrypt's, which li0ard decrypts.
+
+### Two of the four field sizes
+
+**Status: accepted.** Only E256/1 and E512/1, the first curves of Tables
+В.1 and В.3. The 384-bit curves wrap an `M'` that is not a whole number
+of Kalyna blocks, with the key wrap's padded form, and neither
+implementation has them; the 768-bit ones have no worked example in the
+standard at all. The other curves of each table are not here either.
+
+### Decryption is not constant time
+
+**Status: accepted.** The scalar multiplications are, and
+`scripts/ct_check.py`'s case `dstu9041_public_key` checks it. The key
+wrap and the hash, under a key and on data derived from the private
+key, are Kalyna and Kupyna, which are tables here as in the standard.
+
+## 7zzza. DSTU 4145 in an optimal normal basis
+
+### The basis changes what is signed, not only how keys are written
+
+**Status: accepted.** On the five normal-basis curves, the hash is read
+as the element whose normal-basis coordinates are its bits, and `r` is
+cut from `h·x(e·G)` written in the normal basis. Converting a curve's
+parameters to a polynomial basis gives the same group and the same
+public keys, but signatures under it are different numbers and do not
+verify against the normal-basis curve. Which bit is which matters as
+much: bit `p` stands for `β^(2^(m-1-p))` here, as in cryptonite and
+li0ard, and the reverse order gives different keys, hashes and `r`.
+`src/ec/dstu4145.rs`'s tests check that squaring rotates the bits by
+one, which holds only in the right order.
+
+### A key container cannot carry one
+
+**Status: accepted.** The containers this library writes describe the
+curve whole, in a polynomial basis, which would describe the right group
+and the wrong signature. `private_key_info` refuses a key on a
+normal-basis curve rather than write that.
+
+## 7zzzb. DSTU 4145 in certificates
+
+### The signature's byte order is the issuer key's
+
+**Status: mitigated.** `dstu4145le` and `dstu4145be` name the key and the
+signature algorithm both, and the Kupyna signature OIDs say nothing of
+byte order. dstu-engine reverses a signature for a little-endian *key*
+whatever the signature's OID, and so does `x509::verify`; reading a
+signature in the other order turns `s || r` into a different pair, which
+never verifies. `tests/test_dstu4145_x509.rs` verifies every certificate
+under its issuer's key read the other way round and requires a refusal.
+
+### GOST 34.311-95 runs under the issuer's DKE
+
+**Status: mitigated.** The S-box is part of the signer's key, given in
+its parameters; a certificate whose subject key carries another DKE is
+still hashed under its issuer's. `czo-1.cer`, a real root, carries a DKE
+that is none of the ten named tables and verifies only under it; one of
+our chains gives the CA and the leaf different DKEs, and the tests check
+both, and that the default DKE written out equals none written.
+
+### Key identifiers are not SHA-1 here
+
+**Status: accepted.** The Ukrainian centres name a key by GOST 34.311-95
+of the subjectPublicKey's contents under the key's DKE, and the
+Kupyna-era root by Kupyna-256 of the same bytes; RFC 5280's method 1 is
+SHA-1. The builder writes the GOST 34.311-95 form for a DSTU 4145 key,
+as the key containers name a key. Identifiers are compared, never
+recomputed, by a verifier, so either form chains.
+
+### Two real certificates are refused, correctly
+
+**Status: accepted.** The 2017 root of the central certifying authority
+marks certificatePolicies and qcStatements critical; a verifier that
+does not process an extension marked critical must refuse the
+certificate (RFC 5280 4.2), and `verify_chain` does, naming both. Its
+signature verifies. jkurwa's self-signed certificates write the
+authority key identifier as a bare OCTET STRING rather than RFC 5280's
+SEQUENCE; `Certificate::parse` refuses them, and OpenSSL marks such a
+certificate invalid, though dstu-engine's `X509_verify`, which reads no
+extension, accepts their signatures.
+
+### A key in a normal basis cannot be read from a certificate
+
+**Status: open.** `DSTU4145Params` give a normal-basis curve by its
+degree alone; UAPKI reads one, li0ard refuses one, dstu-engine has no
+normal basis, and so no witness could check one. Such a key is carried
+as `PublicKey::Unsupported`, and the builder refuses to write one.
+
+## 7zzzc. Fuzzy hashes
+
+### CyberChef's SSDEEP is not ssdeep
+
+**Status: accepted.** CyberChef computes its SSDEEP with ssdeep.js, and
+on some inputs ssdeep.js disagrees with libfuzzy, which is ssdeep. It
+halves the block size only while the half is above three, so an input
+over 192 bytes whose string at six is short stays at six where libfuzzy
+goes on to three; and it always closes the last piece, so a
+run of zeros, whose rolling hash ends at zero, gets a character libfuzzy
+does not write. `ssdeep` is libfuzzy's; nothing here computes ssdeep.js's
+variant. CyberChef's CTPH is ctph.js, which `ctph` reproduces.
+
+### ctph.js rounds its FNV product
+
+**Status: mitigated.** ctph.js multiplies its 32 bit FNV state by the
+FNV prime in JavaScript's doubles; the product passes 2^53, is rounded,
+and only then reduced, so the six bits it keeps are not FNV's. `ctph`
+multiplies in doubles as well, and takes the block size's logarithm in
+doubles as ctph.js does - Rust's `ln` and V8's agree on every length to
+three million and around every power of two to 192 · 2^45. All 56 digests
+in `vectors/ssdeep.vec` are ctph.js's own.
+
+### ppdeep scores differently
+
+**Status: accepted.** ppdeep's digests are libfuzzy's, but it scores with
+an edit distance where a substitution costs one; libfuzzy's costs two.
+The scores in `vectors/ssdeep.vec` are libfuzzy's, and each row says
+whether ppdeep agrees.
+
+## 7zzzd. Tiger, HAVAL and Snefru
+
+### Tiger's digest has two byte orders
+
+**Status: accepted.** Tiger's digest is its three 64 bit registers, and
+the designers' reference writes each little endian. mhash writes each big
+endian, so the same message has two published digests whose 8 byte words are reversed copies of each other. `tiger`
+is the designers' order, as PHP, sphlib, RHash and Botan write it;
+nothing here writes the other. `scripts/make_tiger_haval_snefru_vectors.py`
+checks that mhash's Tiger is exactly the word-swapped digest on all 30
+messages. Tiger's 128 and 160 bit forms are the first bytes of the
+designers' order.
+
+### A shorter HAVAL is not a truncated one
+
+**Status: mitigated.** HAVAL at fewer than 256 bits folds the last three
+registers into the first five (`fold`), and its padding carries the
+output length and the pass count, so `haval128_3` is not the first 16
+bytes of `haval256_3`. Tiger's shorter forms are truncations. A test
+asserts both, in `tests/test_tiger_haval_snefru.rs`.
+
+### `snefru` is the 256 bit one
+
+**Status: accepted.** PHP's `snefru` is Snefru-256, and so is it here;
+mhash and RHash name both lengths. The two lengths differ in how much
+message a block carries (32 bytes at 256 bits, 48 at 128), so neither is
+the other cut short.
+
+## 7zzze. The SHA-3 finalists
+
+### BLAKE is not BLAKE2
+
+**Status: accepted.** `blake256` and `blake2s` share their initial
+values, their permutations and the quarter-round, and are different
+hashes: BLAKE2 dropped the constants from the rounds, cut their number,
+replaced the padding and the counter's use with a final-block flag, and
+XORs a parameter block into the start. BLAKE as submitted in 2008 also
+had 10 and 14 rounds; `blake256` and `blake512` are the final
+submission's 14 and 16. A test asserts each differs from its BLAKE2.
+
+### A block of padding alone is compressed with a zero counter
+
+**Status: mitigated.** BLAKE compresses every block with the number of
+message bits hashed so far, counting the block's own - except a final
+block that holds none, which gets zero rather than the length. Messages
+whose padding spills into a block of its own (56 to 63 bytes mod 64 for
+BLAKE-256, and the multiples of the block) are the ones that show it;
+`vectors/sha3_finalists.vec` has each.
+
+### The BLAKE-512 reference does not carry its counter
+
+**Status: accepted.** The BLAKE team's reference code for BLAKE-512 adds
+each block to the low word of its 128 bit counter and never carries into
+the high one, so it differs from sphlib on a message crossing 2^64 bits,
+2^61 bytes. That is no message anybody hashes; `blake512` carries, as
+sphlib does, and the vectors' counter rows for BLAKE-512 stay on one
+side of the boundary so the reference can witness them.
+
+### Grøstl was tweaked for the final round
+
+**Status: accepted.** The Grøstl team changed its round constants and
+Q's row shifts for the third round of the competition, so the Grøstl of
+2008 and the Grøstl of 2011 give different digests under one name.
+`groestl224` to `groestl512` are the 2011 one, which sphlib 3.0 and the
+team's final code agree on; nothing here computes the first.
+
+### JH has 35.5 rounds and 42 under one name
+
+**Status: accepted.** JH ran 35.5 rounds through the second round of the
+competition and 42 in the third. SUPERCOP itself carries both, the first
+as `jh224` to `jh512` and the second as `round3jh256` and `round3jh512`,
+so a JH digest from it can be either. `jh224` to `jh512` here are the 42
+round JH, which sphlib 3.0 and the round-3 code agree on.
+
+### `skein256` means two things
+
+**Status: accepted.** Skein has a state size and an output size, and
+software names it by one number: sphlib's `skein256` is Skein-512 with
+256 bits out, which is what the submission recommended for a SHA-3-256,
+while other libraries mean Skein-256-256. Here every name carries both,
+`skein512_256`, and `skein256`, `skein512` and `skein1024` alone are
+refused rather than guessed.
+
+### Skein's last block is processed differently
+
+**Status: mitigated.** Every block's tweak says whether it is the last,
+so a block cannot be processed when it fills - only when more input
+arrives, or at the end. An empty message is one block of zeros, counted
+as no bytes. `skein.rs` holds the last whole block back, and the vectors
+have messages that end exactly on a block at every width, and the empty
+one.
+
+## 7zzzf. BLAKE3
+
+### A shorter BLAKE3 output is a prefix of a longer one
+
+**Status: accepted.** BLAKE3's output is a stream, and asking for 16
+bytes gives the first 16 of the 32 byte digest - unlike BLAKE2, whose
+output length is in its parameter block and changes every byte. Two
+uses of one key that differ only in how much output they take are
+therefore related. `blake3_xof` documents it, and a test pins it.
+
+### Bouncy Castle's derive-key mode at a size over 32 bytes
+
+**Status: accepted.** Bouncy Castle 1.77's `Blake3Digest`, built with a
+digest size over 32 bytes and initialised with a key derivation context,
+throws: deriving the context key runs `doFinal` at the digest's size into
+a 32 byte buffer. Its default size with `doOutput` for the length gives
+the same output this library does, which is how the witness driver uses
+it.
+
+### The block that ends a chunk is decided late
+
+**Status: mitigated.** The last block of every chunk, and the last block
+of the message, are compressed with flags the others do not carry, and a
+full block cannot be known to be either until more input arrives.
+`blake3.rs` holds the last whole block back; a test splits a three-chunk
+message at every block and chunk boundary, with a digest taken midway.
+
+## 7zzzg. SipHash
+
+### The round counts are part of the name
+
+**Status: accepted.** SipHash-2-4 and SipHash-1-3 are different
+functions under one key, and so is every other pair; a "SipHash" with
+the counts unsaid is usually 2-4, except in Rust's and Python's hash
+tables, which run 1-3. `siphash` takes both counts, defaulting to 2-4,
+and nothing infers them.
+
+### The long output is not the short one extended
+
+**Status: mitigated.** SipHash's 128 bit form XORs a different constant
+into its state at the start and before finishing, so its first eight
+bytes are not the 64 bit output - unlike BLAKE3's. HalfSipHash's 64 bit
+form is the same. A test asserts it.
+
+### The length byte counts modulo 256
+
+**Status: accepted.** The last word carries the message length in one
+byte, so two messages whose lengths differ by a multiple of 256 put the
+same byte there. That is the design, not a weakness of this code: the
+key makes the rest unpredictable.
+
+## 7zzzh. LSH
+
+### A width alone names different functions in different libraries
+
+**Status: mitigated.** KS X 3262 names its six functions LSH-256-224,
+LSH-256-256, LSH-512-224, -256, -384 and -512. Crypto++ calls the
+first, second, fifth and sixth `LSH-224`, `LSH-256`, `LSH-384` and
+`LSH-512`, has `LSH-512-256` for the fourth, and no class at all for
+LSH-512-224. Names here always carry both numbers, `lsh512_256`, and a bare
+`lsh256` or `lsh224` is refused rather than guessed.
+
+### The shorter outputs are not the longer cut short
+
+**Status: accepted.** The output length goes into the starting value,
+so LSH-256-224 differs from LSH-256-256 from the first block, and
+LSH-512-256 is neither LSH-256-256 nor the first half of LSH-512-512.
+Code that truncates a longer digest to get a shorter one gets a value
+no other implementation produces. A test pins it.
+
+### The padding carries no length
+
+**Status: accepted.** LSH pads with a 1 bit and zeros to the end of the
+block and never appends the message's length, unlike the
+Merkle-Damgård hashes; the wide pipe - a chaining value twice the
+output - is what the design relies on instead. A message one byte short
+of a block still fits in it, and one that fills a block takes a whole
+block of padding after it; the vectors sit on both sides of each.
+
+## 7zzzi. Checksums
+
+### PHP's `crc32` is not CRC-32
+
+**Status: mitigated.** PHP's `hash("crc32", ...)` is CRC-32/BZIP2 - the
+same polynomial, not reflected - with its four bytes printed least
+significant first; what zlib, Go, Java and everything else call CRC-32,
+PHP calls `crc32b`. `crc32` here is zlib's, `crc32b` is taken as PHP's
+name for the same, and PHP's own `crc32` is not offered under any name,
+so a value from it never matches by accident.
+
+### A checksum's bytes have no one order
+
+**Status: accepted.** A checksum is a number, and formats store it
+either way round: ZIP and gzip little endian, PNG and most network
+protocols big endian. `new("crc32c").digest()` is big endian, as PHP's
+`hash` and Go's `Sum` give it; the number itself is
+`int.from_bytes(digest, "big")`, and `crc32c` returns it directly.
+
+### A checksum is not a hash
+
+**Status: accepted.** CRC-32 and CRC-32C are linear: the checksum of
+two messages XORed together is predictable from theirs, and four chosen
+bytes anywhere give any value. They catch accidents, not attacks. They
+are left out of `algorithms_available`, though `new` takes their names,
+and so does HMAC, with a block the length of the value - which PHP 8's
+`hash_hmac` refuses. What it gives is no MAC.
+
+### Adler-32 is weak on short messages
+
+**Status: accepted.** Adler-32's first sum grows by at most 255 a byte,
+so on a short message it never reaches the modulus and the value uses a
+small part of its 32 bits: after 128 bytes the first sum can be one of
+32,641 values, not 65,521. RFC 3309 took it out of SCTP for that and
+put CRC-32C in. It is here because zlib streams carry it.
+
+### Fletcher's checksum has no one definition
+
+**Status: accepted.** Fletcher-32 and Fletcher-64 sum 16 and 32 bit
+words, and C code that reads them through a `uint16_t` or `uint32_t`
+pointer gets the machine's byte order; a message that is not a whole
+number of words is padded, refused, or summed short. Here the words are
+little endian and the last is padded with zero bytes, as the three
+witnesses do. Code that keeps a sum at all ones where the remainder is
+0 - the same number in ones' complement - gives `ffff` for Fletcher-16
+of the single byte 0xff, where this gives `0000`. And the Fletcher
+checksum of OSI, IS-IS and OSPF is not these sums but two check bytes
+written into the packet so that the sums come to zero; APFS stores a
+like pair for Fletcher-64.
+
+### FNV's wide sizes spread a short input over few bits
+
+**Status: accepted.** FNV's primes are 2^TOP + 2^8 + LOW, so one
+multiplication moves a byte's bits up by at most TOP + 8 places: the
+1024 bit FNV-1a of "123456789" has 82 zero hex digits in a row in the
+middle.
+FNV is a hash for tables and checksums, not for anything an attacker
+chooses the input to, at any size.
+
+### FNV-0 is the original, kept for old data
+
+**Status: accepted.** FNV-0 starts from zero, so every message of zero
+bytes hashes to zero, and so does any run of zeros at the start. Its
+designers replaced it with FNV-1, which starts from the offset basis;
+`fnv0_*` is here for values made with it, as PHP's ext/hash and Go never
+had it.
+
+### hashlib-additional's 512 bit FNV-1 and FNV-1a are wrong
+
+**Status: mitigated.** rfinnie's hashlib-additional 1.2, one of the
+witnesses, writes the 512 bit offset basis as a sum of decimal pieces
+and leaves `* 10**150` off the first, so its FNV-1 and FNV-1a at 512
+bits disagree with every other implementation; its FNV-0 at 512 bits,
+which does not use the basis, agrees. The vectors leave it out at that
+size, and fnv-es and fnv-plus witness it.
+
+### PHP's `fnv132` is FNV-1 at 32 bits
+
+**Status: accepted.** PHP runs the variant and the size together:
+`fnv132` is FNV-1 at 32 bits and `fnv1a64` FNV-1a at 64. They are taken
+as those four spellings only; everything else is `fnvVARIANT_BITS`.
 ---
 
 ## 8. What to do with this document

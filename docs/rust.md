@@ -128,6 +128,99 @@ checksum step, and the document's vectors follow the code. See
 `hash_functions::hash_all(data)` returns a map of every hash of one input,
 which is handy when you do not know which one you want yet.
 
+### Fuzzy hashes: ssdeep and CTPH
+
+A fuzzy hash is a short text digest that two inputs sharing long runs of
+bytes share runs of, so a score between two digests says how alike the
+inputs are. `api::ssdeep` is ssdeep's, as libfuzzy computes it
+(`blocksize:string:string`), `api::Ssdeep` streams it, and
+`api::ssdeep_compare` is libfuzzy's score from 0 to 100. `api::ctph` and
+`api::ctph_similarity` are ctph.js 0.0.5's, which is what CyberChef calls
+CTPH: a different scheme, whose digest starts with one base64 digit and
+whose similarity is a floating-point percentage. Neither is in `HASHES`,
+since neither digest has a fixed length.
+
+```rust
+use allcrypt::api;
+
+// Ten kilobytes of text, and the same with one line changed.
+let text: Vec<u8> = (0..1000).flat_map(|i| format!("line {i}\n").into_bytes()).collect();
+let mut edited = text.clone();
+edited[5000..5008].copy_from_slice(b"EDITED!\n");
+
+let (a, b) = (api::ssdeep(&text)?, api::ssdeep(&edited)?);
+assert!(a.split(':').count() == 3 && a != b);
+assert!(api::ssdeep_compare(&a, &b)? > 50);
+assert_eq!(api::ssdeep_compare(&a, &a)?, 100);
+
+let mut state = api::Ssdeep::new();
+state.update(&text[..4000]);
+state.update(&text[4000..]);
+assert_eq!(state.digest()?, a);
+
+let (c, d) = (api::ctph(&text)?, api::ctph(&edited)?);
+assert!(api::ctph_similarity(&c, &d)? > 50.0);
+```
+
+### Checksums
+
+`checksum` has CRC-32 and CRC-32C as numbers - `crc32` and `crc32c`, and
+`crc32_update` and `crc32c_update` for the bare register, which some
+formats use - and `api::crc32c` continues from an earlier value, as
+zlib's `crc32` does. Adler-32 is `adler32`, and `adler32_update`
+continues from an earlier value, starting from 1; Fletcher's are
+`fletcher16`, `fletcher32` and `fletcher64`, over little endian words.
+`checksum::Fnv` is FNV-0, FNV-1 or FNV-1a (`FnvVariant`) at 32 to 1024
+bits. `AnyHash::new` takes the names in `api::CHECKSUMS`,
+which are not in `HASHES`, and gives the value big endian.
+
+```rust
+use allcrypt::api::{self, AnyHash};
+use allcrypt::checksum;
+use allcrypt::hash_functions::HashFunction;
+
+let data = b"The quick brown fox jumps over the lazy dog";
+let mut h = AnyHash::new("crc32c")?;
+h.update(data);
+assert_eq!(h.digest(), checksum::crc32c(data).to_be_bytes());
+assert_eq!(api::crc32c(&data[10..], api::crc32c(&data[..10], 0)), checksum::crc32c(data));
+assert!(!api::HASHES.contains(&"crc32"));
+let half = checksum::adler32_update(1, &data[..10]);
+assert_eq!(checksum::adler32_update(half, &data[10..]), checksum::adler32(data));
+
+let mut fnv = checksum::Fnv::new(checksum::FnvVariant::Fnv1a, 256)?;
+fnv.update(data);
+let mut by_name = AnyHash::new("fnv1a_256")?;
+by_name.update(data);
+assert_eq!(fnv.value(), by_name.digest());
+```
+
+### BLAKE3
+
+`blake3` is in `HASHES` at its default 32 bytes. Its other two modes
+are `AnyHash::blake3(key, context)` - a 32 byte key for the keyed mode,
+which is a MAC with no HMAC around it, or a context string for key
+derivation, where the data is the key material - and `api::blake3_xof`
+gives any length of output from any offset in any of the three.
+
+```rust
+use allcrypt::api::{self, AnyHash};
+use allcrypt::hash_functions::HashFunction;
+
+let mut h = AnyHash::new("blake3")?;
+h.update(b"abc");
+let digest = h.digest();
+// A longer output extends a shorter one, and seek reaches any part.
+let long = api::blake3_xof(b"abc", 100, None, None, 0)?;
+assert_eq!(long[..32], digest[..]);
+assert_eq!(api::blake3_xof(b"abc", 10, None, None, 90)?, long[90..]);
+
+let mut mac = AnyHash::blake3(Some(&[7; 32]), None)?;
+mac.update(b"abc");
+let key = api::blake3_xof(b"key material", 32, None, Some("example.com 2026 session keys"), 0)?;
+assert!(mac.digest() != digest && key.len() == 32);
+```
+
 ## SM2
 
 GB/T 32918: the Chinese national signature and public key encryption,
@@ -645,6 +738,116 @@ Crypto++ and Botan agree on every row of `vectors/mars.vec`: single
 blocks at all eleven key lengths and Monte Carlo tests of four million
 blocks each way, Crypto++'s six published ones among them. The S-box is
 derived from its SHA-1 construction at test time.
+
+### Khazad
+
+Khazad, Barreto and Rijmen's NESSIE finalist, in the tweaked form NESSIE
+evaluated: a 64 bit block, a 128 bit key and eight rounds of an S-box, an
+involutional MDS matrix over GF(2^8) and a key XOR. Its S-box is built
+from two 4-bit boxes, and it is computed that way here, by masked scans
+of sixteen entries rather than a table indexed by the data, so the
+cipher is constant time.
+
+```rust
+use allcrypt::block_ciphers::khazad::Khazad;
+use allcrypt::block_ciphers::BlockCipher;
+
+// libtomcrypt's and the kernel's published vector: the key's first bit
+// set, a zero block.
+let mut key = [0u8; 16];
+key[0] = 0x80;
+let mut khazad = Khazad::new(&key)?;
+let mut out = Vec::new();
+khazad.block_encrypt(&[0u8; 8], &mut out);
+assert_eq!(out, [0x49, 0xa4, 0xce, 0x32, 0xac, 0x19, 0x0e, 0x3f]);
+assert!(Khazad::new(&[0u8; 24]).is_err());
+```
+
+libtomcrypt and the Linux kernel agree on every row of
+`vectors/khazad.vec`, which has the published tests both carry and
+NESSIE's test sets in shape.
+
+### Anubis
+
+Anubis, Barreto and Rijmen's other NESSIE submission, also in its
+tweaked form, whose S-box is Khazad's: a 128 bit block and a key of 4 to
+10 words, 16 to 40 bytes, with `8 + N` rounds for `N` words. Constant
+time in the same way as Khazad.
+
+```rust
+use allcrypt::block_ciphers::anubis::Anubis;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The published vector: the key's first bit set, a zero block.
+let mut key = [0u8; 16];
+key[0] = 0x80;
+let mut anubis = Anubis::new(&key)?;
+let mut out = Vec::new();
+anubis.block_encrypt(&[0u8; 16], &mut out);
+assert_eq!(out[..4], [0xb8, 0x35, 0xbd, 0xc3]);
+assert_eq!(Anubis::new(&[0u8; 40])?.rounds(), 18);
+assert!(Anubis::new(&[0u8; 18]).is_err());
+```
+
+libtomcrypt, the Linux kernel and the designers' own reference code
+agree on every row of `vectors/anubis.vec`, at every key length.
+
+### Noekeon
+
+Noekeon, a NESSIE submission from Daemen, Peeters, Van Assche and
+Rijmen: a 128 bit block and key, sixteen rounds of word operations,
+bitsliced by design and so constant time as written. The specification
+gives the key two modes, and **they are different ciphers**: in
+direct-key mode (`noekeon`, libtomcrypt's and Bouncy Castle's) the key
+is used as it is; in indirect-key mode (`noekeon-indirect`, Botan's)
+it is first encrypted under the all-zero key, which the designers
+recommend where related keys could occur.
+
+```rust
+use allcrypt::block_ciphers::noekeon::Noekeon;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The specification's two vectors: zero key, zero block.
+let (mut direct, mut indirect) = (Noekeon::new(&[0u8; 16])?, Noekeon::new_indirect(&[0u8; 16])?);
+let (mut a, mut b) = (Vec::new(), Vec::new());
+direct.block_encrypt(&[0u8; 16], &mut a);
+indirect.block_encrypt(&[0u8; 16], &mut b);
+assert_eq!(a[..4], [0xb1, 0x65, 0x68, 0x51]);
+assert_eq!(b[..4], [0xba, 0x69, 0x33, 0x81]);
+```
+
+`vectors/noekeon.vec` has both modes: the direct one as libtomcrypt and
+Bouncy Castle agree on it, the indirect one as Botan and Bouncy Castle
+under the mode's definition agree on it.
+
+### SHACAL-2
+
+SHACAL-2, the NESSIE selection that is SHA-256's compression function
+without its feed-forward: a 256 bit block (the chaining value), a key
+of 16 to 64 bytes (the message block, zero-padded to 64) and SHA-256's
+64 rounds. Words, additions and rotations only, so constant time. Its
+block is 32 bytes, so it takes the modes Rijndael-256 takes and no AEAD.
+
+```rust
+use allcrypt::block_ciphers::shacal2::Shacal2;
+use allcrypt::block_ciphers::BlockCipher;
+
+// NESSIE's first vector: the key's first bit set, a zero block.
+let mut key = [0u8; 64];
+key[0] = 0x80;
+let mut shacal = Shacal2::new(&key)?;
+let mut out = Vec::new();
+shacal.block_encrypt(&[0u8; 32], &mut out);
+assert_eq!(out[..4], [0x36, 0x1a, 0xb6, 0x32]);
+// A shorter key is the same key padded with zeros.
+let mut short = Shacal2::new(&key[..16])?;
+let mut again = Vec::new();
+short.block_encrypt(&[0u8; 32], &mut again);
+assert_eq!(again, out);
+```
+
+Crypto++ and Bouncy Castle agree on every row of `vectors/shacal2.vec`,
+which holds the NESSIE submission's 1,024 vectors and every key length.
 
 ### RC2, and the parameter that weakens a key on purpose
 
@@ -1243,6 +1446,29 @@ assert_eq!(back, b"hello, world");
 A ZIP entry also carries a 12-byte encryption header with a check byte;
 that is the format's, and `examples/products/zip` writes and reads it.
 
+Strumok, DSTU 8845:2019, is Ukraine's stream cipher: a 32 or 64-byte
+key, a 32-byte IV, and a keystream of 64-bit words from a register over
+GF(2^64) and a state machine built from Kalyna's round. The standard
+prints keys, IVs and keystream as words; as bytes, here, each word is
+little endian and word 0 comes first, as UAPKI and uacrypt have it. It
+has no counter, so it does not seek, and its tables are indexed by the
+state, so it is not constant time. In the catalogue it is `strumok`,
+with the IV as the nonce.
+
+```rust
+use allcrypt::api::AnyStreamCipher;
+use allcrypt::stream_ciphers::strumok::Strumok;
+
+let (key, iv) = ([7u8; 64], [9u8; 32]);
+let mut data = *b"pieces of one stream";
+let mut cipher = Strumok::new(&key, &iv)?;
+cipher.apply_keystream(&mut data[..5]);
+cipher.apply_keystream(&mut data[5..]);
+let mut any = AnyStreamCipher::new("strumok", &key, &iv)?;
+assert_eq!(any.update(b"pieces of one stream")?, data);
+assert!(any.seek(0).is_err());
+```
+
 Office XOR obfuscation (`stream_ciphers::office_xor`, [MS-OFFCRYPTO]
 method 1) is the `.xls` password protection before RC4. The password
 gives a 16-byte array that the data is XORed with, repeating, each byte
@@ -1383,6 +1609,26 @@ It is one-shot: the whole message is in hand, as it is for an SSH
 packet. In SSH it is reached by name - `umac-64@openssh.com`,
 `umac-128@openssh.com` and their `-etm` forms - with the packet sequence
 number as the nonce.
+
+### SipHash
+
+`api::siphash` is SipHash under a 16 byte key, with its two round counts
+and an 8 or 16 byte output; `api::halfsiphash` is HalfSipHash, its 32 bit
+form, under an 8 byte key with 4 or 8 bytes out. They are keyed hashes
+for hash tables, where the point is that whoever chooses the keys cannot
+choose collisions.
+
+```rust
+use allcrypt::api;
+
+let key: Vec<u8> = (0..16).collect();
+let tag = api::siphash(&key, b"", 2, 4, 8)?;
+// The designers' first vector, SipHash-2-4 of nothing under 00 01 .. 0f.
+assert_eq!(u64::from_le_bytes(tag.try_into().unwrap()), 0x726f_db47_dd0e_0e31);
+// What Rust's and Python's hash tables run, and the 32 bit form.
+assert_eq!(api::siphash(&key, b"abc", 1, 3, 16)?.len(), 16);
+assert_eq!(api::halfsiphash(&key[..8], b"abc", 2, 4, 4)?.len(), 4);
+```
 
 ## HMAC and key derivation
 
@@ -2462,6 +2708,13 @@ hash is `gost34311`. A public key or key container that carries a
 different DKE gives it as 64 packed bytes, which `sbox_from_dke`
 unpacks - row by row, not in RFC 4357's column order.
 
+Ukraine's other tables are built in too: `dstu-dke-1` to `dstu-dke-10`
+(`gost::DSTU_DKE_NAMES`) are "DKE No. 1 from supplements 1 to 10 to
+instruction 114", the first being the default. Each is a parameter set
+for the cipher and the MAC, and GOST 34.311-95 under table `n` is
+`gost34311_dke2` to `gost34311_dke10`, or `Gost94::with_param_set` with
+the table's name.
+
 ```rust
 use allcrypt::api::{self, AnyHash};
 use allcrypt::block_ciphers::gost::{GostCrypto, DSTU4145_DEFAULT_DKE, DSTU_PARAM_SET};
@@ -2708,6 +2961,25 @@ object identifier, which is what Ukrainian CAs issue, stores the
 compressed key and the signature with their bytes reversed, so the
 signature reads `r || s` there.
 
+The standard's five curves in an optimal normal basis are named too,
+`dstu4145-m173-onb` to `dstu4145-m431-onb`, and work the same way; their
+field elements - in keys, compressed points, shared points, and the
+hash and `r` inside a signature - are written in the normal basis.
+`Curve::element_to_bytes` and `element_from_bytes` cross it. A key
+container cannot hold such a key, since its parameters are written in a
+polynomial basis.
+
+```rust
+use allcrypt::api::{Dstu4145Key, Dstu4145PublicKey};
+
+let key = Dstu4145Key::generate("dstu4145-m233-onb")?;
+let signature = key.sign(&[0x5au8; 32])?;
+let public = Dstu4145PublicKey::from_bytes("dstu4145-m233-onb",
+                                           &key.public_key().to_bytes(true)?)?;
+assert!(public.verify(&[0x5au8; 32], &signature)?);
+assert!(key.private_key_info(None).is_err());
+```
+
 #### Key containers
 
 The keys Ukrainian software issues come in three containers, which
@@ -2745,6 +3017,41 @@ assert_eq!(api::dstu4145_keys_open(&sealed, "пароль".as_bytes())?.len(), 2
 assert_eq!(keys[0].key_id()?, signing.public_key().key_id()?);
 ```
 
+#### Certificates
+
+`x509::Certificate::parse` reads a DSTU 4145 key (`PublicKey::Dstu4145`:
+the curve its parameters name or give whole, the point, the DKE and the
+byte order) and `x509::verify` checks the four signature algorithms the
+Ukrainian CAs use: DSTU 4145 over GOST 34.311-95 - under the `dstu4145le`
+or `dstu4145be` OID, which is also the key's - and over Kupyna-256, -384
+or -512. GOST 34.311-95 runs under the **issuer's** DKE, and the
+signature is read in the issuer key's byte order whatever its OID says,
+as dstu-engine reads it. The builder issues them, with the curve written
+whole and the DKE (the default when none is given); key identifiers are
+GOST 34.311-95 of the key under its DKE, as the CAs and the key
+containers name a key. A curve in a normal basis has no place in a
+certificate's parameters and is carried as `PublicKey::Unsupported`.
+
+```rust
+use allcrypt::ec::dstu4145::Curve;
+use allcrypt::x509::builder::{CertificateBuilder, SigningKey, SubjectKey};
+use allcrypt::x509::verify::{verify_signature, Policy};
+use allcrypt::x509::{Certificate, SignatureAlgorithm};
+
+let curve = Curve::by_name("dstu4145-m257")?;
+let (d, q) = curve.generate()?;
+let mut builder = CertificateBuilder::new("ЦСК", SubjectKey::Dstu4145 {
+    curve: &curve, point: &q, dke: None, little_endian: true });
+builder.hash = "kupyna256";
+builder.key_identifiers = true;
+let der = builder.sign(&SigningKey::Dstu4145 {
+    curve: &curve, private: &d, dke: None, little_endian: true })?;
+
+let certificate = Certificate::parse(&der)?;
+assert_eq!(certificate.signature_algorithm, SignatureAlgorithm::Dstu4145("kupyna256"));
+verify_signature(&certificate, &certificate, &Policy::default())?;
+```
+
 `x509::ua_key` is the layer underneath, for a key on a curve that is not
 one of the ten and for the container formats one at a time. The
 PKCS#12 and JKS stores that hold these keys are read and written by the
@@ -2752,6 +3059,44 @@ key store example (`examples/products/keystore`), with HMAC-GOST 34.311
 as a PKCS#12 MAC and the zero padding PrivatBank's JKS files put after
 the key. Readers disagree on several details; the pitfalls guide has
 them under *Ukrainian key containers*.
+
+### DSTU 9041:2020
+
+Ukraine's public-key encryption, for short messages such as keys:
+ECIES in shape, over twisted Edwards curves `x^2 + 2y^2 = 1 + d·x^2·y^2`
+in `GF(p)`, with Kupyna-256 for the integrity check and Kalyna's key
+wrap for the encryption. Two curves, `dstu9041-e256-1` and
+`dstu9041-e512-1` (`api::DSTU9041_CURVES`; the standard's E256/1 and
+E512/1, which are accepted as names too), taking messages of up to 200
+and 424 bits. A ciphertext is `r || t`, four field elements: 128 or 256
+bytes, whatever the message's length.
+
+```rust
+use allcrypt::api::{Dstu9041Key, Dstu9041PublicKey};
+
+let key = Dstu9041Key::generate("dstu9041-e256-1")?;
+let public = key.public_key();
+assert_eq!(public.max_message_bits(), 200);
+
+let ciphertext = public.encrypt(b"a 25-byte key at the most")?;
+assert_eq!(ciphertext.len(), 128);
+assert_eq!(key.decrypt(&ciphertext)?, b"a 25-byte key at the most");
+
+// The standard counts messages in bits: 13 bits, right aligned in two
+// bytes, the three above them zero.
+let thirteen = public.encrypt_bits(&[0x1f, 0xff], 13, None)?;
+assert_eq!(key.decrypt_bits(&thirteen)?, (vec![0x1f, 0xff], 13));
+
+// A public key travels as x || y and is checked on the way in.
+let again = Dstu9041PublicKey::from_bytes("dstu9041-e256-1", &public.to_bytes())?;
+assert!(again.encrypt(&[0u8; 26]).is_err());   // 208 bits is too long
+```
+
+Decryption gives one error for every way a ciphertext can be wrong. The
+private key and the one-time key are from 2 to `n − 2`, big endian;
+`encrypt_bits` takes a given one-time key for known answers, and
+reusing one shows two messages were sent to the same key.
+`ec::dstu9041::Curve` has the same operations on bytes.
 
 ## Post-quantum: SLH-DSA
 

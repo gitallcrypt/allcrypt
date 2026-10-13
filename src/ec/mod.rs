@@ -43,6 +43,8 @@ mod fixed;
 mod field448;
 pub mod dstu4145;
 mod dstu4145_params;
+pub mod dstu9041;
+mod dstu9041_params;
 pub mod gf2m;
 pub mod gost3410;
 pub mod sm2;

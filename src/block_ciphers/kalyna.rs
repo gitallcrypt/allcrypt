@@ -157,8 +157,9 @@ const INV_SBOX: [[u8; 256]; 4] = {
 const MDS: [u8; 8] = [0x01, 0x01, 0x05, 0x01, 0x08, 0x06, 0x07, 0x04];
 const MDS_INV: [u8; 8] = [0xad, 0x95, 0x76, 0xa8, 0x2f, 0x49, 0xd7, 0xca];
 
-/// Multiplication in GF(2^8) modulo x^8 + x^4 + x^3 + x^2 + 1.
-const fn gf_mul(mut a: u8, mut b: u8) -> u8 {
+/// Multiplication in GF(2^8) modulo x^8 + x^4 + x^3 + x^2 + 1. Shared with
+/// Strumok, which works in the same field.
+pub(crate) const fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     let mut r = 0;
     while b != 0 {
         if b & 1 != 0 {

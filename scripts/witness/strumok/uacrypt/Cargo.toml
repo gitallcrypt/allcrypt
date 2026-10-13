@@ -1,0 +1,17 @@
+# uacrypt's Strumok (crates/dstu-core/src/hazmat/strumok.rs) on its own,
+# through src/main.rs. build.sh links the fetched file in as
+# src/strumok.rs.
+[package]
+name = "strumok-uacrypt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zeroize = { path = "../zeroize" }
+
+[workspace]
+
+# The source tests for this feature (a smaller-table variant uacrypt
+# offers); declared so the build is quiet, and left off.
+[features]
+small-tables = []

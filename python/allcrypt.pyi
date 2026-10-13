@@ -35,6 +35,10 @@ __version__: str
 
 algorithms_available: List[str]
 
+#: The checksums ``new`` also takes: not cryptographic, so not in
+#: ``algorithms_available``.
+checksums_available: List[str]
+
 class Mode(str, enum.Enum):
     """The cipher modes, generated from ``api::MODES``.
 
@@ -73,6 +77,7 @@ aeads_available: List[str]
 box_constructions_available: List[str]
 curves_available: List[str]
 dstu4145_curves_available: List[str]
+dstu9041_curves_available: List[str]
 #: Every cipher suite in the registry, implemented or not - the catalogue
 #: of what TLS has, rather than of what this library has.
 tls_suites_available: List[str]
@@ -121,6 +126,20 @@ def blake2s(data: Optional[BytesLike] = None, *, digest_size: int = 32,
             person: Optional[BytesLike] = None) -> Hash:
     """BLAKE2s, the same with 32 byte outputs and keys and a salt and
     personalisation of up to 8 bytes."""
+def blake3(data: Optional[BytesLike] = None, *, key: Optional[BytesLike] = None,
+           derive_key_context: Optional[str] = None) -> Hash:
+    """BLAKE3 with the ``blake3`` package's parameters: 32 bytes of
+    digest, a 32 byte ``key`` for the keyed mode (a MAC; no HMAC around
+    it), or ``derive_key_context`` for the key derivation mode, where the
+    data is the key material and the context a fixed string naming the
+    application and the purpose. Not both. ``blake3_xof`` gives any
+    length."""
+def blake3_xof(data: BytesLike, length: int, *, key: Optional[BytesLike] = None,
+               derive_key_context: Optional[str] = None, seek: int = 0) -> bytes:
+    """``length`` bytes of BLAKE3's output from byte ``seek``, in the mode
+    ``blake3`` takes the same arguments for. A longer output extends a
+    shorter one, and ``seek`` reaches any part of it without computing
+    what comes before."""
 
 class Encryptor:
     """One encryption or decryption in progress."""
@@ -268,8 +287,8 @@ class StreamCipher:
     def __init__(self, name: str, key: BytesLike, nonce: Optional[BytesLike] = None,
                  counter: int = 0) -> None:
         """``counter`` is the ChaCha or Salsa20 block to start at; RFC
-        8439's AEAD starts its payload at 1. RC4 and ZipCrypto have no
-        counter and refuse anything but 0."""
+        8439's AEAD starts its payload at 1. RC4, Strumok and ZipCrypto
+        have no counter and refuse anything but 0."""
     def seek(self, offset: int) -> None:
         """Move to byte ``offset`` of the keystream, forwards or back.
         ChaCha and Salsa20 only; with a 12 byte nonce ChaCha's counter is
@@ -508,6 +527,49 @@ def dstu4145_keys_open(data: BytesLike, password: BytesLike) -> List[Dstu4145Key
 def dstu4145_key6(key: Dstu4145Key, password: BytesLike,
                   second: Optional[Dstu4145Key] = None) -> bytes:
     """Seal a key, and the key-agreement key beside it, into a ``Key-6.dat``."""
+
+class Dstu9041Key:
+    """A DSTU 9041:2020 key pair on one of ``dstu9041_curves_available``:
+    ``e`` and ``x || y``, big endian at the field's width. It decrypts;
+    ``Dstu9041PublicKey`` encrypts."""
+
+    @staticmethod
+    def generate(curve: str) -> "Dstu9041Key": ...
+    @staticmethod
+    def from_private(curve: str, private: BytesLike) -> "Dstu9041Key":
+        """``e``, big endian, from 2 to ``n - 2``. The public key is ``e*P``."""
+
+    def private_bytes(self) -> bytes: ...
+    def public_key(self) -> "Dstu9041PublicKey": ...
+    def decrypt(self, ciphertext: BytesLike) -> bytes:
+        """``r || t`` to the message. One error for every way it can be
+        wrong."""
+
+    def decrypt_bits(self, ciphertext: BytesLike) -> Tuple[bytes, int]:
+        """The message, right aligned, and its length in bits."""
+
+    @property
+    def curve(self) -> str: ...
+
+class Dstu9041PublicKey:
+    """A DSTU 9041:2020 public key."""
+
+    def __init__(self, curve: str, encoded: BytesLike) -> None:
+        """``x || y``, big endian. Raises for a point that is not on the
+        curve or not of order ``n``."""
+
+    def public_bytes(self) -> bytes: ...
+    def encrypt(self, message: BytesLike, bits: Optional[int] = None,
+                epsilon: Optional[BytesLike] = None) -> bytes:
+        """``r || t``. ``bits`` for a message that is not whole bytes,
+        right aligned with the bits above it zero; ``epsilon``, the
+        one-time key, only for a known answer."""
+
+    @property
+    def max_message_bits(self) -> int:
+        """200 on E256/1, 424 on E512/1."""
+    @property
+    def curve(self) -> str: ...
 
 class RsaKey:
     """An RSA private key, with its public half alongside."""
@@ -2399,6 +2461,24 @@ def bitlocker_encrypt_sector(method: str, key: BytesLike, byte_offset: int,
 def bitlocker_decrypt_sector(method: str, key: BytesLike, byte_offset: int,
                              sector: BytesLike) -> bytes:
     """The inverse of ``bitlocker_encrypt_sector``."""
+class Ssdeep:
+    """ssdeep in progress, as libfuzzy streams it."""
+    def __init__(self, data: Optional[BytesLike] = None) -> None: ...
+    def update(self, data: BytesLike) -> None: ...
+    def digest(self) -> str:
+        """``blocksize:string:string``; more can follow."""
+    def copy(self) -> "Ssdeep": ...
+def ssdeep(data: BytesLike) -> str:
+    """The ssdeep digest, as libfuzzy and the ``ssdeep`` tool give it."""
+def ssdeep_compare(a: str, b: str) -> int:
+    """libfuzzy's score for two ssdeep digests, 0 to 100; 0 when their
+    block sizes cannot be compared."""
+def ctph(data: BytesLike) -> str:
+    """The CTPH digest of ctph.js 0.0.5, which is what CyberChef's CTPH
+    computes; a different scheme from ssdeep."""
+def ctph_similarity(a: str, b: str) -> float:
+    """ctph.js's similarity of two CTPH digests, 0 to 100, or NaN where
+    ctph.js gives NaN."""
 def nt_hash(password: str) -> bytes:
     """The NT hash (NTOWFv1): MD4 of the password as UTF-16 little endian."""
 def ntlmv2_hash(password: str, username: str, domain: str) -> bytes:
@@ -2458,6 +2538,21 @@ def poly1305(key: BytesLike, message: BytesLike) -> bytes:
 
 def poly1305_verify(key: BytesLike, message: BytesLike, tag: BytesLike) -> bool:
     """Check a Poly1305 tag in constant time."""
+
+def crc32c(data: BytesLike, value: int = 0) -> int:
+    """CRC-32C (Castagnoli) of ``data``, continuing from ``value``, the
+    CRC-32C of what came before it, as ``zlib.crc32`` does for CRC-32."""
+
+def siphash(key: BytesLike, data: BytesLike, *, c_rounds: int = 2, d_rounds: int = 4,
+            size: int = 8) -> bytes:
+    """SipHash under a 16 byte key: 8 or 16 bytes. SipHash-2-4 is the
+    designers' choice; ``c_rounds=1, d_rounds=3`` is what Rust's and
+    Python's hash tables run."""
+
+def halfsiphash(key: BytesLike, data: BytesLike, *, c_rounds: int = 2, d_rounds: int = 4,
+                size: int = 4) -> bytes:
+    """HalfSipHash, SipHash on 32 bit words, under an 8 byte key: 4 or 8
+    bytes."""
 
 def cmac(cipher: str, key: BytesLike, data: BytesLike) -> bytes:
     """CMAC (SP 800-38B, RFC 4493) over any block cipher here."""

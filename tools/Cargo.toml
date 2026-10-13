@@ -1,7 +1,9 @@
 # Development tools, not part of the library: the corpus generators
 # `scripts/diff_check.py` checks against other implementations
 # (`diff_*`), the constant-time harness `scripts/ct_check.py` runs under
-# valgrind (`ct_bignum`), and benchmarks (`bench_*`). Every file in
+# valgrind (`ct_bignum`), benchmarks (`bench_*`), and the DSTU 4145
+# certificates `scripts/make_dstu4145_x509_vectors.py` hands to its
+# witnesses (`dstu4145_certs`). Every file in
 # src/bin/ is a program, found by Cargo without a line here:
 #
 #     cargo run --release -p allcrypt-tools --bin diff_gcm

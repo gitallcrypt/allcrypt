@@ -1,14 +1,22 @@
 use std::collections::HashMap;
 
+pub mod blake;
 pub mod blake2;
+pub mod blake3;
 pub mod buffer;
 pub mod gost94;
+pub mod groestl;
 pub mod keccak;
 pub mod kupyna;
+pub mod lsh;
+mod lsh_tables;
 pub mod md2;
 pub mod md4;
 pub mod md5;
 pub mod has160;
+pub mod jh;
+mod jh_tables;
+pub mod haval;
 pub mod md6;
 pub mod ripemd;
 pub mod ripemd160;
@@ -16,8 +24,14 @@ pub mod sha1;
 pub mod sha2;
 #[cfg(all(feature = "sha-ni", target_arch = "x86_64"))]
 mod sha_ni;
+pub mod skein;
+mod skein_tables;
 pub mod sm3;
+pub mod snefru;
+mod snefru_tables;
+pub mod ssdeep;
 pub mod streebog;
+pub mod tiger;
 pub mod whirlpool;
 
 /*
@@ -29,7 +43,7 @@ pub trait HashFunction {
     /// The name `api::AnyHash::new` reads back as this same function: the
     /// catalogue's spelling (`api::HASHES`), lowercase, with the length in
     /// the name for a family that takes one at a length the catalogue does
-    /// not list (`blake2b_256`, `md6_200`, `kupyna128`, `shake_128_512`).
+    /// not list (`blake2b_200`, `md6_200`, `kupyna128`, `shake_128_512`).
     fn name(&self) -> String;
     fn digest_len(&self) -> usize;
     /// The compression function's input block size in bytes: 64 for the

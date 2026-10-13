@@ -108,6 +108,21 @@ pub enum SignatureAlgorithm {
     /// section 3). HashML-DSA has OIDs of its own, and RFC 9881 section
     /// 8.3 keeps them out of certificates.
     MlDsa(&'static str),
+    /// DSTU 4145-2002, over the named hash: `gost34311` (GOST
+    /// 34.311-95 under the signer's DKE, the S-box its key's parameters
+    /// carry) or `kupyna256`, `kupyna384`, `kupyna512`.
+    ///
+    /// **The byte order is the key's, not the signature's.** The
+    /// `dstu4145le` and `dstu4145be` OIDs serve as key algorithm and
+    /// signature algorithm both, and the Kupyna OIDs say nothing about
+    /// it; dstu-engine reverses the signature for a little-endian *key*
+    /// whatever the signature OID says, and so does `verify` here. Both
+    /// GOST 34.311 OIDs are therefore this one variant.
+    ///
+    /// Like GOST's, the hash is not separable from the algorithm:
+    /// `hash_name()` is `None`, because `gost34311` here means a hash
+    /// whose S-box comes from the key.
+    Dstu4145(&'static str),
     /// Recognised as a signature algorithm, not implemented here. PSS is the
     /// one that matters, and certificate verification does not handle it yet.
     Unsupported(&'static str),
@@ -139,6 +154,11 @@ impl SignatureAlgorithm {
         else if bytes == oids::GOST3410_12_256_WITH_DIGEST { SignatureAlgorithm::Gost(256) }
         else if bytes == oids::GOST3410_12_512_WITH_DIGEST { SignatureAlgorithm::Gost(512) }
         else if bytes == oids::GOST3411_94_WITH_GOST3410_2001 { SignatureAlgorithm::Gost2001 }
+        else if bytes == oids::DSTU4145_LE || bytes == oids::DSTU4145_BE {
+            SignatureAlgorithm::Dstu4145("gost34311") }
+        else if bytes == oids::DSTU4145_KUPYNA256 { SignatureAlgorithm::Dstu4145("kupyna256") }
+        else if bytes == oids::DSTU4145_KUPYNA384 { SignatureAlgorithm::Dstu4145("kupyna384") }
+        else if bytes == oids::DSTU4145_KUPYNA512 { SignatureAlgorithm::Dstu4145("kupyna512") }
         // GOST R 34.10-94 is a discrete log scheme over a prime field
         // rather than a curve, and nothing here does that arithmetic.
         // Named so a certificate using it says which algorithm is
@@ -168,7 +188,8 @@ impl SignatureAlgorithm {
             // afterwards - so the hash is not separable from the
             // algorithm here and the caller must go through the GOST
             // path rather than hashing generically.
-            SignatureAlgorithm::Gost(_) | SignatureAlgorithm::Gost2001 => None,
+            SignatureAlgorithm::Gost(_) | SignatureAlgorithm::Gost2001
+                | SignatureAlgorithm::Dstu4145(_) => None,
             // EdDSA and ML-DSA hash the message themselves. See the
             // variants' notes.
             SignatureAlgorithm::Eddsa(_) | SignatureAlgorithm::MlDsa(_) => None,
@@ -187,6 +208,12 @@ impl SignatureAlgorithm {
                 "GOST R 34.10-2001 with GOST R 34.11-94".to_string(),
             SignatureAlgorithm::Eddsa(name) => format!("EdDSA ({})", name),
             SignatureAlgorithm::MlDsa(name) => name.to_string(),
+            SignatureAlgorithm::Dstu4145(hash) => format!("DSTU 4145-2002 with {}", match *hash {
+                "gost34311" => "GOST 34.311-95",
+                "kupyna256" => "Kupyna-256",
+                "kupyna384" => "Kupyna-384",
+                _ => "Kupyna-512",
+            }),
             SignatureAlgorithm::Unsupported(name) => format!("{} (not implemented)", name),
             SignatureAlgorithm::Unknown => "an unrecognised algorithm".to_string(),
         }
@@ -303,6 +330,23 @@ pub enum PublicKey<'a> {
     /// rather than refused, so the rest of the certificate can still be
     /// read and the verifier can say what it cannot do.
     Dsa { parameters: Option<(BigUint, BigUint, BigUint)>, y: BigUint },
+    /// A DSTU 4145-2002 key: the curve its `DSTU4145Params` name or give
+    /// whole, the point, the DKE the parameters carry, and the byte
+    /// order its OID names (`dstu4145le` or `dstu4145be`).
+    ///
+    /// The BIT STRING holds an OCTET STRING holding the compressed
+    /// point, its bytes reversed under `dstu4145le` - as are the
+    /// curve's `b` and base point in the parameters, and the signatures
+    /// the key makes. Only the polynomial basis: a curve given in a
+    /// normal basis is `Unsupported`.
+    Dstu4145 {
+        curve: Box<crate::ec::dstu4145::Curve>,
+        point: crate::ec::dstu4145::Point,
+        /// The 64-byte DKE: the S-box GOST 34.311-95 runs under when
+        /// this key verifies, `None` for the standard's default.
+        dke: Option<Vec<u8>>,
+        little_endian: bool,
+    },
     /// A key we can carry but not use. Keeping it means a caller can still
     /// read the rest of the certificate and report why it is unusable.
     Unsupported { algorithm: &'a [u8] },
@@ -1266,6 +1310,8 @@ fn read_public_key<'a>(reader: &mut Reader<'a>) -> Result<PublicKey<'a>, String>
         let y = inner.read_integer()?;
         inner.finish()?;
         Ok(PublicKey::Dsa { parameters, y })
+    } else if bytes == oids::DSTU4145_LE || bytes == oids::DSTU4145_BE {
+        read_dstu4145_key(bytes == oids::DSTU4145_LE, parameters, key_bits)
     } else if let Some(parameter_set) = ml_dsa_parameter_set(bytes) {
         // RFC 9881 section 2: "The contents of the parameters component
         // for each algorithm MUST be absent." Refused for the reason
@@ -1285,6 +1331,36 @@ fn read_public_key<'a>(reader: &mut Reader<'a>) -> Result<PublicKey<'a>, String>
     } else {
         Ok(PublicKey::Unsupported { algorithm: bytes })
     }
+}
+
+/// A DSTU 4145-2002 subject public key: `DSTU4145Params` (read by
+/// `ua_key::read_parameters`, the same structure a private key's
+/// algorithm carries) and the compressed point in an OCTET STRING.
+///
+/// A curve the parameters give in an optimal normal basis is carried as
+/// `Unsupported` rather than refused, for the reason the EC branch
+/// gives: reading is not judging.
+fn read_dstu4145_key<'a>(little_endian: bool, parameters: Option<&'a [u8]>,
+                         key_bits: &'a [u8]) -> Result<PublicKey<'a>, String> {
+    let parameters = parameters.ok_or("A DSTU 4145 key with no parameters.")?;
+    if ua_key::names_a_normal_basis(parameters) {
+        let algorithm = if little_endian { oids::DSTU4145_LE } else { oids::DSTU4145_BE };
+        return Ok(PublicKey::Unsupported { algorithm });
+    }
+    let (curve, dke) = ua_key::read_parameters(parameters, little_endian)?;
+    let mut inner = Reader::new(key_bits);
+    let mut packed = inner.read_octet_string()?.to_vec();
+    inner.finish()?;
+    let width = curve.field().byte_len();
+    if packed.len() != width {
+        return Err(format!("A DSTU 4145 public key on this curve is {} bytes compressed; \
+                            got {}.", width, packed.len()));
+    }
+    if little_endian {
+        packed.reverse();
+    }
+    let point = curve.decompress(&packed)?;
+    Ok(PublicKey::Dstu4145 { curve: Box::new(curve), point, dke, little_endian })
 }
 
 /// FIPS 204's name for an RFC 9881 OID, or `None` for any other OID.
@@ -1879,6 +1955,88 @@ mod real_world_tests {
                 other => panic!("expected {name}, got {:?}", other),
             }
         }
+    }
+
+    /// A DSTU 4145 key whose curve is given in an optimal normal basis -
+    /// `ECBinary`'s field with a degree and no polynomial - is carried as
+    /// `Unsupported` under its own OID, in either byte order, rather than
+    /// refused or misread as a polynomial basis.
+    #[test]
+    fn test_a_dstu4145_key_in_a_normal_basis_is_carried_as_unsupported() {
+        use crate::asn1::Writer;
+        let curve = crate::ec::dstu4145::Curve::by_name("dstu4145-m233-onb").unwrap();
+        let b = curve.element_to_bytes(curve.b());
+        let packed = curve.compress(curve.generator()).unwrap();
+        for (oid, polynomial) in [(oids::DSTU4145_LE, false), (oids::DSTU4145_BE, false),
+                                  (oids::DSTU4145_LE, true)] {
+            let mut w = Writer::new();
+            w.write_sequence(|w| {
+                w.write_sequence(|w| {
+                    w.write_oid(oid);
+                    w.write_sequence(|w| {
+                        w.write_sequence(|w| {
+                            w.write_sequence(|w| {
+                                w.write_u32(233);
+                                // The control: the same bytes with a
+                                // polynomial are read as one, and fail
+                                // as the wrong curve rather than being
+                                // set aside.
+                                if polynomial {
+                                    w.write_u32(74);
+                                }
+                            });
+                            w.write_u32(u32::from(curve.a()));
+                            w.write_octet_string(&b);
+                            w.write_integer(curve.order());
+                            w.write_octet_string(&packed);
+                        });
+                    });
+                });
+                let mut key = Writer::new();
+                key.write_octet_string(&packed);
+                w.write_bit_string(&key.finish());
+            });
+            let der = w.finish();
+            match read_public_key(&mut Reader::new(&der)) {
+                Ok(PublicKey::Unsupported { algorithm }) if !polynomial =>
+                    assert_eq!(algorithm, oid),
+                Err(_) if polynomial => {}
+                other => panic!("{polynomial}: {other:?}"),
+            }
+        }
+    }
+
+    /// A compressed key one byte longer than the field, with the extra
+    /// byte zero at the high end, is refused for its length: it names
+    /// the same point, and a second encoding of one key is what a
+    /// fingerprint cannot survive.
+    #[test]
+    fn test_a_dstu4145_key_of_the_wrong_length_is_refused() {
+        use crate::asn1::Writer;
+        let curve = crate::ec::dstu4145::Curve::by_name("dstu4145-m163").unwrap();
+        let (_, q) = curve.generate().unwrap();
+        let mut packed = curve.compress(&q).unwrap();
+        packed.reverse();
+        packed.push(0);
+        let mut parameters = Writer::new();
+        ua_key::write_parameters(&mut parameters, &curve,
+                                 &crate::block_ciphers::gost::DSTU4145_DEFAULT_DKE, true)
+            .unwrap();
+        let parameters = parameters.finish();
+        let mut key = Writer::new();
+        key.write_octet_string(&packed);
+        let key = key.finish();
+        let mut w = Writer::new();
+        w.write_sequence(|w| {
+            w.write_sequence(|w| {
+                w.write_oid(oids::DSTU4145_LE);
+                w.write_raw(&parameters);
+            });
+            w.write_bit_string(&key);
+        });
+        let der = w.finish();
+        let error = read_public_key(&mut Reader::new(&der)).unwrap_err();
+        assert!(error.contains("21 bytes compressed; got 22"), "{error}");
     }
 
     /// An RFC 8410 SPKI, for the tests below. Written here rather than

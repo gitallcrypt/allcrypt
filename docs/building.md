@@ -867,6 +867,33 @@ $ scripts/witness/mars/build.sh                 # builds /opt/mars
 $ python3 scripts/make_mars_vectors.py          # rewrites vectors/mars.vec
 ```
 
+**The NESSIE ciphers** - Khazad, Anubis, Noekeon and SHACAL-2 - are
+witnessed by libtomcrypt 1.18.2 and the Linux kernel's `crypto/`
+modules, each cipher file compiled alone against a small shim of the
+headers it includes (`scripts/witness/nessie/shim/`); Anubis also by
+the designers' reference code as Crypt::Anubis ships it, through its
+NESSIE interface; Noekeon by Bouncy Castle (`NessieWitness.java`, over
+the system's bcprov jar) and, for its indirect-key mode, Botan 1.10.17's
+file against a shim of the Botan interface; SHACAL-2 by Crypto++ 8.9.0's
+`shacal2.cpp`, with the library files it links against and its assembly
+compiled out, and Bouncy Castle. A row is written only where every
+witness of that cipher agrees. The reference fixes
+its key size with a `#define`, so a shim `stdio.h` that it includes
+later makes that a variable, and the file is compiled as fetched. `scripts/witness/nessie/build.sh` fetches the files once, checks
+each against `nessie.sha256`, and requires every witness to reproduce
+the published tests both projects carry - libtomcrypt's self-tests,
+the kernel's `testmgr.h`, Botan's test files and Crypto++'s
+`TestVectors`, read out of their sources by `published.py` - before it
+reports success.
+
+```console
+$ scripts/witness/nessie/build.sh               # builds /opt/nessie
+$ python3 scripts/make_khazad_vectors.py        # rewrites vectors/khazad.vec
+$ python3 scripts/make_anubis_vectors.py        # rewrites vectors/anubis.vec
+$ python3 scripts/make_noekeon_vectors.py       # rewrites vectors/noekeon.vec
+$ python3 scripts/make_shacal2_vectors.py       # rewrites vectors/shacal2.vec
+```
+
 **Rijndael's wider blocks** have two witnesses, and a row is written
 only where both agree: Bouncy Castle's `RijndaelEngine` through the same
 driver, and phpseclib 1.0.23's pure-PHP `Crypt_Rijndael`, whose two
@@ -895,6 +922,18 @@ $ scripts/witness/gost89/build.sh               # builds /opt/gost89
 $ scripts/witness/cryptonite/build.sh           # builds /opt/cryptonite
 $ python3 scripts/make_dstu_gost_vectors.py     # rewrites vectors/dstu_gost.vec
 $ PYTHONPATH=python python3 scripts/make_gost94_vectors.py
+```
+
+**Ukraine's other nine tables** go through the same three.
+`scripts/make_dstu_dke_vectors.py` reads the ten tables from cryptonite
+(its own tables 1 to 10) and from li0ard/dstu's `src/dstu9311/const.ts`,
+which it fetches once at a pinned commit and checks against its SHA-256;
+the two must agree, and table 1 must be the default DKE. It writes the
+tables to `src/block_ciphers/dstu_dke.rs`, and under tables 2 to 10 the
+rows all three witnesses agree on.
+
+```console
+$ python3 scripts/make_dstu_dke_vectors.py      # rewrites src/block_ciphers/dstu_dke.rs, vectors/dstu_dke.vec
 ```
 
 **Kalyna** is checked against the reference implementation by its
@@ -962,6 +1001,40 @@ $ python3 scripts/make_dstu4145_params.py       # rewrites src/ec/dstu4145_param
 $ python3 scripts/make_dstu4145_vectors.py      # rewrites vectors/dstu4145.vec
 ```
 
+The five curves in an **optimal normal basis** have no Bouncy Castle
+counterpart. Their parameters come from cryptonite's table and li0ard's
+`src/dstu4145/const.ts` (li0ard/dstu, which the same script fetches at a
+pinned commit), which must agree; their vectors from cryptonite and
+li0ard's TypeScript, which `scripts/witness/li0ard/build.sh` fetches -
+the DSTU 4145 files, its GOST 34.311-95 and Kupyna for certificates, and
+the three @noble files and bn.js 5.2.3 they import - checks against
+`li0ard.sha256` and runs under **bun** through `driver.ts`. One line of li0ard's `dstu4145/index.ts`, the re-export of
+an ECIES that needs an ASN.1 package, is removed in the copy that runs.
+
+```console
+$ scripts/witness/li0ard/build.sh               # builds /opt/li0ard; needs bun
+$ python3 scripts/make_dstu4145_onb_vectors.py  # rewrites vectors/dstu4145_onb.vec
+```
+
+**DSTU 9041:2020** against two implementations that share no code:
+uacrypt's `hazmat::dstu9041` (user137/uacrypt), built on its own with
+the Kalyna, key wrap and Kupyna modules it uses, subtle 2.6.1's one
+source file and a stand-in for the `zeroize` crate, with `cargo
+--offline`; and li0ard's TypeScript `dstu9041` (li0ard/dstu), with the
+three files of @noble/curves and @noble/hashes 2.4.0 it imports, run by
+**bun**. `scripts/witness/dstu9041/build.sh` fetches all of them from
+GitHub at pinned commits and tags once, checks them against
+`dstu9041.sha256`, and requires both to reproduce the standard's worked
+examples Г.1 and Г.3, which uacrypt transcribes and li0ard's tests
+carry. The curve parameters come from both witnesses' sources, which
+must agree.
+
+```console
+$ scripts/witness/dstu9041/build.sh             # builds /opt/dstu9041; needs bun
+$ python3 scripts/make_dstu9041_params.py       # rewrites src/ec/dstu9041_params.rs
+$ python3 scripts/make_dstu9041_vectors.py      # rewrites vectors/dstu9041.vec
+```
+
 **dstu-engine** (an OpenSSL engine for the Ukrainian standards, with
 keylib, which opens IIT's Key-6.dat, PKCS#12 and JKS key containers):
 44 source files, each checked against
@@ -969,7 +1042,16 @@ keylib, which opens IIT's Key-6.dat, PKCS#12 and JKS key containers):
 system's OpenSSL into an engine module and a driver that loads it. The
 PKCS#12 key derivation over GOST 34.311 is OpenSSL's own, through the
 engine's hash. The key containers are keylib's: the driver prints each
-key it finds as numbers and each certificate's SHA-256.
+key it finds as numbers and each certificate's SHA-256. Its `x509` op
+is the engine's `X509_verify` under an issuer's key, which hashes with
+the key's DKE, with the signature pairing the standard defines added to
+OpenSSL's object table, which has none for the `dstu4145le` and
+`dstu4145be` OIDs. `scripts/make_dstu4145_x509_vectors.py` hands it the
+certificates - three real roots that li0ard's `x509.spec.ts` tests
+against, fetched at a pinned commit, and ours, from
+`tools/src/bin/dstu4145_certs.rs` - beside li0ard's own (needs bun and
+`/opt/li0ard`); every signature is checked by each witness that can
+check it, and each must refuse two changed copies.
 `scripts/check_ua_keys.py` takes its other inputs from two directories:
 dstu-engine's `tests/` and jkurwa's `test/data/`
 (github.com/dstucrypt/jkurwa), each file checked against its git blob
@@ -979,9 +1061,140 @@ example.
 ```console
 $ scripts/witness/dstuengine/build.sh           # builds /opt/dstuengine
 $ python3 scripts/make_pkcs12_kdf_gost_vectors.py   # rewrites vectors/pkcs12_kdf_gost.vec
+$ python3 scripts/make_dstu4145_x509_vectors.py # rewrites vectors/dstu4145_x509.vec and
+                                                # the certificates in tests/keys/ua-x509/
 $ python3 scripts/check_ua_keys.py --dstu-engine DIR --jkurwa DIR --record
                                                 # rewrites tests/keys/ua/, vectors/ua_keys.vec
                                                 # and examples/products/fixtures/keystore-ua*
+```
+
+**BLAKE2 at the lengths the catalogue names** (BLAKE2b-128 to -384,
+BLAKE2s-128 and -160) against three implementations: hashlib,
+OpenSSL 3.5's provider, whose `size` parameter sets the output length
+(`scripts/witness/blake2/build.sh` builds a driver for it against
+`/opt/openssl35`), and coreutils' `b2sum -l` for BLAKE2b.
+
+```console
+$ scripts/witness/blake2/build.sh               # builds /opt/blake2witness
+$ python3 scripts/make_blake2_vectors.py        # rewrites vectors/blake2_named.vec
+```
+
+**Tiger, HAVAL and Snefru** against five implementations.
+`scripts/witness/oldhashes/build.sh` fetches four from GitHub at pinned
+commits and checks them against `oldhashes.sha256` - sphlib 3.0 (Tiger,
+Tiger2, HAVAL), RHash 1.4.6's librhash (Tiger, Tiger2, Snefru), Botan
+1.10.17's `src/hash/tiger` with a shim for the rest of Botan's headers
+(Tiger at any length and pass count) - and clones mhash 0.9.9 at a
+pinned commit to configure and build its library (HAVAL, Snefru, and a
+Tiger with its words the other way round, which the script checks and
+leaves out). The fifth is PHP's `ext/hash`, through the system's `php`.
+Every driver takes its message in pieces of 1, 2, 3 ... bytes.
+
+```console
+$ scripts/witness/oldhashes/build.sh            # builds /opt/oldhashes; needs php
+$ python3 scripts/make_tiger_haval_snefru_vectors.py   # rewrites vectors/tiger_haval_snefru.vec
+$ python3 scripts/make_snefru_tables.py         # rewrites src/hash_functions/snefru_tables.rs;
+                                                # fetches RHash, PHP and mhash's tables
+```
+
+**The SHA-3 finalists** as their teams finally submitted them.
+`scripts/witness/finalists/build.sh` fetches sphlib 3.0 and the teams'
+own code as SUPERCOP carries it - BLAKE's reference, Grøstl's 32 bit
+code through the API NIST asked every submission for, and JH from the
+designer's bitsliced code, whose JH-224 and JH-384 starting values
+`jh_any.c` derives, and Skein's code at all three widths - from GitHub at
+pinned commits, checked against `finalists.sha256`, and clones
+dchest's pure Go BLAKE at pinned commits to build with the system's
+**go**, offline; Bouncy Castle's Skein comes from the bcprov jar the
+system ships, through **javac**. The sphlib and reference drivers also take a context
+told it has already taken some number of bytes, which is how BLAKE's
+counter past 32 bits is reached.
+
+```console
+$ scripts/witness/finalists/build.sh            # builds /opt/finalists; needs go, javac
+$ python3 scripts/make_finalist_vectors.py      # rewrites vectors/sha3_finalists.vec
+$ python3 scripts/make_jh_tables.py             # rewrites src/hash_functions/jh_tables.rs;
+                                                # fetches SUPERCOP's JH and sphlib's
+$ python3 scripts/make_skein_tables.py          # rewrites src/hash_functions/skein_tables.rs;
+                                                # fetches the Skein team's skein.h and
+                                                # Bouncy Castle's ThreefishEngine
+```
+
+**BLAKE3** against three implementations: the BLAKE3 team's C
+implementation without SIMD and their reference implementation in Rust,
+which `scripts/witness/blake3/build.sh` fetches from GitHub at a pinned
+commit, checked against `blake3.sha256`, and builds with the system's
+**rustc**, and Bouncy Castle's Blake3Digest from the system's bcprov
+jar. The team's test vectors are vendored as
+`rfcs/blake3-test-vectors.json`.
+
+```console
+$ scripts/witness/blake3/build.sh               # builds /opt/blake3witness; needs javac
+$ python3 scripts/make_blake3_vectors.py        # rewrites vectors/blake3.vec
+```
+
+**LSH** against three implementations: KISA's reference C and Crypto++
+8.9.0's `lsh256.cpp` and `lsh512.cpp` with the few library files they
+link against, which `scripts/witness/lsh/build.sh` fetches from GitHub
+at pinned commits, checked against `lsh.sha256`, and compiles without
+SIMD; and RyuaNerin's go-krypto, cloned at a pinned commit and built
+with the system's **go**, offline, which has only the six sizes the
+standard names.
+
+```console
+$ scripts/witness/lsh/build.sh                  # builds /opt/lshwitness; needs go
+$ python3 scripts/make_lsh_vectors.py           # rewrites vectors/lsh.vec
+$ python3 scripts/make_lsh_tables.py            # rewrites src/hash_functions/lsh_tables.rs;
+                                                # fetches KISA's lsh256.c and lsh512.c
+                                                # and Crypto++'s lsh256.cpp and lsh512.cpp
+```
+
+**The checksums** against what the system already has, which
+`scripts/witness/checksums/build.sh` wraps - **PHP**'s ext/hash, Go's
+standard library through the system's **go**, java.util.zip through
+**javac**, and zlib and the SSE 4.2 CRC32 instruction through a C
+driver, so the build needs a processor with SSE 4.2 - and three
+implementations of Fletcher's checksums it fetches from GitHub at pinned
+commits, checked against `checksums.sha256`: the C of the R package
+fletcher, rfinnie's hashlib-additional, run by **python3**, and
+jbangelo's fletcher crate, built with the system's **rustc** - and two
+of FNV, run by **node**: hugoalh's fnv-es, with its type annotations
+stripped, and tjwebb's fnv-plus. hashlib-additional has FNV too.
+
+```console
+$ scripts/witness/checksums/build.sh            # builds /opt/checksumwitness; needs php, go,
+                                                # javac, node
+$ python3 scripts/make_checksum_vectors.py      # rewrites vectors/checksums.vec
+$ python3 scripts/make_fnv_tables.py            # rewrites src/checksum/fnv_tables.rs;
+                                                # fetches Landon Curt Noll's FNV, libfnv
+                                                # and fnv-es
+```
+
+**SipHash** against three implementations: the designers' reference,
+which `scripts/witness/siphash/build.sh` fetches from GitHub at a pinned
+commit, checked against `siphash.sha256`, and compiles once per pair of
+round counts, since it fixes them at compile time; OpenSSL 3.5's SIPHASH
+MAC (`/opt/openssl35`); and Bouncy Castle's SipHash and SipHash128. The
+reference alone has HalfSipHash.
+
+```console
+$ scripts/witness/siphash/build.sh              # builds /opt/siphashwitness; needs javac
+$ python3 scripts/make_siphash_vectors.py       # rewrites vectors/siphash.vec
+```
+
+**ssdeep and CTPH** against the implementations that define them, which
+`scripts/witness/ssdeep/build.sh` fetches from GitHub at pinned commits
+and checks against `ssdeep.sha256`: libfuzzy (ssdeep 2.14.1's `fuzzy.c`
+and the five files it needs, compiled with a driver that also checks
+hashing in pieces gives the same digest), ppdeep (pure Python, one pass
+per block size, as spamsum did) and ctph.js 0.0.5 under **node**, which
+is CyberChef's CTPH and has no second implementation. ppdeep scores with
+unit edit costs where libfuzzy weighs a substitution as two, so the
+scores are libfuzzy's, and the file says on each where ppdeep agrees.
+
+```console
+$ scripts/witness/ssdeep/build.sh               # builds /opt/ssdeepwitness; needs node
+$ python3 scripts/make_ssdeep_vectors.py        # rewrites vectors/ssdeep.vec
 ```
 
 **Kupyna** the same way: its authors' reference implementation, fetched
@@ -993,6 +1206,23 @@ the reference's `main.c`.
 ```console
 $ scripts/witness/kupyna/build.sh               # builds /opt/kupyna
 $ python3 scripts/make_kupyna_vectors.py        # rewrites vectors/kupyna.vec
+```
+
+**Strumok** has two implementations that share no code: UAPKI's
+`dstu8845.c` (specinfo-ua/UAPKI), compiled with the three library files
+it links against, and uacrypt's `hazmat/strumok.rs` (user137/uacrypt),
+built on its own with `cargo --offline` and a stand-in for the `zeroize`
+crate, whose derives only clear memory. `scripts/witness/strumok/build.sh`
+fetches both at pinned commits once and checks them against
+`strumok.sha256`; before it reports success, `published.py` requires
+both to reproduce the standard's Annex D examples (as uacrypt's tests
+transcribe them), UAPKI's self-test and the conformance letter's two
+examples, all read out of the fetched sources. The vectors script asks
+each witness for every keystream whole and in uneven pieces.
+
+```console
+$ scripts/witness/strumok/build.sh              # builds /opt/strumok
+$ python3 scripts/make_strumok_vectors.py       # rewrites vectors/strumok.vec
 ```
 
 **WireGuard**: wireguard-go (`WireGuard/wireguard-go`, its main branch)

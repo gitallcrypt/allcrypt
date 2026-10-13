@@ -172,15 +172,35 @@ Its two earlier versions are `whirlpool_0` (2000) and `whirlpool_t`
 before the final one; RIPEMD-160's relatives are `ripemd128`,
 `ripemd256` and `ripemd320`, Korea's KCDSA hash is `has160`, and MD6 is
 `md6_128` to `md6_512` - or `md6_` with any whole-byte size up to 512
-bits. None of them is in `hashlib`.
+bits. Tiger, HAVAL and Snefru have PHP's names, with an underscore for
+its comma, and PHP's comma works too: `tiger` (192 bits, three passes),
+`tiger128_3` to `tiger192_4` and `tiger2`; `haval128_3` to `haval256_5`;
+`snefru128` and `snefru256`, which PHP calls `snefru`. BLAKE, the SHA-3
+finalist that BLAKE2 grew out of, is `blake224` to `blake512`, and
+Grøstl and JH, two more finalists, `groestl224` to `groestl512` and
+`jh224` to `jh512`. Skein is `skeinSTATE_BITS` - `skein512_256` is
+Skein-512-256 - at any whole number of bytes, and a bare `skein256` is
+refused, because some software means Skein-256-256 by it and some
+Skein-512-256. LSH, Korea's hash standard (KS X 3262), is the same
+shape: `lsh256_224`, `lsh256_256` and `lsh512_224` to `lsh512_512`, any
+whole number of bytes up to the width as `lsh512_200`, and the
+standard's `LSH-512-256` spelling; a bare `lsh256` is refused, because
+Crypto++ calls LSH-256-224 `LSH-224` and LSH-512-384 `LSH-384`. None of
+them is in `hashlib`.
 
 ```python
 import allcrypt
 
 sizes = {"ripemd128": 16, "ripemd256": 32, "ripemd320": 40, "has160": 20,
-         "whirlpool_0": 64, "whirlpool_t": 64, "md6_256": 32, "md6_200": 25}
+         "whirlpool_0": 64, "whirlpool_t": 64, "md6_256": 32, "md6_200": 25,
+         "tiger": 24, "tiger128_4": 16, "haval224_5": 28, "snefru128": 16,
+         "blake224": 28, "blake512": 64, "groestl384": 48, "jh224": 28,
+         "skein1024_1024": 128, "skein512_200": 25, "lsh256_224": 28,
+         "lsh512_512": 64, "lsh512_200": 25}
 for name, size in sizes.items():
     assert allcrypt.new(name, b"abc").digest_size == size
+assert allcrypt.new("haval256,5", b"abc").digest() == \
+    allcrypt.new("haval256_5", b"abc").digest()
 # Three different functions, not three spellings of one.
 assert len({allcrypt.new(n, b"abc").digest() for n in
             ("whirlpool", "whirlpool_t", "whirlpool_0")}) == 3
@@ -220,7 +240,7 @@ Objects carry `digest_size`, `block_size` and `name`, and `copy()` forks the
 state, exactly as `hashlib` does. Names are case-insensitive going in and
 come out as the catalogue spells them, so `new(h.name)` always makes the
 same hash again: `allcrypt.new("SHA512_224").name` is `"sha512_224"`, and a
-length the catalogue does not list stays in the name (`"blake2b_256"`,
+length the catalogue does not list stays in the name (`"blake2b_200"`,
 `"kupyna128"`).
 
 ```python
@@ -246,6 +266,62 @@ assert h.hexdigest() != forked.hexdigest()
 This is a drop-in shape, so swapping `hashlib` for `allcrypt` in existing code
 usually works unchanged — with the caveat that these are from-scratch
 implementations, not OpenSSL.
+
+### Fuzzy hashes: ssdeep and CTPH
+
+`allcrypt.ssdeep(data)` is ssdeep's digest as libfuzzy and the `ssdeep`
+tool give it, `blocksize:string:string`; `allcrypt.Ssdeep` streams it;
+`allcrypt.ssdeep_compare(a, b)` is libfuzzy's score, 0 to 100, for how
+alike two digests say their inputs are. `allcrypt.ctph` and
+`allcrypt.ctph_similarity` are ctph.js 0.0.5's, which is what CyberChef
+calls CTPH - a different scheme, with a float for a score. Neither is a
+`Hash`: the digests are text of no fixed length.
+
+```python
+import allcrypt
+
+text = "".join(f"line {i}\n" for i in range(1000)).encode()
+edited = text[:5000] + b"EDITED!\n" + text[5008:]
+
+a, b = allcrypt.ssdeep(text), allcrypt.ssdeep(edited)
+assert a != b and allcrypt.ssdeep_compare(a, b) > 50
+
+state = allcrypt.Ssdeep(text[:4000])
+state.update(text[4000:])
+assert state.digest() == a
+
+assert allcrypt.ctph_similarity(allcrypt.ctph(text), allcrypt.ctph(edited)) > 50
+```
+
+### Checksums
+
+`new` also takes the checksums in `allcrypt.checksums_available` -
+`"crc32"`, `"crc32c"`, `"adler32"`, `"fletcher16"` to `"fletcher64"`, and
+FNV as `"fnv0_32"` to `"fnv1a_1024"` - which are not in `algorithms_available`,
+because they are not cryptographic: anybody can make data with any
+checksum they like. Their digests are the value big endian, as PHP's
+`hash` and Go's `Sum` give them; PHP's names `crc32b` and `fnv132` to
+`fnv1a64` work too, but PHP's `crc32` is a different CRC (see
+[pitfalls.md](pitfalls.md)).
+`allcrypt.crc32c(data, value=0)` is CRC-32C as a number, continuing from
+an earlier value, the way `zlib.crc32` gives CRC-32.
+
+```python
+import zlib
+
+import allcrypt
+
+data = b"The quick brown fox jumps over the lazy dog"
+assert int.from_bytes(allcrypt.new("crc32", data).digest(), "big") == zlib.crc32(data)
+
+value = allcrypt.crc32c(data[:10])
+value = allcrypt.crc32c(data[10:], value)
+assert value == int.from_bytes(allcrypt.new("crc32c", data).digest(), "big")
+assert allcrypt.new("adler32", data).digest() == zlib.adler32(data).to_bytes(4, "big")
+assert allcrypt.new("fletcher64", data).digest_size == 8
+assert allcrypt.new("fnv1a64", data).digest() == allcrypt.new("FNV-1a-64", data).digest()
+assert allcrypt.new("fnv1a_1024", data).digest_size == 128
+```
 
 ## Names as enumerations
 
@@ -514,6 +590,60 @@ import allcrypt
 assert allcrypt.Cipher("mars", bytes(16)).encrypt("ecb", bytes(16)).hex() \
     == "dcc07b8dfb0738d6e30a22dfcf27e886"
 assert allcrypt.Cipher("mars", bytes(56)).block_size == 16
+```
+
+Khazad, a NESSIE finalist in its tweaked form: a 64 bit block and a 16
+byte key, in every mode a 64 bit cipher takes and as `khazad-eax` and
+`khazad-mgm`. It is constant time:
+
+```python
+import allcrypt
+
+# The published vector: the key's first bit set, a zero block.
+key = bytes([0x80]) + bytes(15)
+assert allcrypt.Cipher("khazad", key).encrypt("ecb", bytes(8)).hex() == "49a4ce32ac190e3f"
+```
+
+Anubis, its sibling with a 128 bit block and a key of 16 to 40 bytes in
+steps of 4, likewise tweaked and constant time, as `anubis`,
+`anubis-eax`, `anubis-mgm` and `anubis-ocb`:
+
+```python
+import allcrypt
+
+key = bytes([0x80]) + bytes(15)
+assert allcrypt.Cipher("anubis", key).encrypt("ecb", bytes(16)).hex() \
+    == "b835bdc334829d8371bfa371e4b3c4fd"
+```
+
+Noekeon has two names, because its specification takes the key two
+ways and the results differ: `noekeon` uses the key directly, as
+libtomcrypt and Bouncy Castle do, and `noekeon-indirect` first encrypts
+it under the zero key, as Botan does. Both take a 16 byte key and every
+128 bit mode, and are constant time:
+
+```python
+import allcrypt
+
+assert allcrypt.Cipher("noekeon", bytes(16)).encrypt("ecb", bytes(16)).hex() \
+    == "b1656851699e29fa24b70148503d2dfc"
+assert allcrypt.Cipher("noekeon-indirect", bytes(16)).encrypt("ecb", bytes(16)).hex() \
+    == "ba6933819299c71699a99f08f678178b"
+```
+
+SHACAL-2 is SHA-256's compression function as a cipher, with a 32 byte
+block and a key of 16 to 64 bytes that is zero-padded to 64, so a short
+key and the same key padded are one key. Constant time, in the modes a
+256 bit block takes:
+
+```python
+import allcrypt
+
+key = bytes([0x80]) + bytes(63)
+assert allcrypt.Cipher("shacal2", key).encrypt("ecb", bytes(32)).hex()[:16] \
+    == "361ab6322fa9e7a7"
+assert allcrypt.Cipher("shacal2", key[:16]).encrypt("ecb", bytes(32)) \
+    == allcrypt.Cipher("shacal2", key).encrypt("ecb", bytes(32))
 ```
 
 RC5 (RFC 2040) is `RC5-32/r/b`: a 64 bit block, a round count, and a key
@@ -1015,10 +1145,12 @@ assert rc4.update(bytes(16)).hex() == "b2396305f03dc027ccc3524a0a1118a8"
 ```
 
 Names are `chacha20`, `chacha12`, `chacha8`, `xchacha20`, `salsa20`,
-`salsa12`, `salsa8`, `xsalsa20`, `rc4` and `zipcrypto`
+`salsa12`, `salsa8`, `xsalsa20`, `strumok`, `rc4` and `zipcrypto`
 (`allcrypt.stream_ciphers_available`). ChaCha takes an 8 or 12 byte nonce,
 XChaCha20 and XSalsa20 a 24 byte one, Salsa20 an 8 byte one; RC4 and ZipCrypto take
-none. Keystream position carries across calls.
+none. Strumok (DSTU 8845:2019) takes a 32 or 64 byte key and its 32 byte
+IV as the nonce, each 64-bit word of key, IV and keystream little endian.
+Keystream position carries across calls.
 
 `update` XORs the keystream onto the data, which encrypts and decrypts
 alike. ZipCrypto, PKWARE's traditional ZIP encryption, has no such
@@ -1057,8 +1189,8 @@ assert c.update(bytes(50)) == whole[150:]
 
 With a 12 byte nonce ChaCha's counter is 32 bits, and the stream ends
 after block 2^32 - 1 rather than wrapping onto block 0. With an 8 byte
-nonce, and for Salsa20, it is 64 bits. RC4 and ZipCrypto have no
-counter, so they refuse both.
+nonce, and for Salsa20, it is 64 bits. RC4, Strumok and ZipCrypto have
+no counter, so they refuse both.
 
 ### The pieces underneath
 
@@ -1104,6 +1236,23 @@ CBC-MAC is forgeable over messages of different lengths - the MAC of
 `M` is also the MAC of `M || (M XOR tag)` - which is what CMAC fixes. It
 is here for DES-MAC, Kerberos's DES checksums and the banking MACs that
 are CBC-MACs.
+
+## SipHash
+
+Keyed hashes for hash tables: SipHash under a 16 byte key, 8 or 16 bytes
+out, and HalfSipHash, its 32 bit form, under an 8 byte key, 4 or 8 bytes
+out. The round counts are arguments; SipHash-2-4 is the default and
+SipHash-1-3 is what Rust's and Python's own hash tables run.
+
+```python
+import allcrypt
+
+key = bytes(range(16))
+assert len(allcrypt.siphash(key, b"abc")) == 8
+assert allcrypt.siphash(key, b"abc", c_rounds=1, d_rounds=3) != allcrypt.siphash(key, b"abc")
+assert len(allcrypt.siphash(key, b"abc", size=16)) == 16
+assert len(allcrypt.halfsiphash(key[:8], b"abc")) == 4
+```
 
 ## Office XOR obfuscation
 
@@ -1271,7 +1420,10 @@ its own does not allow guessing.
 
 BLAKE2 is registered like any other hash, and its output length is part
 of the function rather than a truncation — so `blake2b_256` is not the
-first 32 bytes of `blake2b`:
+first 32 bytes of `blake2b`. The catalogue names the lengths other
+software names, BLAKE2b-128, -160, -256 and -384 and BLAKE2s-128 and -160
+(`"blake2b_256"`, or `"BLAKE2b-256"` as written elsewhere); any whole
+number of bytes up to the full length is reachable the same way:
 
 ```python
 import allcrypt, hashlib
@@ -1437,6 +1589,28 @@ key = allcrypt.keepass_aes_kdf(bytes(32), bytes(range(32)), 1000)
 # 4000 stripes and SHA-256 are LUKS's defaults.
 material = allcrypt.luks_af_split(bytes(32))
 assert allcrypt.luks_af_merge(material, 32) == bytes(32)
+```
+
+### BLAKE3
+
+`allcrypt.blake3` takes the `blake3` package's arguments - a 32 byte
+`key` for the keyed mode, a MAC with no HMAC around it, or a
+`derive_key_context` for key derivation, where the data is the key
+material - and `allcrypt.blake3_xof` gives any length from any offset.
+
+```python
+import allcrypt
+
+digest = allcrypt.blake3(b"abc").digest()
+assert allcrypt.new("blake3", b"abc").digest() == digest
+
+# A longer output extends a shorter one, and seek reaches any part of it.
+long = allcrypt.blake3_xof(b"abc", 100)
+assert long[:32] == digest and allcrypt.blake3_xof(b"abc", 10, seek=90) == long[90:]
+
+mac = allcrypt.blake3(b"message", key=bytes(range(32))).hexdigest()
+key = allcrypt.blake3_xof(b"key material", 32, derive_key_context="example.com 2026 session keys")
+assert len(mac) == 64 and len(key) == 32
 ```
 
 ### SHA-3, SHAKE, and the Keccak that is not SHA-3
@@ -2289,6 +2463,12 @@ assert key.shared_point(peer.public_key()) == peer.shared_point(public)
 Everything is big endian. A certificate under the `dstu4145le` object
 identifier stores the compressed key and the signature byte-reversed, so
 `signature[::-1]` is what goes in one and what comes out of one.
+
+The last five names, `dstu4145-m173-onb` to `dstu4145-m431-onb`, are the
+standard's curves in an optimal normal basis. They work the same way,
+with every field element - keys, compressed points, shared points, and
+the hash and `r` inside a signature - written in the normal basis; a key
+container cannot hold one, as its parameters are in a polynomial basis.
 `sign_with_nonce(hash, e)` takes a given `e`, as the standard's worked
 example does; reusing one gives the private key away.
 
@@ -2322,8 +2502,50 @@ assert len(allcrypt.dstu4145_keys_open(sealed, password)) == 2
 assert keys[0].key_id() == signing.public_key().key_id()
 ```
 
+### Certificates
+
+`allcrypt.Certificate` reads DSTU 4145 certificates - `publicKeyType` is
+`"DSTU 4145-2002 dstu4145-m431"`, or a custom curve's field, and
+`signatureAlgorithm` names the hash - and `allcrypt.verify_chain`
+verifies them: DSTU 4145 over GOST 34.311-95 under the issuer's DKE, or
+over Kupyna-256, -384 or -512, read in the issuer key's byte order.
+Issuing one is in Rust, through `x509::builder`.
+
 A wrong password is refused by the `Key-6.dat` MAC, which says so; a
 PBES2 container has no MAC, and fails on what the wrong key decrypts to.
+
+## DSTU 9041:2020
+
+Ukraine's public-key encryption, for short messages such as keys, over
+twisted Edwards curves: `allcrypt.dstu9041_curves_available` lists
+`dstu9041-e256-1` and `dstu9041-e512-1`, the standard's E256/1 and
+E512/1, which take messages of up to 200 and 424 bits. `Dstu9041Key`
+decrypts and `Dstu9041PublicKey` encrypts; a ciphertext is `r || t`,
+128 or 256 bytes.
+
+```python
+import allcrypt
+
+key = allcrypt.Dstu9041Key.generate("dstu9041-e512-1")
+public = key.public_key()
+assert public.max_message_bits == 424
+
+ciphertext = public.encrypt(bytes(range(32)))
+assert len(ciphertext) == 256
+assert key.decrypt(ciphertext) == bytes(range(32))
+
+# In bits: 13 of them, right aligned, the bits above them zero.
+ct = public.encrypt(b"\x1f\xff", bits=13)
+assert key.decrypt_bits(ct) == (b"\x1f\xff", 13)
+
+# The public key as x || y, checked when it is read.
+again = allcrypt.Dstu9041PublicKey("dstu9041-e512-1", public.public_bytes())
+assert key.decrypt(again.encrypt(b"k")) == b"k"
+```
+
+Every way a ciphertext can be wrong raises the same error.
+`encrypt(..., epsilon=...)` takes a given one-time key, for known
+answers; reusing one shows two messages went to the same key.
 
 ## DSA
 
@@ -4179,6 +4401,21 @@ import allcrypt
 ua = allcrypt.Cipher("gost", bytes(32), "dstu4145-default-dke")
 assert ua.encrypt("ecb", bytes(8)).hex() == "970cd7cf057aa0b7"
 assert len(allcrypt.new("gost34311", b"abc").digest()) == 32
+```
+
+Ukraine's other tables are built in as well: `"dstu-dke-1"` to
+`"dstu-dke-10"`, "DKE No. 1 from supplements 1 to 10 to instruction
+114", the first of which is the default. Each works as a parameter set
+for `Cipher` and `gost28147_mac`, and GOST 34.311-95 under table `n` is
+the hash `"gost34311_dke2"` to `"gost34311_dke10"`:
+
+```python
+import allcrypt
+
+assert allcrypt.gost_sbox("dstu-dke-1") == allcrypt.gost_sbox("dstu4145-default-dke")
+seven = allcrypt.Cipher("gost", bytes(32), "dstu-dke-7")
+assert seven.encrypt("ecb", bytes(8)) != allcrypt.Cipher("gost", bytes(32), "dstu-dke-1").encrypt("ecb", bytes(8))
+assert len(allcrypt.new("gost34311_dke7", b"abc").digest()) == 32
 ```
 
 **The empty message has two answers**, under all three of GOST R

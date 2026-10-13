@@ -54,6 +54,19 @@ pub enum SigningKey<'a> {
     /// DSA, RFC 3279: hash, then sign with RFC 6979 nonces, and the
     /// signature a DER `Dss-Sig-Value`.
     Dsa(&'a crate::publickey_ciphers::dsa::DsaPrivateKey),
+    /// DSTU 4145-2002 in a polynomial basis. The builder's `hash` is
+    /// `gost34311` - GOST 34.311-95 under `dke`, the standard's default
+    /// when `None` - or `kupyna256`, `kupyna384` or `kupyna512`. The
+    /// signature algorithm is the key's own OID (`dstu4145le` or
+    /// `dstu4145be`) over GOST 34.311, or the Kupyna OID, and the
+    /// signature an OCTET STRING of `s || r`, reversed whole when
+    /// `little_endian`.
+    Dstu4145 {
+        curve: &'a crate::ec::dstu4145::Curve,
+        private: &'a BigUint,
+        dke: Option<&'a [u8]>,
+        little_endian: bool,
+    },
     /// A key this library cannot read: on a smart card, in an HSM, in
     /// another process. `public` is its public half, which decides the
     /// signature algorithm and the authority key identifier, and `sign`
@@ -97,6 +110,16 @@ pub enum SubjectKey<'a> {
     /// A DSA key: the group goes in the AlgorithmIdentifier as Dss-Parms
     /// and `y` in the BIT STRING as an INTEGER.
     Dsa(&'a crate::publickey_ciphers::dsa::DsaPublicKey),
+    /// A DSTU 4145-2002 key: `DSTU4145Params` with the curve given whole
+    /// and the DKE (the default when `None`), and the compressed point in
+    /// an OCTET STRING, under `dstu4145le` (the point, `b` and the base
+    /// point reversed) or `dstu4145be`. Only a polynomial basis.
+    Dstu4145 {
+        curve: &'a crate::ec::dstu4145::Curve,
+        point: &'a crate::ec::dstu4145::Point,
+        dke: Option<&'a [u8]>,
+        little_endian: bool,
+    },
 }
 
 
@@ -150,6 +173,16 @@ impl<'a> SigningKey<'a> {
                 other => return Err(format!("No OID for EdDSA variant {}.", other)),
             },
             (SigningKey::MlDsa(key), _) => crate::x509::ml_dsa_oid(key.parameter_set())?,
+            // GOST 34.311's OID is the key's, which names the byte order;
+            // Kupyna's say nothing of it, and the key decides.
+            (SigningKey::Dstu4145 { little_endian, .. }, "gost34311") =>
+                if *little_endian { oids::DSTU4145_LE } else { oids::DSTU4145_BE },
+            (SigningKey::Dstu4145 { .. }, "kupyna256") => oids::DSTU4145_KUPYNA256,
+            (SigningKey::Dstu4145 { .. }, "kupyna384") => oids::DSTU4145_KUPYNA384,
+            (SigningKey::Dstu4145 { .. }, "kupyna512") => oids::DSTU4145_KUPYNA512,
+            (SigningKey::Dstu4145 { .. }, other) => return Err(format!(
+                "DSTU 4145 signs over gost34311, kupyna256, kupyna384 or kupyna512, \
+                 not {}.", other)),
             // An external key signs as its public half's algorithm does.
             (SigningKey::External { public, .. }, hash) => match public {
                 SubjectKey::Rsa { .. } | SubjectKey::Ec { .. } => {
@@ -224,6 +257,11 @@ impl<'a> SigningKey<'a> {
             SigningKey::MlDsa(key) => key_identifier(&SubjectKey::MlDsa {
                 parameter_set: key.parameter_set(), key: key.public_bytes() }),
             SigningKey::Dsa(key) => key_identifier(&SubjectKey::Dsa(&key.public)),
+            SigningKey::Dstu4145 { curve, private, dke, little_endian } => {
+                let point = curve.public_key(private)?;
+                key_identifier(&SubjectKey::Dstu4145 { curve, point: &point, dke: *dke,
+                                                       little_endian: *little_endian })
+            }
             SigningKey::External { public, .. } => key_identifier(public),
         }
     }
@@ -243,6 +281,8 @@ impl<'a> SigningKey<'a> {
             SigningKey::Eddsa { name, seed } => SigningKey::sign_eddsa(name, seed, tbs),
             // RFC 9881 section 3: the empty context string.
             SigningKey::MlDsa(key) => key.sign(tbs, &[], None),
+            SigningKey::Dstu4145 { curve, private, dke, little_endian } =>
+                SigningKey::sign_dstu4145(curve, private, *dke, *little_endian, hash, tbs),
             SigningKey::External { sign, .. } => sign(hash, tbs),
             other => other.sign(hash, tbs),
         }
@@ -279,7 +319,8 @@ impl<'a> SigningKey<'a> {
             SigningKey::Gost { .. } | SigningKey::Gost2001 { .. } =>
                 unreachable!("handled in sign_gost"),
             SigningKey::Eddsa { .. } => unreachable!("handled in sign_eddsa"),
-            SigningKey::MlDsa(_) => unreachable!("handled in sign_signed_data"),
+            SigningKey::MlDsa(_) | SigningKey::Dstu4145 { .. } =>
+                unreachable!("handled in sign_signed_data"),
             SigningKey::External { .. } => unreachable!("handled above"),
         }
     }
@@ -309,6 +350,24 @@ impl<'a> SigningKey<'a> {
         let digest = Gost94::new(message).digest();
         let signature = curve.gost_sign(private, &digest, Gost94::new(&[]))?;
         curve.gost_signature_bytes(&signature)
+    }
+
+    /// DSTU 4145 signing: the digest by `hash` (GOST 34.311 under the
+    /// key's DKE, or Kupyna), then `s || r` at the width of `n`, reversed
+    /// whole for a little-endian key, in an OCTET STRING.
+    fn sign_dstu4145(curve: &crate::ec::dstu4145::Curve, private: &BigUint,
+                     dke: Option<&[u8]>, little_endian: bool, hash: &str, message: &[u8])
+                     -> Result<Vec<u8>, String> {
+        let digest = verify::dstu4145_digest(hash, dke, message)?;
+        let (r, s) = curve.sign(private, &digest)?;
+        let width = curve.order().bit_len().div_ceil(8);
+        let mut value = [s.to_bytes_be_padded(width)?, r.to_bytes_be_padded(width)?].concat();
+        if little_endian {
+            value.reverse();
+        }
+        let mut w = Writer::new();
+        w.write_octet_string(&value);
+        Ok(w.finish())
     }
 
     fn sign_gost(curve: &Curve, private: &BigUint, message: &[u8])
@@ -647,6 +706,29 @@ fn write_spki(writer: &mut Writer, subject_key: &SubjectKey<'_>)
                 writer.write_raw(
                     &crate::tls::gost_kex::encode_public_key_2001(curve, point)?);
             }
+            SubjectKey::Dstu4145 { curve, point, dke, little_endian } => {
+                let mut parameters = Writer::new();
+                crate::x509::ua_key::write_parameters(
+                    &mut parameters, curve,
+                    dke.unwrap_or(&crate::block_ciphers::gost::DSTU4145_DEFAULT_DKE),
+                    *little_endian)?;
+                let parameters = parameters.finish();
+                let mut packed = curve.compress(point)?;
+                if *little_endian {
+                    packed.reverse();
+                }
+                let mut key = Writer::new();
+                key.write_octet_string(&packed);
+                let key = key.finish();
+                writer.write_sequence(|w| {
+                    w.write_sequence(|w| {
+                        w.write_oid(if *little_endian { oids::DSTU4145_LE }
+                                    else { oids::DSTU4145_BE });
+                        w.write_raw(&parameters);
+                    });
+                    w.write_bit_string(&key);
+                });
+            }
         }
         Ok(())
     }
@@ -663,6 +745,13 @@ fn write_spki(writer: &mut Writer, subject_key: &SubjectKey<'_>)
 ///
 /// SHA-1 is not a choice: the identifier is a name, not a signature,
 /// and every verifier that looks one up computes it this way.
+///
+/// **Except a DSTU 4145 key's**, which the Ukrainian centres name with
+/// the hash of the same bytes under their own algorithms: GOST 34.311-95
+/// under the key's DKE, as here and as the key containers do
+/// (`ua_key::key_id`) - the centres that sign with Kupyna name with
+/// Kupyna-256. Nothing computes these but the issuer; a verifier
+/// compares them.
 pub fn key_identifier(subject_key: &SubjectKey<'_>) -> Result<Vec<u8>, String> {
     let mut writer = Writer::new();
     write_spki(&mut writer, subject_key)?;
@@ -677,6 +766,9 @@ pub fn key_identifier(subject_key: &SubjectKey<'_>) -> Result<Vec<u8>, String> {
     sequence.read_any()?;                       // AlgorithmIdentifier
     let bits = sequence.read_bit_string()?;
     sequence.finish()?;
+    if let SubjectKey::Dstu4145 { dke, .. } = subject_key {
+        return verify::dstu4145_digest("gost34311", *dke, bits);
+    }
     Ok(crate::hash_functions::sha1::SHA1::new(bits).digest())
 }
 

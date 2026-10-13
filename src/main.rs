@@ -1054,6 +1054,8 @@ fn describe_key(key: &allcrypt::x509::PublicKey<'_>) -> String {
             format!("GOST R 34.10-2001 {}", curve),
         PublicKey::Gost { curve, .. } => format!("GOST R 34.10-2012 {}", curve),
         PublicKey::Eddsa { curve, .. } => curve.to_string(),
+        PublicKey::Dstu4145 { curve, .. } =>
+            format!("DSTU 4145-2002 on a curve over GF(2^{})", curve.field().degree()),
         PublicKey::MlDsa { parameter_set, .. } => parameter_set.to_string(),
         PublicKey::Dsa { parameters: Some((p, _, _)), .. } => format!("DSA-{}", p.bit_len()),
         PublicKey::Dsa { parameters: None, .. } => "DSA with inherited parameters".to_string(),

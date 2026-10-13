@@ -90,7 +90,7 @@ carries a second reading of RFC 5831 as the differential reference.
 */
 
 use super::HashFunction;
-use crate::block_ciphers::gost::GostCrypto;
+use crate::block_ciphers::gost::{GostCrypto, DSTU_DKE_NAMES};
 
 /// The standard, for the constant and the vectors.
 const RFC_5831: &str = include_str!("../../rfcs/rfc5831.txt");
@@ -117,6 +117,10 @@ pub enum EmptyMessage {
     /// Castle, gost89 and OpenSSL 1.0's gost engine compute.
     NoBlock,
 }
+
+/// The `name` of a GOST 34.311-95 hash under a DKE that is none of the
+/// ten named tables: a key's own, read from its parameters.
+const CUSTOM_DKE: &str = "custom DKE";
 
 #[derive(Clone)]
 pub struct Gost94 {
@@ -181,10 +185,19 @@ impl Gost94 {
                                TEST_PARAM_SET),
             DSTU_PARAM_SET => (GostCrypto::sbox_named(DSTU_PARAM_SET)?,
                                DSTU_PARAM_SET),
+            // GOST 34.311-95 under Ukraine's other tables; the first is
+            // the default DKE.
+            other if DSTU_DKE_NAMES.contains(&other) => {
+                let index = DSTU_DKE_NAMES.iter().position(|n| *n == other)
+                    .expect("just found");
+                let canonical = if index == 0 { DSTU_PARAM_SET } else { DSTU_DKE_NAMES[index] };
+                (GostCrypto::sbox_named(canonical)?, canonical)
+            }
             other => return Err(format!(
-                "GOST R 34.11-94 has three parameter sets here, {:?}, {:?} \
-                 and {:?} (GOST 34.311-95); {:?} is none of them.",
-                CRYPTOPRO_PARAM_SET, TEST_PARAM_SET, DSTU_PARAM_SET, other)),
+                "GOST R 34.11-94 takes {:?}, {:?}, and {:?} or one of {} (GOST \
+                 34.311-95) here; {:?} is none of them.",
+                CRYPTOPRO_PARAM_SET, TEST_PARAM_SET, DSTU_PARAM_SET,
+                DSTU_DKE_NAMES.join(", "), other)),
         };
         let mut hash = Gost94 {
             h: [0; BLOCK],
@@ -195,6 +208,33 @@ impl Gost94 {
             cipher: GostCrypto::new_with_sbox(&[0; 32], &sbox)?,
             name: canonical,
             empty,
+        };
+        hash.update(data);
+        Ok(hash)
+    }
+
+    /// GOST 34.311-95 under a DKE given as its 64 bytes, as a DSTU 4145
+    /// key's parameters carry one: the S-box its signatures hash with.
+    /// One of the ten named tables is named as such; any other valid
+    /// S-box is taken as it is, and `name()` says `gost34311_custom_dke`.
+    ///
+    /// # Errors
+    /// Not 64 bytes, or rows that are not permutations of 0..16.
+    pub fn with_dke(data: &[u8], dke: &[u8]) -> Result<Gost94, String> {
+        let known = crate::block_ciphers::dstu_dke::DSTU_DKE.iter().position(|t| t[..] == *dke);
+        if let Some(index) = known {
+            return Gost94::with_param_set(data, DSTU_DKE_NAMES[index]);
+        }
+        let sbox = GostCrypto::sbox_from_dke(dke)?;
+        let mut hash = Gost94 {
+            h: [0; BLOCK],
+            sigma: [0; BLOCK],
+            length: [0; BLOCK],
+            pending: [0; BLOCK],
+            pending_len: 0,
+            cipher: GostCrypto::new_with_sbox(&[0; 32], &sbox)?,
+            name: CUSTOM_DKE,
+            empty: EmptyMessage::ZeroBlock,
         };
         hash.update(data);
         Ok(hash)
@@ -250,10 +290,16 @@ impl Gost94 {
 
 impl HashFunction for Gost94 {
     fn name(&self) -> String {
+        let dke;
         let base = if self.name == TEST_PARAM_SET {
             "gost94_test"
         } else if self.name == DSTU_PARAM_SET {
             "gost34311"
+        } else if let Some(index) = DSTU_DKE_NAMES.iter().position(|n| *n == self.name) {
+            dke = format!("gost34311_dke{}", index + 1);
+            &dke
+        } else if self.name == CUSTOM_DKE {
+            "gost34311_custom_dke"
         } else {
             // CRYPTOPRO_PARAM_SET, the only other one `with_param_set`
             // accepts.
@@ -552,6 +598,37 @@ fn read_power(text: &[char], at: usize) -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::block_ciphers::BlockCipher;
+
+    /// A DKE given as bytes is the named table when it is one - the
+    /// default is `gost34311` - and otherwise a hash of its own, under
+    /// that S-box, which `tests/test_dstu4145_x509.rs` checks against a
+    /// real certificate signed with one.
+    #[test]
+    fn test_a_dke_given_as_bytes() {
+        use crate::block_ciphers::dstu_dke::DSTU_DKE;
+        let message = b"DSTU 4145 signs this";
+        for (i, table) in DSTU_DKE.iter().enumerate() {
+            let mut hash = Gost94::with_dke(message, table).unwrap();
+            let mut named = Gost94::with_param_set(message, DSTU_DKE_NAMES[i]).unwrap();
+            assert_eq!(hash.name(), named.name());
+            assert_eq!(hash.digest(), named.digest());
+        }
+        assert_eq!(Gost94::with_dke(&[], &DSTU_DKE[0]).unwrap().name(), "gost34311");
+
+        // The default's rows in the opposite order: valid, and none of the
+        // ten, whose digest differs from each of theirs.
+        let custom: Vec<u8> = DSTU_DKE[0].chunks(8).rev().flatten().copied().collect();
+        let mut hash = Gost94::with_dke(message, &custom).unwrap();
+        assert_eq!(hash.name(), "gost34311_custom_dke");
+        let digest = hash.digest();
+        for table in DSTU_DKE.iter() {
+            assert_ne!(digest, Gost94::with_dke(message, table).unwrap().digest());
+        }
+
+        // Not 64 bytes, or a row that is not a permutation.
+        assert!(Gost94::with_dke(message, &custom[..63]).is_err());
+        assert!(Gost94::with_dke(message, &[0; 64]).is_err());
+    }
 
     /// `NAME = XXXXXXXX XXXXXXXX ...`, as RFC 5831 appendix 7.3 prints
     /// every value, with continuation lines indented under it.

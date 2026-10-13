@@ -141,6 +141,25 @@ pub fn read_parameters(der: &[u8], little_endian: bool)
     Ok((curve, dke))
 }
 
+/// Whether `DSTU4145Params` give the curve whole over an optimal
+/// normal basis - a field with a degree and no polynomial - which
+/// `read_parameters` refuses. Anything else, including what does not
+/// parse, is `false`, and `read_parameters` says what is wrong with it.
+pub fn names_a_normal_basis(der: &[u8]) -> bool {
+    let field = || -> Result<bool, String> {
+        let mut params = Reader::new(der).read_sequence()?;
+        if params.peek_tag() == Some(Tag::universal(tag::OID)) {
+            return Ok(false);
+        }
+        let mut ecb = params.read_sequence()?;
+        ecb.read_optional_context(0, true)?;
+        let mut field = ecb.read_sequence()?;
+        field.read_u32()?;
+        Ok(field.is_empty())
+    };
+    field().unwrap_or(false)
+}
+
 fn read_dke(reader: &mut Reader<'_>) -> Result<Option<Vec<u8>>, String> {
     if reader.is_empty() {
         return Ok(None);
@@ -207,8 +226,16 @@ fn read_ecbinary(reader: &mut Reader<'_>, little_endian: bool) -> Result<Curve, 
 }
 
 /// Write `DSTU4145Params` with the curve given whole and the DKE.
-fn write_parameters(w: &mut Writer, curve: &Curve, dke: &[u8], little_endian: bool)
+///
+/// # Errors
+/// A curve in a normal basis, which `ECBinary` cannot carry: its field
+/// would be written as a polynomial basis with the wrong elements.
+pub(crate) fn write_parameters(w: &mut Writer, curve: &Curve, dke: &[u8], little_endian: bool)
                     -> Result<(), String> {
+    if curve.is_normal_basis() {
+        return Err("A curve in an optimal normal basis cannot be written as \
+                    DSTU4145Params here; only a polynomial basis can.".to_string());
+    }
     let f = curve.field();
     let bp = reversed(&curve.compress(curve.generator())?, little_endian);
     let b = reversed(&f.to_bytes(curve.b()), little_endian);

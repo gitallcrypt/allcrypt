@@ -29,6 +29,16 @@
  * (PKCS12_key_gen_utf8: the password made a BMPString with its two-byte
  * NUL), over the engine's GOST 34.311, as hex. PASSWORD is "-" for the
  * empty one.
+ *
+ *   dstuengine-witness x509 CERT ISSUER
+ *
+ * CERT's public key as "pub m=M poly=HEX a=HEX b=HEX n=HEX gx=HEX gy=HEX
+ * qx=HEX qy=HEX", as above without d, then "verify 1" when X509_verify
+ * accepts CERT's signature under ISSUER's key and "verify 0" when it does
+ * not. OpenSSL's object table has no signature pairing for the
+ * dstu4145le and dstu4145be OIDs, which name the key and the signature
+ * both, so the driver adds the one the standard defines: DSTU 4145 over
+ * GOST 34.311, whose S-box the engine takes from the verifying key.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,14 +89,14 @@ static unsigned char *slurp(const char *path, size_t *len) {
     return buf;
 }
 
-static void print_key(const EVP_PKEY *pkey) {
+static void print_key_as(const char *label, const EVP_PKEY *pkey, int with_private) {
     const DSTU_KEY *key = EVP_PKEY_get0((EVP_PKEY *)pkey);
     const EC_KEY *ec = key->ec;
     const EC_GROUP *group = EC_KEY_get0_group(ec);
     BN_CTX *ctx = BN_CTX_new();
     BIGNUM *p = BN_new(), *a = BN_new(), *b = BN_new(), *x = BN_new(), *y = BN_new();
     EC_GROUP_get_curve(group, p, a, b, ctx);
-    printf("key m=%d", EC_GROUP_get_degree(group));
+    printf("%s m=%d", label, EC_GROUP_get_degree(group));
     hex_bn("poly", p);
     hex_bn("a", a);
     hex_bn("b", b);
@@ -94,13 +104,43 @@ static void print_key(const EVP_PKEY *pkey) {
     EC_POINT_get_affine_coordinates(group, EC_GROUP_get0_generator(group), x, y, ctx);
     hex_bn("gx", x);
     hex_bn("gy", y);
-    hex_bn("d", EC_KEY_get0_private_key(ec));
+    if (with_private) hex_bn("d", EC_KEY_get0_private_key(ec));
     EC_POINT_get_affine_coordinates(group, EC_KEY_get0_public_key(ec), x, y, ctx);
     hex_bn("qx", x);
     hex_bn("qy", y);
     printf("\n");
     BN_free(p); BN_free(a); BN_free(b); BN_free(x); BN_free(y);
     BN_CTX_free(ctx);
+}
+
+static void print_key(const EVP_PKEY *pkey) {
+    print_key_as("key", pkey, 1);
+}
+
+static X509 *read_cert(const char *path) {
+    size_t len;
+    unsigned char *data = slurp(path, &len);
+    const unsigned char *p = data;
+    X509 *cert = data ? d2i_X509(NULL, &p, len) : NULL;
+    free(data);
+    return cert;
+}
+
+static int x509_verify(const char *cert_path, const char *issuer_path) {
+    OBJ_add_sigid(NID_dstu4145le, NID_dstu34311, NID_dstu4145le);
+    OBJ_add_sigid(NID_dstu4145be, NID_dstu34311, NID_dstu4145be);
+    X509 *cert = read_cert(cert_path), *issuer = read_cert(issuer_path);
+    EVP_PKEY *subject_key = cert ? X509_get0_pubkey(cert) : NULL;
+    EVP_PKEY *issuer_key = issuer ? X509_get0_pubkey(issuer) : NULL;
+    if (!subject_key || !issuer_key) {
+        printf("error: cannot read the certificates or their keys\n");
+        return 1;
+    }
+    print_key_as("pub", subject_key, 0);
+    printf("verify %d\n", X509_verify(cert, issuer_key) == 1);
+    X509_free(cert);
+    X509_free(issuer);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -117,6 +157,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     ENGINE_set_default(e, ENGINE_METHOD_ALL);
+
+    if (!strcmp(argv[1], "x509")) {
+        return x509_verify(argv[2], argv[3]);
+    }
 
     if (!strcmp(argv[1], "pbkdf2") || !strcmp(argv[1], "p12kdf")) {
         size_t salt_len;

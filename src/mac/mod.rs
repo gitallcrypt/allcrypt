@@ -11,6 +11,7 @@ pub mod cmac;
 pub mod hmac;
 pub mod michael;
 pub mod poly1305;
+pub mod siphash;
 pub mod umac;
 
 pub use cmac::Cmac;

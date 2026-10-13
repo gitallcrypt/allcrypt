@@ -183,4 +183,6 @@ def test_every_member_of_every_enum_actually_constructs():
             nonce = bytes(12)
         if name.value.startswith(("xchacha", "xsalsa")):
             nonce = bytes(24)
+        if name == allcrypt.StreamCipherName.STRUMOK:
+            nonce = bytes(32)
         allcrypt.StreamCipher(name, bytes(32), nonce)

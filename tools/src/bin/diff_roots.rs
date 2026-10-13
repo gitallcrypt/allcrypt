@@ -71,6 +71,7 @@ fn main() {
                 SignatureAlgorithm::Ecdsa(hash) => format!("ecdsa-{}", hash),
                 SignatureAlgorithm::Gost(bits) => format!("gost-{}", bits),
                 SignatureAlgorithm::Gost2001 => "gost-2001".to_string(),
+                SignatureAlgorithm::Dstu4145(hash) => format!("dstu4145-{}", hash),
                 SignatureAlgorithm::Eddsa(name) => format!("eddsa-{}", name),
                 SignatureAlgorithm::MlDsa(name) => name.to_ascii_lowercase(),
                 SignatureAlgorithm::Dsa(hash) => format!("dsa-{}", hash),
@@ -85,6 +86,7 @@ fn main() {
                 PublicKey::Dsa { parameters, .. } => format!("dsa-{}",
                     parameters.as_ref().map_or(0, |(p, _, _)| p.bit_len())),
                 PublicKey::Gost { curve, .. } => format!("gost-{}", curve),
+                PublicKey::Dstu4145 { .. } => "dstu4145".to_string(),
                 // Such a root now parses rather than being dropped, which
                 // is the point - it used to disappear from the store and
                 // from this corpus at the same time, leaving a bare count.

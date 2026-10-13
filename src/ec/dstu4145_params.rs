@@ -81,3 +81,60 @@ pub(crate) const CURVES: [Params; 10] = [
              gy: "70b5e1e14031c1f70bbefe96bdde66f451754b4ca5f48da241f331aa396b8d1839a855c1769b1ea14ba53308b5e2723724e090e02db9",
              h: 2 },
 ];
+
+/// A curve in an optimal normal basis: as `Params`, with `b`, `n`, the
+/// base point and the cofactor as the standard gives them - `b` and the
+/// point in the normal basis - and `root`, the normal element in the
+/// polynomial basis of `x^m` plus `terms`, which the arithmetic uses.
+pub(crate) struct OnbParams {
+    pub(crate) m: usize,
+    pub(crate) terms: &'static [usize],
+    pub(crate) a: u8,
+    pub(crate) b: &'static str,
+    pub(crate) n: &'static str,
+    pub(crate) gx: &'static str,
+    pub(crate) gy: &'static str,
+    pub(crate) h: u8,
+    pub(crate) root: &'static str,
+}
+
+/// The five curves in an optimal normal basis, m = 173, 179, 191, 233 and
+/// 431, from cryptonite's dstu4145_params_internal.c and li0ard's
+/// dstu4145/const.ts, which agree on every value.
+pub(crate) const ONB_CURVES: [OnbParams; 5] = [
+    OnbParams { m: 173, terms: &[10, 2, 1, 0], a: 0,
+                b: "43d7e139319f43ba00944915740e1e6651b06e278c7",
+                n: "800000000000000000000189b4e67606e3825bb2831",
+                gx: "a3b8b8d704089b24318caa51917cb6e424b4e6dea56",
+                gy: "5a43d5ee1f400349cf35150c74f119a39145f0cb08",
+                h: 4,
+                root: "d4e82948d06bdd9fd5499be5bbdf3c17c5cd81c3a95" },
+    OnbParams { m: 179, terms: &[4, 2, 1, 0], a: 1,
+                b: "19c9ebc4fd8308193d3a61762c547c82f2e6b2182cbcb",
+                n: "3ffffffffffffffffffffffb981960435fe5ab64236ef",
+                gx: "11f4112265410477159e0d3e39bc4ac4ade43b21b66b9",
+                gy: "2ca5f0b34c61a86216f13766591cb266e2819ee582b3c",
+                h: 2,
+                root: "2fa11e836e4a0593591138945241f2a04d54d579b4561" },
+    OnbParams { m: 191, terms: &[9, 0], a: 1,
+                b: "13871c9d29d6ceea740fd57444f72fdbae559c13a1e31ef8",
+                n: "40000000000000000000000069a779cac1dabc6788f7474f",
+                gx: "7159e0d3e39bc4ac4ade43b21b66b94f2af25abeeb1d85d3",
+                gy: "57e45d546be6201e9705e029535d009d31f51d81e18226be",
+                h: 2,
+                root: "58fe12f51aa53fbfdba92f16b5a08fb172d99a84cdac542b" },
+    OnbParams { m: 233, terms: &[9, 4, 1, 0], a: 1,
+                b: "80f920952a702c75b704a424c018eea55aa44664f3a003e0962d4f9a8e",
+                n: "1000000000000000000000000000013e974e72f8a6922031d2603cfe0d7",
+                gx: "a0823b8acf069f1cde256256f21d90db35ca795792d5f758ec2e9992fb",
+                gy: "19dae222af326d33afb7761953f624a23d3eb1ca7a1c300f0aa9953ca85",
+                h: 2,
+                root: "18f49d2701bb0aa979ff19ba6c213201ad8c05dec61f4741c845bc5bfab" },
+    OnbParams { m: 431, terms: &[5, 3, 1, 0], a: 1,
+                b: "53fb7af7b4407000a6f226ad6bad28378646bd83f1f940810a4c19536ee65e53f40f973f2f06c5e80efe3b43651bd5ff8b06ba5f9299",
+                n: "3fffffffffffffffffffffffffffffffffffffffffffffffffffffba3175458009a8c0a724f02f81aa8a1fcbaf80d90c7a95110504cf",
+                gx: "2020182cfcd7c724157b363d4abfd4c16251773c595d4e5c88572fa9d5ebb58142326448c08d3ee3e17e40b835d3090dcfba7c5adea6",
+                gy: "18e1b6efb28eef8a1f9c1859ed57c74ca747e4e1a60294c005d1920e80903a432929855828dd7f21714f837e119a044987f00110adad",
+                h: 2,
+                root: "4513a0d22d332f6ef68f26c3169ae670730ebcdcc78a81ae24c3b13124e4adde4db8a984c755f6607d537eae7e6cb575664922585a59" },
+];

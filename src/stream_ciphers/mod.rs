@@ -5,6 +5,7 @@ pub mod chacha20poly1305;
 pub mod office_xor;
 pub mod rc4;
 pub mod salsa20;
+pub mod strumok;
 pub mod tkip;
 pub mod wep;
 pub mod zipcrypto;

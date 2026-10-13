@@ -67,11 +67,23 @@ const K_64: [u64; 80] = [0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3
 0x113f9804bef90dae, 0x1b710b35131c471b, 0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 
 0x431d67c49c100d4c, 0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817];
 
+// The initial values (FIPS 180-4 section 5.3), which BLAKE's four
+// sizes start from as well.
+pub(crate) const H224: [u32; 8] = [0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
+                                   0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4];
+pub(crate) const H256: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+pub(crate) const H384: [u64; 8] = [0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17,
+                                   0x152fecd8f70e5939, 0x67332667ffc00b31, 0x8eb44a8768581511,
+                                   0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4];
+pub(crate) const H512: [u64; 8] = [0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b,
+                                   0xa54ff53a5f1d36f1, 0x510e527fade682d1, 0x9b05688c2b3e6c1f,
+                                   0x1f83d9abfb41bd6b, 0x5be0cd19137e2179];
+
 impl SHA224 {
     pub fn new(data: &[u8]) -> SHA224 {
         let mut sha = SHA224 {
-            state: [0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 
-                    0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4],
+            state: H224,
             buffer: BlockBuffer::default(),
             len: 0,
         };
@@ -83,8 +95,7 @@ impl SHA224 {
 impl SHA256 {
     pub fn new(data: &[u8]) -> SHA256 {
         let mut sha = SHA256 {
-            state: [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-                    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19],
+            state: H256,
             buffer: BlockBuffer::default(),
             len: 0,
         };
@@ -96,8 +107,7 @@ impl SHA256 {
 impl SHA384 {
     pub fn new(data: &[u8]) -> SHA384 {
         let mut sha = SHA384 {
-            state: [0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939, 
-            0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4],
+            state: H384,
             buffer: BlockBuffer::default(),
             len: 0,
         };
@@ -136,18 +146,14 @@ impl SHA512 {
                         is a separate function with its own initial values.".to_string());
         }
         let mut sha = SHA512 {
-            state: [0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1, 
-            0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179],
+            state: H512,
             output_bits,
             buffer: BlockBuffer::default(),
             len: 0,
         };
         if output_bits != 512 {
             let mut sha_inner = SHA512 {
-                state: [0x6a09e667f3bcc908^0xa5a5a5a5a5a5a5a5, 0xbb67ae8584caa73b^0xa5a5a5a5a5a5a5a5,
-                        0x3c6ef372fe94f82b^0xa5a5a5a5a5a5a5a5, 0xa54ff53a5f1d36f1^0xa5a5a5a5a5a5a5a5, 
-                        0x510e527fade682d1^0xa5a5a5a5a5a5a5a5, 0x9b05688c2b3e6c1f^0xa5a5a5a5a5a5a5a5,
-                        0x1f83d9abfb41bd6b^0xa5a5a5a5a5a5a5a5, 0x5be0cd19137e2179^0xa5a5a5a5a5a5a5a5],
+                state: H512.map(|w| w ^ 0xa5a5a5a5a5a5a5a5),
                 output_bits: 512,
                 buffer: BlockBuffer::default(),
                 len: 0,

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Write src/ec/dstu4145_params.rs: DSTU 4145-2002's ten named curves in a
-polynomial basis, from two independent sources that must agree.
+polynomial basis and its five in an optimal normal basis, each from two
+independent sources that must agree.
 
     python3 scripts/make_dstu4145_params.py
 
@@ -14,6 +15,16 @@ Castle's big-endian hexadecimal, cryptonite's little-endian byte
 arrays), or the script stops. The cofactor is Bouncy Castle's; cryptonite
 does not carry one, and `src/ec/dstu4145.rs` checks it against the
 field's size.
+
+The five curves in an optimal normal basis (ONB), which Bouncy Castle
+does not carry, come from cryptonite's same file and li0ard's
+`src/dstu4145/const.ts` (li0ard/dstu, fetched at a pinned commit and
+checked the same way): the field's degree and the reduction polynomial of
+the polynomial basis the arithmetic is done in, `a`, and `b`, `n` and the
+base point in the normal basis, and `root`, the normal element as a
+polynomial-basis element, which fixes the change of basis. The two must
+agree on every value. The cofactor is li0ard's; `src/ec/dstu4145.rs`
+checks it as it checks the others.
 
 Nothing in the output is typed: the Rust file is written from the values
 the two files agree on.
@@ -34,6 +45,10 @@ BC_SHA256 = "c32f0de6183cfee632564c4097296aac689a393dce7d05336698933043aad9a9"
 CN_URL = ("https://raw.githubusercontent.com/privat-it/cryptonite/master/src/cryptonite/c/"
           "dstu4145_params_internal.c")
 CN_SHA256 = "6831fbb24060b427dec60771bbc7a9adb0e595dfc389cfc391501ff8ce8fa016"
+LI_URL = ("https://raw.githubusercontent.com/li0ard/dstu/"
+          "6c277c8906588a11f0d21a844347e83574ca325a/src/dstu4145/const.ts")
+LI_SHA256 = "6c2cdaf25913dbc46e6b780ed0252aa784f58adf215024eaa0c3fccad7a22ccf"
+ONB_DEGREES = (173, 179, 191, 233, 431)
 
 
 def fetch(url, digest):
@@ -86,9 +101,63 @@ def cryptonite(text):
     return out
 
 
+def le_array(text, name):
+    m = re.search(r"%s\[[^\]]*\] = \{([^}]*)\}" % name, text)
+    if not m:
+        sys.exit(f"cryptonite: no {name}")
+    return int.from_bytes(bytes(int(v, 16) for v in re.findall(r"0x([0-9a-fA-F]{2})",
+                                                               m.group(1))), "little")
+
+
+def cryptonite_onb(text):
+    out = []
+    for m in ONB_DEGREES:
+        start = text.index(f"DSTU4145_PARAMS_M{m}_ONB = {{")
+        body = text[start:text.index("};", start)]
+        f = [int(x) for x in re.search(r"\{\s*([\d,\s]+)\}", body).group(1).replace(",", " ").split()]
+        rest = body[body.index("}", body.index("{", body.index("{") + 1)) + 1:]
+        a = int(re.search(r"^\s*,\s*(\d+)\s*,", rest, re.M).group(1))
+        arrays = [bytes(int(v, 16) for v in re.findall(r"0x([0-9a-fA-F]{2})", blk))
+                  for blk in re.findall(r"\{([^{}]*)\}", rest)]
+        if len(arrays) != 4 or f[0] != m or "true" not in rest:
+            sys.exit(f"M{m} ONB: cryptonite's entry is not what was expected")
+        b, n, gx, gy = (int.from_bytes(x, "little") for x in arrays)
+        terms = sorted({t for t in f[1:]} | {0}, reverse=True)
+        out.append(dict(m=m, terms=terms, a=a, b=b, n=n, gx=gx, gy=gy,
+                        root=le_array(text, f"ROOT1_M{m}_ONB")))
+    return out
+
+
+def li0ard_onb(text):
+    out = []
+    for m in ONB_DEGREES:
+        block = re.search(r"export const DSTU_%d_ONB: DSTUParameters = \{(.*?)\n\}" % m, text,
+                          re.S).group(1)
+        named = re.search(r"onb: (\w+)", block)
+        onb = (re.search(r"const %s[^=]*= \{(.*?)\n\}" % named.group(1), text, re.S).group(1)
+               if named else block)
+        hexed = lambda key, where=block: re.search(key + r': "([0-9A-F]+)"', where).group(1)  # noqa: E731
+        ks = [int(x) for x in re.search(r"ks: \[([\d,]+)\]", block).group(1).split(",")]
+        out.append(dict(m=int(re.search(r"m: (\d+)", block).group(1)),
+                        terms=sorted(set(ks) | {0}, reverse=True),
+                        a=int(re.search(r"a: (\d)", block).group(1)), b=int(hexed("b"), 16),
+                        n=int(hexed("order"), 16), gx=int(hexed("Gx"), 16),
+                        gy=int(hexed("Gy"), 16),
+                        h=int(re.search(r"cofactor: (\d)", block).group(1)),
+                        root=int.from_bytes(bytes.fromhex(hexed("root1", onb)), "little")))
+    return out
+
+
 def main():
     bc = bouncy_castle(fetch(BC_URL, BC_SHA256))
-    cn = cryptonite(fetch(CN_URL, CN_SHA256))
+    cn_text = fetch(CN_URL, CN_SHA256)
+    cn = cryptonite(cn_text)
+    onb = li0ard_onb(fetch(LI_URL, LI_SHA256))
+    for i, (x, y) in enumerate(zip(onb, cryptonite_onb(cn_text))):
+        for key in ("m", "terms", "a", "b", "n", "gx", "gy", "root"):
+            if x[key] != y[key]:
+                sys.exit(f"ONB curve {i}: li0ard and cryptonite disagree on {key}: "
+                         f"{x[key]} != {y[key]}")
     for i, (x, y) in enumerate(zip(bc, cn)):
         for key in ("m", "terms", "a", "b", "n", "gx", "gy"):
             if x[key] != y[key]:
@@ -122,8 +191,36 @@ def main():
                     f"             gx: \"{c['gx']:x}\",\n"
                     f"             gy: \"{c['gy']:x}\",\n"
                     f"             h: {c['h']} }},\n")
+        f.write("];\n\n"
+                "/// A curve in an optimal normal basis: as `Params`, with `b`, `n`, the\n"
+                "/// base point and the cofactor as the standard gives them - `b` and the\n"
+                "/// point in the normal basis - and `root`, the normal element in the\n"
+                "/// polynomial basis of `x^m` plus `terms`, which the arithmetic uses.\n"
+                "pub(crate) struct OnbParams {\n"
+                "    pub(crate) m: usize,\n"
+                "    pub(crate) terms: &'static [usize],\n"
+                "    pub(crate) a: u8,\n"
+                "    pub(crate) b: &'static str,\n"
+                "    pub(crate) n: &'static str,\n"
+                "    pub(crate) gx: &'static str,\n"
+                "    pub(crate) gy: &'static str,\n"
+                "    pub(crate) h: u8,\n"
+                "    pub(crate) root: &'static str,\n"
+                "}\n\n"
+                "/// The five curves in an optimal normal basis, m = 173, 179, 191, 233 and\n"
+                "/// 431, from cryptonite's dstu4145_params_internal.c and li0ard's\n"
+                "/// dstu4145/const.ts, which agree on every value.\n"
+                "pub(crate) const ONB_CURVES: [OnbParams; 5] = [\n")
+        for c in onb:
+            f.write(f"    OnbParams {{ m: {c['m']}, terms: &{c['terms']}, a: {c['a']},\n"
+                    f"                b: \"{c['b']:x}\",\n"
+                    f"                n: \"{c['n']:x}\",\n"
+                    f"                gx: \"{c['gx']:x}\",\n"
+                    f"                gy: \"{c['gy']:x}\",\n"
+                    f"                h: {c['h']},\n"
+                    f"                root: \"{c['root']:x}\" }},\n")
         f.write("];\n")
-    print(f"10 curves to {OUTPUT}", file=sys.stderr)
+    print(f"15 curves to {OUTPUT}", file=sys.stderr)
 
 
 if __name__ == "__main__":
