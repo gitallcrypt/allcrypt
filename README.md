@@ -193,6 +193,12 @@ commands; [pitfalls.md](docs/pitfalls.md) is the list of side channels,
 correctness traps and protocol hazards, each marked mitigated, accepted
 or open.
 
+The crate on crates.io is for depending on. It carries the library and
+the five RFCs the library reads while it compiles, and none of the test
+data, so running the tests, regenerating the vectors or building the
+Python module takes a checkout of
+[the repository](https://github.com/gitallcrypt/allcrypt).
+
 ## Documentation
 
 - [Status](docs/status.md) - every algorithm, mode and protocol, and what checked it

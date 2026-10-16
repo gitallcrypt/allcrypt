@@ -16,17 +16,30 @@ default-members = [".", "shim", "tools"]
 
 [package]
 name = "allcrypt"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "0BSD"
 description = "Common and uncommon cryptographic algorithms in pure Rust, old and broken ones included, with Python and C bindings."
 repository = "https://github.com/gitallcrypt/allcrypt"
-readme = "README.md"
+# The crates.io page and the docs.rs front page, which are for the Rust
+# library alone; README.md is the repository's and covers the bindings,
+# the proxy and the shim as well.
+readme = "README.crates.md"
 keywords = ["cryptography", "crypto", "cipher", "hash", "tls"]
 categories = ["cryptography"]
 
-# Things not needed to build the rust package.
-# To build these things checkout the git.
+# What goes to crates.io: the source and the few documents the library
+# itself reads at compile time. Not the test data. Running the tests, the
+# witnesses or the bindings' builds takes a checkout of the repository,
+# which has all of it; the crate is for depending on.
+#
+# **The test data is vectors/ and rfcs/**, and none of vectors/ is read
+# outside a test. Five RFCs are: the library parses MD2's and MD4's
+# tables, MISTY1's S-boxes, ARIA's constants and GOST R 34.11-94's C3 out of
+# them while it compiles. A sixth would make `cargo package` fail its
+# verify build with "couldn't read rfcs/...", which is the signal to add
+# it below. Unit tests in src/ read vectors/ too, so `cargo test` in an
+# unpacked crate does not compile; that is expected.
 exclude = [
     "examples/",
     "python/",
@@ -35,8 +48,13 @@ exclude = [
     "tests/",
     "docs/",
     "pyproject.toml",
-    # Read only by tests/, and 1.8 MB.
-    "vectors/slh_dsa_x509.vec",
+    "vectors/",
+    "rfcs/*",
+    "!rfcs/rfc1319.txt",
+    "!rfcs/rfc1320.txt",
+    "!rfcs/rfc2994.txt",
+    "!rfcs/rfc5794.txt",
+    "!rfcs/rfc5831.txt",
 ]
 # The oldest toolchain this builds on. Declared rather than implied:
 # `is_multiple_of` and `Option::is_none_or` were stabilised in 1.87 and

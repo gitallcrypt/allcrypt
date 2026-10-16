@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.crates.md")]
+
 
 pub mod asn1;
 pub mod bignum;

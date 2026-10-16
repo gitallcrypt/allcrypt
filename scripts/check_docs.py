@@ -2,8 +2,9 @@
 """Compile and run every code block in the documentation.
 
 Docs rot silently. This makes them fail loudly instead: each fenced ```rust
-block in README.md and docs/*.md is compiled as part of a generated example,
-and each ```python block is executed against the built module.
+block in README.md, README.crates.md and docs/*.md is compiled as part of a
+generated example, and each ```python block is executed against the built
+module.
 
     python3 scripts/check_docs.py              # rust blocks (+ python if built)
     python3 scripts/check_docs.py --rust       # rust only
@@ -20,7 +21,8 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DOCS = [ROOT / "README.md"] + sorted((ROOT / "docs").glob("*.md"))
+DOCS = ([ROOT / "README.md", ROOT / "README.crates.md"]
+        + sorted((ROOT / "docs").glob("*.md")))
 GENERATED = ROOT / "examples" / "doc_examples.rs"
 
 FENCE = re.compile(r"^```(\w+)([^\n]*)\n(.*?)^```", re.M | re.S)
