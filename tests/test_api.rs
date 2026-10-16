@@ -587,6 +587,10 @@ fn test_aead_through_the_api() {
                         "saferplus-reversed-words-eax", "loki97-eax", "loki97-mcrypt-eax", "lea-eax",
                         "hight-eax", "speck64-eax", "speck128-eax", "simon64-eax",
                         "simon128-eax", "present-eax", "feal-eax", "feal-nx-eax",
+                        "threefish256-eax", "threefish512-eax", "threefish1024-eax",
+                        "shacal2-eax", "kalyna-256-eax", "kalyna-512-eax",
+                        "rijndael-160-eax", "rijndael-192-eax", "rijndael-224-eax",
+                        "rijndael-256-eax",
                         "kuznyechik-mgm", "magma-mgm", "aes-mgm",
                         "twofish-mgm", "serpent-mgm", "camellia-mgm",
                         "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
@@ -619,9 +623,9 @@ fn test_aead_through_the_api() {
         ("aria-ccm", 24), ("camellia-ccm", 16), ("camellia-ccm", 32), ("sm4-ccm", 16),
         ("chacha20-poly1305", 32), ("xchacha20-poly1305", 32),
         // EAX, over a cipher of each block size the catalogue offers -
-        // 128 bit and 64 bit - because EAX's OMAC tweak is a whole
-        // block and a 64 bit one is where an implementation that
-        // hard-coded 16 falls over.
+        // 64 and 128 bit, and 160 to 1024 - because EAX's OMAC tweak is
+        // a whole block and the sizes other than 16 are where an
+        // implementation that hard-coded 16 falls over.
         ("aes-eax", 16), ("aes-eax", 32),
         ("twofish-eax", 32), ("serpent-eax", 32),
         ("camellia-eax", 16), ("sm4-eax", 16),
@@ -637,6 +641,10 @@ fn test_aead_through_the_api() {
         ("loki97-eax", 16), ("loki97-mcrypt-eax", 24), ("lea-eax", 32),
         ("hight-eax", 16), ("speck64-eax", 12), ("speck128-eax", 32), ("simon64-eax", 16),
         ("simon128-eax", 24), ("present-eax", 10), ("feal-eax", 8), ("feal-nx-eax", 16),
+        ("threefish256-eax", 32), ("threefish512-eax", 64), ("threefish1024-eax", 128),
+        ("shacal2-eax", 16), ("shacal2-eax", 64), ("kalyna-256-eax", 32),
+        ("kalyna-256-eax", 64), ("kalyna-512-eax", 64), ("rijndael-160-eax", 20),
+        ("rijndael-192-eax", 16), ("rijndael-224-eax", 28), ("rijndael-256-eax", 32),
         // MGM, the same way: the standard's own two ciphers first, then
         // one of each block size from the rest. MGM's field polynomial
         // differs between a 64 and a 128 bit block, so the two sizes

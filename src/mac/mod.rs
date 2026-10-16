@@ -8,6 +8,7 @@ constructions.
 
 pub mod cbc_mac;
 pub mod cmac;
+mod cmac_polynomials;
 pub mod hmac;
 pub mod michael;
 pub mod poly1305;

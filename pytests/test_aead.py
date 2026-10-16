@@ -600,7 +600,9 @@ TAG_LENGTHS = [("aes-gcm", 16, 16), ("chacha20-poly1305", 32, 16),
                ("aes-eax", 16, 16), ("twofish-eax", 32, 16),
                ("des-eax", 8, 8), ("3des-eax", 24, 8), ("blowfish-eax", 16, 8),
                ("kuznyechik-mgm", 32, 16), ("magma-mgm", 32, 8),
-               ("des-mgm", 8, 8), ("aes-mgm", 16, 16)]
+               ("des-mgm", 8, 8), ("aes-mgm", 16, 16),
+               ("rijndael-160-eax", 16, 20), ("shacal2-eax", 32, 32),
+               ("threefish512-eax", 64, 64), ("threefish1024-eax", 128, 128)]
 
 
 def nonce_for(name, tag_len):
@@ -667,8 +669,8 @@ def test_every_aead_in_the_catalogue_round_trips():
     for name in allcrypt.aeads_available:
         worked = None
         # Up to 64: AES-256-CBC-HMAC-SHA512's key is its MAC key and
-        # its AES key together.
-        for key_len in range(5, 65):
+        # its AES key together; and 128 for Threefish-1024.
+        for key_len in list(range(5, 65)) + [128]:
             # 32 and 64: Kalyna's GCM and CCM take a nonce of one block.
             for nonce_len in (8, 12, 16, 24, 32, 64):
                 key = bytes(key_len)

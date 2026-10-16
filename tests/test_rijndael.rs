@@ -100,18 +100,17 @@ fn test_rijndael_through_the_catalogue_in_every_mode() {
     assert!(checked >= 120, "only {checked} cases ran");
 }
 
-/// A block size wider than 128 bits has no CMAC: SP 800-38B defines Rb
-/// for 64 and 128 bit blocks only, and a guessed polynomial would be a
-/// MAC nobody else computes.
+/// CMAC takes every Rijndael block: SP 800-38B defines Rb for 64 and
+/// 128 bit blocks, and the wider ones use the low-weight polynomials
+/// Bouncy Castle uses, so the tag is the whole block.
+/// `tests/test_cmac_eax_wide.rs` checks the values.
 #[test]
-fn test_cmac_refuses_the_wide_blocks() {
+fn test_cmac_takes_every_block() {
     use allcrypt::mac::cmac::Cmac;
-    for bits in [160, 192, 224, 256] {
+    for bits in [128, 160, 192, 224, 256] {
         let cipher = AnyBlockCipher::new(&format!("rijndael-{bits}"), &[0u8; 16], None).unwrap();
-        assert!(Cmac::new(cipher).is_err(), "{bits}");
+        assert_eq!(Cmac::new(cipher).unwrap().tag_len(), bits / 8, "{bits}");
     }
-    let cipher = AnyBlockCipher::new("rijndael-128", &[0u8; 16], None).unwrap();
-    assert!(Cmac::new(cipher).is_ok());
 }
 
 #[test]

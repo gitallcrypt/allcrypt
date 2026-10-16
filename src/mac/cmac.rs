@@ -17,7 +17,12 @@ Three things to get right, and the first two are silent:
     of the irreducible polynomial for GF(2^b): 0x87 for a 128 bit block,
     0x1b for a 64 bit one. Using 0x87 everywhere gives a MAC that is
     perfectly consistent with itself over DES, 3DES, Blowfish and Magma,
-    and agrees with nothing.
+    and agrees with nothing. SP 800-38B defines only those two; wider
+    blocks - Rijndael's 160 to 256 bits, SHACAL-2's 256, Kalyna's and
+    Threefish's 256 to 1024 - take the irreducible polynomial of fewest
+    terms and smallest exponents, which is the rule the two standard ones
+    follow and what Botan, Crypto++ and Bouncy Castle use. Above 128 bits
+    Rb is more than one byte: 0x80043 for 1024.
 
   * **An empty message is padded**, so it uses K2 and not K1. The "is it
     a whole number of blocks" test is `len > 0 && len % b == 0`, and
@@ -32,31 +37,39 @@ AES, Triple DES and Blowfish - so both Rb values are covered by a real
 independent implementation, over a 128 bit block and a 64 bit one.
 Kuznyechik and Magma then use the same construction with ciphers that are
 themselves checked, which is as close to an independent check as an
-algorithm nothing here implements can get.
+algorithm nothing here implements can get. The wider blocks are checked
+against Botan, Crypto++ and Bouncy Castle, in `vectors/cmac_eax_wide.vec`.
 */
 
 use crate::api::AnyBlockCipher;
 use crate::block_ciphers::BlockCipher;
 use crate::Mac;
 
-/// The low coefficients of the irreducible polynomial for the block size.
+/// The low coefficients of the irreducible polynomial for the block size,
+/// as a block: `x^b` is implicit, and the rest are bits of a big-endian
+/// `b`-bit number.
 ///
 /// Not a constant: a 64 bit block and a 128 bit block have different
 /// fields, and the same value for both is a MAC that agrees with itself
-/// and with nobody.
-fn rb(block_size: usize) -> Result<u8, String> {
-    match block_size {
-        16 => Ok(0x87),     // x^128 + x^7 + x^2 + x + 1
-        8 => Ok(0x1b),      // x^64 + x^4 + x^3 + x + 1
-        other => Err(format!(
-            "CMAC needs a 64 or 128 bit block; this cipher's is {} bits. The \
-             field's polynomial is not defined for other sizes.", other * 8)),
+/// and with nobody. The table is generated; see `cmac_polynomials.rs`.
+pub(crate) fn rb(block_size: usize) -> Result<Vec<u8>, String> {
+    let (_, exponents) = super::cmac_polynomials::POLYNOMIALS.iter()
+        .find(|(size, _)| *size == block_size)
+        .ok_or_else(|| format!(
+            "CMAC is not defined for a {} bit block: the field's polynomial is \
+             fixed for 64, 128, 160, 192, 224, 256, 512 and 1024 bits.",
+            block_size * 8))?;
+    let mut out = vec![0u8; block_size];
+    for &exponent in exponents.iter() {
+        let exponent = exponent as usize;
+        out[block_size - 1 - exponent / 8] |= 1 << (exponent % 8);
     }
+    Ok(out)
 }
 
 /// Multiply by x in GF(2^b): shift left one bit, and fold in `rb` if the
-/// bit that fell off the top was set.
-fn double(block: &mut [u8], rb: u8) {
+/// bit that fell off the top was set. `rb` is as long as `block`.
+pub(crate) fn double(block: &mut [u8], rb: &[u8]) {
     let carry = block[0] >> 7;
     for index in 0..block.len() - 1 {
         block[index] = (block[index] << 1) | (block[index + 1] >> 7);
@@ -65,8 +78,12 @@ fn double(block: &mut [u8], rb: u8) {
     block[last] <<= 1;
     // Branchless: `carry` is a bit of the cipher's output under the key,
     // and this is the one place in the construction where branching on it
-    // would leak. `carry.wrapping_neg()` is 0x00 or 0xff.
-    block[last] ^= rb & carry.wrapping_neg();
+    // would leak. `carry.wrapping_neg()` is 0x00 or 0xff, and every byte
+    // of `rb` is masked whether it is zero or not.
+    let mask = carry.wrapping_neg();
+    for (byte, low) in block.iter_mut().zip(rb) {
+        *byte ^= low & mask;
+    }
 }
 
 /// CMAC over any block cipher this library has.
@@ -105,9 +122,9 @@ impl Cmac {
                 "{} produced {} bytes for a {} byte block.",
                 cipher.name(), subkey_one.len(), block_size));
         }
-        double(&mut subkey_one, rb);
+        double(&mut subkey_one, &rb);
         let mut subkey_two = subkey_one.clone();
-        double(&mut subkey_two, rb);
+        double(&mut subkey_two, &rb);
 
         Ok(Cmac {
             cipher,
@@ -272,22 +289,194 @@ mod tests {
     /// in this library.
     #[test]
     fn test_the_polynomial_depends_on_the_block_size() {
-        assert_eq!(rb(16).unwrap(), 0x87);
-        assert_eq!(rb(8).unwrap(), 0x1b);
-        assert!(rb(7).is_err());
+        assert_eq!(hex(&rb(16).unwrap()), "00000000000000000000000000000087");
+        assert_eq!(hex(&rb(8).unwrap()), "000000000000001b");
+        assert_eq!(hex(&rb(128).unwrap()[125..]), "080043");
+        for size in [7, 12, 40, 48, 96, 256] {
+            assert!(rb(size).is_err(), "{} bytes", size);
+        }
 
         // A block whose top bit is set must fold; one without must not.
         let mut high = vec![0x80u8, 0, 0, 0, 0, 0, 0, 0];
-        double(&mut high, 0x1b);
+        double(&mut high, &rb(8).unwrap());
         assert_eq!(hex(&high), "000000000000001b");
 
         let mut low = vec![0x01u8, 0, 0, 0, 0, 0, 0, 0];
-        double(&mut low, 0x1b);
+        double(&mut low, &rb(8).unwrap());
         assert_eq!(hex(&low), "0200000000000000");
 
         let mut wide = vec![0x80u8; 16];
-        double(&mut wide, 0x87);
+        double(&mut wide, &rb(16).unwrap());
         assert_eq!(hex(&wide), "010101010101010101010101010101" .to_string() + "87");
+
+        // Above 128 bits Rb spans bytes: x^1024 + x^19 + x^6 + x + 1 folds
+        // into the last three, and the carry out of a byte boundary still
+        // shifts through.
+        let mut top = vec![0u8; 128];
+        top[0] = 0x80;
+        top[127] = 0x80;
+        double(&mut top, &rb(128).unwrap());
+        assert_eq!(hex(&top[124..]), "00080143");
+        assert!(top[..124].iter().all(|&b| b == 0));
+    }
+
+    /// Polynomials over GF(2) as bit vectors, little-endian in `u64`s, for
+    /// checking the generated table. Tests only: nothing here is constant
+    /// time, and nothing needs to be.
+    mod gf2 {
+        pub type Poly = Vec<u64>;
+
+        pub fn degree(p: &[u64]) -> Option<usize> {
+            (0..p.len()).rev().find(|&i| p[i] != 0)
+                .map(|i| i * 64 + 63 - p[i].leading_zeros() as usize)
+        }
+
+        pub fn from_exponents(exponents: &[usize]) -> Poly {
+            let mut p = vec![0u64; exponents.iter().max().unwrap() / 64 + 1];
+            for &e in exponents {
+                p[e / 64] ^= 1 << (e % 64);
+            }
+            p
+        }
+
+        /// `acc ^= src * x^shift`, growing `acc` as needed.
+        fn xor_shifted(acc: &mut Poly, src: &[u64], shift: usize) {
+            let (words, bits) = (shift / 64, shift % 64);
+            if acc.len() < src.len() + words + 1 {
+                acc.resize(src.len() + words + 1, 0);
+            }
+            for (i, &w) in src.iter().enumerate() {
+                acc[i + words] ^= w << bits;
+                if bits != 0 {
+                    acc[i + words + 1] ^= w >> (64 - bits);
+                }
+            }
+        }
+
+        /// `p * x^-n`, dropping the bits below `x^n`.
+        fn shift_down(p: &[u64], n: usize) -> Poly {
+            let (words, bits) = (n / 64, n % 64);
+            (words..p.len()).map(|i| {
+                let high = if bits != 0 && i + 1 < p.len() { p[i + 1] << (64 - bits) } else { 0 };
+                (p[i] >> bits) | high
+            }).collect()
+        }
+
+        /// `p mod x^n`.
+        fn truncate(p: &mut Poly, n: usize) {
+            let (words, bits) = (n / 64, n % 64);
+            for (i, w) in p.iter_mut().enumerate() {
+                if i > words || (i == words && bits == 0) {
+                    *w = 0;
+                } else if i == words {
+                    *w &= (1u64 << bits) - 1;
+                }
+            }
+        }
+
+        /// `a mod m`, a degree at a time from the top.
+        pub fn reduce(mut a: Poly, m: &[u64]) -> Poly {
+            let dm = degree(m).unwrap();
+            while let Some(da) = degree(&a) {
+                if da < dm {
+                    break;
+                }
+                xor_shifted(&mut a, m, da - dm);
+            }
+            a
+        }
+
+        /// `p mod (x^n + sum of x^e for e in low)`: the part from `x^n` up
+        /// folds back down as copies shifted by each `e`, until none is
+        /// left.
+        pub fn reduce_sparse(mut p: Poly, n: usize, low: &[usize]) -> Poly {
+            while degree(&p).is_some_and(|d| d >= n) {
+                let high = shift_down(&p, n);
+                truncate(&mut p, n);
+                for &e in low {
+                    xor_shifted(&mut p, &high, e);
+                }
+            }
+            // Below x^n now, so the words above it are zero; drop them, or
+            // squaring doubles the length every time.
+            p.truncate(n / 64 + 1);
+            p
+        }
+
+        /// Each bit i moves to 2i.
+        pub fn square(p: &[u64]) -> Poly {
+            fn spread(x: u32) -> u64 {
+                let mut x = x as u64;
+                x = (x | (x << 16)) & 0x0000_ffff_0000_ffff;
+                x = (x | (x << 8)) & 0x00ff_00ff_00ff_00ff;
+                x = (x | (x << 4)) & 0x0f0f_0f0f_0f0f_0f0f;
+                x = (x | (x << 2)) & 0x3333_3333_3333_3333;
+                (x | (x << 1)) & 0x5555_5555_5555_5555
+            }
+            p.iter().flat_map(|&w| [spread(w as u32), spread((w >> 32) as u32)]).collect()
+        }
+
+        pub fn gcd(mut a: Poly, mut b: Poly) -> Poly {
+            while degree(&b).is_some() {
+                let r = reduce(a, &b);
+                a = b;
+                b = r;
+            }
+            a
+        }
+
+        /// Rabin's test for f = x^n + sum of x^e for e in low: irreducible
+        /// exactly when x^(2^n) = x mod f and gcd(x^(2^(n/q)) - x, f) = 1
+        /// for every prime q dividing n.
+        pub fn irreducible(n: usize, low: &[usize]) -> bool {
+            let mut all = low.to_vec();
+            all.push(n);
+            let f = from_exponents(&all);
+            let x_to_2_to_minus_x = |k: usize| {
+                let mut p = from_exponents(&[1]);
+                for _ in 0..k {
+                    p = reduce_sparse(square(&p), n, low);
+                }
+                p[0] ^= 2;
+                p
+            };
+            if degree(&x_to_2_to_minus_x(n)).is_some() {
+                return false;
+            }
+            let mut primes = Vec::new();
+            let (mut m, mut d) = (n, 2);
+            while m > 1 {
+                if m % d == 0 {
+                    primes.push(d);
+                    while m % d == 0 {
+                        m /= d;
+                    }
+                }
+                d += 1;
+            }
+            primes.iter().all(|q| degree(&gcd(f.clone(), x_to_2_to_minus_x(n / q))) == Some(0))
+        }
+    }
+
+    /// Every polynomial in the generated table is irreducible, checked
+    /// here independently of the script that chose it. That it is also
+    /// the one the rule picks is the script's check, against three
+    /// libraries' tables.
+    #[test]
+    fn test_every_tabled_polynomial_is_irreducible() {
+        for &(bytes, exponents) in super::super::cmac_polynomials::POLYNOMIALS {
+            let n = bytes * 8;
+            let low: Vec<usize> = exponents.iter().map(|&e| e as usize).collect();
+            assert!(gf2::irreducible(n, &low), "{} bits", n);
+            assert!(low.len() == 2 || low.len() == 4);
+            assert_eq!(*low.last().unwrap(), 0);
+            // A reducible polynomial of the same degree must fail, or the
+            // test proves nothing: x + 1 divides one with an even number
+            // of terms, and by Swan's theorem every trinomial of a degree
+            // divisible by 8 is reducible.
+            assert!(!gf2::irreducible(n, &[2, 1, 0]), "{} bits", n);
+            assert!(!gf2::irreducible(n, &[1, 0]), "{} bits", n);
+        }
     }
 
     /// The empty message is padded and uses K2. An implementation testing

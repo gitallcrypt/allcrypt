@@ -1322,6 +1322,21 @@ assert allcrypt.Aead(bytes(8), "des-eax").tag_size == 8
 assert allcrypt.Aead(bytes(16), "aes-ccm-8").tag_size == 8
 ```
 
+The same holds over the wider blocks - `rijndael-160-eax` to
+`rijndael-256-eax`, `shacal2-eax`, `kalyna-256-eax`, `kalyna-512-eax`
+and `threefish256-eax` to `threefish1024-eax` - whose tags are 20 to 128
+bytes. CMAC's field there is the low-weight polynomial Botan, Crypto++
+and Bouncy Castle all use, so the tags agree with theirs. Name a length
+for a shorter tag:
+
+```python
+import allcrypt
+
+assert allcrypt.Aead(bytes(128), "threefish1024-eax").tag_size == 128
+assert allcrypt.Aead(bytes(128), "threefish1024-eax-16").tag_size == 16
+assert len(allcrypt.cmac("shacal2", bytes(16), b"message")) == 32
+```
+
 ### MGM
 
 Multilinear Galois Mode, RFC 9058: a counter mode for confidentiality

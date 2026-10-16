@@ -33,8 +33,9 @@ def test_threefish_is_in_the_catalogue():
     for name in NAMES:
         assert name in allcrypt.block_ciphers_available
         assert getattr(allcrypt.BlockCipher, name.upper()) == name
-    # No AEAD here takes a block this wide.
-    assert not any(a.startswith("threefish") for a in allcrypt.aeads_available)
+    # EAX is the one AEAD here that takes a block this wide.
+    assert {a for a in allcrypt.aeads_available if a.startswith("threefish")} \
+        == {name + "-eax" for name in NAMES}
 
 
 @pytest.mark.parametrize("alias,name", [("Threefish-256", "threefish256"),

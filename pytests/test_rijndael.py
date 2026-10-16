@@ -17,8 +17,10 @@ def test_rijndael_is_in_the_catalogue():
     for name in NAMES:
         assert name in allcrypt.block_ciphers_available
     assert allcrypt.BlockCipher.RIJNDAEL_256 == "rijndael-256"
-    # No AEAD: their constants are defined for 64 and 128 bit blocks.
-    assert not any(a.startswith("rijndael") for a in allcrypt.aeads_available)
+    # EAX only: CMAC's field is defined at every size here, while GCM, CCM
+    # and OCB fix theirs at 128 bits.
+    assert {a for a in allcrypt.aeads_available if a.startswith("rijndael")} \
+        == {f"rijndael-{bits}-eax" for bits in (160, 192, 224, 256)}
 
 
 def test_block_sizes():

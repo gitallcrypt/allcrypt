@@ -1279,8 +1279,21 @@ assert_eq!(set, out);
 assert!(Threefish256::new(&[0u8; 40]).is_err());
 ```
 
-No EAX, MGM or OCB here takes a block this wide. Crypto++, Bouncy Castle
-and Skein3Fish's C agree on every row of `vectors/threefish.vec`.
+CMAC and EAX take a block this wide, with the whole block as the tag
+unless a length is named; MGM and OCB do not. Crypto++, Bouncy Castle
+and Skein3Fish's C agree on every row of `vectors/threefish.vec`, and
+Botan, Crypto++ and Bouncy Castle on the CMAC and EAX rows of
+`vectors/cmac_eax_wide.vec`.
+
+```rust
+use allcrypt::api;
+
+let tag = api::cmac("threefish512", &[7u8; 64], b"message")?;
+assert_eq!(tag.len(), 64);
+let (ciphertext, tag) =
+    api::aead_encrypt("threefish1024-eax-16", &[7u8; 128], b"nonce", b"", b"message")?;
+assert_eq!((ciphertext.len(), tag.len()), (7, 16));
+```
 
 ### Square
 

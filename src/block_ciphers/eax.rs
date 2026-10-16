@@ -34,7 +34,7 @@ where `OMAC(i, M)` is CMAC over `[i]_blocksize || M` - the index written
 as **a whole block**, big endian, not a single byte. For a 16 byte block
 that is fifteen zeros and then `i`.
 
-Four things are silent when wrong:
+Five things are silent when wrong:
 
   * **the three tweaks must differ.** Using one index for all three
     makes `N`, `H` and `T` interchangeable, and a forger can move bytes
@@ -42,6 +42,11 @@ Four things are silent when wrong:
   * **the index is a full block**, not one byte. Both encodings produce
     a tag; only one interoperates.
   * **the CTR nonce is `N`, not the nonce.** `N` is the OMAC of it.
+  * **the counter is EAX's, not the cipher's.** `N` is incremented as
+    one big-endian integer over the whole block. Kalyna's and GOST's
+    `ctr_init` and `ctr_next` are their national counter modes, which
+    encrypt the IV first and count little-endian, so going through them
+    gives a self-consistent EAX that agrees with no one.
   * **the MAC covers the ciphertext**, not the plaintext. Authenticating
     the plaintext is encrypt-and-MAC, which is the composition with the
     worst reputation, and it round-trips against itself perfectly.
@@ -115,8 +120,9 @@ impl Eax {
     fn omac(&mut self, index: u8, message: &[u8]) -> Vec<u8> {
         self.mac.reset();
         // **A whole block, not a byte.** Fifteen zeros then the index,
-        // for a 16 byte block.
-        let mut prefix = [0u8; 32];
+        // for a 16 byte block. 128 bytes is Threefish-1024's block, the
+        // widest `Cmac::new` accepts.
+        let mut prefix = [0u8; 128];
         prefix[self.block_size - 1] = index;
         self.mac.update(&prefix[..self.block_size]);
         self.mac.update(message);
@@ -132,7 +138,7 @@ impl Eax {
         // The CTR nonce is `N`, the OMAC of the nonce - not the nonce.
         let mut ciphertext = plaintext.to_vec();
         let cipher = self.mac.cipher_mut();
-        let mut ctr = CtrState::new(cipher, &n)?;
+        let mut ctr = CtrState::new_big_endian(cipher, &n)?;
         ctr.apply(cipher, &mut ciphertext)?;
 
         // Over the **ciphertext**. Authenticating the plaintext here
@@ -176,7 +182,7 @@ impl Eax {
         // thing an AEAD exists to prevent.
         let mut plaintext = ciphertext.to_vec();
         let cipher = self.mac.cipher_mut();
-        let mut ctr = CtrState::new(cipher, &n)?;
+        let mut ctr = CtrState::new_big_endian(cipher, &n)?;
         ctr.apply(cipher, &mut plaintext)?;
         Ok(plaintext)
     }
@@ -230,8 +236,7 @@ mod tests {
                     "DES" => "des".to_string(),
                     "TripleDES" => "3des".to_string(),
                     "Twofish" => "twofish".to_string(),
-                    // Threefish-512 is, but CMAC here has no field for a
-                    // 512 bit block, so EAX over it is not.
+                    "Threefish-512" => "threefish512".to_string(),
                     _ => String::new(),
                 };
                 tag_len = rest.strip_prefix("EAX(")
@@ -267,13 +272,14 @@ mod tests {
     #[test]
     fn test_the_vector_file_parses() {
         let parsed = vectors();
-        assert_eq!(parsed.len(), 190, "vectors/eax.vec should give 190 usable cases");
+        assert_eq!(parsed.len(), 191, "vectors/eax.vec should give 191 usable cases");
 
         let ciphers: std::collections::HashSet<&str> =
             parsed.iter().map(|v| v.cipher.as_str()).collect();
-        // Five ciphers, three block sizes between them - so the block
-        // size is exercised rather than assumed to be 16.
-        assert_eq!(ciphers, ["aes", "blowfish", "des", "3des", "twofish"]
+        // Six ciphers, three block sizes between them - 8, 16 and 64
+        // bytes - so the block size is exercised rather than assumed to
+        // be 16, and a polynomial wider than one byte is used.
+        assert_eq!(ciphers, ["aes", "blowfish", "des", "3des", "twofish", "threefish512"]
                    .into_iter().collect());
         assert!(parsed.iter().any(|v| v.tag_len == Some(8)),
                 "no truncated-tag case, so with_tag_len is untested");
@@ -378,6 +384,46 @@ mod tests {
             let (ciphertext, tag) = eax.encrypt(&nonce, b"", b"message").unwrap();
             assert_eq!(eax.decrypt(&nonce, b"", &ciphertext, &tag).unwrap(), b"message");
             assert!(seen.insert((ciphertext, tag)), "length {length} collided");
+        }
+    }
+
+    /// EAX's keystream is `E(N), E(N+1), ...` with the whole block one
+    /// big-endian integer, over every cipher. Kalyna and GOST have counter
+    /// modes of their own behind `ctr_init` and `ctr_next` - the IV
+    /// encrypted first, then counted little-endian - and EAX over either
+    /// once used those, producing an EAX nothing else does. Checked here
+    /// from the definition, with a counter that carries across bytes, and
+    /// with AES as the control.
+    #[test]
+    fn test_the_counter_is_eaxs_own_over_every_cipher() {
+        use crate::api::AnyBlockCipher;
+        use crate::block_ciphers::BlockCipher;
+        for (name, key_len) in [("aes", 16), ("kalyna-128", 16), ("kalyna-128", 32),
+                                ("gost", 32), ("des", 8)] {
+            let key: Vec<u8> = (0..key_len as u8).map(|b| b.wrapping_mul(29)).collect();
+            let mut eax = Eax::new(name, &key).unwrap();
+            let bs = eax.block_size;
+            // A nonce whose N ends in 0xff, so the second block carries.
+            let (nonce, n) = (0u16..).map(|i| i.to_be_bytes())
+                .map(|nonce| (nonce, eax.omac(0, &nonce)))
+                .find(|(_, n)| n[bs - 1] == 0xff)
+                .unwrap();
+            let (ciphertext, _) = eax.encrypt(&nonce, b"", &vec![0u8; 3 * bs + 5]).unwrap();
+
+            let mut cipher = AnyBlockCipher::new(name, &key, None).unwrap();
+            let mut counter = n.clone();
+            let mut expected = Vec::new();
+            while expected.len() < ciphertext.len() {
+                cipher.block_encrypt(&counter, &mut expected);
+                for byte in counter.iter_mut().rev() {
+                    *byte = byte.wrapping_add(1);
+                    if *byte != 0 {
+                        break;
+                    }
+                }
+            }
+            expected.truncate(ciphertext.len());
+            assert_eq!(ciphertext, expected, "{name} with a {key_len} byte key");
         }
     }
 

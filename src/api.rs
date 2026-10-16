@@ -111,6 +111,15 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "loki97-eax", "loki97-mcrypt-eax", "lea-eax", "hight-eax",
                              "speck64-eax", "speck128-eax", "simon64-eax", "simon128-eax",
                              "present-eax", "feal-eax", "feal-nx-eax",
+                             // The wider blocks: CMAC's field there is the
+                             // low-weight polynomial Botan, Crypto++ and
+                             // Bouncy Castle use (see `mac/cmac.rs`), and
+                             // the tag is a whole block - 32, 64 or 128
+                             // bytes - unless a length is asked for.
+                             "threefish256-eax", "threefish512-eax", "threefish1024-eax",
+                             "shacal2-eax", "kalyna-256-eax", "kalyna-512-eax",
+                             "rijndael-160-eax", "rijndael-192-eax", "rijndael-224-eax",
+                             "rijndael-256-eax",
                              // MGM (RFC 9058), named the same way. The
                              // first two are the ones the standard is
                              // written for and the ones RFC 9367's TLS

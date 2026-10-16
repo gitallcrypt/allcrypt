@@ -912,6 +912,20 @@ $ python3 scripts/make_rc6_vectors.py           # rewrites vectors/rc6.vec
 $ python3 scripts/make_cast256_vectors.py       # rewrites vectors/cast256.vec
 ```
 
+**CMAC and EAX over the wide blocks**: `scripts/witness/widemac` builds
+Crypto++ 8.9.0 and a minimized Botan 3.6.1 from pinned commits, each
+under a small driver, and a Java driver over Bouncy Castle's jar; it
+also keeps Bouncy Castle 1.77's `CMac.java`, whose polynomial table the
+first script reads with Botan's and Crypto++'s. Before it reports
+success every witness with Threefish-512 reproduces Botan's published
+CMAC and EAX tests over it, and the three agree wherever they overlap.
+
+```console
+$ sh scripts/witness/widemac/build.sh            # builds /opt/widemac
+$ python3 scripts/make_cmac_polynomials.py       # rewrites src/mac/cmac_polynomials.rs
+$ python3 scripts/make_wide_cmac_eax_vectors.py  # rewrites vectors/cmac_eax_wide.vec
+```
+
 **MARS** has two witnesses, and a row is written only where both agree:
 Crypto++ 8.9.0's `mars.cpp` with the handful of library files it links
 against, and Botan 1.10.17's, the last Botan with MARS, compiled against

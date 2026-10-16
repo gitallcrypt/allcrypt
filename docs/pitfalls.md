@@ -5027,6 +5027,19 @@ is what separates them.
 
 Eleven deliberate breaks across both modes, all eleven caught.
 
+### EAX over Kalyna or GOST once used their national counter modes
+
+**Status: mitigated.** EAX's keystream is `E(N), E(N+1), ...`, the
+whole block one big-endian integer. The CTR driver asks each cipher for
+its counter, and Kalyna and GOST 28147-89 answer with DSTU 7624's and
+GOST's own counter modes - the IV encrypted first, then counted
+little-endian - so `kalyna-128-eax` and `gost-eax` were an EAX nothing
+else computes, consistent with itself in both directions. Neither name
+was in the catalogue, and every EAX vector was over a cipher on the
+default counter. EAX now asks for the big-endian counter by name, and a
+test checks the keystream against the definition over Kalyna, GOST, AES
+and DES, with a carry across bytes.
+
 ### The tag is the block size, and that had a bug behind it
 
 EAX's tag is one block, so EAX over a 64 bit cipher - DES, 3DES,
@@ -9877,13 +9890,30 @@ lost them.
 32 byte IV. A 16 byte one, carried over from AES code, is refused rather
 than padded; a Python test checks it.
 
-### No CMAC and no AEAD over the wider blocks
+### CMAC over the wider blocks rests on a polynomial no standard gives
 
-**Status: mitigated, by refusing.** CMAC doubles in GF(2^b) with a
-constant SP 800-38B gives for 64 and 128 bit blocks only, and EAX, OCB,
-GCM and MGM inherit the same restriction. `Cmac::new` refuses a wider
-cipher rather than guessing a polynomial no other implementation uses,
-and the AEAD catalogue has no `rijndael-` names.
+**Status: mitigated.** CMAC doubles in GF(2^b), and SP 800-38B fixes the
+field for 64 and 128 bit blocks only. The wider blocks take the
+irreducible polynomial of fewest terms and, of those, smallest exponents
+- the rule the two standard ones follow, and the one Botan, Crypto++ and
+Bouncy Castle use. `scripts/make_cmac_polynomials.py` computes each from
+that rule and refuses to write the table unless every entry of all three
+libraries' tables agrees with it; a Rust test checks each is
+irreducible. Above 128 bits Rb is more than a byte - 0x80043 for 1024 -
+so code that kept it in one byte would agree at 64 and 128 bits and
+nowhere else; `vectors/cmac_eax_wide.vec` pins all ten wide ciphers.
+A block size with no polynomial in the table - Simon's and Speck's 32,
+48 and 96 bits - is refused. OCB, GCM and MGM stay at 64 and 128 bits,
+where their own specifications fix their fields, so the wide ciphers
+are offered as EAX only.
+
+### EAX's tag over a wide block is the whole block
+
+**Status: accepted.** EAX's tag is the CMAC's, one block: 32 bytes over
+SHACAL-2, 128 over Threefish-1024. That is what Botan, Crypto++ and
+Bouncy Castle produce, so it is the default here. A protocol that wants
+a shorter tag names its length - `threefish1024-eax-16` - and gets the
+first bytes of the full one.
 
 ---
 

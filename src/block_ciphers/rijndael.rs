@@ -37,10 +37,12 @@ neither, and `docs/pitfalls.md` records it as accepted.
 `rijndael-256`, named by block size in bits as mcrypt named them; each
 takes any of the five key lengths. `rijndael-128` is AES under a 16, 24
 or 32 byte key and is there for the 20 and 28 byte keys AES does not
-have. The chaining modes take any block size. CMAC and the AEADs do
-not: SP 800-38B and the AEADs' own specifications give their field
-constants for 64 and 128 bit blocks only, so `Cmac::new` refuses the
-wider ones rather than guess a polynomial.
+have. The chaining modes take any block size, and so do CMAC and EAX,
+whose field polynomial for 160, 192, 224 and 256 bits follows the rule
+the 64 and 128 bit ones do (see `mac/cmac.rs`) and is checked against
+Bouncy Castle, the one implementation found with CMAC over these
+blocks. GCM, CCM and OCB stay at 128 bits: their specifications fix
+their fields there.
 
 ## Where the vectors come from
 

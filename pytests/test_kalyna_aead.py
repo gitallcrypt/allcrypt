@@ -26,6 +26,9 @@ def test_the_names_are_in_the_catalogue():
     for bits in (128, 256, 512):
         for mode in ("gcm", "ccm"):
             assert f"kalyna-{bits}-{mode}" in allcrypt.aeads_available
+    # EAX over the two wide blocks, from CMAC's polynomials there.
+    assert "kalyna-256-eax" in allcrypt.aeads_available
+    assert "kalyna-512-eax" in allcrypt.aeads_available
 
 
 def test_gcm_rows_through_aead():

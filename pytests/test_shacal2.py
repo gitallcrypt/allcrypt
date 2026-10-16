@@ -24,6 +24,7 @@ def test_shacal2_is_in_the_catalogue():
     assert "shacal2" in allcrypt.block_ciphers_available
     assert allcrypt.BlockCipher.SHACAL2 == "shacal2"
     assert allcrypt.Cipher("shacal2", bytes(16)).block_size == 32
+    assert "shacal2-eax" in allcrypt.aeads_available
 
 
 def test_shacal2_vectors_through_cipher():

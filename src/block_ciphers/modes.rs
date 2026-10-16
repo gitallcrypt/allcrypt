@@ -66,8 +66,21 @@ pub struct CtrState {
     counter: Vec<u8>,
     keystream: Vec<u8>,
     pos: usize,
-    /// The whole block counts as one little-endian integer.
-    little_endian: bool,
+    /// How the counter advances.
+    order: Order,
+}
+
+/// What `CtrState` adds one to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Order {
+    /// The cipher's own counter mode, through `ctr_init` and `ctr_next`:
+    /// SP 800-38A's for most, DSTU 7624's for Kalyna, GOST's for GOST.
+    Cipher,
+    /// The whole block as one little-endian integer.
+    Little,
+    /// The whole block as one big-endian integer, whatever the cipher's
+    /// own counter mode is.
+    Big,
 }
 
 impl CtrState {
@@ -79,7 +92,7 @@ impl CtrState {
             return Err("ctr_init did not produce exactly one counter block.".to_string());
         }
         Ok(CtrState { counter, keystream: Vec::with_capacity(bs * KEYSTREAM_BLOCKS), pos: 0,
-                      little_endian: false })
+                      order: Order::Cipher })
     }
 
     /// Counter mode with the whole block as one **little-endian** counter:
@@ -94,20 +107,47 @@ impl CtrState {
                                 not {}.", iv.len()));
         }
         Ok(CtrState { counter: iv.to_vec(), keystream: Vec::with_capacity(bs * KEYSTREAM_BLOCKS),
-                      pos: 0, little_endian: true })
+                      pos: 0, order: Order::Little })
+    }
+
+    /// Counter mode with the whole block as one **big-endian** counter,
+    /// starting at `iv`, for a mode that defines its own CTR rather than
+    /// using the cipher's: EAX's is this one over every cipher. Kalyna's
+    /// and GOST's `ctr_init` and `ctr_next` are their national counter
+    /// modes, which encrypt the IV first and count little-endian, so
+    /// `new` over either is not SP 800-38A's CTR.
+    pub fn new_big_endian<C: BlockCipher + ?Sized>(cipher: &mut C, iv: &[u8])
+                                                   -> Result<Self, String> {
+        let bs = cipher.blocksize();
+        if iv.len() != bs {
+            return Err(format!("A big-endian counter's first block is {bs} bytes, \
+                                not {}.", iv.len()));
+        }
+        Ok(CtrState { counter: iv.to_vec(), keystream: Vec::with_capacity(bs * KEYSTREAM_BLOCKS),
+                      pos: 0, order: Order::Big })
     }
 
     fn advance<C: BlockCipher + ?Sized>(&mut self, cipher: &C) {
-        if self.little_endian {
-            for b in self.counter.iter_mut() {
-                let (v, carry) = b.overflowing_add(1);
-                *b = v;
-                if !carry {
-                    break;
+        match self.order {
+            Order::Little => {
+                for b in self.counter.iter_mut() {
+                    let (v, carry) = b.overflowing_add(1);
+                    *b = v;
+                    if !carry {
+                        break;
+                    }
                 }
             }
-        } else {
-            cipher.ctr_next(&mut self.counter);
+            Order::Big => {
+                for b in self.counter.iter_mut().rev() {
+                    let (v, carry) = b.overflowing_add(1);
+                    *b = v;
+                    if !carry {
+                        break;
+                    }
+                }
+            }
+            Order::Cipher => cipher.ctr_next(&mut self.counter),
         }
     }
 
@@ -116,7 +156,7 @@ impl CtrState {
         let bs = cipher.blocksize();
         let mut done = 0;
         while done < buf.len() {
-            if self.pos == self.keystream.len() && !self.little_endian
+            if self.pos == self.keystream.len() && self.order == Order::Cipher
                 && buf.len() - done >= bs {
                 // Whole blocks in one pass, where the cipher has one.
                 let whole = (buf.len() - done) / bs * bs;
@@ -133,7 +173,7 @@ impl CtrState {
                 let wanted = (buf.len() - done).div_ceil(bs).min(KEYSTREAM_BLOCKS);
                 self.keystream.clear();
                 self.keystream.resize(wanted * bs, 0);
-                if !self.little_endian {
+                if self.order == Order::Cipher {
                     cipher.ctr_fill(&mut self.counter, &mut self.keystream);
                 } else {
                     for at in (0..wanted * bs).step_by(bs) {

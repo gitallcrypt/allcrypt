@@ -113,7 +113,7 @@ published and is listed under public key as not yet implemented.
 |GCM, GHASH and GMAC|✓|✓|
 |CCM|✓|✓|
 |GCM and CCM over Camellia, SM4 and ARIA, and at every tag length SP 800-38D and RFC 3610 allow|✓|RFC 8998's SM4 examples; SP 800-38D and RFC 3610 in Python over python-cryptography's Camellia and SM4, the same code held to OpenSSL's AES-GCM and AES-CCM|
-|EAX|✓|Botan's vectors|
+|EAX|✓|Botan's vectors; over the 160 to 1024 bit blocks, Botan 3.6.1, Crypto++ 8.9.0 and Bouncy Castle 1.77, each where it has the cipher: `vectors/cmac_eax_wide.vec`|
 |OCB (RFC 7253)|✓|✓|
 |MGM (RFC 9058)|✓|✓|
 |AES-CBC-HMAC-SHA2 AEAD (RFC 7518 §5.2)|✓|RFC 7518's vectors; jwcrypto, by hand|
@@ -136,7 +136,9 @@ and length share one 16-byte block, XTS's tweak is a GF(2^128) element,
 and key wrap's registers are the two halves of a 128-bit block. **MGM is
 the exception**: RFC 9058 gives it a field for 64-bit blocks too, so
 `magma-mgm` and `kuznyechik-mgm` are two different modes sharing a name.
-EAX works on 64-bit ciphers, and its tag is then 8 bytes.
+EAX works on 64-bit ciphers, and its tag is then 8 bytes, and on the
+wider ones - Rijndael's 160 to 256 bits, SHACAL-2, Kalyna and Threefish
+up to 1024 - where its tag is the whole block, up to 128 bytes.
 A tag length can follow GCM, CCM, EAX, MGM and OCB in a name
 (`aes-gcm-8`), within each mode's own set.
 
@@ -174,6 +176,7 @@ for a tag. Key wrap authenticates without one. Both are in
 |---|---|---|
 |HMAC|✓|✓|
 |CMAC / OMAC (SP 800-38B, RFC 4493)|✓|✓|
+|CMAC over 160 to 1024 bit blocks: Threefish, SHACAL-2, Kalyna-256 and -512, Rijndael-160 to -256|✓|Botan 3.6.1, Crypto++ 8.9.0 and Bouncy Castle 1.77, each where it has the cipher - the Rijndaels Bouncy Castle alone - and Botan's published CMAC(Threefish-512) test: `vectors/cmac_eax_wide.vec`. The field polynomials are computed from their rule and checked against all three libraries' tables|
 |CBC-MAC (ISO/IEC 9797-1 algorithm 1; DES-MAC, X9.9)|✓|✓|
 |Poly1305|✓|✓|
 |UMAC (RFC 4418), 32 to 128 bit tags|✓|✓|
