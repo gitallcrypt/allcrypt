@@ -255,6 +255,10 @@ pub fn verify_signed(signed: &[u8], algorithm: SignatureAlgorithm,
     if let SignatureAlgorithm::MlDsa(parameter_set) = algorithm {
         return verify_ml_dsa(signed, signature, key, parameter_set);
     }
+    // And SLH-DSA, pure or pre-hashed inside the scheme.
+    if let SignatureAlgorithm::SlhDsa(parameter_set, pre_hash) = algorithm {
+        return verify_slh_dsa(signed, signature, key, parameter_set, pre_hash);
+    }
 
     let hash_name = match algorithm {
         SignatureAlgorithm::RsaPkcs1(hash) | SignatureAlgorithm::Ecdsa(hash)
@@ -385,6 +389,34 @@ fn verify_eddsa(signed: &[u8], signature: &[u8], key: &PublicKey<'_>,
 }
 
 /// An ML-DSA signature on a certificate, RFC 9881 section 3: pure
+/// SLH-DSA (FIPS 205 algorithm 24, or 25 for HashSLH-DSA) over the DER of
+/// the TBS, with an empty context string, the signature the raw bytes of
+/// the BIT STRING - RFC 9909 section 4. The key must be of the same
+/// parameter set **and the same form**: section 8 forbids a pure key
+/// verifying a pre-hashed signature or the other way round, though the
+/// arithmetic would allow it.
+fn verify_slh_dsa(signed: &[u8], signature: &[u8], key: &PublicKey<'_>,
+                  parameter_set: &'static str, pre_hash: Option<&'static str>)
+                  -> Result<(), String> {
+    let wanted = crate::x509::slh_dsa_name(parameter_set, pre_hash);
+    let key_bytes = match key {
+        PublicKey::SlhDsa { parameter_set: set, pre_hash: hash, key }
+            if *set == parameter_set && *hash == pre_hash => *key,
+        PublicKey::SlhDsa { parameter_set: set, pre_hash: hash, .. } => return Err(format!(
+            "The signature says {} and the issuer's key is {} (RFC 9909 section 8 keeps \
+             each key to its own form).", wanted, crate::x509::slh_dsa_name(set, *hash))),
+        other => return Err(format!("Issuer's key ({}) cannot verify an {} signature.",
+                                    describe_key(other), wanted)),
+    };
+    let parameters = crate::pq::slh_dsa::parameters(parameter_set)?;
+    let pre_hash = pre_hash.map(crate::pq::prehash::PreHash::by_name).transpose()?;
+    if crate::pq::slh_dsa::verify(parameters, key_bytes, signed, &[], pre_hash, signature)? {
+        Ok(())
+    } else {
+        Err(format!("The {wanted} signature does not verify."))
+    }
+}
+
 /// ML-DSA (FIPS 204 algorithm 3) over the DER of the TBS, with an empty
 /// context string, and the signature the raw bytes of the BIT STRING.
 fn verify_ml_dsa(signed: &[u8], signature: &[u8], key: &PublicKey<'_>,
@@ -561,7 +593,10 @@ pub(crate) fn describe_key(key: &PublicKey<'_>) -> String {
         PublicKey::Rsa { n, .. } => format!("RSA {} bits", n.bit_len()),
         PublicKey::Ec { curve, .. } => format!("EC {}", curve),
         PublicKey::Eddsa { curve, .. } => format!("EdDSA {}", curve),
-        PublicKey::MlDsa { parameter_set, .. } => parameter_set.to_string(),
+        PublicKey::MlDsa { parameter_set, .. } | PublicKey::MlKem { parameter_set, .. } =>
+            parameter_set.to_string(),
+        PublicKey::SlhDsa { parameter_set, pre_hash, .. } =>
+            crate::x509::slh_dsa_name(parameter_set, *pre_hash),
         PublicKey::Dsa { parameters: Some((p, _, _)), .. } => format!("DSA {} bits", p.bit_len()),
         PublicKey::Dsa { parameters: None, .. } => "DSA with inherited parameters".to_string(),
         PublicKey::Gost { curve, legacy: true, .. } =>

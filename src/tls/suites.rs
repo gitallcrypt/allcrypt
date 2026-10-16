@@ -869,12 +869,14 @@ pub fn by_name(name: &str) -> Option<&'static CipherSuite> {
 /// Spellings that are somebody's name for a suite but not its own.
 ///
 /// OpenSSL renamed the CNT_IMIT suite when IANA assigned it a code
-/// point: what it called `GOST2012-GOST8912-GOST8912` is now
-/// `IANA-GOST2012-GOST8912-GOST8912`, with the old spelling given to
-/// nothing. A configuration file written against the older OpenSSL
-/// names the suite the old way, and that has to keep working - this is
-/// a library for reaching things nobody will update, and a cipher list
-/// somebody wrote in 2019 is one of them.
+/// point: 0xC102 is now `IANA-GOST2012-GOST8912-GOST8912`, and the old
+/// spelling `GOST2012-GOST8912-GOST8912` became a cipher-string alias
+/// that selects **both** CNT_IMIT code points, 0xFF85 first - OpenSSL
+/// 3.0's `openssl ciphers -V` lists the two. This function returns one
+/// suite, and resolves it to 0xC102. A configuration file written against
+/// the older OpenSSL names the suite the old way, and that has to keep
+/// working - this is a library for reaching things nobody will update,
+/// and a cipher list somebody wrote in 2019 is one of them.
 fn alias(name: &str) -> Option<u16> {
     const ALIASES: &[(&str, u16)] = &[
         ("GOST2012-GOST8912-GOST8912", 0xc102),

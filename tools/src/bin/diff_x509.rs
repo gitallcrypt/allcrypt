@@ -57,8 +57,10 @@ fn emit(label: &str, signer: &str, der: &[u8]) {
         PublicKey::Eddsa { curve, .. } => format!("eddsa-{}", curve),
         // python-cryptography here cannot read one, so no corpus row has
         // one; the RFC 9881 examples and OpenSSL 3.5's certificates are
-        // the checks (`x509::tests`, `tests/test_ml_dsa_openssl.rs`).
-        PublicKey::MlDsa { parameter_set, .. } => parameter_set.to_ascii_lowercase(),
+        // the checks (`x509::tests`, `tests/test_ml_dsa_openssl.rs`), and
+        // RFC 9935's and OpenSSL 3.5's for ML-KEM.
+        PublicKey::MlDsa { parameter_set, .. } | PublicKey::MlKem { parameter_set, .. }
+            | PublicKey::SlhDsa { parameter_set, .. } => parameter_set.to_ascii_lowercase(),
         PublicKey::Dsa { parameters, .. } => format!("dsa-{}",
             parameters.as_ref().map_or(0, |(p, _, _)| p.bit_len())),
         // Nothing here can issue one: OpenSSL is built without the GOST

@@ -28,7 +28,7 @@ sent. Identical curve, different bytes, `decode_error`.
 
 What these tests check is the property that makes the whole class
 impossible: **the ephemeral key's `AlgorithmIdentifier` is the server's,
-copied.** Every one of the five captures shows OpenSSL doing exactly
+copied.** Every capture shows OpenSSL doing exactly
 that - the algorithm OID, the parameter set and the `digestParamSet`,
 byte for byte, with only the point changed - and that single rule settles
 three separate decisions that used to be made independently:
@@ -42,7 +42,7 @@ The answer to all three is "whatever the server said", which is not a
 thing a client can get wrong.
 */
 
-use allcrypt::ec::{curves, Point};
+use allcrypt::ec::curves;
 use allcrypt::tls::suites;
 
 mod fixture {
@@ -180,24 +180,14 @@ fn test_our_client_key_exchange_carries_the_same_oids_as_the_engines() {
         let certificate = leaf_certificate(transcript);
         let parsed = allcrypt::x509::Certificate::parse(&certificate)
             .expect("the certificate");
-        let (curve_name, x, y, algorithm_id) = match &parsed.public_key {
-            allcrypt::x509::PublicKey::Gost { curve, x, y, algorithm_id, .. } =>
-                (*curve, x.clone(), y.clone(), *algorithm_id),
-            other => panic!("not a GOST key: {other:?}"),
-        };
-        let curve = curves::by_name(curve_name).expect("the curve");
-        let server_public = Point::new(x, y);
-
-        let (ours, _) = match (suite.key_exchange, suite.cipher.ctr_omac()) {
-            (suites::KeyExchange::GostVko2001, _) =>
-                allcrypt::tls::gost_kex_28147::client_key_exchange_2001(
-                    &curve, algorithm_id, &server_public, &[1u8; 32], &[2u8; 32]),
-            (_, Some(gost)) => allcrypt::tls::gost_kex::client_key_exchange(
-                gost, &curve, algorithm_id, &server_public,
-                &[1u8; 32], &[2u8; 32]),
-            (_, None) => allcrypt::tls::gost_kex_28147::client_key_exchange(
-                &curve, algorithm_id, &server_public, &[1u8; 32], &[2u8; 32]),
-        }.expect("our ClientKeyExchange");
+        // Through the client's own function, so that this compares what
+        // the client sends rather than a copy of how it chooses. A copy
+        // was here, and it took the S-box from the suite exactly as the
+        // client did, so the two agreed on the bug.
+        let (_, ours) = allcrypt::tls::client::gost_client_key_exchange(
+            suite, &parsed.public_key, &[1u8; 32], &[2u8; 32])
+            .unwrap_or_else(|e| panic!("{}: our ClientKeyExchange: {}",
+                                       transcript.name, e.describe()));
 
         let theirs = client_key_exchange(transcript);
         assert_eq!(oids(&ours), oids(&theirs),

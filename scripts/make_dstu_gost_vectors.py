@@ -56,6 +56,7 @@ Row formats, hex fields:
 
 import os
 import random
+import re
 import subprocess
 import sys
 
@@ -121,7 +122,9 @@ def default_dke():
         input="System.out.println(org.bouncycastle.util.encoders.Hex.toHexString("
               "org.bouncycastle.asn1.ua.DSTU4145Params.getDefaultDKE()));\n/exit\n",
         check=True, capture_output=True, text=True).stdout
-    bc = [w for w in bc.split() if len(w) == 128][0]
+    # jshell may echo the statement in front of its answer on the same
+    # line, so the answer is the run of 128 hex digits, wherever it is.
+    bc = re.findall(r"(?<![0-9a-f])[0-9a-f]{128}(?![0-9a-f])", bc)[0]
     js = subprocess.run(
         ["node", "-e", f"const d=require('{GOST89}/lib/dstu.js');"
                        "console.log(d.packSbox(d.defaultSbox).toString('hex'))"],

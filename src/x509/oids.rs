@@ -253,6 +253,44 @@ oids! {
     ID_ML_DSA_65          = "2.16.840.1.101.3.4.3.18";
     ID_ML_DSA_87          = "2.16.840.1.101.3.4.3.19";
 
+    // RFC 9935, ML-KEM (FIPS 203) under NIST's kems arc. The key's
+    // OID only - a KEM signs nothing - with the parameters absent and
+    // the BIT STRING the raw encapsulation key, as for ML-DSA.
+    ID_ML_KEM_512         = "2.16.840.1.101.3.4.4.1";
+    ID_ML_KEM_768         = "2.16.840.1.101.3.4.4.2";
+    ID_ML_KEM_1024        = "2.16.840.1.101.3.4.4.3";
+
+    // RFC 9909 (with RFC 9814's), SLH-DSA (FIPS 205) under NIST's sigAlgs
+    // arc: each OID names the key and the signature algorithm, as for
+    // ML-DSA, with the parameters absent and the BIT STRING the raw key.
+    // The second twelve are HashSLH-DSA, each fixing the pre-hash; a key
+    // under one form's OID may not make or check the other's signatures
+    // (RFC 9909 section 8).
+    ID_SLH_DSA_SHA2_128S              = "2.16.840.1.101.3.4.3.20";
+    ID_SLH_DSA_SHA2_128F              = "2.16.840.1.101.3.4.3.21";
+    ID_SLH_DSA_SHA2_192S              = "2.16.840.1.101.3.4.3.22";
+    ID_SLH_DSA_SHA2_192F              = "2.16.840.1.101.3.4.3.23";
+    ID_SLH_DSA_SHA2_256S              = "2.16.840.1.101.3.4.3.24";
+    ID_SLH_DSA_SHA2_256F              = "2.16.840.1.101.3.4.3.25";
+    ID_SLH_DSA_SHAKE_128S             = "2.16.840.1.101.3.4.3.26";
+    ID_SLH_DSA_SHAKE_128F             = "2.16.840.1.101.3.4.3.27";
+    ID_SLH_DSA_SHAKE_192S             = "2.16.840.1.101.3.4.3.28";
+    ID_SLH_DSA_SHAKE_192F             = "2.16.840.1.101.3.4.3.29";
+    ID_SLH_DSA_SHAKE_256S             = "2.16.840.1.101.3.4.3.30";
+    ID_SLH_DSA_SHAKE_256F             = "2.16.840.1.101.3.4.3.31";
+    ID_HASH_SLH_DSA_SHA2_128S_WITH_SHA256 = "2.16.840.1.101.3.4.3.35";
+    ID_HASH_SLH_DSA_SHA2_128F_WITH_SHA256 = "2.16.840.1.101.3.4.3.36";
+    ID_HASH_SLH_DSA_SHA2_192S_WITH_SHA512 = "2.16.840.1.101.3.4.3.37";
+    ID_HASH_SLH_DSA_SHA2_192F_WITH_SHA512 = "2.16.840.1.101.3.4.3.38";
+    ID_HASH_SLH_DSA_SHA2_256S_WITH_SHA512 = "2.16.840.1.101.3.4.3.39";
+    ID_HASH_SLH_DSA_SHA2_256F_WITH_SHA512 = "2.16.840.1.101.3.4.3.40";
+    ID_HASH_SLH_DSA_SHAKE_128S_WITH_SHAKE128 = "2.16.840.1.101.3.4.3.41";
+    ID_HASH_SLH_DSA_SHAKE_128F_WITH_SHAKE128 = "2.16.840.1.101.3.4.3.42";
+    ID_HASH_SLH_DSA_SHAKE_192S_WITH_SHAKE256 = "2.16.840.1.101.3.4.3.43";
+    ID_HASH_SLH_DSA_SHAKE_192F_WITH_SHAKE256 = "2.16.840.1.101.3.4.3.44";
+    ID_HASH_SLH_DSA_SHAKE_256S_WITH_SHAKE256 = "2.16.840.1.101.3.4.3.45";
+    ID_HASH_SLH_DSA_SHAKE_256F_WITH_SHAKE256 = "2.16.840.1.101.3.4.3.46";
+
     // Named curves
     PRIME256V1            = "1.2.840.10045.3.1.7";
     SECP384R1             = "1.3.132.0.34";
@@ -453,31 +491,14 @@ pub fn gost_curve_for(oid: &[u8]) -> Option<&'static str> {
         // way to meet a curve it does have, since the same curve is
         // named three times over already - see `src/registry.rs`.
         //
-        // The leak is deliberate and bounded: `curves::by_name`
-        // returns a `&'static str`, and the registry only ever holds
-        // one of those names, so this turns a registered name back
-        // into the static one rather than leaking a fresh string on
-        // each call.
-        let registered = crate::registry::curve_for_der(oid)?;
-        // A registration naming a built-in curve resolves to that name's
-        // `&'static str`, which is what this signature promises and what
-        // keeps it from leaking a string per call.
-        if let Some(builtin) = crate::ec::curves::NAMES.iter()
-            .find(|name| **name == registered) {
-            return Some(builtin);
-        }
-        // **And a registration that supplied its own parameters.** Its
-        // name is not in `NAMES` - it is not a curve this file carries -
-        // but `curves::from_parameters` interned it when it was
-        // registered, so there is a `&'static str` for it already and
-        // this hands back that one rather than making another.
-        //
-        // Without this arm a caller could register a curve, see it in
-        // `registered_oids()`, use it through `curves::by_name`, and
-        // still have a certificate carrying that very OID come back as
-        // `UnsupportedCurve` - which is the one thing the registration
-        // was for.
-        crate::ec::curves::interned_name(&registered)
+        // Through `curves::by_name`, which gives the name the curve
+        // itself carries: a built-in curve's, however the registration
+        // spelled it, or the one a curve registered with its own
+        // parameters was given. It used to compare the registered name
+        // with the built-in ones exactly, so a registration as
+        // `GOST256_A` - which `register` accepts, because `by_name` does
+        // - resolved to nothing here.
+        crate::registry::curve_named_by_der(oid)
     }
 }
 

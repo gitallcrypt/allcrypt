@@ -9,7 +9,8 @@ by a distance that depends on the round and the pair (`skein_tables.rs`,
 read by `scripts/make_skein_tables.py` out of the Skein team's own
 header), XORing it into the sum, and permuting the words; and every four
 rounds a subkey, taken from the key words, a parity word, the tweak and
-the subkey's number. Skein chains it in UBI mode: each block is
+the subkey's number. It is `block_ciphers::threefish`, which is also the
+block cipher on its own. Skein chains it in UBI mode: each block is
 encrypted under the chaining value with a tweak carrying the bytes
 processed so far, the block's type and whether it is the first or the
 last, and XORed back in.
@@ -28,76 +29,13 @@ in bytes.
 */
 
 use super::buffer::BlockBuffer;
-use super::skein_tables::{R1024, R256, R512};
 use super::HashFunction;
-
-/// The key schedule's parity constant.
-const C240: u64 = 0x1BD1_1BDA_A9FC_1A22;
-
-/// The word permutation after each round, at 4, 8 and 16 words.
-const PI4: [usize; 4] = [0, 3, 2, 1];
-const PI8: [usize; 8] = [2, 1, 4, 7, 6, 5, 0, 3];
-const PI16: [usize; 16] = [0, 9, 2, 13, 6, 11, 4, 15, 10, 7, 12, 3, 14, 5, 8, 1];
+use crate::block_ciphers::threefish::Threefish;
 
 /// The tweak's block types.
 const CFG: u64 = 4;
 const MSG: u64 = 48;
 const OUT: u64 = 63;
-
-/// Threefish-`64 N`: `block` encrypted under `key` and `tweak`.
-fn threefish<const N: usize>(key: &[u64; N], tweak: [u64; 2], block: &[u64; N]) -> [u64; N] {
-    let (rounds, pi): (usize, &[usize]) = match N {
-        4 => (72, &PI4),
-        8 => (72, &PI8),
-        _ => (80, &PI16),
-    };
-    let rotation = |d: usize, j: usize| match N {
-        4 => R256[d % 8][j],
-        8 => R512[d % 8][j],
-        _ => R1024[d % 8][j],
-    };
-    let mut k = [0u64; 17];
-    k[..N].copy_from_slice(key);
-    k[N] = key.iter().fold(C240, |a, w| a ^ w);
-    let t = [tweak[0], tweak[1], tweak[0] ^ tweak[1]];
-    let subkey = |s: usize| -> [u64; N] {
-        core::array::from_fn(|i| {
-            let mut w = k[(s + i) % (N + 1)];
-            if i == N - 3 {
-                w = w.wrapping_add(t[s % 3]);
-            } else if i == N - 2 {
-                w = w.wrapping_add(t[(s + 1) % 3]);
-            } else if i == N - 1 {
-                w = w.wrapping_add(s as u64);
-            }
-            w
-        })
-    };
-    let mut v = *block;
-    for d in 0..rounds {
-        if d % 4 == 0 {
-            let key = subkey(d / 4);
-            for (x, y) in v.iter_mut().zip(key) {
-                *x = x.wrapping_add(y);
-            }
-        }
-        for j in 0..N / 2 {
-            let (a, b) = (v[2 * j], v[2 * j + 1]);
-            let sum = a.wrapping_add(b);
-            v[2 * j] = sum;
-            v[2 * j + 1] = b.rotate_left(rotation(d, j)) ^ sum;
-        }
-        let before = v;
-        for i in 0..N {
-            v[i] = before[pi[i]];
-        }
-    }
-    let key = subkey(rounds / 4);
-    for (x, y) in v.iter_mut().zip(key) {
-        *x = x.wrapping_add(y);
-    }
-    v
-}
 
 /// Skein in progress, on `N` 64 bit words, `B = 8 N` bytes a block.
 #[derive(Clone)]
@@ -152,7 +90,7 @@ impl<const N: usize, const B: usize> Skein<N, B> {
         let tweak = [position as u64,
                      (position >> 64) as u64 | kind << 56 | u64::from(first) << 62
                          | u64::from(last) << 63];
-        let e = threefish(chain, tweak, &m);
+        let e = Threefish::<N>::from_words(chain, tweak).encrypt_words(&m);
         for i in 0..N {
             chain[i] = e[i] ^ m[i];
         }

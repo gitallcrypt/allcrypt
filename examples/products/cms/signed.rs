@@ -379,6 +379,9 @@ fn clone_key<'a>(key: &PublicKey<'a>) -> PublicKey<'a> {
         PublicKey::Dsa { parameters, y } =>
             PublicKey::Dsa { parameters: parameters.clone(), y: y.clone() },
         PublicKey::MlDsa { parameter_set, key } => PublicKey::MlDsa { parameter_set, key },
+        PublicKey::MlKem { parameter_set, key } => PublicKey::MlKem { parameter_set, key },
+        PublicKey::SlhDsa { parameter_set, pre_hash, key } =>
+            PublicKey::SlhDsa { parameter_set, pre_hash: *pre_hash, key },
         PublicKey::UnsupportedCurve { oid, family } =>
             PublicKey::UnsupportedCurve { oid: *oid, family },
         PublicKey::Unsupported { algorithm } => PublicKey::Unsupported { algorithm },

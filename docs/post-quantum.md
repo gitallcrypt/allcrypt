@@ -143,9 +143,7 @@ What is left:
    every one of ACVP's seven reasons. Signatures are inputs there, so they
    cannot be stored as digests, and the full file is 30 MB; the two kept
    are the smallest signature in each hash family.
-2. **A file format.** There is no PEM, DER or certificate support for
-   these keys - only the FIPS 205 byte strings, which is what every
-   implementation agrees on.
+2. **A file format** - done: RFC 9909, below.
 3. ML-KEM, then ML-DSA - both done.
 
 Two numbers to keep in view, both measured rather than estimated.
@@ -172,13 +170,60 @@ a test that costs nothing rather than being left to the slow ones.
 
 Reference to check against: **NIST's ACVP vectors** - see "What would
 have to exist first" below, which used to say this was unsolved and was
-wrong. No second implementation is used as a check:
-python-cryptography 46 has no SLH-DSA, and OpenSSL 3.5, which added it,
-is not used as a witness for it. So the vectors are the whole of the
-independent opinion here rather than a supplement to one, which raises
-the bar on the parser: a vector file that silently parses to nothing turns every
-loop into a pass. The count assertion that `src/ec/eddsa.rs` and
-`src/block_ciphers/keywrap.rs` both carry is not optional here.
+wrong. No second implementation runs in the tests: python-cryptography
+46 has no SLH-DSA. So the vectors are the main independent opinion
+rather than a supplement to one, which raises the bar on the parser: a
+vector file that silently parses to nothing turns every loop into a
+pass. The count assertion that `src/ec/eddsa.rs` and
+`src/block_ciphers/keywrap.rs` both carry is not optional here. Four
+other implementations' signatures are checked as well, through their
+certificates:
+
+**In certificates and private keys.** RFC 9909's encoding is in `x509`:
+the twenty-four OIDs, twelve pure and twelve HashSLH-DSA, absent
+parameters, the BIT STRING as FIPS 205's `PK.seed || PK.root`, and the
+private key as FIPS 205's `4n` bytes straight in the PKCS#8 OCTET
+STRING, with no second wrapping. **The form is part of the key**: a key
+read from a HashSLH-DSA OID comes back bound to the pre-hash that OID
+fixes (`SlhDsaKey.pre_hash`), and section 8 forbids a pure key verifying
+a HashSLH-DSA signature or the other way round, so verification refuses
+a mismatch by name. `SlhDsaPublicKey.from_spki` and `from_certificate`
+read a public key, `private_key` a private one, and a
+`CertificateAuthority` can have an SLH-DSA key - generated pure, or
+rebuilt with `from_parts` from a key and its certificate, HashSLH-DSA
+included, when it signs in the form its certificate names. Checked
+against:
+
+* **RFC 9909's appendix**, read out of the vendored document
+  (`src/x509/rfc9909_tests.rs`): the public key, the private key whose
+  seeds regenerate it, and a self-signed certificate it verifies.
+* **The IETF hackathon's interoperability artifacts**
+  (`tests/test_slh_dsa_x509.rs`, from
+  `scripts/make_slh_dsa_x509_vectors.py` into
+  `vectors/slh_dsa_x509.vec`, fetched once at a pinned commit): 56
+  self-signed certificates with the keys that signed them - OpenSSL 3.5
+  and Bouncy Castle at all twelve pure sets, Bouncy Castle and Redhound
+  at all twelve HashSLH-DSA ones, Botan and Redhound at the 128-bit pure
+  sets. Every one verifies, every OID agrees with the participant's own
+  file name, and at the 128-bit `f` sets their keys sign here and make
+  a CA whose leaves verify under their certificates. Redhound's twelve
+  HashSLH-DSA certificates carry the pure OID in their key and are
+  refused under section 8, by name; their signatures are checked as
+  HashSLH-DSA all the same.
+* **OpenSSL 3.5.4, live**, by the same script, which fails if OpenSSL
+  disagrees: `openssl verify -x509_strict` accepts a CA certificate and
+  a leaf this library made at each of the twelve pure sets. OpenSSL 3.5
+  has no HashSLH-DSA, so that form rests on Bouncy Castle and Redhound.
+
+**Written, as well as read.** All three key types write PKCS#8
+(`to_pkcs8`) and their public keys SubjectPublicKeyInfo (`to_spki`); an
+ML-DSA or ML-KEM key in any of the CHOICE's three forms, the seed form
+needing a key that kept its seed - which an ML-KEM key now does. Every
+example in the three RFCs, OpenSSL 3.5's keys in every form, and the
+hackathon's 56 SLH-DSA keys come out of the writer byte for byte
+(`tests/test_pq_key_writing.rs`), and `scripts/check_pq_key_writing.py`
+has OpenSSL 3.5 read keys written here, sign and decapsulate with them,
+and decrypt encrypted ones.
 
 ### 2. ML-KEM (FIPS 203)
 
@@ -293,6 +338,34 @@ as for SLH-DSA. With one difference worth noting - for the ring and the
 NTT there are no published vectors at all, not even ACVP ones, because
 they are internal to the scheme. Those rest on structural properties and
 on the sweep, and the ACVP vectors cover them indirectly through K-PKE.
+
+**In certificates and private keys, too.** RFC 9935's encoding is in
+`x509`: the three OIDs, absent parameters, the BIT STRING as FIPS 203's
+raw encapsulation key (which FIPS 203's modulus check must pass where it
+is read), and the private key in all three of its section 6 forms. Each
+form is checked as section 8 says, and more: a seed and an expanded key
+are regenerated and compared, and an expanded key alone gets the hash
+check and a pairwise consistency test - encapsulating to the `ek` inside
+it and decapsulating with it - which is the only check that sees a
+secret part altered and its hash left alone. `MlKemKey.from_private`
+runs the same test. `CertificateAuthority.issue_ml_kem` issues a
+certificate for someone's key under any signing CA, with keyUsage
+keyEncipherment alone, and `MlKemPublicKey.from_spki` and
+`from_certificate` read one back. Checked against:
+
+* **RFC 9935's appendix**, read out of the vendored document
+  (`src/x509/rfc9935_tests.rs`): nine private keys, three public keys,
+  three certificates - verified under RFC 9881's example ML-DSA keys,
+  read out of that document - and the four deliberately inconsistent
+  keys, each refused for its own reason.
+* **OpenSSL 3.5.4, offline** (`tests/test_ml_kem_openssl.rs`): its keys
+  in all three forms, nine of its encapsulations, which the keys read
+  here decapsulate to the secret it kept, and an ML-KEM certificate per
+  set under an ML-DSA CA. Regenerated by `scripts/capture_mlkem.py`.
+* **OpenSSL 3.5.4, live**, by the same script, which fails if OpenSSL
+  disagrees: `pkeyutl -decap` recovers what this library encapsulated
+  to OpenSSL's public key, and `openssl verify -x509_strict` accepts the
+  certificate `issue_ml_kem` made for it.
 
 ### 3. ML-DSA (FIPS 204)
 
@@ -445,9 +518,8 @@ a mask, and the weight check substitutes rather than rejects.
   one kind of work this library has no appetite for, because the point
   of it is that nothing gets removed - and something that was never
   standardised is the one thing that could reasonably be.
-* **SLH-DSA in a certificate or a handshake.** ML-DSA's are done (see
-  section 3); SLH-DSA has RFC 9909 for certificates and no TLS
-  codepoint, and its signatures are 8 to 50 KB.
+* **SLH-DSA in a handshake.** Its certificates are done (RFC 9909, in
+  section 1); it has no TLS codepoint, and its signatures are 8 to 50 KB.
 
 ## Honest summary
 

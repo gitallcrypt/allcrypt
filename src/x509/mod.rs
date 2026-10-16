@@ -59,6 +59,10 @@ pub mod verify;
 pub mod tests_support;
 #[cfg(test)]
 mod rfc9881_tests;
+#[cfg(test)]
+mod rfc9935_tests;
+#[cfg(test)]
+mod rfc9909_tests;
 
 use crate::asn1::{self, Oid, Reader, Tag};
 use crate::bignum::BigUint;
@@ -108,6 +112,12 @@ pub enum SignatureAlgorithm {
     /// section 3). HashML-DSA has OIDs of its own, and RFC 9881 section
     /// 8.3 keeps them out of certificates.
     MlDsa(&'static str),
+    /// SLH-DSA, RFC 9909: FIPS 205's parameter set, and the pre-hash for
+    /// HashSLH-DSA (`SHA2-256`, `SHA2-512`, `SHAKE-128` or `SHAKE-256`,
+    /// which the OID fixes) or `None` for pure SLH-DSA. Either way with
+    /// an empty context string, and the hash is inside the scheme, so
+    /// there is no `hash_name()`.
+    SlhDsa(&'static str, Option<&'static str>),
     /// DSTU 4145-2002, over the named hash: `gost34311` (GOST
     /// 34.311-95 under the signer's DKE, the S-box its key's parameters
     /// carry) or `kupyna256`, `kupyna384`, `kupyna512`.
@@ -174,6 +184,8 @@ impl SignatureAlgorithm {
         // The same shape as EdDSA: one OID per parameter set, serving
         // as key and signature algorithm both.
         else if let Some(name) = ml_dsa_parameter_set(bytes) { SignatureAlgorithm::MlDsa(name) }
+        else if let Some((set, pre_hash)) = slh_dsa_parameter_set(bytes) {
+            SignatureAlgorithm::SlhDsa(set, pre_hash) }
         else if bytes == oids::RSASSA_PSS { SignatureAlgorithm::Unsupported("RSASSA-PSS") }
         else if bytes == oids::MD2_WITH_RSA { SignatureAlgorithm::Unsupported("MD2-with-RSA") }
         else { SignatureAlgorithm::Unknown }
@@ -192,7 +204,8 @@ impl SignatureAlgorithm {
                 | SignatureAlgorithm::Dstu4145(_) => None,
             // EdDSA and ML-DSA hash the message themselves. See the
             // variants' notes.
-            SignatureAlgorithm::Eddsa(_) | SignatureAlgorithm::MlDsa(_) => None,
+            SignatureAlgorithm::Eddsa(_) | SignatureAlgorithm::MlDsa(_)
+                | SignatureAlgorithm::SlhDsa(..) => None,
             _ => None,
         }
     }
@@ -208,6 +221,7 @@ impl SignatureAlgorithm {
                 "GOST R 34.10-2001 with GOST R 34.11-94".to_string(),
             SignatureAlgorithm::Eddsa(name) => format!("EdDSA ({})", name),
             SignatureAlgorithm::MlDsa(name) => name.to_string(),
+            SignatureAlgorithm::SlhDsa(set, pre_hash) => slh_dsa_name(set, *pre_hash),
             SignatureAlgorithm::Dstu4145(hash) => format!("DSTU 4145-2002 with {}", match *hash {
                 "gost34311" => "GOST 34.311-95",
                 "kupyna256" => "Kupyna-256",
@@ -322,6 +336,19 @@ pub enum PublicKey<'a> {
     /// The BIT STRING is the key, as for EdDSA: RFC 9881 section 4
     /// puts FIPS 204's own encoding there with no ASN.1 around it.
     MlDsa { parameter_set: &'static str, key: &'a [u8] },
+    /// An ML-KEM key, RFC 9935. `parameter_set` is FIPS 203's name and
+    /// `key` the raw encapsulation key - 800, 1184 or 1568 bytes, which
+    /// FIPS 203's modulus check has passed.
+    ///
+    /// A key to encapsulate to, never to verify with: a certificate
+    /// carrying one is issued by a CA with a signing key, and its
+    /// keyUsage, when present, is keyEncipherment alone (section 5).
+    MlKem { parameter_set: &'static str, key: &'a [u8] },
+    /// An SLH-DSA key, RFC 9909: FIPS 205's parameter set, the pre-hash
+    /// its OID fixes for HashSLH-DSA (`None` for pure), and the raw key,
+    /// `PK.seed || PK.root`. A key under one form's OID verifies only
+    /// that form's signatures (section 8).
+    SlhDsa { parameter_set: &'static str, pre_hash: Option<&'static str>, key: &'a [u8] },
     /// A DSA key, RFC 3279 section 2.3.2: the group from the
     /// AlgorithmIdentifier's Dss-Parms and `y` from the BIT STRING.
     ///
@@ -1120,7 +1147,7 @@ pub(crate) fn read_algorithm(reader: &mut Reader<'_>)
     Ok(SignatureAlgorithm::from_oid(oid))
 }
 
-fn read_public_key<'a>(reader: &mut Reader<'a>) -> Result<PublicKey<'a>, String> {
+pub(crate) fn read_public_key<'a>(reader: &mut Reader<'a>) -> Result<PublicKey<'a>, String> {
     let mut spki = reader.read_sequence()?;
 
     // **The AlgorithmIdentifier's own bytes, kept before it is taken
@@ -1188,11 +1215,12 @@ fn read_public_key<'a>(reader: &mut Reader<'a>) -> Result<PublicKey<'a>, String>
             // three above for the reason in `src/registry.rs`: nothing a
             // caller registers can change what `prime256v1` means.
             //
-            // `interned_name` rather than a fresh leak: the name already
-            // has a `&'static str` from when the curve was registered,
-            // and this branch runs once per certificate parsed.
-            other => match crate::registry::curve_for_der(other)
-                .and_then(|name| crate::ec::curves::interned_name(&name)) {
+            // Through `curves::by_name`, so an OID registered as another
+            // name for a built-in curve - `curve="P-256"` - reads as that
+            // curve. It looked the name up among the interned ones, which
+            // hold only curves registered with their own parameters, and
+            // an alias of a built-in curve read as unsupported.
+            other => match crate::registry::curve_named_by_der(other) {
                 Some(registered) => registered,
                 // Not an error. A curve we cannot compute on is a
                 // judgement, and this function reads rather than judges.
@@ -1328,6 +1356,40 @@ fn read_public_key<'a>(reader: &mut Reader<'a>) -> Result<PublicKey<'a>, String>
                                parameter_set, expected, key_bits.len()));
         }
         Ok(PublicKey::MlDsa { parameter_set, key: key_bits })
+    } else if let Some(parameter_set) = ml_kem_parameter_set(bytes) {
+        // RFC 9935 section 3: the parameters "MUST be absent".
+        if parameters.is_some() {
+            return Err(format!(
+                "An {} key must have absent AlgorithmIdentifier parameters \
+                 (RFC 9935 section 3); this one has them present.", parameter_set));
+        }
+        let ml_kem = crate::pq::ml_kem::parameters(parameter_set)?;
+        if key_bits.len() != ml_kem.encapsulation_key_len() {
+            return Err(format!("An {} public key is {} bytes; got {}.",
+                               parameter_set, ml_kem.encapsulation_key_len(), key_bits.len()));
+        }
+        // FIPS 203 requires the modulus check before a key is used, and
+        // a key that fails it is two byte strings for one key; refused
+        // here, where the bytes arrive, rather than at first use.
+        if !crate::pq::ml_kem::modulus_check(ml_kem, key_bits)? {
+            return Err(format!("This {} public key encodes a coefficient non-canonically \
+                                (FIPS 203's modulus check).", parameter_set));
+        }
+        Ok(PublicKey::MlKem { parameter_set, key: key_bits })
+    } else if let Some((parameter_set, pre_hash)) = slh_dsa_parameter_set(bytes) {
+        // RFC 9909 section 3: "MUST be absent".
+        let name = slh_dsa_name(parameter_set, pre_hash);
+        if parameters.is_some() {
+            return Err(format!(
+                "An {name} key must have absent AlgorithmIdentifier parameters \
+                 (RFC 9909 section 3); this one has them present."));
+        }
+        let expected = crate::pq::slh_dsa::parameters(parameter_set)?.public_key_len();
+        if key_bits.len() != expected {
+            return Err(format!("An {name} public key is {expected} bytes; got {}.",
+                               key_bits.len()));
+        }
+        Ok(PublicKey::SlhDsa { parameter_set, pre_hash, key: key_bits })
     } else {
         Ok(PublicKey::Unsupported { algorithm: bytes })
     }
@@ -1372,6 +1434,82 @@ pub(crate) fn ml_dsa_parameter_set(oid: &[u8]) -> Option<&'static str> {
 }
 
 /// The RFC 9881 OID for a FIPS 204 parameter set name.
+/// RFC 9909's twenty-four OIDs: FIPS 205's parameter set, and the
+/// pre-hash a HashSLH-DSA OID fixes (FIPS 205's name for it), or `None`
+/// for pure SLH-DSA.
+const SLH_DSA_OIDS: [(&[u8], &str, Option<&str>); 24] = [
+    (oids::ID_SLH_DSA_SHA2_128S, "SLH-DSA-SHA2-128s", None),
+    (oids::ID_SLH_DSA_SHA2_128F, "SLH-DSA-SHA2-128f", None),
+    (oids::ID_SLH_DSA_SHA2_192S, "SLH-DSA-SHA2-192s", None),
+    (oids::ID_SLH_DSA_SHA2_192F, "SLH-DSA-SHA2-192f", None),
+    (oids::ID_SLH_DSA_SHA2_256S, "SLH-DSA-SHA2-256s", None),
+    (oids::ID_SLH_DSA_SHA2_256F, "SLH-DSA-SHA2-256f", None),
+    (oids::ID_SLH_DSA_SHAKE_128S, "SLH-DSA-SHAKE-128s", None),
+    (oids::ID_SLH_DSA_SHAKE_128F, "SLH-DSA-SHAKE-128f", None),
+    (oids::ID_SLH_DSA_SHAKE_192S, "SLH-DSA-SHAKE-192s", None),
+    (oids::ID_SLH_DSA_SHAKE_192F, "SLH-DSA-SHAKE-192f", None),
+    (oids::ID_SLH_DSA_SHAKE_256S, "SLH-DSA-SHAKE-256s", None),
+    (oids::ID_SLH_DSA_SHAKE_256F, "SLH-DSA-SHAKE-256f", None),
+    (oids::ID_HASH_SLH_DSA_SHA2_128S_WITH_SHA256, "SLH-DSA-SHA2-128s", Some("SHA2-256")),
+    (oids::ID_HASH_SLH_DSA_SHA2_128F_WITH_SHA256, "SLH-DSA-SHA2-128f", Some("SHA2-256")),
+    (oids::ID_HASH_SLH_DSA_SHA2_192S_WITH_SHA512, "SLH-DSA-SHA2-192s", Some("SHA2-512")),
+    (oids::ID_HASH_SLH_DSA_SHA2_192F_WITH_SHA512, "SLH-DSA-SHA2-192f", Some("SHA2-512")),
+    (oids::ID_HASH_SLH_DSA_SHA2_256S_WITH_SHA512, "SLH-DSA-SHA2-256s", Some("SHA2-512")),
+    (oids::ID_HASH_SLH_DSA_SHA2_256F_WITH_SHA512, "SLH-DSA-SHA2-256f", Some("SHA2-512")),
+    (oids::ID_HASH_SLH_DSA_SHAKE_128S_WITH_SHAKE128, "SLH-DSA-SHAKE-128s", Some("SHAKE-128")),
+    (oids::ID_HASH_SLH_DSA_SHAKE_128F_WITH_SHAKE128, "SLH-DSA-SHAKE-128f", Some("SHAKE-128")),
+    (oids::ID_HASH_SLH_DSA_SHAKE_192S_WITH_SHAKE256, "SLH-DSA-SHAKE-192s", Some("SHAKE-256")),
+    (oids::ID_HASH_SLH_DSA_SHAKE_192F_WITH_SHAKE256, "SLH-DSA-SHAKE-192f", Some("SHAKE-256")),
+    (oids::ID_HASH_SLH_DSA_SHAKE_256S_WITH_SHAKE256, "SLH-DSA-SHAKE-256s", Some("SHAKE-256")),
+    (oids::ID_HASH_SLH_DSA_SHAKE_256F_WITH_SHAKE256, "SLH-DSA-SHAKE-256f", Some("SHAKE-256")),
+];
+
+/// FIPS 205's parameter set and pre-hash for an RFC 9909 OID.
+pub fn slh_dsa_parameter_set(oid: &[u8])
+                                    -> Option<(&'static str, Option<&'static str>)> {
+    SLH_DSA_OIDS.iter().find(|(o, _, _)| *o == oid).map(|&(_, set, pre_hash)| (set, pre_hash))
+}
+
+/// RFC 9909's OID for a parameter set, pure or with its pre-hash.
+pub(crate) fn slh_dsa_oid(parameter_set: &str, pre_hash: Option<&str>)
+                          -> Result<&'static [u8], String> {
+    SLH_DSA_OIDS.iter().find(|(_, set, ph)| *set == parameter_set && *ph == pre_hash)
+        .map(|&(oid, _, _)| oid)
+        .ok_or_else(|| match pre_hash {
+            None => format!("{parameter_set:?} is not an SLH-DSA parameter set."),
+            Some(hash) => format!("RFC 9909 has no OID for {parameter_set} pre-hashed with \
+                                   {hash}: each set has one pre-hash, SHA2-256 or SHA2-512 for \
+                                   SHA2 and SHAKE-128 or SHAKE-256 for SHAKE."),
+        })
+}
+
+/// The name a certificate's SLH-DSA algorithm is reported under: the
+/// parameter set, and the pre-hash when there is one.
+pub fn slh_dsa_name(parameter_set: &str, pre_hash: Option<&str>) -> String {
+    match pre_hash {
+        None => parameter_set.to_string(),
+        Some(hash) => format!("{parameter_set} with {hash}"),
+    }
+}
+
+/// FIPS 203's parameter set for an RFC 9935 key OID.
+pub(crate) fn ml_kem_parameter_set(oid: &[u8]) -> Option<&'static str> {
+    if oid == oids::ID_ML_KEM_512 { Some("ML-KEM-512") }
+    else if oid == oids::ID_ML_KEM_768 { Some("ML-KEM-768") }
+    else if oid == oids::ID_ML_KEM_1024 { Some("ML-KEM-1024") }
+    else { None }
+}
+
+/// RFC 9935's key OID for a FIPS 203 parameter set.
+pub(crate) fn ml_kem_oid(parameter_set: &str) -> Result<&'static [u8], String> {
+    match parameter_set {
+        "ML-KEM-512" => Ok(oids::ID_ML_KEM_512),
+        "ML-KEM-768" => Ok(oids::ID_ML_KEM_768),
+        "ML-KEM-1024" => Ok(oids::ID_ML_KEM_1024),
+        other => Err(format!("{other:?} is not ML-KEM-512, -768 or -1024.")),
+    }
+}
+
 pub(crate) fn ml_dsa_oid(parameter_set: &str) -> Result<&'static [u8], String> {
     match parameter_set {
         "ML-DSA-44" => Ok(oids::ID_ML_DSA_44),

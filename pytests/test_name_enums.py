@@ -171,7 +171,7 @@ def test_every_member_of_every_enum_actually_constructs():
         # DES and 3DES. The claim being tested is "this name is usable",
         # so trying the lengths and requiring one to succeed says it
         # without recording anything.
-        usable = [n for n in (8, 16, 24, 32, 48, 64) if _constructs(name, n)]
+        usable = [n for n in (8, 10, 16, 24, 32, 48, 64) if _constructs(name, n)]
         assert usable, f"{name.value} works at no key length"
 
     for name in allcrypt.StreamCipherName:

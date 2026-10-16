@@ -3857,72 +3857,8 @@ impl ClientConnection {
         let leaf = Certificate::parse(&self.certificates[0])
             .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
 
-        let generation = if suite.key_exchange
-                            == crate::tls::suites::KeyExchange::GostVko2001 {
-            "GOST R 34.10-2001"
-        } else {
-            "GOST R 34.10-2012"
-        };
-        // **The certificate's own algorithm has to match the suite's.**
-        // A 2001 key and a 2012 key are the same point on the same
-        // curve under different OIDs, so a client that looked only at
-        // the shape would use either for either - and would then be
-        // agreeing a key with an algorithm the server never said it
-        // would use. The OID is the only thing that distinguishes them.
-        let wants_2001 = suite.key_exchange
-                         == crate::tls::suites::KeyExchange::GostVko2001;
-        let (curve_name, x, y, algorithm_id) = match &leaf.public_key {
-            PublicKey::Gost { legacy, .. } if *legacy != wants_2001 =>
-                return Err(Error::new(
-                    AlertDescription::UNSUPPORTED_CERTIFICATE, format!(
-                    "{} needs a {} certificate; this one carries {}.",
-                    suite.name, generation,
-                    crate::x509::verify::describe_key(&leaf.public_key)))),
-            // **The AlgorithmIdentifier travels with the point.** The
-            // ephemeral key in the ClientKeyExchange has to wear the
-            // server's, verbatim: the curve alone does not determine the
-            // OID, because several OIDs name the same curve and the
-            // server picked one. See `gost_kex::encode_public_key_like`.
-            PublicKey::Gost { curve, x, y, algorithm_id, .. } =>
-                (*curve, x.clone(), y.clone(), *algorithm_id),
-            other => return Err(Error::new(
-                AlertDescription::UNSUPPORTED_CERTIFICATE, format!(
-                "{} needs a {} certificate; this one carries {}.",
-                suite.name, generation,
-                crate::x509::verify::describe_key(other)))),
-        };
-        let curve = crate::ec::curves::by_name(curve_name)
-            .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
-        let public = crate::ec::Point::new(x, y);
-
-        // Validated here rather than trusted from the certificate: an
-        // invalid-curve point would move the agreement into a group the
-        // certificate's issuer chose, and `Certificate::parse` reads
-        // rather than judges.
-        curve.validate(&public)
-            .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
-
-        // The two families wrap the secret quite differently - KEG and
-        // KExp15 against KEG_28147 and KExp28147, and a different DER
-        // structure - so which one is decided by the *suite*, here,
-        // rather than by anything in the certificate.
-        let (body, premaster) = match (suite.key_exchange, suite.cipher.ctr_omac()) {
-            // The 2001 suite first, because it shares a cipher with
-            // RFC 9189's CNT_IMIT and differs in everything around it:
-            // GOST R 34.11-94 over the randoms, VKO GOST R
-            // 34.10-2001, and CryptoPro-A wherever a table is needed.
-            (crate::tls::suites::KeyExchange::GostVko2001, _) =>
-                crate::tls::gost_kex_28147::client_key_exchange_2001(
-                    &curve, algorithm_id, &public,
-                    &self.client_random, &self.server_random),
-            (_, Some(gost)) => crate::tls::gost_kex::client_key_exchange(
-                gost, &curve, algorithm_id, &public,
-                &self.client_random, &self.server_random),
-            (_, None) => crate::tls::gost_kex_28147::client_key_exchange(
-                &curve, algorithm_id, &public,
-                &self.client_random, &self.server_random),
-        }.map_err(|e| Error::new(AlertDescription::INTERNAL_ERROR, e))?;
-        Ok((premaster, body))
+        gost_client_key_exchange(suite, &leaf.public_key,
+                                 &self.client_random, &self.server_random)
     }
 
     /// ECDHE: a fresh key pair, and the premaster is the shared secret.
@@ -4769,6 +4705,84 @@ fn signature_algorithms_extension(with_gost: bool, with_dss: bool)
 pub(crate) fn key_ceiling(policy: &Policy, what: &str, bits: usize) -> Result<(), Error> {
     policy.check_key_ceiling(what, bits)
         .map_err(|e| Error::new(AlertDescription::UNSUPPORTED_CERTIFICATE, e))
+}
+
+
+/// The GOST TLS 1.2 ClientKeyExchange against a server's certificate
+/// key: `(premaster, body)`.
+///
+/// Public so that a test can build the client's message from a captured
+/// certificate exactly as the client does, rather than by a copy of this
+/// dispatch that could drift from it.
+pub fn gost_client_key_exchange(suite: &crate::tls::suites::CipherSuite,
+                                server_key: &PublicKey, client_random: &[u8],
+                                server_random: &[u8])
+                                -> Result<(Vec<u8>, Vec<u8>), Error> {
+    use crate::tls::gost_kex_28147::{KeyGeneration, Transport};
+    let suite_is_2001 = suite.key_exchange
+                        == crate::tls::suites::KeyExchange::GostVko2001;
+    let refuse = |wanted: &str, key: &PublicKey| Error::new(
+        AlertDescription::UNSUPPORTED_CERTIFICATE, format!(
+        "{} needs a {} certificate; this one carries {}.",
+        suite.name, wanted, crate::x509::verify::describe_key(key)));
+    // **The AlgorithmIdentifier travels with the point.** The
+    // ephemeral key in the ClientKeyExchange has to wear the
+    // server's, verbatim: the curve alone does not determine the
+    // OID, because several OIDs name the same curve and the server
+    // picked one. See `gost_kex::encode_public_key_like`.
+    //
+    // `legacy` is the certificate's own algorithm OID, the only thing
+    // that tells a 2001 key from a 2012 one on the same curve - and
+    // it decides the VKO and the S-box below, where the suite decides
+    // the UKM's hash.
+    let (curve_name, x, y, algorithm_id, key_generation) = match server_key {
+        PublicKey::Gost { curve, x, y, algorithm_id, legacy, .. } =>
+            (*curve, x.clone(), y.clone(), *algorithm_id,
+             if *legacy { KeyGeneration::Gost2001 } else { KeyGeneration::Gost2012 }),
+        other => return Err(refuse(
+            if suite_is_2001 { "GOST R 34.10-2001" } else { "GOST R 34.10" },
+            other)),
+    };
+    let curve = crate::ec::curves::by_name(curve_name)
+        .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
+    let public = crate::ec::Point::new(x, y);
+
+    // Validated here rather than trusted from the certificate: an
+    // invalid-curve point would move the agreement into a group the
+    // certificate's issuer chose, and `Certificate::parse` reads
+    // rather than judges.
+    curve.validate(&public)
+        .map_err(|e| Error::new(AlertDescription::BAD_CERTIFICATE, e))?;
+
+    // The two families wrap the secret quite differently - KEG and
+    // KExp15 against KEG_28147 and KExp28147, and a different DER
+    // structure - so which one is decided by the *suite*, here.
+    let (body, premaster) = match suite.cipher.ctr_omac() {
+        // RFC 9189's KEG is defined for GOST R 34.10-2012 keys only,
+        // and gost-engine's has no branch for a 2001 one; OpenSSL's
+        // server does not offer these suites on such a certificate.
+        Some(_) if key_generation == KeyGeneration::Gost2001 =>
+            return Err(refuse("GOST R 34.10-2012", server_key)),
+        Some(gost) => crate::tls::gost_kex::client_key_exchange(
+            gost, &curve, algorithm_id, &public,
+            client_random, server_random),
+        // CNT_IMIT: **the UKM's hash from the suite, the VKO and the
+        // S-box from the key.** A server may pair a 2012 suite with a
+        // 2001 certificate - OpenSSL does, since those suites
+        // authenticate with either generation - and taking everything
+        // from the suite then produced a key the server could not
+        // derive. See `gost_kex_28147::Transport`.
+        None => {
+            // The one pairing it refuses is the 2001 suite on a 2012
+            // key, which no implementation makes.
+            let transport = Transport::for_suite(suite_is_2001, key_generation)
+                .map_err(|_| refuse("GOST R 34.10-2001", server_key))?;
+            crate::tls::gost_kex_28147::client_key_exchange_with(
+                transport, &curve, algorithm_id, &public,
+                client_random, server_random)
+        }
+    }.map_err(|e| Error::new(AlertDescription::INTERNAL_ERROR, e))?;
+    Ok((premaster, body))
 }
 
 #[cfg(test)]

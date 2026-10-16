@@ -38,7 +38,7 @@ negotiate:
 
   * `GOST2012-KUZNYECHIK-KUZNYECHIKOMAC` (0xC100)
   * `GOST2012-MAGMA-MAGMAOMAC` (0xC101)
-  * `GOST2012-GOST8912-GOST8912` (0xC102, CNT_IMIT)
+  * `IANA-GOST2012-GOST8912-GOST8912` (0xC102, CNT_IMIT)
   * `LEGACY-GOST2012-GOST8912-GOST8912` (0xFF85, the CryptoPro code point)
 
 and `GOST2001-GOST89-GOST89` (0x0081), which needs a GOST R
@@ -48,6 +48,13 @@ refuses to load such a certificate at all - `ca md too weak`, a policy
 about the CA's digest rather than about the suite. Lowering it is the
 right answer here, because this library exists for the algorithms other
 people's policies have turned off.
+
+The 2012 CNT_IMIT suites are captured a second time on the 2001
+certificate, since OpenSSL serves them on either generation and the key
+exchange then takes its UKM from the suite and its VKO from the key; and
+CTR_OMAC and CNT_IMIT once more on a 512 bit key. Every row records the
+server's private key as well as the key log, which is what lets the test
+unwrap the engine's own ClientKeyExchange.
 
 Each capture also sends application data in both directions **after** the
 handshake, because the second record is where every re-keying mistake
@@ -77,6 +84,8 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+from make_gost_vectors import build_probe  # noqa: E402
 DEFAULT_OUTPUT = os.path.join(ROOT, "tests", "transcripts",
                               "gost_handshakes.txt")
 
@@ -97,7 +106,7 @@ DEFAULT_OUTPUT = os.path.join(ROOT, "tests", "transcripts",
 SUITES = [
     ("kuznyechik_ctr_omac", "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC", "2012", ""),
     ("magma_ctr_omac", "GOST2012-MAGMA-MAGMAOMAC", "2012", ""),
-    ("gost28147_cnt_imit", "GOST2012-GOST8912-GOST8912", "2012", ""),
+    ("gost28147_cnt_imit", "IANA-GOST2012-GOST8912-GOST8912", "2012", ""),
     ("gost28147_cnt_imit_legacy", "LEGACY-GOST2012-GOST8912-GOST8912",
      "2012", ""),
     ("gost2001_cnt_imit", "GOST2001-GOST89-GOST89", "2001", "@SECLEVEL=0"),
@@ -121,7 +130,72 @@ SUITES = [
      "2012-xcha", ""),
     ("kuznyechik_ctr_omac_tc26_b", "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC",
      "2012-tc26-b", ""),
+    # **A suite and a certificate of different generations**, which is
+    # here because of a bug a real server found. The 2012 CNT_IMIT suites
+    # authenticate with `aGOST12|aGOST01`, so OpenSSL serves them on a
+    # GOST R 34.10-2001 key; its client then hashes the randoms with the
+    # suite's Streebog-256 and gost-engine runs the *key's* VKO GOST R
+    # 34.10-2001 over CryptoPro-A. Only the engine's own client can show
+    # the UKM - its server reads the UKM out of the message rather than
+    # deriving it, so it accepts either hash.
+    ("gost28147_cnt_imit_2001_key", "IANA-GOST2012-GOST8912-GOST8912", "2001",
+     "@SECLEVEL=0"),
+    ("gost28147_cnt_imit_legacy_2001_key", "LEGACY-GOST2012-GOST8912-GOST8912",
+     "2001", "@SECLEVEL=0"),
+    # And the 512 bit key under both key exchanges: KEG's 512 bit branch,
+    # which has no KDF, and KEG_28147, which runs VKO_256 whatever the
+    # curve. The rows above are all on 256 bit curves.
+    ("kuznyechik_ctr_omac_512", "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC",
+     "2012-512", ""),
+    ("gost28147_cnt_imit_512", "IANA-GOST2012-GOST8912-GOST8912", "2012-512",
+     ""),
+    # **A curve this library does not carry.** `paramset:0` is RFC 4357's
+    # id-GostR3410-2001-TestParamSet, which gost-engine has and this
+    # library leaves to `register_oid`. Each row records the curve as the
+    # engine holds it, and the loader registers it before any test reads
+    # the row - so every test over this file runs a registered curve
+    # through the certificate reader, the key exchange and the record
+    # layer, the way a caller meeting a box on an unknown curve would.
+    ("kuznyechik_ctr_omac_test_curve", "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC",
+     "2012-test", ""),
+    ("gost28147_cnt_imit_test_curve_2001_key",
+     "IANA-GOST2012-GOST8912-GOST8912", "2001-test", "@SECLEVEL=0"),
+    ("gost2001_cnt_imit_test_curve", "GOST2001-GOST89-GOST89", "2001-test",
+     "@SECLEVEL=0"),
+    # And TC 26's 512 bit test set, for KEG's 512 bit branch and the 512
+    # bit algorithm OIDs on a registered curve.
+    ("kuznyechik_ctr_omac_test_curve_512", "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC",
+     "2012-512-test", ""),
 ]
+
+#: The chains on a curve this library does not carry, whose rows record
+#: that curve's parameters.
+UNKNOWN_CURVES = {"2012-test", "2001-test", "2012-512-test"}
+
+# The code point each OpenSSL name has to negotiate.
+#
+# **Checked against the ServerHello, because a name can select two.**
+# OpenSSL 3.0's `GOST2012-GOST8912-GOST8912` is not 0xC102's old name: it
+# is a cipher-string alias for both CNT_IMIT code points, 0xFF85 first, so
+# a row that asked for it got 0xFF85 and was labelled 0xC102. That is how
+# this fixture went without a 0xC102 handshake while its test listed one.
+CODES = {
+    "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC": 0xC100,
+    "GOST2012-MAGMA-MAGMAOMAC": 0xC101,
+    "IANA-GOST2012-GOST8912-GOST8912": 0xC102,
+    "LEGACY-GOST2012-GOST8912-GOST8912": 0xFF85,
+    "GOST2001-GOST89-GOST89": 0x0081,
+}
+
+
+def negotiated(to_client):
+    """The suite in the recorded ServerHello: record header, handshake
+    header, version, random, session id, then the suite."""
+    at = 5 + 4 + 2 + 32
+    session_id = to_client[at]
+    at += 1 + session_id
+    return int.from_bytes(to_client[at:at + 2], "big")
+
 
 # Sent by the client after the handshake, then echoed by `s_server`.
 #
@@ -143,6 +217,47 @@ def openssl(args, env, **kwargs):
     return done.stdout
 
 
+def curve_parameters(probe, env, key):
+    """The curve `key` is on, as the engine holds it: `oid p a b q x y h`,
+    the numbers in hex.
+
+    Read out of the engine's own group by `gost_engine_probe --curve`,
+    rather than typed from a document, so the curve a test registers is
+    the one the engine computed with.
+    """
+    done = subprocess.run([probe, "--curve", key], env=env,
+                          capture_output=True)
+    if done.returncode != 0:
+        raise RuntimeError("the probe could not read the curve:\n"
+                           + done.stderr.decode(errors="replace"))
+    fields = dict(line.split(" = ", 1)
+                  for line in done.stdout.decode().splitlines())
+    return " ".join(fields[name].strip().lower()
+                    for name in ("oid", "p", "a", "b", "q", "x", "y", "h"))
+
+
+def private_scalar(env, key):
+    """The server's private key, as the engine prints it: the scalar in
+    big-endian hex.
+
+    **Recorded so that the engine's own ClientKeyExchange can be unwrapped
+    offline.** The key log gives the master secret, which settles the
+    record layer; this settles the key exchange - which hash made the
+    UKM, which VKO and which S-box - by letting the test unwrap what the
+    engine's client wrapped and derive that same master secret from it.
+    A throwaway key made for one capture, like everything else here.
+    """
+    text = openssl(["pkey", "-engine", "gost", "-in", key, "-text",
+                    "-noout"], env).decode()
+    for line in text.splitlines():
+        if line.startswith("Private key:"):
+            # The engine prints the scalar as a number, so a leading zero
+            # nibble is dropped and the hex can be of odd length.
+            scalar = line.split(":", 1)[1].strip().lower()
+            return scalar.zfill(len(scalar) + len(scalar) % 2)
+    raise RuntimeError(f"no private key in the engine's listing of {key}")
+
+
 def make_chain(env, work, algorithm, paramset, tag):
     """A GOST CA and a leaf for `localhost`, both signed by the engine.
 
@@ -157,7 +272,8 @@ def make_chain(env, work, algorithm, paramset, tag):
     crt = os.path.join(work, f"srv-{tag}.crt")
     csr = os.path.join(work, f"srv-{tag}.csr")
     ext = os.path.join(work, f"ext-{tag}.cnf")
-    digest = "md_gost12_256" if algorithm != "gost2001" else "md_gost94"
+    digest = {"gost2001": "md_gost94",
+              "gost2012_512": "md_gost12_512"}.get(algorithm, "md_gost12_256")
 
     openssl(["genpkey", "-engine", "gost", "-algorithm", algorithm,
              "-pkeyopt", f"paramset:{paramset}", "-out", ca_key], env)
@@ -270,7 +386,7 @@ def wait_for_accept(server, seconds=20):
     return False
 
 
-def capture(env, work, name, suite, extra, ca_crt, crt, key):
+def capture(env, work, name, suite, extra, ca_crt, crt, key, curve=None):
     """`(fields, note)` for one suite; `fields` is None if it did not
     negotiate, with the note saying so rather than raising - the 2001
     suite is expected to be unavailable on some builds."""
@@ -288,6 +404,9 @@ def capture(env, work, name, suite, extra, ca_crt, crt, key):
     server = subprocess.Popen(
         ["openssl", "s_server", "-engine", "gost", "-accept", str(port),
          "-cert", crt, "-key", key, "-CAfile", ca_crt,
+         # The CA goes out after the leaf, so a test can check the
+         # engine's signature on it without anything but the capture.
+         "-cert_chain", ca_crt,
          "-cipher", suite + extra,
          "-tls1_2", "-keylogfile", keylog, "-naccept", "1", "-www"],
         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -330,8 +449,15 @@ def capture(env, work, name, suite, extra, ca_crt, crt, key):
 
         if not relay.to_server or not relay.to_client:
             return None, "a direction recorded nothing"
+        got = negotiated(bytes(relay.to_client))
+        if got != CODES[suite]:
+            raise RuntimeError(f"{name}: asked for {suite}, which is "
+                               f"{CODES[suite]:#06x}, and negotiated "
+                               f"{got:#06x}")
 
         fields = [("version", "TLSv1.2"), ("cipher", suite),
+                  ("server_key", private_scalar(env, key)),
+                  *([("curve", curve)] if curve else []),
                   ("to_server", bytes(relay.to_server).hex()),
                   ("to_client", bytes(relay.to_client).hex())]
         for label, random, secret in secrets:
@@ -370,11 +496,19 @@ HEADER = """\
 # fresh randoms, a fresh certificate every time - so a diff against the
 # previous capture is noise. What matters is which suites are listed.
 #
-# The last two rows repeat one suite on two other spellings of the same
-# curve - RFC 4357's XchA and TC 26's paramSetB are both CryptoPro-A's
-# parameters - so that the ephemeral key's parameter set OID is checked
-# against a peer that chose a non-canonical one. See
-# tests/test_gost_client_key_exchange.rs.
+# Two rows repeat one suite on two other spellings of the same curve -
+# RFC 4357's XchA and TC 26's paramSetB are both CryptoPro-A's parameters -
+# so that the ephemeral key's parameter set OID is checked against a peer
+# that chose a non-canonical one. See tests/test_gost_client_key_exchange.rs.
+#
+# Two more put a 2012 suite on a GOST R 34.10-2001 certificate, which
+# OpenSSL allows, and two are on a 512 bit key. The last four are on RFC
+# 4357's and TC 26's test curves, which this library does not carry: their `curve` line
+# is that curve as the engine holds it, and tests/transcripts/loader.rs
+# registers it before a test reads the row. Every row carries
+# the server's private key, so tests/test_gost_transcript.rs can unwrap the
+# engine's ClientKeyExchange and arrive at the master secret in the key log:
+# that settles which hash made the UKM and which VKO and S-box the key took.
 """
 
 
@@ -410,11 +544,21 @@ def main():
             "2012-xcha": make_chain(env, work, "gost2012_256", "XA", "xcha"),
             "2012-tc26-b": make_chain(env, work, "gost2012_256", "TCB",
                                       "tc26b"),
+            "2012-512": make_chain(env, work, "gost2012_512", "A", "512"),
+            "2012-test": make_chain(env, work, "gost2012_256", "0",
+                                    "test12"),
+            "2001-test": make_chain(env, work, "gost2001", "0", "test01"),
+            "2012-512-test": make_chain(
+                env, work, "gost2012_512",
+                "id-tc26-gost-3410-2012-512-paramSetTest", "test512"),
         }
+        probe = build_probe(work)
+        curves = {which: curve_parameters(probe, env, chains[which][2])
+                  for which in UNKNOWN_CURVES}
         for name, suite, which, extra in SUITES:
             ca_crt, crt, key = chains[which]
             fields, note = capture(env, work, name, suite, extra,
-                                   ca_crt, crt, key)
+                                   ca_crt, crt, key, curves.get(which))
             if fields is None:
                 skipped.append((name, note))
                 print(f"  {name}: skipped - {note}")

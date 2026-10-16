@@ -20,25 +20,32 @@ const SETS: [&str; 3] = ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"];
 
 /// One PEM block from the appendix: the subsection it is under (`C.1.2.3`)
 /// and its DER.
-struct Example {
-    section: String,
-    label: String,
-    der: Vec<u8>,
+pub(super) struct Example {
+    pub(super) section: String,
+    pub(super) label: String,
+    pub(super) der: Vec<u8>,
 }
 
-/// Every PEM block after the appendix heading, with the heading it sits
-/// under. Page furniture inside a block - a footer, a form feed, the next
-/// page's header - is dropped by keeping only lines that are base64.
 fn examples() -> Vec<Example> {
+    examples_in(RFC)
+}
+
+/// Every PEM block in an RFC's Appendix C, with the heading it sits
+/// under - RFC 9881's, and RFC 9935's, which is laid out the same way.
+/// Page furniture inside a block - a footer, a form feed, the next page's
+/// header - is dropped by keeping only lines that are base64.
+pub(super) fn examples_in(rfc: &str) -> Vec<Example> {
     // The heading as a whole line: the table of contents carries the same
     // words followed by dots and a page number.
-    let start = RFC.lines().position(|line| line == "Appendix C.  Examples")
+    let start = rfc.lines().position(|line| line == "Appendix C.  Examples")
         .expect("Appendix C heading");
     let mut found = Vec::new();
     let mut section = String::new();
     let mut block: Option<(String, String)> = None;
-    for line in RFC.lines().skip(start) {
-        if line.starts_with("Appendix D.") {
+    for line in rfc.lines().skip(start) {
+        // RFC 9881 has an Appendix D after the examples; RFC 9935 goes
+        // straight to its acknowledgments.
+        if line.starts_with("Appendix D.") || line == "Acknowledgments" {
             break;
         }
         if line.starts_with("C.") {
@@ -204,4 +211,37 @@ fn test_present_parameters_are_refused() {
     let rebuilt = writer.finish();
     let error = read_public_key(&mut Reader::new(&rebuilt)).unwrap_err();
     assert!(error.contains("absent"), "{error}");
+}
+
+/// Writing: each of C.1's nine private keys is what `MlDsaKey::to_pkcs8`
+/// writes for the reference key in that form, byte for byte, and each of
+/// C.2's public keys what `to_spki` writes. A key imported expanded has
+/// no seed, and refuses the two forms that need one.
+#[test]
+fn test_the_examples_are_what_is_written() {
+    use crate::api::{MlDsaKey, PrivateKeyForm};
+    let keys: Vec<Example> = of("PRIVATE KEY").into_iter()
+        .filter(|e| e.section.starts_with("C.1")).collect();
+    assert_eq!(keys.len(), 9);
+    let forms = [PrivateKeyForm::Seed, PrivateKeyForm::Expanded, PrivateKeyForm::Both];
+    let seed: Vec<u8> = (0..32).collect();
+    for (i, example) in keys.iter().enumerate() {
+        let key = MlDsaKey::from_seed(SETS[i / 3], &seed).unwrap();
+        assert_eq!(key.to_pkcs8(forms[i % 3]).unwrap(), example.der, "{}", example.section);
+    }
+    let publics = of("PUBLIC KEY");
+    assert_eq!(publics.len(), 3);
+    for (example, parameter_set) in publics.iter().zip(SETS) {
+        let key = MlDsaKey::from_seed(parameter_set, &seed).unwrap();
+        assert_eq!(key.public_key().to_spki().unwrap(), example.der, "{parameter_set}");
+        let read = crate::api::MlDsaPublicKey::from_spki(&example.der).unwrap();
+        assert_eq!(read.public_bytes(), key.public_bytes());
+    }
+    let expanded = MlDsaKey::from_private("ML-DSA-44",
+        MlDsaKey::from_seed("ML-DSA-44", &seed).unwrap().private_bytes()).unwrap();
+    assert_eq!(expanded.to_pkcs8(PrivateKeyForm::Expanded).unwrap(), keys[1].der);
+    for form in [PrivateKeyForm::Seed, PrivateKeyForm::Both] {
+        let error = expanded.to_pkcs8(form).unwrap_err();
+        assert!(error.contains("no seed"), "{error}");
+    }
 }

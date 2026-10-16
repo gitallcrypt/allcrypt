@@ -286,7 +286,9 @@ respectively will speak, and OpenSSL's GOST engine calls them
 that is the question a failed GOST handshake usually comes down to: a
 2001 key and a 2012 key are the same point on the same curve under
 different OIDs, and which one a box has decides which suites it can
-use.
+use. A 2001 key also serves `0xC102` and `0xFF85`, since OpenSSL lets
+those two authenticate with either generation; the key exchange then
+takes its UKM's hash from the suite and its VKO and S-box from the key.
 
 ```
 18:41:02.335Z #1     [0] subject CN=box / issuer CN=box / ... / GOST R 34.10-2001 gost256-a / signed with GOST R 34.10-2001 with GOST R 34.11-94

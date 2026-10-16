@@ -25,7 +25,7 @@ pub mod sha2;
 #[cfg(all(feature = "sha-ni", target_arch = "x86_64"))]
 mod sha_ni;
 pub mod skein;
-mod skein_tables;
+pub(crate) mod skein_tables;
 pub mod sm3;
 pub mod snefru;
 mod snefru_tables;

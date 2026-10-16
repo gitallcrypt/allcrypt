@@ -24,7 +24,12 @@ ROWS = [dict(w.split("=", 1) for w in line.split()[1:])
 def test_the_file():
     assert len(MESSAGES) == 31
     assert len(ROWS) == 744
-    assert len(allcrypt.checksums_available) == 24
+    # The rest are the fast hashes, in test_xxhash.py, test_murmur3.py and
+    # test_joaat.py.
+    assert len(allcrypt.checksums_available) == 32
+    assert allcrypt.checksums_available[24:] == ["xxh32", "xxh64", "xxh3", "xxh128",
+                                                 "murmur3_32", "murmur3_x86_128",
+                                                 "murmur3_x64_128", "joaat"]
     assert not set(allcrypt.checksums_available) & set(allcrypt.algorithms_available)
 
 

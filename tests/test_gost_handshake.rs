@@ -36,6 +36,11 @@ use allcrypt::tls::record_cnt_imit::CntImit;
 use allcrypt::tls::record_gost::CtrOmac;
 use allcrypt::tls::suites::{self, CipherSuite};
 use allcrypt::tls::{gost_kex, gost_kex_28147, ContentType, Version};
+use allcrypt::tls::gost_kex_28147::{KeyGeneration, Transport};
+
+mod fixture {
+    include!("transcripts/loader.rs");
+}
 use allcrypt::trust::TrustStore;
 use allcrypt::x509::builder::{CertificateBuilder, SanEntry, SigningKey, SubjectKey};
 use allcrypt::x509::oids;
@@ -46,6 +51,8 @@ struct Pki {
     root_der: Vec<u8>,
     leaf_der: Vec<u8>,
     leaf_private: allcrypt::bignum::BigUint,
+    /// The leaf is a GOST R 34.10-2001 key rather than a 2012 one.
+    legacy: bool,
 }
 
 fn pki(curve_name: &str, hostname: &str) -> Pki {
@@ -97,7 +104,7 @@ fn pki_of(curve_name: &str, hostname: &str, legacy: bool) -> Pki {
     leaf.sans = vec![SanEntry::Dns(hostname.to_string())];
     let leaf_der = leaf.sign(&signer(legacy, &curve, &root_private)).unwrap();
 
-    Pki { curve, root_der, leaf_der, leaf_private }
+    Pki { curve, root_der, leaf_der, leaf_private, legacy }
 }
 
 /// Everything the server learns as it goes.
@@ -201,21 +208,22 @@ impl Server {
         match message.message_type {
             HandshakeType::ClientHello => self.client_hello(message),
             HandshakeType::ClientKeyExchange => {
-                let secret = if self.is_2001() {
-                    gost_kex_28147::unwrap_secret_2001(
+                // The UKM's hash from the suite, the VKO and the S-box from
+                // this server's own key - which is how gost-engine pairs a
+                // 2012 CNT_IMIT suite with a 2001 certificate.
+                let key = if self.pki.legacy { KeyGeneration::Gost2001 }
+                          else { KeyGeneration::Gost2012 };
+                let secret = match self.suite.cipher.ctr_omac() {
+                    Some(gost) => gost_kex::unwrap_secret(
+                        gost, &self.pki.curve, &self.pki.leaf_private,
+                        &self.client_random, &self.server_random,
+                        &message.body),
+                    None => gost_kex_28147::unwrap_secret_with(
+                        Transport::for_suite(self.is_2001(), key)
+                            .expect("server: no such pairing"),
                         &self.pki.curve, &self.pki.leaf_private,
-                        &self.client_random, &self.server_random, &message.body)
-                } else {
-                    match self.suite.cipher.ctr_omac() {
-                        Some(gost) => gost_kex::unwrap_secret(
-                            gost, &self.pki.curve, &self.pki.leaf_private,
-                            &self.client_random, &self.server_random,
-                            &message.body),
-                        None => gost_kex_28147::unwrap_secret(
-                            &self.pki.curve, &self.pki.leaf_private,
-                            &self.client_random, &self.server_random,
-                            &message.body),
-                    }
+                        &self.client_random, &self.server_random,
+                        &message.body),
                 }.expect("server: cannot unwrap the preliminary secret");
 
                 // The session hash is the transcript through the
@@ -484,12 +492,81 @@ fn test_a_2012_certificate_is_refused_for_the_2001_suite() {
     assert!(reason.contains("needs a GOST R 34.10-2001 certificate"),
             "refused for the wrong reason: {}", reason);
 
-    // And the mirror image: a 2001 certificate for a 2012 suite.
-    let pki = pki_of("gost256-a", "gost.test", true);
-    let (_, _, failure) = try_handshake(pki, 0xc102);
-    let reason = failure.expect("the client did not refuse");
-    assert!(reason.contains("needs a GOST R 34.10-2012 certificate"),
-            "refused for the wrong reason: {}", reason);
+    // And the mirror image for the suites whose key exchange is RFC
+    // 9189's KEG, which has no 2001 form: a 2001 certificate for them is
+    // refused. Not for the CNT_IMIT ones, which take either - see
+    // `test_a_2012_cnt_imit_suite_takes_a_2001_certificate`.
+    for code in [0xc100u16, 0xc101] {
+        let pki = pki_of("gost256-a", "gost.test", true);
+        let (_, _, failure) = try_handshake(pki, code);
+        let reason = failure.expect("the client did not refuse");
+        assert!(reason.contains("needs a GOST R 34.10-2012 certificate"),
+                "{code:#06x} refused for the wrong reason: {}", reason);
+    }
+}
+
+/// A curve this library does not carry, registered, on every suite and
+/// both generations of key.
+///
+/// The curves are RFC 4357's and TC 26's test sets as gost-engine holds them,
+/// from the capture, which `fixture::load_gost` registers. Writing the
+/// certificates here goes through the GOST parameter-set writers, which
+/// matched the built-in curve names and refused a registered curve; the
+/// engine's own handshakes on it are in the transcripts.
+#[test]
+fn test_a_registered_curve_works_on_every_suite() {
+    let mut curves: Vec<String> = fixture::load_gost().into_iter()
+        .filter(|transcript| !transcript.curve.is_empty())
+        .map(|transcript| format!("engine-{}", transcript.curve
+            .split_whitespace().next().unwrap()))
+        .collect();
+    curves.sort();
+    curves.dedup();
+    assert_eq!(curves.len(), 2, "the capture's registered curves: {curves:?}");
+    for curve in &curves {
+        let wide = curves::by_name(curve).unwrap().n.bit_len() > 256;
+        for (code, legacy) in [(0xc100u16, false), (0xc101, false), (0xc102, false),
+                               (0xff85, false), (0x0081, true), (0xc102, true),
+                               (0xff85, true)] {
+            // A 2001 key is 256 bits.
+            if legacy && wide {
+                continue;
+            }
+            let (client, saw_finished) =
+                handshake_with(pki_of(curve, "gost.test", legacy), code);
+            assert!(saw_finished, "{curve} {code:#06x} legacy={legacy}: no Finished");
+            assert!(client.is_established(), "{curve} {code:#06x} legacy={legacy}");
+            assert!(client.certificate_verified(), "{curve} {code:#06x} legacy={legacy}");
+        }
+    }
+}
+
+/// A 2012 CNT_IMIT suite on a GOST R 34.10-2001 certificate completes.
+///
+/// OpenSSL serves 0xC102 and 0xFF85 on a 2001 key, since both
+/// authenticate with either generation, and then the UKM's hash follows
+/// the suite while the VKO and the S-box follow the key. This client
+/// refused the pairing, and a test here required it to; before that
+/// refusal it took all three from the suite, and the server could not
+/// unwrap the secret.
+///
+/// The server here is ours, so this settles the wiring - that the client
+/// reads the key's generation from the certificate and the hash from the
+/// suite - and not which way round either goes. The engine's own
+/// handshakes on this pairing, unwrapped under its server key in
+/// `tests/test_gost_key_transport.rs`, settle that.
+#[test]
+fn test_a_2012_cnt_imit_suite_takes_a_2001_certificate() {
+    for code in [0xc102u16, 0xff85] {
+        for curve in ["gost256-a", "gost256-b", "gost256-c"] {
+            let (client, saw_finished) =
+                handshake_with(pki_of(curve, "gost.test", true), code);
+            assert!(saw_finished, "{code:#06x} on {curve}: no Finished");
+            assert!(client.is_established(), "{code:#06x} on {curve}");
+            assert_eq!(client.negotiated_suite().unwrap().code, code);
+            assert!(client.certificate_verified(), "{code:#06x} on {curve}");
+        }
+    }
 }
 
 /// The two CNT_IMIT suites do not produce the same records.

@@ -51,6 +51,11 @@ pub enum SigningKey<'a> {
     /// context, hedged. The builder's `hash` field is ignored, as for
     /// EdDSA.
     MlDsa(&'a crate::api::MlDsaKey),
+    /// SLH-DSA, RFC 9909: pure, or HashSLH-DSA when the key is bound to
+    /// a pre-hash (`SlhDsaKey::pre_hash`), which names the OID; an empty
+    /// context, hedged. The builder's `hash` field is ignored, as for
+    /// ML-DSA.
+    SlhDsa(&'a crate::api::SlhDsaKey),
     /// DSA, RFC 3279: hash, then sign with RFC 6979 nonces, and the
     /// signature a DER `Dss-Sig-Value`.
     Dsa(&'a crate::publickey_ciphers::dsa::DsaPrivateKey),
@@ -107,6 +112,15 @@ pub enum SubjectKey<'a> {
     /// An ML-DSA key: FIPS 204's parameter set name and the raw public
     /// key, which is the BIT STRING as it is for EdDSA.
     MlDsa { parameter_set: &'static str, key: &'a [u8] },
+    /// An ML-KEM key: FIPS 203's parameter set name and the raw
+    /// encapsulation key, the BIT STRING as for ML-DSA (RFC 9935
+    /// section 4). Such a certificate is signed by a CA's own key;
+    /// keyUsage, if any, should be keyEncipherment alone (section 5).
+    MlKem { parameter_set: &'static str, key: &'a [u8] },
+    /// An SLH-DSA key: FIPS 205's parameter set, the pre-hash for a
+    /// HashSLH-DSA OID (`None` for pure), and `PK.seed || PK.root` as
+    /// the BIT STRING (RFC 9909 section 5).
+    SlhDsa { parameter_set: &'static str, pre_hash: Option<&'static str>, key: &'a [u8] },
     /// A DSA key: the group goes in the AlgorithmIdentifier as Dss-Parms
     /// and `y` in the BIT STRING as an INTEGER.
     Dsa(&'a crate::publickey_ciphers::dsa::DsaPublicKey),
@@ -173,6 +187,8 @@ impl<'a> SigningKey<'a> {
                 other => return Err(format!("No OID for EdDSA variant {}.", other)),
             },
             (SigningKey::MlDsa(key), _) => crate::x509::ml_dsa_oid(key.parameter_set())?,
+            (SigningKey::SlhDsa(key), _) =>
+                crate::x509::slh_dsa_oid(key.parameter_set(), key.pre_hash())?,
             // GOST 34.311's OID is the key's, which names the byte order;
             // Kupyna's say nothing of it, and the key decides.
             (SigningKey::Dstu4145 { little_endian, .. }, "gost34311") =>
@@ -256,6 +272,9 @@ impl<'a> SigningKey<'a> {
             }
             SigningKey::MlDsa(key) => key_identifier(&SubjectKey::MlDsa {
                 parameter_set: key.parameter_set(), key: key.public_bytes() }),
+            SigningKey::SlhDsa(key) => key_identifier(&SubjectKey::SlhDsa {
+                parameter_set: key.parameter_set(), pre_hash: key.pre_hash(),
+                key: key.public_bytes() }),
             SigningKey::Dsa(key) => key_identifier(&SubjectKey::Dsa(&key.public)),
             SigningKey::Dstu4145 { curve, private, dke, little_endian } => {
                 let point = curve.public_key(private)?;
@@ -281,6 +300,9 @@ impl<'a> SigningKey<'a> {
             SigningKey::Eddsa { name, seed } => SigningKey::sign_eddsa(name, seed, tbs),
             // RFC 9881 section 3: the empty context string.
             SigningKey::MlDsa(key) => key.sign(tbs, &[], None),
+            // RFC 9909 section 4: the empty context, and the pre-hash the
+            // key's OID fixes.
+            SigningKey::SlhDsa(key) => key.sign(tbs, &[], key.pre_hash()),
             SigningKey::Dstu4145 { curve, private, dke, little_endian } =>
                 SigningKey::sign_dstu4145(curve, private, *dke, *little_endian, hash, tbs),
             SigningKey::External { sign, .. } => sign(hash, tbs),
@@ -319,7 +341,7 @@ impl<'a> SigningKey<'a> {
             SigningKey::Gost { .. } | SigningKey::Gost2001 { .. } =>
                 unreachable!("handled in sign_gost"),
             SigningKey::Eddsa { .. } => unreachable!("handled in sign_eddsa"),
-            SigningKey::MlDsa(_) | SigningKey::Dstu4145 { .. } =>
+            SigningKey::MlDsa(_) | SigningKey::SlhDsa(_) | SigningKey::Dstu4145 { .. } =>
                 unreachable!("handled in sign_signed_data"),
             SigningKey::External { .. } => unreachable!("handled above"),
         }
@@ -578,7 +600,7 @@ impl<'a> CertificateBuilder<'a> {
 /// Out of the impl block because `key_identifier` needs it for a key
 /// that has no builder around it - the *signer's* own, when writing an
 /// authorityKeyIdentifier.
-fn write_spki(writer: &mut Writer, subject_key: &SubjectKey<'_>)
+pub(crate) fn write_spki(writer: &mut Writer, subject_key: &SubjectKey<'_>)
               -> Result<(), String> {
     {
         match subject_key {
@@ -612,10 +634,17 @@ fn write_spki(writer: &mut Writer, subject_key: &SubjectKey<'_>)
                     w.write_bit_string(&y.finish());
                 });
             }
-            SubjectKey::MlDsa { parameter_set, key } => {
-                let oid = crate::x509::ml_dsa_oid(parameter_set)?;
-                // RFC 9881 sections 2 and 4: absent parameters, and the
-                // BIT STRING is FIPS 204's encoding of the key.
+            SubjectKey::MlDsa { parameter_set, key } | SubjectKey::MlKem { parameter_set, key }
+                | SubjectKey::SlhDsa { parameter_set, key, .. } => {
+                let oid = match subject_key {
+                    SubjectKey::MlDsa { .. } => crate::x509::ml_dsa_oid(parameter_set)?,
+                    SubjectKey::SlhDsa { pre_hash, .. } =>
+                        crate::x509::slh_dsa_oid(parameter_set, *pre_hash)?,
+                    _ => crate::x509::ml_kem_oid(parameter_set)?,
+                };
+                // RFC 9881, RFC 9935 and RFC 9909: absent parameters, and
+                // the BIT STRING is FIPS 204's, FIPS 203's or FIPS 205's
+                // encoding of the key.
                 writer.write_sequence(|w| {
                     w.write_sequence(|w| {
                         w.write_oid(oid);

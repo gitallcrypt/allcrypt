@@ -16,7 +16,7 @@ default-members = [".", "shim", "tools"]
 
 [package]
 name = "allcrypt"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "0BSD"
 description = "Common and uncommon cryptographic algorithms in pure Rust, old and broken ones included, with Python and C bindings."
@@ -34,7 +34,9 @@ exclude = [
     "scripts/",
     "tests/",
     "docs/",
-    "pyproject.toml"
+    "pyproject.toml",
+    # Read only by tests/, and 1.8 MB.
+    "vectors/slh_dsa_x509.vec",
 ]
 # The oldest toolchain this builds on. Declared rather than implied:
 # `is_multiple_of` and `Option::is_none_or` were stabilised in 1.87 and

@@ -283,18 +283,35 @@ to use.
 
 ## Regenerating the GOST transcripts
 
-`tests/transcripts/gost_handshakes.txt` holds seven real GOST TLS 1.2
+`tests/transcripts/gost_handshakes.txt` holds fifteen real GOST TLS 1.2
 handshakes with OpenSSL plus gost-engine at **both** ends, recorded by a
 relay that sat between them, together with the master secret from
-`s_server -keylogfile`. Five are the five suites; the last two repeat one
-suite on two other spellings of the same curve — RFC 4357's `XchA` and
-TC 26's `paramSetB` are both CryptoPro-A's parameters — because the
-ephemeral key must echo the server's parameter set OID and the five
-canonical captures cannot tell echoing from rebuilding. `tests/test_gost_transcript.rs` derives the key
-block from that secret and decrypts records the engine encrypted, which
-is the only thing that can settle the byte orders in these suites — our
-own client and server agree with each other whichever way round any of
-them is.
+`s_server -keylogfile`, and the server's private key. Five are the five
+suites. Two repeat one suite on two other spellings of the same curve —
+RFC 4357's `XchA` and TC 26's `paramSetB` are both CryptoPro-A's
+parameters — because the ephemeral key must echo the server's parameter
+set OID and the five canonical captures cannot tell echoing from
+rebuilding. Two put 0xC102 and 0xFF85 on a GOST R 34.10-2001
+certificate, which OpenSSL allows, and two are on a 512 bit key. The last
+four are on RFC 4357's id-GostR3410-2001-TestParamSet and TC 26's 512 bit
+paramSetTest, which this library does not carry. Their `curve` line is
+that curve as the engine holds it,
+read out of its group by `scripts/gost_engine_probe.c --curve`, and
+`tests/transcripts/loader.rs` registers it before a test reads the rows,
+so every test over the file runs a registered curve.
+`tests/test_gost_transcript.rs` derives the key block from the master
+secret and decrypts records the engine encrypted, which is the only thing
+that can settle the byte orders in these suites — our own client and
+server agree with each other whichever way round any of them is.
+`tests/test_gost_key_transport.rs` unwraps the engine's ClientKeyExchange
+under the server's key and requires the same master secret, which
+settles the key exchange the same way: which hash makes the UKM, and
+which VKO and S-box the key takes.
+
+The 0xC102 rows ask for `IANA-GOST2012-GOST8912-GOST8912`. OpenSSL 3.0's
+`GOST2012-GOST8912-GOST8912` selects both CNT_IMIT code points with
+0xFF85 first, so the capture refuses any row whose ServerHello is not the
+code point it asked for.
 
 With the engine built as below:
 
@@ -377,7 +394,12 @@ else here has:
 This one runs a full handshake, in both directions, with 1.4 kB of data
 each way so the record layer crosses a re-keying boundary, against an
 implementation that is not ours — on all five GOST suites that OpenSSL
-plus gost-engine can serve, plus the 512-bit key.
+plus gost-engine can serve, plus the 512-bit key under both key
+exchanges, and 0xC102 and 0xFF85 on a GOST R 34.10-2001 certificate.
+OpenSSL serves those two suites on either generation of key, and then
+the UKM's hash follows the suite while the VKO and the S-box follow the
+key. The engine's server reads the UKM out of the message, so these rows
+cannot tell which hash the client used; the transcripts above can.
 
 **And it verifies the chain.** `check_live.py --gost` turns verification
 off on purpose, because no trust store here carries a Russian test CA, so
@@ -404,7 +426,7 @@ which is the reference implementation building its group from *its*
 OID and finding our point tagged with another. The four RFC 9367 MGM
 suites cannot appear at all: they are TLS 1.3 suites and neither OpenSSL
 3.0 nor gost-engine 3.0.3 has a TLS 1.3 GOST suite to negotiate against,
-so the script lists them as unreachable rather than counting "6 of 6" as
+so the script lists them as unreachable rather than counting "9 of 9" as
 full coverage. They are checked against the engine as primitives
 instead, through `vectors/gost_engine.vec`.
 
@@ -453,6 +475,44 @@ on a re-capture; the counts do not.
 A prefix build of OpenSSL has no `openssl.cnf`, and `openssl req` will
 not run without one. Both scripts write a minimal one into their
 temporary directory and point `OPENSSL_CONF` at it.
+
+ML-KEM keys and certificates against the same build, after
+`scripts/build_python.py`, because the other direction runs through
+the Python bindings:
+
+```console
+$ python3 scripts/capture_mlkem.py --openssl /opt/openssl35/bin/openssl
+```
+
+It records OpenSSL's keys in all three private key forms, its
+encapsulations and an ML-KEM certificate per set under an ML-DSA CA
+(`vectors/ml_kem_openssl.vec`, read by `tests/test_ml_kem_openssl.rs`),
+and checks live that OpenSSL decapsulates what this library
+encapsulated and verifies the certificates it issues, failing if not.
+
+Post-quantum keys written here, read by the same build - every form,
+every parameter set, and encrypted - after `scripts/build_python.py`:
+
+```console
+$ python3 scripts/check_pq_key_writing.py --openssl /opt/openssl35/bin/openssl
+```
+
+It records nothing: OpenSSL must derive the public key written here,
+sign or decapsulate with the key, and decrypt the encrypted ones, or it
+fails.
+
+SLH-DSA certificates the same way, after `scripts/build_python.py`:
+
+```console
+$ python3 scripts/make_slh_dsa_x509_vectors.py --openssl /opt/openssl35/bin/openssl
+```
+
+It checks live that OpenSSL verifies a CA certificate and a leaf this
+library made at each of the twelve pure parameter sets, and writes
+`vectors/slh_dsa_x509.vec` (read by `tests/test_slh_dsa_x509.rs`) from
+the IETF hackathon's certificate artifacts - four participants' zips,
+fetched once at a pinned commit and SHA-256 checked, so this one needs
+the network.
 
 ## SSH against OpenSSH
 
@@ -894,6 +954,70 @@ $ python3 scripts/make_noekeon_vectors.py       # rewrites vectors/noekeon.vec
 $ python3 scripts/make_shacal2_vectors.py       # rewrites vectors/shacal2.vec
 ```
 
+**The older block ciphers** - Skipjack, SAFER, SAFER+, Square, KASUMI,
+MISTY1, 3-Way, LOKI97, LEA, HIGHT, Simon, Speck, Threefish, SHACAL-1, PRESENT and FEAL so far - are witnessed the same way, by `scripts/witness/oldciphers/build.sh`, which reuses the NESSIE
+witness's drivers with shims of its own: libtomcrypt 1.18.2's cipher
+files, Crypto++ 8.9.0's, Botan 1.10.17's and Bouncy Castle's engines
+(`OldCipherWitness.java`), libmcrypt 2.5.8's cipher modules through
+`mcrypt_driver.c`, go-krypto's pure Go (cloned at the commit the LSH
+witness pins, and built offline with the `purego` tag), the Linux
+kernel's Speck from v4.19 - the last release that had it - against a
+small header shim, inmcm's Python Simon and Speck through
+`inmcm_driver.py`, with its tests for the paper's vectors at every size,
+jedisct1/rust-lwbc's Speck and Simon, built offline with cargo under
+`lwbc_driver.rs`, Skein3Fish's C Threefish through
+`skein3fish_driver.c`, Crypto++'s and the system OpenSSL's SHA-1
+compression functions, less their feed-forward, for SHACAL-1 through
+`shacal1_driver.cpp` - which encrypt only, so only encryption is asked
+of them - Nirusu/PRESENT.go through the Go driver, kurtfu/present's C
+against a configuration shim through `present_kurtfu_driver.c`, which
+undoes its reversed byte order, and OpenTitan's Python PRESENT through
+`opentitan_driver.py`, zilijonas/FEAL-NX's Java through
+`FealWitness.java` and Donaldduck8's Python FEAL-NX through
+`feal_driver.py`, and for MISTY1 and LOKI97 the C that Crypt::Misty1
+and Crypt::Loki97 carry, compiled with its `main` renamed - as fetched
+for MISTY1, and for LOKI97 from a copy with one declaration changed:
+the designers' code keeps 32-bit halves in an `unsigned long` and is a
+different cipher where that is 64 bits wide, its own self-test
+included. It fetches the files once, checks each
+against `oldciphers.sha256`, and requires every witness to reproduce
+the published tests its project carries - libtomcrypt's self-tests,
+Botan's `validate.dat`, Crypto++'s `TestData` and `TestVectors`,
+go-krypto's test cases - KISA's known-answer tests, for LEA and HIGHT -
+NTT's FEAL-NX test data, read from its Shift JIS, and the
+test in each libmcrypt module's own self-test function - before it
+reports
+success. Its drivers are the NESSIE witness's with a round count, read
+from the environment's `ROUNDS`, which SAFER and FEAL need: each test is run at
+the count its project names, and a vectors row at a count only one
+witness takes is not written. Skipjack's four witnesses read it in two
+byte orders, and a row is written only where all four agree once the
+order is accounted for; SAFER+'s two read it in two word orders, and
+every request goes to both, each in its own.
+The ciphers' constant tables are read out of the same sources by
+`scripts/make_oldcipher_tables.py`, which checks each file against the
+manifest first and requires all of them to agree.
+
+```console
+$ scripts/witness/oldciphers/build.sh           # builds /opt/oldciphers
+$ python3 scripts/make_oldcipher_tables.py      # rewrites src/block_ciphers/*_table.rs
+$ python3 scripts/make_skipjack_vectors.py      # rewrites vectors/skipjack.vec
+$ python3 scripts/make_safer_vectors.py         # rewrites vectors/safer.vec
+$ python3 scripts/make_saferplus_vectors.py     # rewrites vectors/saferplus.vec
+$ python3 scripts/make_square_vectors.py        # rewrites vectors/square.vec
+$ python3 scripts/make_kasumi_vectors.py        # rewrites vectors/kasumi.vec
+$ python3 scripts/make_misty1_vectors.py        # rewrites vectors/misty1.vec
+$ python3 scripts/make_threeway_vectors.py      # rewrites vectors/threeway.vec
+$ python3 scripts/make_loki97_vectors.py        # rewrites vectors/loki97.vec
+$ python3 scripts/make_lea_vectors.py           # rewrites vectors/lea.vec
+$ python3 scripts/make_hight_vectors.py         # rewrites vectors/hight.vec
+$ python3 scripts/make_simon_speck_vectors.py   # rewrites vectors/simon_speck.vec
+$ python3 scripts/make_threefish_vectors.py     # rewrites vectors/threefish.vec
+$ python3 scripts/make_shacal1_vectors.py       # rewrites vectors/shacal1.vec
+$ python3 scripts/make_present_vectors.py       # rewrites vectors/present.vec
+$ python3 scripts/make_feal_vectors.py          # rewrites vectors/feal.vec and feal_nx_ntt.txt
+```
+
 **Rijndael's wider blocks** have two witnesses, and a row is written
 only where both agree: Bouncy Castle's `RijndaelEngine` through the same
 driver, and phpseclib 1.0.23's pure-PHP `Crypt_Rijndael`, whose two
@@ -1168,6 +1292,50 @@ $ python3 scripts/make_checksum_vectors.py      # rewrites vectors/checksums.vec
 $ python3 scripts/make_fnv_tables.py            # rewrites src/checksum/fnv_tables.rs;
                                                 # fetches Landon Curt Noll's FNV, libfnv
                                                 # and fnv-es
+```
+
+**xxHash** against seven implementations, which
+`scripts/witness/xxhash/build.sh` fetches from GitHub at pinned commits,
+checked against `xxhash.sha256`, and builds: the reference `xxhash.h`
+0.8.3 through a C driver, twox-hash 2.1.5 with the system's **rustc**,
+and OneOfOne/xxhash, cespare/xxhash, pierrec/xxHash and zeebo/xxh3 with
+the system's **go**, offline, for `GOARCH=386` so that each takes its
+portable path - and **PHP**'s ext/hash, which bundles the reference.
+
+```console
+$ scripts/witness/xxhash/build.sh               # builds /opt/xxhashwitness; needs php, go,
+                                                # rustc, cc
+$ python3 scripts/make_xxhash_vectors.py        # rewrites vectors/xxhash.vec
+$ python3 scripts/make_xxhash_tables.py         # rewrites src/checksum/xxhash_tables.rs;
+                                                # fetches xxhash.h, twox-hash,
+                                                # OneOfOne/xxhash and zeebo/xxh3
+```
+
+**MurmurHash3** against six implementations, which
+`scripts/witness/murmur3/build.sh` fetches from GitHub at pinned
+commits, checked against `murmur3.sha256`, and builds: SMHasher's
+reference through a C++ driver, the murmur3 crate with the system's
+**rustc**, murmurhash3js run by **node**, and spaolacci/murmur3 and
+twmb/murmur3 with the system's **go**, offline, for `GOARCH=386` - and
+**PHP**'s ext/hash, whose PMurHash was written apart from the
+reference.
+
+```console
+$ scripts/witness/murmur3/build.sh              # builds /opt/murmur3witness; needs php, go,
+                                                # rustc, c++, node
+$ python3 scripts/make_murmur3_vectors.py       # rewrites vectors/murmur3.vec
+```
+
+**Jenkins's one-at-a-time** against three implementations, which
+`scripts/witness/joaat/build.sh` builds: **PHP**'s `joaat`, Perl 5.24's
+old one-at-a-time, cut out of `hv_func.h` and compiled with a C driver,
+and gVisor's TCP stack's, built with the system's **go**, offline - the
+last two fetched from GitHub at pinned commits and checked against
+`joaat.sha256`.
+
+```console
+$ scripts/witness/joaat/build.sh                # builds /opt/joaatwitness; needs php, go, cc
+$ python3 scripts/make_joaat_vectors.py         # rewrites vectors/joaat.vec
 ```
 
 **SipHash** against three implementations: the designers' reference,

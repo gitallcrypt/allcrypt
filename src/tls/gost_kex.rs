@@ -303,7 +303,7 @@ pub fn algorithm_id_for(curve: &Curve) -> Result<Vec<u8>, String> {
         // in. **When answering a peer, the question does not arise** -
         // `encode_public_key_like` copies whichever the peer chose.
         algid.write_sequence(|params| {
-            params.write_oid(param_set);
+            params.write_oid(&param_set);
             params.write_oid(digest);
         });
     });
@@ -328,7 +328,7 @@ pub fn algorithm_id_for(curve: &Curve) -> Result<Vec<u8>, String> {
 /// `decode_error`. Reported from a real server on `XchA`.
 ///
 /// So the OIDs are not chosen here at all: the server's
-/// `AlgorithmIdentifier` is copied whole. All seven handshakes in
+/// `AlgorithmIdentifier` is copied whole. Every handshake in
 /// `tests/transcripts/gost_handshakes.txt` show OpenSSL doing exactly
 /// that, which is also what settles the `digestParamSet` question -
 /// RFC 9215 4.2 says SHOULD NOT include it and RFC 9189's own example
@@ -423,19 +423,22 @@ pub fn algorithm_id_for_2001(curve: &Curve) -> Result<Vec<u8>, String> {
             "GOST R 34.10-2001 keys are 256 bit; {} is not.", curve.name));
     }
     let param_set = match curve.name {
-        "gost256-a" => oids::GOST_2001_CRYPTOPRO_A,
-        "gost256-b" => oids::GOST_2001_CRYPTOPRO_B,
-        "gost256-c" => oids::GOST_2001_CRYPTOPRO_C,
+        "gost256-a" => oids::GOST_2001_CRYPTOPRO_A.to_vec(),
+        "gost256-b" => oids::GOST_2001_CRYPTOPRO_B.to_vec(),
+        "gost256-c" => oids::GOST_2001_CRYPTOPRO_C.to_vec(),
         // The TC 26 sets arrived with the 2012 standard, so a 2001 key
         // on one of them is not a thing that exists.
-        other => return Err(format!(
-            "{} has no GOST R 34.10-2001 parameter set OID.", other)),
+        "gost256-tc26-a" => return Err(format!(
+            "{} has no GOST R 34.10-2001 parameter set OID.", curve.name)),
+        // And a curve the caller registered, under the OID it was
+        // registered with.
+        other => registered_param_set(other)?,
     };
     let mut writer = Writer::new();
     writer.write_sequence(|algid| {
         algid.write_oid(oids::GOST3410_2001);
         algid.write_sequence(|params| {
-            params.write_oid(param_set);
+            params.write_oid(&param_set);
             params.write_oid(oids::GOST3411_94_CRYPTOPRO_PARAMSET);
         });
     });
@@ -511,10 +514,13 @@ pub fn decode_public_key(der: &[u8]) -> Result<(Curve, Point), String> {
 /// parameter set is the curve. The CryptoPro names are used for the 256 bit curves
 /// because that is what certificates in the wild carry; the TC 26 names
 /// for the same curves are accepted on the way in.
+///
+/// A curve that is not built in takes the OID a caller registered for it,
+/// and the algorithm and digest its size calls for.
 #[allow(clippy::type_complexity)]
 fn spki_oids(curve: &Curve)
-             -> Result<(&'static [u8], &'static [u8], &'static [u8]), String> {
-    Ok(match curve.name {
+             -> Result<(&'static [u8], Vec<u8>, &'static [u8]), String> {
+    let (algorithm, param_set, digest) = match curve.name {
         "gost256-a" => (oids::GOST3410_12_256, oids::GOST_2001_CRYPTOPRO_A,
                         oids::GOST3411_12_256),
         "gost256-b" => (oids::GOST3410_12_256, oids::GOST_2001_CRYPTOPRO_B,
@@ -531,10 +537,31 @@ fn spki_oids(curve: &Curve)
                         oids::GOST3411_12_512),
         "gost512-c" => (oids::GOST3410_12_512, oids::GOST_2012_512_PARAMSET_C,
                         oids::GOST3411_12_512),
-        other => return Err(format!(
-            "{} is not a GOST curve, so it has no GOST parameter set OID.",
-            other)),
-    })
+        other => {
+            let param_set = registered_param_set(other)?;
+            return Ok(if curve.n.bit_len() > 256 {
+                (oids::GOST3410_12_512, param_set, oids::GOST3411_12_512)
+            } else {
+                (oids::GOST3410_12_256, param_set, oids::GOST3411_12_256)
+            });
+        }
+    };
+    Ok((algorithm, param_set.to_vec(), digest))
+}
+
+/// The parameter set OID a caller registered for a curve this library
+/// does not carry.
+///
+/// **The fallthrough that made a registered curve half work.** Reading a
+/// key on one went through the registry and writing one did not: these
+/// two functions matched the built-in names and refused anything else, so
+/// a GOST certificate on a registered curve could be verified and could
+/// not be issued, and the same held for the key in front of a test server.
+fn registered_param_set(name: &str) -> Result<Vec<u8>, String> {
+    crate::registry::oid_for_curve(name)?.ok_or_else(|| format!(
+        "{} is not a GOST curve this library carries, and no OID is \
+         registered for it, so it has no GOST parameter set OID. Register \
+         one with register_oid.", name))
 }
 
 /// The `GostKeyTransport` body of a ClientKeyExchange.

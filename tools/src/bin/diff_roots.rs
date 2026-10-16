@@ -73,7 +73,8 @@ fn main() {
                 SignatureAlgorithm::Gost2001 => "gost-2001".to_string(),
                 SignatureAlgorithm::Dstu4145(hash) => format!("dstu4145-{}", hash),
                 SignatureAlgorithm::Eddsa(name) => format!("eddsa-{}", name),
-                SignatureAlgorithm::MlDsa(name) => name.to_ascii_lowercase(),
+                SignatureAlgorithm::MlDsa(name) | SignatureAlgorithm::SlhDsa(name, _) =>
+                    name.to_ascii_lowercase(),
                 SignatureAlgorithm::Dsa(hash) => format!("dsa-{}", hash),
                 SignatureAlgorithm::Unsupported(name) => format!("unsupported-{}", name),
                 SignatureAlgorithm::Unknown => "unknown".to_string(),
@@ -82,7 +83,8 @@ fn main() {
                 PublicKey::Rsa { n, .. } => format!("rsa-{}", n.bit_len()),
                 PublicKey::Ec { curve, .. } => format!("ec-{}", curve),
                 PublicKey::Eddsa { curve, .. } => format!("eddsa-{}", curve),
-                PublicKey::MlDsa { parameter_set, .. } => parameter_set.to_ascii_lowercase(),
+                PublicKey::MlDsa { parameter_set, .. } | PublicKey::MlKem { parameter_set, .. }
+                    | PublicKey::SlhDsa { parameter_set, .. } => parameter_set.to_ascii_lowercase(),
                 PublicKey::Dsa { parameters, .. } => format!("dsa-{}",
                     parameters.as_ref().map_or(0, |(p, _, _)| p.bit_len())),
                 PublicKey::Gost { curve, .. } => format!("gost-{}", curve),

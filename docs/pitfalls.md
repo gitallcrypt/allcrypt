@@ -125,6 +125,27 @@ to be someone's CVE.**
 - [7zzzg. SipHash](#7zzzg-siphash)
 - [7zzzh. LSH](#7zzzh-lsh)
 - [7zzzi. Checksums](#7zzzi-checksums)
+- [7zzzj. ML-KEM keys and certificates](#7zzzj-ml-kem-keys-and-certificates)
+- [7zzzk. SLH-DSA keys and certificates](#7zzzk-slh-dsa-keys-and-certificates)
+- [7zzzl. xxHash](#7zzzl-xxhash)
+- [7zzzm. MurmurHash3](#7zzzm-murmurhash3)
+- [7zzzn. One-at-a-time](#7zzzn-one-at-a-time)
+- [7zzzo. Writing post-quantum keys](#7zzzo-writing-post-quantum-keys)
+- [7zzzp. Skipjack](#7zzzp-skipjack)
+- [7zzzq. SAFER](#7zzzq-safer)
+- [7zzzr. Square](#7zzzr-square)
+- [7zzzs. KASUMI](#7zzzs-kasumi)
+- [7zzzt. MISTY1](#7zzzt-misty1)
+- [7zzzu. SAFER+](#7zzzu-safer)
+- [7zzzv. 3-Way](#7zzzv-3-way)
+- [7zzzw. LOKI97](#7zzzw-loki97)
+- [7zzzx. LEA](#7zzzx-lea)
+- [7zzzy. HIGHT](#7zzzy-hight)
+- [7zzzz. Simon and Speck](#7zzzz-simon-and-speck)
+- [7zzzzz. Threefish](#7zzzzz-threefish)
+- [7zzzzzz. SHACAL-1](#7zzzzzz-shacal-1)
+- [7zzzzzzz. PRESENT](#7zzzzzzz-present)
+- [7zzzzzzzz. FEAL](#7zzzzzzzz-feal)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -3593,7 +3614,7 @@ It found a real bug the first time it ran; see *The GOST MAC is never
 fewer than two blocks* below, and *VKO's cofactor* in §7o for the other.
 
 **And the record layers are no longer judged only by us.**
-`tests/transcripts/gost_handshakes.txt` holds seven real GOST TLS 1.2
+`tests/transcripts/gost_handshakes.txt` holds eleven real GOST TLS 1.2
 handshakes with OpenSSL plus gost-engine at *both* ends, recorded by a
 relay that sat between them, plus the master secret from
 `s_server -keylogfile`; `tests/test_gost_transcript.rs` derives the key
@@ -3604,7 +3625,7 @@ whichever way round any of them is, which is what
 `tests/test_gost_handshake.rs` has always said about itself.
 
 Both record layers are in it, and so are the two CNT_IMIT S-boxes and
-both PRFs: 0xC102 with `id-tc26-gost-28147-param-Z` and Streebog-256,
+both PRFs: 0xC102 and 0xFF85 with `id-tc26-gost-28147-param-Z` and Streebog-256,
 and 0x0081 with `id-Gost28147-89-CryptoPro-A-ParamSet` and GOST R
 34.11-94. A GOST cipher *is* its S-box, so those two produce entirely
 different bytes from the same key material.
@@ -5861,7 +5882,7 @@ server whose certificate said `XchA`, or `paramSetB`, or `paramSetC`, or
 *different OID*. CryptoPro compares the bytes and answers
 `decode_error`.
 
-**The fix is to stop choosing.** All seven captured handshakes in
+**The fix is to stop choosing.** Every captured handshake in
 `tests/transcripts/gost_handshakes.txt` show OpenSSL's ephemeral key
 repeating the server certificate's whole `AlgorithmIdentifier` — the
 algorithm OID, the parameter set and the `digestParamSet` — byte for byte,
@@ -5927,6 +5948,97 @@ collected for.
 EC keys are left with no parameter-set field, and that is not an
 oversight: a named curve there maps one-to-one onto its OID, so the name
 carries everything the OID does. GOST is the case where it does not.
+
+### The suite names the UKM's hash; the key names the VKO
+
+A server can pair a CNT_IMIT suite with a certificate of the other
+generation. OpenSSL serves 0xC102 and 0xFF85 on a GOST R 34.10-2001
+key, because both suites authenticate with `aGOST12|aGOST01`. Then the
+three choices in the key exchange come from two places:
+
+| | from | 2012 key | 2001 key |
+| --- | --- | --- | --- |
+| hash of `r_c \| r_s` for the UKM | the suite | Streebog-256 | Streebog-256 |
+| VKO | the key | VKO_256 | VKO GOST R 34.10-2001 |
+| S-box, and the blob's `encryptionParamSet` | the key | `param-Z` | CryptoPro-A |
+
+The hash is OpenSSL's `statem`, which picks Streebog-256 when the
+suite's authentication includes `aGOST12` and GOST R 34.11-94
+otherwise. The VKO and the S-box are gost-engine's, which picks both
+from the key it is given. Neither RFC 9189 nor the CryptoPro draft
+describes the pairing.
+
+The client refused it with `unsupported_certificate`, and a test in
+`tests/test_gost_handshake.rs` required that. Before the refusal it took
+all three from the suite, and the server could not unwrap the secret.
+`gost_kex_28147::Transport` now carries the two inputs separately.
+
+**Why nothing here found it.** The test that compared our
+ClientKeyExchange with the engine's built ours through a copy of the
+client's dispatch. Both took everything from the suite, and no capture
+had the pairing, so the copy and the client agreed on the bug. The test
+now calls `client::gost_client_key_exchange`. The fixture now holds both
+2012 CNT_IMIT suites on a 2001 key and the server's private key for every
+row. `tests/test_gost_key_transport.rs` unwraps the engine's own
+ClientKeyExchange and requires the key log's master secret, and it
+requires both one-sided readings to fail on the mixed rows.
+
+**And the engine's server could not have found it either.** It reads the
+UKM out of the message instead of deriving it, so a client that hashed
+the randoms with GOST R 34.11-94 on these rows still completes a
+handshake with it. Tried, and it does. A server that checks the UKM, as
+draft-chudov-cryptopro-cptls section 3.6 says it MUST, refuses that
+client. Only the engine's *client* shows which hash it should be.
+
+### Two OpenSSL names for one cipher string
+
+In OpenSSL 3.0, `GOST2012-GOST8912-GOST8912` is not the old name of
+0xC102 alone. It is a cipher-string alias that selects both CNT_IMIT code
+points, with 0xFF85 first. 0xC102's own name is
+`IANA-GOST2012-GOST8912-GOST8912`. The capture asked for the alias, got
+0xFF85, and labelled the row 0xC102. The fixture had no 0xC102 handshake,
+yet its coverage test listed one; the two code points share a record
+layer, so nothing failed. `capture_gost_transcripts.py` now asks by the
+IANA name and refuses a row whose ServerHello is not the code point it
+asked for. `suites::by_name` still resolves the alias to 0xC102 alone,
+and the todo records that.
+
+### A registered curve was readable and not writable
+
+`register_oid` exists so that a curve this library does not carry works
+everywhere a built-in one does. Reading certificates went through the
+registry, and four other places did not.
+
+| where | what a registered curve got |
+| --- | --- |
+| `gost_kex::spki_oids`, `algorithm_id_for_2001` | "not a GOST curve": a GOST certificate on it could be verified and not issued, under either generation |
+| `x509::private_key`'s curve OIDs | four built-in OIDs and nothing else, so a PKCS#8 or SEC1 key on a curve whose certificates read was refused |
+| `x509` reading `id-ecPublicKey`, `oids::gost_curve_for` | the name looked up among the interned or built-in spellings exactly, so `curve="GOST256_A"`, accepted by `register` because `by_name` takes it, resolved to nothing |
+| `registry::oids_for_curve` | names compared as spelled, so an alias registered as `SM2` was not found when a certificate on `sm2p256v1` was written |
+
+`register` now stores a `curve=` alias under the curve's own name. Every
+reader turns an OID into a curve through `registry::curve_named_by_der`,
+which goes through `curves::by_name`, and every writer takes the one
+registered OID from `registry::oid_for_curve`, refusing when there are
+several. Two different curves may not share a name, since a curve is
+found by its name and the second was reached or not depending on a hash
+map's order. The same numbers under a second OID are an alias, however
+the name is spelled.
+
+**Why nothing here found it.** Every test of a registered curve read
+something: a certificate `cryptography` wrote, an S-box reached by OID.
+None wrote a key on one, and every alias was spelled the canonical way.
+The witness now is gost-engine on RFC 4357's
+id-GostR3410-2001-TestParamSet and TC 26's 512 bit paramSetTest, which the
+engine has and this library does not. `gost_engine_probe --curve` reads
+each curve out of the engine's own group, the capture records it beside
+the handshakes on it (four, a 2001 key among them), and the
+transcript loader registers it before any test reads them. So the record
+layer, the key exchange and our ClientKeyExchange tests run it as they
+run the built-in curves. `tests/test_gost_registered_curve.rs` holds what
+those cannot: the certificate unreadable before the registration, the
+engine's CA signature, and issuing on it. The private-key path is checked
+in `pytests/test_registered_curve.py` against keys `cryptography` wrote.
 
 ### Three namings for two curves
 
@@ -10816,6 +10928,844 @@ size, and fnv-es and fnv-plus witness it.
 **Status: accepted.** PHP runs the variant and the size together:
 `fnv132` is FNV-1 at 32 bits and `fnv1a64` FNV-1a at 64. They are taken
 as those four spellings only; everything else is `fnvVARIANT_BITS`.
+## 7zzzj. ML-KEM keys and certificates
+
+`src/x509` (RFC 9935): the three OIDs, public keys in certificates and
+`PUBLIC KEY` files, private keys in PKCS#8, and a certificate builder
+for someone else's key.
+
+### An expanded key can pass every check but one
+
+**Status: mitigated.** A decapsulation key carries its `ek` and `H(ek)`,
+so FIPS 203's hash check sees a changed `ek` or a changed hash - and
+nothing else. Alter the secret vector and leave the rest, and the key
+passes the hash check and the modulus check, imports, and decapsulates
+every ciphertext to the implicit rejection secret, which looks like a
+peer sending garbage. RFC 9935's Appendix C.4 has such a key. An
+expanded key alone, in a file or through `MlKemKey.from_private`, gets
+a pairwise test - encapsulate to its own `ek`, decapsulate, compare -
+and a test pins that the C.4 key passes the other two checks and fails
+this one.
+
+### The rejection seed cannot be checked without the seed
+
+**Status: accepted.** `z`, the last 32 bytes, is used only when a
+ciphertext is refused, so no encapsulation can show that a key's `z` is
+not the one it was generated with. A file with both the seed and the
+expanded key is regenerated and compared, which C.4's fourth key, wrong
+only in `z`, fails. An expanded key alone cannot be asked.
+
+### The seed is 64 bytes, not 32
+
+**Status: mitigated.** ML-KEM's seed is `d || z` and ML-DSA's is one 32
+byte value; the private key structures are otherwise the same CHOICE. A
+reader copied from ML-DSA's refuses every seed OpenSSL and the RFC
+write. A test offers 32 bytes and expects the refusal to name 64.
+
+### An ML-KEM key signs nothing
+
+**Status: mitigated.** A KEM certificate is issued by a CA with a
+signing key, never self-signed, and RFC 9935 section 5 allows only
+keyEncipherment in its keyUsage. `issue_ml_kem` writes that alone, and
+a signature claimed under an ML-KEM key is refused by name rather than
+as a bad signature.
+
+## 7zzzk. SLH-DSA keys and certificates
+
+`src/x509` (RFC 9909): the twenty-four OIDs, public keys in
+certificates and `PUBLIC KEY` files, private keys in PKCS#8, and
+SLH-DSA certificate authorities.
+
+### The form is in the key, and the arithmetic does not care
+
+**Status: mitigated.** Pure SLH-DSA and HashSLH-DSA have separate OIDs,
+and the same OID names the key and the signature. Section 8: a key
+under a pure OID "is not permitted" to verify a HashSLH-DSA signature,
+or the other way round, though FIPS 205 would compute either. A reader
+that took the set from the key and the form from the signature would
+accept both. Here a key comes back bound to the pre-hash its OID fixes,
+verification compares set and form and refuses a mismatch by name, and a
+test checks both directions. Redhound's HashSLH-DSA artifacts are signed
+under the HashSLH-DSA OID by a key whose certificate carries the pure
+one, and they are refused; `tests/test_slh_dsa_x509.rs` pins that,
+and that their signatures are right as HashSLH-DSA.
+
+### The private key has no second wrapping
+
+**Status: mitigated.** RFC 8410's keys and RFC 9881's ML-DSA seed sit in
+an OCTET STRING inside the PKCS#8 one; RFC 9909 section 7 puts FIPS
+205's `4n` bytes in the PKCS#8 OCTET STRING directly. A reader copied
+from either sees two bytes of DER header as key material and the wrong
+length. The length is checked, and a test offers a doubly wrapped key.
+
+### Importing a private key does not check its root
+
+**Status: accepted.** `PK.root` is the root of a tree over the seeds,
+and checking it is a whole key generation - seconds at the `s` sets. A
+private key is read with its length checked and nothing more, as
+`SlhDsaKey.from_private` always was; `recompute_public` asks.
+`CertificateAuthority.from_parts`, the one place a stored key signs for
+others, does check.
+
+### OpenSSL 3.5 has no HashSLH-DSA
+
+**Status: accepted.** It verifies this library's pure SLH-DSA
+certificates live, at all twelve sets, and cannot be asked about the
+other form. HashSLH-DSA rests on ACVP's pre-hash cases, Bouncy Castle's
+certificates and Redhound's signatures. A CA generated here is pure;
+one rebuilt from a HashSLH-DSA certificate signs as that certificate
+says.
+
+## 7zzzl. xxHash
+
+`src/checksum/xxhash.rs`: XXH32, XXH64, and XXH3 at 64 and 128 bits.
+
+### XXH3-64 is not XXH3-128's low half
+
+**Status: mitigated.** The specification says it is, and for 1 to 3
+bytes and above 240 it is; for the empty input and from 4 to 240 bytes
+the two are computed differently, and truncating a 128 bit value gives
+neither. `tests/test_xxhash.rs` checks the low half exactly where it
+holds.
+
+### The last block is not a block like the others
+
+**Status: mitigated.** XXH3 folds input in blocks of 16 stripes (with
+the default secret), but the last block, even a full one, is left for
+the final step, whose last stripe is the input's last 64 bytes and can
+reach back into the block before. A stream cannot know which block is
+last, so one is folded in only once more input follows it, and its last
+64 bytes are kept. The tests stream every vector in growing pieces and
+a byte at a time.
+
+### PHP keeps 256 bytes of a secret
+
+**Status: accepted.** PHP's `hash_init("xxh3", ..., ["secret" => ...])`
+copies at most 256 bytes and warns; for inputs over 240 bytes the hash
+is then of another secret, since a longer one gives longer blocks. Here
+a secret of any length is used whole, as the reference and twox-hash
+use it, and the vectors do not ask PHP about the secret of 1000 bytes.
+
+### A secret does not make a MAC
+
+**Status: accepted.** XXH3 with a secret is still a fast hash: nothing
+in it resists someone who sees outputs and chooses inputs, and the
+secret can be recovered or worked around. It is for hash tables that
+want their hashes unpredictable to a casual observer. SipHash is the
+keyed hash for that job when the keys matter; HMAC when it is a MAC.
+
+### The value's bytes have one order here and two elsewhere
+
+**Status: accepted.** The canonical form is big endian, and that is
+what `digest` gives and `xxhsum` prints; but Go's pierrec/xxHash
+appends its `Sum` little endian, and code that writes the integer
+straight to memory gets the machine's order. XXH3-128's canonical form
+is the high half first.
+
+## 7zzzm. MurmurHash3
+
+`src/checksum/murmur3.rs`: x86_32, x86_128 and x64_128.
+
+### Three functions under one name
+
+**Status: accepted.** "MurmurHash3" with 128 bits out is two functions:
+x86_128 works in four 32 bit words and x64_128 in two 64 bit ones, and
+they give unrelated values for the same input and seed. Libraries name
+them as they please - PHP's `murmur3c` and `murmur3f`, Guava's
+`murmur3_128` is x64_128 - so each has its own name here and none is
+called plain `murmur3`.
+
+### A 128 bit value has three byte orders
+
+**Status: accepted.** The reference writes its words to memory, so its
+output bytes are each word in the machine's order; PHP prints each word
+big endian, first word first, and that is `digest` here; Python's
+`mmh3.hash128` reads the reference's bytes as one little endian number,
+which puts the second word on top. `intdigest` and the `u128` here have
+the first word on top. Converting between them is a matter of words and
+bytes, not of arithmetic, and getting it wrong gives a value that looks
+as random as the right one.
+
+### The seed is 32 bits, and some libraries take two
+
+**Status: accepted.** The reference seeds every word with one 32 bit
+value. twmb/murmur3 and others take two 64 bit seeds for x64_128, one
+per half; theirs with both halves set to the same 32 bit value is the
+reference's, and the witness is driven that way.
+
+### Collisions that no seed prevents
+
+**Status: accepted.** Aumasson, Bernstein and Boßlet showed in 2012 that
+MurmurHash3 has multicollisions independent of the seed, so seeding a
+hash table with a secret does not stop flooding it. SipHash was designed
+for that. MurmurHash3 is here for the data and systems that already use
+it: Bloom filters, partitioners, Guava.
+
+## 7zzzn. One-at-a-time
+
+`src/checksum.rs`: Jenkins's one-at-a-time.
+
+### The same name for several functions
+
+**Status: accepted.** Perl's hashes used it from 5.8 starting from a
+seed, and from 5.18 a variant that adds the key's length to the seed
+first - another function under the same name in the same header. The
+hashers crate's is computed in 64 bits; the RAGE games' `joaat` hashes
+names lowercased. Here it is the 32 bit function of Bob Jenkins's
+article, from zero or from a seed taken as the starting state, which is
+PHP's `joaat` and Perl's before 5.18.
+
+### Nothing in it resists a chosen input
+
+**Status: accepted.** Each step is invertible, so the state after any
+prefix can be steered to any value by the bytes that follow, and
+collisions for any seed are easy. It is a hash for tables of names. It
+is here because data and formats carry it.
+
+## 7zzzo. Writing post-quantum keys
+
+`to_pkcs8` and `to_spki` on the ML-DSA, ML-KEM and SLH-DSA key types.
+
+### A key without its seed cannot be written in the recommended form
+
+**Status: accepted.** RFC 9881 and RFC 9935 recommend writing the seed
+alone, and the seed cannot be recovered from an expanded key. A key
+imported with `from_private`, or read from a file in the expanded form,
+writes only that form; asking for the seed form is refused by name
+rather than quietly writing the expanded one. ML-KEM keys used to drop
+their seed on generation; they keep it now, as ML-DSA keys did.
+
+### The seed form trusts the reader to expand it
+
+**Status: accepted.** A file holding only the seed says nothing a reader
+can check against: every 32 or 64 bytes is some key. The `both` form
+lets a reader regenerate and compare, which this library's reader does
+and RFC 9881 section 8.2 asks for; it is larger by the whole expanded
+key. Which to write is the caller's choice; the default in Python is the
+RFC's recommendation.
+
+### The optional public key is not written
+
+**Status: accepted.** OneAsymmetricKey can carry the public key in
+`[1]`, and both RFCs allow it for a consistency check on import. OpenSSL
+3.5 does not write it and neither does this; the tests compare with
+OpenSSL's bytes, which a `[1]` would break.
+
+## 7zzzp. Skipjack
+
+`src/block_ciphers/skipjack.rs`.
+
+### Two byte orders, and both are in wide use
+
+**Status: accepted.** The specification reads the block as four
+big-endian words and the key as `cv0` to `cv9` in order; libtomcrypt
+and Bouncy Castle do the same. Crypto++ and Botan read the key, the
+block and the result each backwards, and print the specification's test
+vector backwards as their own - so each pair's published test fails on
+the other pair's code, and nothing in a ciphertext says which was used.
+Both are here, as `skipjack` and `skipjack-reversed`, rather than one
+picked as "Skipjack". Data a Crypto++ or Botan program wrote needs the
+second. The vectors put every input through all four implementations,
+each in its own order, so a mistake in either direction of the reversal
+is a disagreement.
+
+### Rule B mixes `w1` into `w3` before `G` changes it
+
+**Status: mitigated.** Rule B writes `w1 ^ w2 ^ counter` into `w3`
+using the old `w1`, and only the new `w2` is `G(w1)`; rule A instead
+mixes `G(w1)` into the new `w1`. Using the new value in B, or the old
+in A, is a different permutation that still decrypts with the matching
+mistake. The published tests catch either, and both directions of every
+row are checked.
+
+### The key bytes are used cyclically, four per round
+
+**Status: mitigated.** The `k`-th `G` takes key bytes `4k` to `4k + 3`
+modulo 10, so the schedule wraps mid-round every five rounds. Restarting
+at `cv0` each round, or taking the bytes in the other order, changes
+every round after the second; the single-bit keys reach each of the ten
+positions.
+
+### It is not constant time
+
+**Status: accepted.** `G` looks up the F-table at a data byte XORed with
+a key byte, as every implementation does. A cache-timing observer
+learns about the key. It is here for the data Clipper- and Fortezza-era
+systems produced, not for new use.
+
+## 7zzzq. SAFER
+
+`src/block_ciphers/safer.rs`: SAFER K-64, K-128, SK-64 and SK-128.
+
+### The round count is part of the key
+
+**Status: accepted.** Each variant has a usual count - 6, 10, 8 and 10 -
+and the designer allowed others, up to 13; libtomcrypt takes 6 to 13,
+Crypto++ and Botan 1 to 13. A ciphertext does not say its count, and
+Crypto++'s own tests run K-128 at twelve and SK-64 at six. The count is
+the catalogue's parameter, absent meaning the usual one, and every
+vector names its count. Fewer than six rounds is offered because two
+implementations take it, not because it is advisable.
+
+### The first subkey is the key's second half
+
+**Status: mitigated.** For the -128 variants the key splits into two
+halves: the second is the first subkey and seeds the register for the
+odd subkeys after it, the first - rotated left by five - seeds the
+register for the even ones. Swapping the halves changes nothing for the
+-64 variants, which use the key as both, and everything for the -128
+ones; the vectors have both.
+
+### SK reads its registers from a moving start, over nine bytes
+
+**Status: mitigated.** Each register is the half key and the XOR of its
+bytes, nine bytes. SK starts the `n`-th subkey at register byte
+`n - 1 mod 9` and wraps over all nine; K reads bytes 0 to 7 every time.
+Wrapping over eight, or starting both of a round's subkeys at the same
+place, is a different key schedule that still decrypts its own output.
+Every single-bit key at each variant's usual count is in the vectors.
+
+### `exp` sends 128 to 0
+
+**Status: mitigated.** `exp(x)` is `45^x mod 257`, and `45^128` is 256,
+which does not fit a byte and is written as 0; `log(0)` is 128. Both are
+computed here from that rule, a test checks the rule entry by entry, and
+every byte repeated as key and block reaches every entry.
+
+### It is not constant time
+
+**Status: accepted.** `exp` and `log` are indexed by data mixed with key
+bytes, as in every implementation.
+
+## 7zzzr. Square
+
+`src/block_ciphers/square.rs`.
+
+### It is not AES with a different S-box
+
+**Status: mitigated.** Square's field is GF(2⁸) modulo 0x1f5, its
+diffusion multiplies each row rather than each column, and the plaintext
+passes through that diffusion's inverse before the first key is added -
+three places where AES's habits give a cipher that round-trips and
+matches nothing. The round keys are passed through the diffusion too,
+all but the last. The inverse diffusion is computed here by elimination
+over the field and checked against the forward one; the vectors settle
+the rest.
+
+### The key schedule adds a power of two, not a field power
+
+**Status: mitigated.** Round `t`'s constant is `2ᵗ⁻¹` in the top byte of
+the first word, for `t` from 1 to 8 - all of which fit a byte, so nothing
+is reduced. Starting at `2ᵗ` instead, or putting the constant in the
+low byte, is a different key schedule; every single-bit key is in the
+vectors.
+
+### It is not constant time
+
+**Status: accepted.** The S-box is a table indexed by state bytes, as in
+every implementation.
+
+## 7zzzs. KASUMI
+
+`src/block_ciphers/kasumi.rs`.
+
+### The rounds alternate the order of FL and FO
+
+**Status: mitigated.** Odd rounds apply `FL` then `FO`, even rounds `FO`
+then `FL`. A loop that applies them in one order every round is a
+Feistel network that decrypts its own output and matches nothing; the
+3GPP's tests and every row catch it.
+
+### FI's subkey is split nine and seven bits the other way round
+
+**Status: mitigated.** `FI` splits its input into a nine-bit top and a
+seven-bit bottom, but XORs the subkey's top seven bits into the
+seven-bit half and its bottom nine into the nine-bit half. Matching the
+input's split is the natural mistake; the vectors catch it.
+
+### It is not MISTY1
+
+**Status: accepted.** KASUMI keeps MISTY1's structure and changes its
+S-boxes, `FL`'s position and the key schedule, so a MISTY1
+implementation with KASUMI's tables is not KASUMI.
+
+### It is not constant time
+
+**Status: accepted.** S7 and S9 are tables indexed by data mixed with
+key words, as in every implementation.
+
+## 7zzzt. MISTY1
+
+`src/block_ciphers/misty1.rs`.
+
+### The halves are exchanged at the end
+
+**Status: mitigated.** RFC 2994 writes the ciphertext as
+`(D1 << 32) | D0` after the last `FL`s, and decryption reads them back
+the same way round. Leaving the halves where they are still decrypts and
+matches nothing; the RFC's examples, read out of the document, catch it.
+
+### FI masks the seven-bit half
+
+**Status: mitigated.** After the first S7 lookup, `S7[d7] ^ d9` has nine
+bits, and the RFC's `( d7 = d7 & 0x7f; )`, in parentheses as if it were
+a remark, keeps seven. Without it the stray bits reach the next XOR and
+the output; the vectors catch it.
+
+### FL's key words depend on whether its index is odd
+
+**Status: mitigated.** Even-numbered `FL`s take `EK[k/2]` for the AND
+and an `EK'` word for the OR; odd-numbered ones the other way round,
+from different offsets. `FLINV` takes the same words in the reverse
+order of operations. The single-bit keys reach every `EK` word.
+
+### It is not constant time
+
+**Status: accepted.** S7 and S9 are tables indexed by data mixed with
+key words, as in every implementation.
+
+## 7zzzu. SAFER+
+
+`src/block_ciphers/saferplus.rs`.
+
+### There are two word orders, and both are in use
+
+**Status: accepted.** The submission's tests, and libtomcrypt, read the
+key and the block as byte strings in order. libmcrypt - and so PHP's
+`mcrypt` extension - takes them as arrays of 32-bit words and reverses
+the order of the words, leaving each word's bytes alone, for the key,
+the block and the result. Data written by one does not decrypt under
+the other. Both are offered, `saferplus` and `saferplus-reversed-words`,
+and the vectors have both; a test asserts the two differ on the
+published tests. The reordering is of whole words, so a key length is
+checked before it - reordering first dropped the partial last word of a
+17 or 33 byte key and accepted it as 16 or 32.
+
+### The bias is `exp` applied twice, then once
+
+**Status: mitigated.** Subkey `k`'s bias is `exp(exp(17k + 35 + j))`
+for the sixteen subkeys after the first and a single `exp` for the rest,
+which only the 24 and 32 byte keys reach. Applying one rule throughout is
+right for every 16 byte key and wrong for the longer ones from the
+eighteenth subkey on. The bias is computed here from the rule, and every
+single-bit key at each length is in the vectors.
+
+### The linear layer shuffles between its four transforms, not after them
+
+**Status: mitigated.** Four Pseudo-Hadamard layers with the "Armenian
+shuffle" between each pair - three shuffles, not four, and none after
+the last. The inverse applies the inverse shuffle and inverse
+transforms in the reverse order. A test checks the shuffle is a
+permutation and the inverse undoes the layer; the vectors settle the
+order.
+
+### It is not constant time
+
+**Status: accepted.** `exp` and `log` are tables indexed by data mixed
+with key bytes, as in every implementation.
+
+## 7zzzv. 3-Way
+
+`src/block_ciphers/threeway.rs`.
+
+### Decryption is encryption under a transformed key, with the block's bits reversed
+
+**Status: mitigated.** Decryption runs the same eleven rounds, but under
+`mu(theta(key))`, with round constants from `0xb1b1` rather than
+`0x0b0b`, and with `mu` - all 96 bits in reverse order - applied to the
+block before and after. Reversing each word's bits without exchanging
+the first and third words, or transforming the key in the other order,
+gives a decryption that does not invert anything. A test checks `mu`
+bit by bit, and every row is decrypted as well as encrypted.
+
+### The round constants are a 16-bit register, placed in two halves
+
+**Status: mitigated.** Each round XORs its constant into the top half of
+the first word and the bottom half of the third. The constants step by
+doubling and, when bit 16 is set, XORing `0x11011`. A test checks the
+register's rule; the vectors check the placement.
+
+### libmcrypt's own build can compute it wrongly
+
+**Status: accepted.** In libmcrypt 2.5.8 the round's nonlinear step is
+a global function named `gamma`, and when the module is built as its
+own shared object and loaded into a program linked with the C math
+library, the math library's `gamma` is called instead and the output is
+wrong. Data written that way decrypts under nothing else, including
+this library; the vectors here are from a libmcrypt build that calls
+its own.
+
+### It is constant time
+
+**Status: mitigated.** Every step is a shift, rotation or logical
+operation on three words, with no table lookups and no branches on data.
+
+## 7zzzw. LOKI97
+
+`src/block_ciphers/loki97.rs`.
+
+### The name means two ciphers
+
+**Status: accepted.** libmcrypt - and so PHP's `mcrypt` - computes
+something else as LOKI97: every 32-bit word of the key, the block and
+the result byte-swapped, and only the 32 byte key schedule, so a 16 or
+24 byte key is the 32 byte key with zeros after it. Data it wrote
+decrypts under nothing that follows the submission, and with a short
+key under no LOKI97 of that length. Both are offered, `loki97` and
+`loki97-mcrypt`; the vectors have both, and a test asserts the two
+differ on each other's published tests.
+
+### The designers' C is a different cipher on a 64-bit machine
+
+**Status: accepted.** The reference keeps each 32-bit half of its
+64-bit words in an `unsigned long`. Where that is 64 bits wide, nothing
+truncates, the carry between the halves is lost, and a byte shifted to
+the top of a word sign-extends - a different function, which its own
+self-test reports and which the Perl module carrying it computes on
+every 64-bit Unix. Vectors made there are not LOKI97. The witness is
+built with the halves 32 bits wide, and this library's halves are a
+`u64` split explicitly.
+
+### The short keys have one witness
+
+**Status: accepted.** No second implementation of the 16 and 24 byte
+key schedules is available here, so those rows are the reference's
+alone, marked in the file, with five published 128 bit tests. They
+differ from the 32 byte schedule, which two implementations agree on,
+only in making the missing key words with the round function.
+
+### P is a transpose, and is easy to transpose the wrong way
+
+**Status: mitigated.** The permutation between the S-box columns sends
+bit `j` of the `k`-th first-column output to bit `8j + k`. The
+mirror-image reading, `8j + 7 - k`, is as plausible from the
+submission's prose; a test checks the permutation against the
+submission's printed table, and the vectors catch either.
+
+### It is not constant time
+
+**Status: accepted.** S1 and S2 are tables indexed by data mixed with
+key bits, as in every implementation.
+
+## 7zzzx. LEA
+
+`src/block_ciphers/lea.rs`.
+
+### The words are little-endian
+
+**Status: mitigated.** LEA reads the key and the block as little-endian
+32-bit words, where most ciphers here read big-endian ones. A
+big-endian reading round-trips and matches nothing; KISA's tests catch
+it on every row.
+
+### The 16 byte key schedule repeats a word
+
+**Status: mitigated.** With a 16 byte key the round key is
+`T0, T1, T2, T1, T3, T1` - four register words, `T1` in three places -
+where the longer keys take six distinct words. And the 32 byte
+schedule walks its eight-word register six words at a time, starting
+at `6i mod 8`, so consecutive rounds overlap. A test checks the 16 byte
+shape; KISA's tests cover each length separately, and a test requires
+that.
+
+### The constants are the square root of "LEA"
+
+**Status: mitigated.** The eight constants are the hexadecimal digits
+after the point of the square root of 766965, "LEA" in decimal ASCII.
+They are generated into `lea_table.rs` from two implementations' tables,
+which must agree with each other and with that rule computed - 766995,
+one digit off, gives a plausible table that matches nothing.
+
+### It is constant time
+
+**Status: mitigated.** Additions, rotations and XORs of words, with no
+table and no branch on data.
+
+## 7zzzy. HIGHT
+
+`src/block_ciphers/hight.rs`.
+
+### The standard prints its bytes backwards
+
+**Status: accepted.** TTAS.KO-12.0040 numbers the key's bytes 15 down to
+0 and the block's 7 down to 0, most significant first, and prints its
+worked examples in that order; implementations keep byte `i` at index
+`i`. Read as printed, the standard's own example is a different key and
+block. go-krypto marks those examples `Reverse`, and the witness reader
+reverses them as it does.
+
+### The whitening keys are not the first eight key bytes
+
+**Status: mitigated.** The four whitening bytes before the rounds are
+key bytes 12 to 15, and the four after are bytes 0 to 3. Taking 0 to 7,
+in either order, round-trips and matches nothing; every single-bit key
+is in the vectors.
+
+### The round's four updates move round by round
+
+**Status: mitigated.** Each round changes bytes `7, 5, 3, 1` of the
+state, one place lower every round, from their neighbours below, with
+`F0` added to a subkey and XORed in at two of them and `F1` XORed with a
+subkey and added at the other two. A test checks the positions; the
+vectors check the rest.
+
+### It is constant time
+
+**Status: mitigated.** Byte additions, XORs and rotations, with `F0` and
+`F1` computed rather than looked up, and no branch on data.
+
+## 7zzzz. Simon and Speck
+
+`src/block_ciphers/simon.rs` and `src/block_ciphers/speck.rs`.
+
+### The paper prints its vectors in the other byte order
+
+**Status: accepted.** The paper writes words most significant first, the
+block as `(x, y)` and the key as `(l_{m-2}, ..., l_0, k_0)`, and prints
+its test vectors in that order. The designers have since given the byte
+encoding as little-endian: each word little-endian, `y` before `x`,
+`k_0` first - the whole number little-endian. The Linux kernel, Crypto++
+and inmcm's reference, read that way, agree on every row, and Crypto++'s
+copies of the paper's vectors are the printed strings reversed. An
+implementation that reads the printed order runs, round-trips and
+matches nothing; a test checks the published tests fail under it.
+
+jedisct1/rust-lwbc's own block functions take `x` first and `y` second,
+each little-endian, so its bytes agree with none of the others: the
+paper's Speck64/128 test comes out `7a1969f60a33d989` there rather than
+`8b024e4548a56f8c`. Its keys are read as the others read them. Its
+witness driver goes through its word functions instead, in the
+designers' order.
+
+### One name, several key lengths, different round counts
+
+**Status: mitigated.** Each block size is one name, and the key length
+chooses the variant: `speck32` and `simon32` take 8 bytes, `speck48`
+and `simon48` 9 or 12, `speck64` and `simon64` 12 or 16, `speck96` and
+`simon96` 12 or 18, `speck128` and `simon128` 16, 24 or 32. Speck's
+rounds are 22; 22, 23; 26, 27; 28, 29; and 32, 33, 34, Simon's 32; 36,
+36; 42, 44; 52, 54; and 68, 69, 72, and Simon's constant sequence
+changes with them - Simon48's two variants differ in their sequence
+alone. Each key length has its own rows in the vectors, and a test
+requires that.
+
+### Speck32 rotates by different amounts
+
+**Status: mitigated.** Every other Speck rotates by 8 and 3; Speck32
+rotates by 7 and 2, in its round and so in its key schedule. inmcm and
+lwbc both compute it, and their rows are in the vectors.
+
+### Words that are not a whole integer
+
+**Status: mitigated.** The 48 and 96 bit blocks have 24- and 48-bit
+words, held here in 32- and 64-bit integers. A carry out of an
+addition, a bit rotated in from above, or Simon's complement leaves
+bits above the word unless each is masked, and the results are wrong
+from there on. Each operation is masked, the tests put every byte 0xff
+through them, and the vectors cover both sizes.
+
+### Four variants have one witness
+
+**Status: accepted.** lwbc has one key length at each of the 32, 48 and
+96 bit blocks, 8, 12 and 18 bytes, so Speck48/72, Speck96/96,
+Simon48/72 and Simon96/96 are computed by inmcm's Python alone, with
+the paper's one vector each. Their rows say `witnesses=1`, and a test
+requires exactly those rows to.
+
+### Simon's sequences come in three encodings
+
+**Status: mitigated.** The 62-bit sequences `z0` to `z4` are consumed
+from the low bit, one per round key after the key's own words. inmcm
+keeps all five as 62-bit binary literals; Crypto++ keeps `z2`, `z3` and
+`z4` as 64-bit words, the sequence with its first two bits again on
+top, since it has period 62; lwbc keeps `z0`, `z1` and `z3` as binary
+literals in the variants that use them. `simon_table.rs` is generated
+from all three, every sequence from two at least, and the generator
+requires each Crypto++ word to be that shape and to match the sequence
+its variant's round count names.
+
+### Speck's key schedule is its round function
+
+**Status: mitigated.** Each round key comes from running the round
+function on the key's words, with the round number as the key - so a
+key schedule that gets the rotation directions right and the order of
+the `l` words wrong still produces a cipher that inverts itself. Every
+single-bit key at every length is in the vectors.
+
+### It is constant time
+
+**Status: mitigated.** Additions, ANDs, rotations and XORs only, with no
+table and no branch on data.
+
+## 7zzzzz. Threefish
+
+`src/block_ciphers/threefish.rs`.
+
+### The tweak rides in the key
+
+**Status: accepted.** The catalogue and the bindings have one key
+argument, so `threefish256`, `threefish512` and `threefish1024` take the
+key alone, with a tweak of zero, or the key followed by the 16 byte
+tweak: a 48 byte key to `threefish256` is a 32 byte key and a tweak, not
+a longer key. Only those two lengths are accepted at each size, so a key
+of any other length is an error rather than a guess. Rust callers can
+use `with_tweak` and `set_tweak` instead. Every row of the vectors is
+checked through all of these ways of giving the tweak.
+
+### A tweak of the wrong length, or an old one kept
+
+**Status: mitigated.** The tweak is a `&[u8; 16]`, so a short one does
+not compile, and keying with the key alone always means a tweak of zero.
+Both are places other implementations go wrong: Crypto++ checks the
+tweak's length only with a debug assertion and in a release build reads
+16 bytes from a shorter one, and Bouncy Castle's engine, given a key
+alone after a tweak, keeps the old tweak although its documentation
+says zero.
+
+### The last subkey's tweak words
+
+**Status: mitigated.** Subkey `s` adds tweak words `s mod 3` and
+`s + 1 mod 3`. The last subkey is 18 at 256 and 512 bits, which takes
+words 0 and 1 - the same as the first - but 20 at 1024 bits, which
+takes words 2 and 0. An implementation that copies the 512 bit
+schedule's ending to 1024 bits passes every test with a zero tweak.
+Every single-bit tweak is in the vectors at every size.
+
+### Published answers that are Skein's, not Threefish's
+
+**Status: accepted.** Skein feeds the plaintext forward - each block's
+output is XORed with its input - and some Threefish tests are written
+after that step: Skein3Fish's own test of the tweaked Threefish-256
+vector compares the ciphertext XORed with the plaintext. Read as a
+Threefish answer it fails. The published tests here are Crypto++'s,
+which are Threefish's alone, and Skein3Fish is checked against them.
+
+### No AEAD at this width
+
+**Status: accepted.** CMAC, EAX, OCB and MGM here are defined over 64
+and 128 bit blocks only, so Threefish has the unauthenticated modes and
+none of the AEADs.
+
+### It is constant time
+
+**Status: mitigated.** Additions, rotations by fixed distances and XORs,
+with no table indexed by data and no branch on it.
+
+## 7zzzzzz. SHACAL-1
+
+`src/block_ciphers/shacal1.rs`.
+
+### No implementation found decrypts
+
+**Status: accepted.** SHACAL-1 is in no maintained library found: the
+witnesses are two SHA-1 compression functions, Crypto++'s and OpenSSL's,
+with the feed-forward subtracted, and a compression function cannot be
+run backwards. Every row's encryption is theirs; decryption is checked
+by giving every row's block back, which on those blocks makes it the
+inverse of a witnessed encryption, and nothing more.
+
+### It is SHA-1 without the feed-forward
+
+**Status: mitigated.** As SHACAL-2 (7zzx): SHA-1's compression adds the
+input chaining value to its output and SHACAL-1 does not. A unit test
+requires encryption with the block added back to equal this library's
+own SHA-1 compression, which shares only the round constants with it.
+
+### A short key is the long key with zeros
+
+**Status: accepted.** As SHACAL-2: keys of 16 to 64 bytes are the
+64-byte message block with zeros after them, so a key and the same key
+padded are one key. The published tests have 64-byte keys only; the
+shorter keys' rows are the witnesses' drivers padding them, which is the
+definition and what Project Nayuki's implementation does too.
+
+### It is constant time
+
+**Status: mitigated.** Additions, rotations and Boolean functions of
+words, with no table and no branch on data.
+
+## 7zzzzzzz. PRESENT
+
+`src/block_ciphers/present.rs`.
+
+### Byte order
+
+**Status: accepted.** The paper prints keys, blocks and results as hex
+numbers, and this library reads them most significant byte first, as
+PRESENT.go and OpenTitan's Python do. kurtfu/present takes every byte
+string the other way round; read like that, the paper's tests are
+different blocks under different keys, which a test checks. Its witness
+driver reverses the strings, so all three agree.
+
+### The 128 bit tests are not the paper's
+
+**Status: accepted.** The paper gives test vectors for 80 bit keys only.
+The 128 bit ones PRESENT.go carries were generated with pypresent, of
+which OpenTitan's Python is a port; so at 128 bits the published rows
+show those two agree, and PRESENT.go's and kurtfu's own code are what
+make the 128 bit rows independent.
+
+### One name, two key schedules
+
+**Status: mitigated.** The key's length, 10 or 16 bytes, chooses the
+schedule: at 80 bits one nibble through the S-box and the counter at
+bits 19 to 15, at 128 bits two nibbles and the counter at 66 to 62.
+Every single-bit key at both lengths is in the vectors.
+
+### Round counts
+
+**Status: mitigated.** PRESENT has 31 rounds and 32 round keys, and
+implementations count either: pypresent's `rounds=32` and PRESENT.go's
+`NewCipher(key, 31)` are the same cipher. This one has no round count to
+set. PRESENT.go keeps the count in a package-wide variable, so another
+cipher made with a different count changes the first one's.
+
+### Not constant time
+
+**Status: accepted.** The S-box is a 16-byte table indexed by data. It
+fits in one cache line, but that is the processor's doing, not a
+guarantee.
+
+## 7zzzzzzzz. FEAL
+
+`src/block_ciphers/feal.rs`.
+
+### It is broken, and kept
+
+**Status: accepted.** FEAL-4 falls to a few chosen plaintexts and
+FEAL-8 to differential and linear cryptanalysis; FEAL-N is weak at any
+round count small enough to be fast. It is here for old data and for
+study, under its own name, never as a default.
+
+### The cryptanalysis courses' FEAL-4 is not FEAL-4
+
+**Status: accepted.** The FEAL-4 of many cryptanalysis tutorials and
+exercises takes independent round keys in place of NTT's key schedule,
+and agrees with nothing NTT specified. `feal` with four rounds is NTT's
+FEAL-N at N = 4.
+
+### Two names, two defaults
+
+**Status: mitigated.** `feal` is FEAL-N with an 8 byte key and 8 rounds
+unless the parameter says otherwise, FEAL-8; `feal-nx` is FEAL-NX with
+a 16 byte key and 32, the round count NTT recommends for it. The same
+round count under the two names is the same cipher when the 16 byte
+key's right half is zero, which is how NTT defines FEAL-N, and a unit
+test requires it. An odd round count, or none, is refused: the key
+schedule makes two subkeys at a time.
+
+### The test data is in Shift JIS
+
+**Status: accepted.** NTT's FEAL-NX test data is a Japanese text file in
+Shift JIS. It is kept as published; the tests read its ASCII lines and
+skip the rest, and require all 40,960 blocks under ten keys to be found,
+so a reader that missed them would fail rather than pass on nothing.
+
+### It is constant time
+
+**Status: mitigated.** Byte additions, rotations by two and XORs, with no
+table and no branch on data.
+
 ---
 
 ## 8. What to do with this document

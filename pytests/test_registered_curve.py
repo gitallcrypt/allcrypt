@@ -667,3 +667,90 @@ def test_signing_on_a_wide_order_curve(wide_order):
     signature = key.sign(digest, "sha256")
     assert key.verify(digest, signature)
     assert not key.verify(hashlib.sha256(b"other").digest(), signature)
+
+
+@pytest.mark.parametrize("form", ["PKCS8", "TraditionalOpenSSL"])
+def test_a_private_key_on_the_registered_curve_loads(brainpool, form):
+    """A private key from `cryptography` on the registered curve.
+
+    A certificate on a registered curve was readable and a private key on
+    it was refused: the private key reader knew four curve OIDs and asked
+    the registry nothing. Both forms, since PKCS#8 names the curve in its
+    AlgorithmIdentifier and SEC1 inside the key.
+    """
+    theirs = ec.generate_private_key(ec.BrainpoolP256R1())
+    der = theirs.private_bytes(serialization.Encoding.DER,
+                               getattr(serialization.PrivateFormat, form),
+                               serialization.NoEncryption())
+    ours = allcrypt.private_key(der)
+    assert ours.curve == brainpool
+    assert ours.public_bytes(False) == their_public_bytes(theirs)
+
+
+def test_the_private_key_is_refused_without_the_registration():
+    """The control for the test above."""
+    theirs = ec.generate_private_key(ec.BrainpoolP256R1())
+    der = theirs.private_bytes(serialization.Encoding.DER,
+                               serialization.PrivateFormat.PKCS8,
+                               serialization.NoEncryption())
+    with pytest.raises(allcrypt.CryptoError, match="not one this library"):
+        allcrypt.private_key(der)
+
+
+#: An OID in Brainpool's own arc that names no curve, and encodes to the
+#: same length as `BRAINPOOL_OID`, so a certificate can be re-pointed at
+#: it by replacing bytes.
+ALIAS_OID = "1.3.36.3.3.2.8.1.1.127"
+
+
+def test_a_second_oid_for_the_registered_curve_answers_by_its_name(brainpool):
+    """`curve=` with another spelling of a registered curve's name.
+
+    `register_oid` accepts any spelling `EcKey.generate` does, and stores
+    the curve's own name, so the listing shows it and a certificate on the
+    second OID reads as the same curve. Stored as spelled, it matched
+    nothing that compared names.
+    """
+    allcrypt.register_oid(ALIAS_OID, curve="BRAINPOOLP256R1")
+    try:
+        assert (ALIAS_OID, "curve", brainpool) in allcrypt.registered_oids()
+
+        theirs, _ = their_key()
+        der = _self_signed(theirs)
+        ours = bytes.fromhex("06092b2403030208010107")
+        alias = bytes.fromhex("06092b240303020801017f")
+        assert der.count(ours) == 1
+        fields = allcrypt.Certificate(der.replace(ours, alias)).to_dict()
+        assert fields["publicKeyType"] == f"EC {brainpool}", fields["publicKeyType"]
+    finally:
+        allcrypt.forget_oid(ALIAS_OID)
+
+
+def _self_signed(theirs):
+    import datetime
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "brainpool.test")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return (x509.CertificateBuilder()
+            .subject_name(name).issuer_name(name)
+            .public_key(theirs.public_key()).serial_number(1)
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=30))
+            .sign(theirs, hashes.SHA256())
+            .public_bytes(serialization.Encoding.DER))
+
+
+def test_a_second_curve_cannot_take_a_registered_curve_s_name(brainpool):
+    """A curve is found by its name, so two cannot share one.
+
+    Registered twice under one name with different numbers, the curve
+    `EcKey.generate` got depended on the order a hash map gave back.
+    """
+    other = dict(allcrypt.curve_parameters("secp256k1"), name="BrainpoolP256R1")
+    with pytest.raises(allcrypt.CryptoError, match="already names a different curve"):
+        allcrypt.register_oid(ALIAS_OID, curve_parameters=other)
+    # The same numbers under a second OID are an alias, and are fine.
+    allcrypt.register_oid(ALIAS_OID, curve_parameters=BRAINPOOL_P256R1)
+    allcrypt.forget_oid(ALIAS_OID)

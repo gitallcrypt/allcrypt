@@ -23,6 +23,14 @@ pub struct Transcript {
     /// `(label, client_random, secret)` from the key log - for TLS 1.2 the
     /// label is `CLIENT_RANDOM` and the secret is the master secret.
     pub secrets: Vec<(String, String, String)>,
+    /// The server's private key, big-endian hex, where the capture
+    /// recorded one - the GOST captures do, so that the key exchange can
+    /// be unwrapped as well as the records decrypted.
+    pub server_key: String,
+    /// `oid p a b q x y h`, hex, for a row on a curve this library does
+    /// not carry: the curve as the engine held it. `load_gost` registers
+    /// it under the name `engine-<oid>`.
+    pub curve: String,
 }
 
 #[allow(dead_code)]
@@ -43,10 +51,44 @@ pub fn load() -> Vec<Transcript> {
 /// The GOST captures, which live in their own file because their
 /// generator is a different one - it needs OpenSSL's gost-engine, where
 /// `capture_transcripts.py` needs only Python's `ssl`. Same format.
+///
+/// **The rows on a curve this library does not carry are registered
+/// here**, from the numbers the engine recorded, so that every test over
+/// this file runs a registered curve wherever it runs a built-in one.
 #[allow(dead_code)]
 pub fn load_gost() -> Vec<Transcript> {
+    let transcripts = load_gost_as_recorded();
+    for transcript in &transcripts {
+        if !transcript.curve.is_empty() {
+            register_curve(&transcript.curve);
+        }
+    }
+    transcripts
+}
+
+/// The GOST captures without registering anything.
+#[allow(dead_code)]
+pub fn load_gost_as_recorded() -> Vec<Transcript> {
     load_from("tests/transcripts/gost_handshakes.txt",
               "scripts/capture_gost_transcripts.py")
+}
+
+/// Register a `curve` line's curve under its OID, as `engine-<oid>`.
+/// Registering it again replaces it with itself.
+#[allow(dead_code)]
+pub fn register_curve(line: &str) {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(fields.len(), 8, "a curve line is `oid p a b q x y h`: {line:?}");
+    let number = |at: usize| allcrypt::bignum::BigUint::from_hex(fields[at])
+        .unwrap_or_else(|e| panic!("{line:?}: {e:?}"));
+    let parameters = allcrypt::ec::curves::CurveParameters {
+        name: format!("engine-{}", fields[0]),
+        p: number(1), a: number(2), b: number(3), n: number(4),
+        gx: number(5), gy: number(6), h: number(7),
+    };
+    allcrypt::registry::register(
+        fields[0], allcrypt::registry::Meaning::curve_parameters(parameters))
+        .unwrap_or_else(|e| panic!("the engine's curve was refused: {e}"));
 }
 
 /// TLS 1.3 handshakes with ML-DSA certificates, OpenSSL 3.5 at both ends.
@@ -84,6 +126,8 @@ fn load_from(path: &str, generator: &str) -> Vec<Transcript> {
             "cipher" => transcript.cipher = value.to_string(),
             "to_server" => transcript.to_server = unhex_bytes(value),
             "to_client" => transcript.to_client = unhex_bytes(value),
+            "server_key" => transcript.server_key = value.to_string(),
+            "curve" => transcript.curve = value.to_string(),
             "secret" => {
                 let mut pieces = value.splitn(3, ' ');
                 match (pieces.next(), pieces.next(), pieces.next()) {

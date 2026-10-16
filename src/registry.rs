@@ -172,15 +172,23 @@ pub fn register(oid: &str, meaning: Meaning) -> Result<(), String> {
                 "{} cannot be registered as {:?}: {}", oid, built_in, reason))?;
             Meaning::Hash(built_in)
         }
+        // **Stored as the curve's own name, not as the caller spelled
+        // it.** `by_name` folds case and separators and knows aliases -
+        // `GOST256_A`, `tc26-256-b`, `SM2` - so a registration accepted
+        // under any of them has to answer under the one name every other
+        // table holds. Stored as given, it resolved nowhere that compared
+        // names: a GOST certificate on the OID read as an unsupported
+        // curve, and a certificate on the curve could not be written.
+        Meaning::Curve(name) => {
+            let curve = crate::ec::curves::by_name(&name).map_err(|reason| format!(
+                "{} cannot be registered as curve {:?}: {}", oid, name, reason))?;
+            Meaning::Curve(curve.name.to_string())
+        }
         other => other,
     };
 
     match &meaning {
-        Meaning::Hash(_) => {}
-        Meaning::Curve(name) => {
-            crate::ec::curves::by_name(name).map_err(|reason| format!(
-                "{} cannot be registered as curve {:?}: {}", oid, name, reason))?;
-        }
+        Meaning::Hash(_) | Meaning::Curve(_) => {}
         // The same check `GostCrypto::new_with_sbox` makes, so a table
         // refused here is not accepted there.
         Meaning::GostParamSet(rows) =>
@@ -199,6 +207,28 @@ pub fn register(oid: &str, meaning: Meaning) -> Result<(), String> {
     }
 
     let mut table = table().write().map_err(|_| "the registry is poisoned")?;
+    // **A curve is found by its name**, by `curves::by_name` and by
+    // everything that turns an OID into a curve, so two different curves
+    // cannot share one. Registered under one name twice, the second set
+    // of parameters was reached or not depending on the order a hash map
+    // gave back. The same numbers under a second OID are an alias and
+    // are fine, however the name is spelled.
+    if let Meaning::CurveParameters(parameters) = &meaning {
+        let numbers = |p: &crate::ec::curves::CurveParameters|
+            [p.p.clone(), p.a.clone(), p.b.clone(), p.gx.clone(), p.gy.clone(),
+             p.n.clone(), p.h.clone()];
+        let clash = table.iter().find(|(other, held)| other.as_str() != oid
+            && matches!(held, Meaning::CurveParameters(theirs)
+                        if same_curve_name(&theirs.name, &parameters.name)
+                           && numbers(theirs) != numbers(parameters)));
+        if let Some((other, _)) = clash {
+            return Err(format!(
+                "{} cannot be registered as a curve called {:?}: {} already \
+                 names a different curve by that name, and a curve is found \
+                 by its name. Give one of them another.",
+                oid, parameters.name, other));
+        }
+    }
     table.insert(oid.to_string(), meaning);
     Ok(())
 }
@@ -279,6 +309,40 @@ pub fn curve_for_der(der: &[u8]) -> Option<String> {
     }
 }
 
+/// The curve a registered OID names, as `curves::by_name` spells it.
+///
+/// **The one way to turn a registered OID into a curve name**, for every
+/// reader that has an OID in hand: GOST parameter sets, the curve of an
+/// `id-ecPublicKey` certificate, and a PKCS#8 or SEC1 private key. Going
+/// through `by_name` rather than comparing names means a registration
+/// spelled any way `by_name` takes reaches the curve, the answer is the
+/// same `&'static str` the curve itself carries, and a registration whose
+/// curve has since been forgotten answers nothing rather than a name that
+/// resolves to nothing.
+pub fn curve_named_by_der(der: &[u8]) -> Option<&'static str> {
+    let name = curve_for_der(der)?;
+    crate::ec::curves::by_name(&name).ok().map(|curve| curve.name)
+}
+
+/// The OID to write for a curve that is not built in: the one registered
+/// for it, encoded. `Ok(None)` when there is none.
+///
+/// For the writers - certificates and GOST public keys - which have a
+/// curve and must name it. Several OIDs is an error rather than a choice
+/// of the first: what is written names exactly one, and choosing would be
+/// choosing for the caller.
+pub fn oid_for_curve(name: &str) -> Result<Option<Vec<u8>>, String> {
+    let oids = oids_for_curve(name);
+    match oids.len() {
+        0 => Ok(None),
+        1 => Ok(Some(encode_oid(&oids[0])?)),
+        _ => Err(format!(
+            "{} is registered under {} OIDs ({}), and a key names one. \
+             Forget the ones it should not claim.",
+            name, oids.len(), oids.join(", "))),
+    }
+}
+
 /// Curve names compare the way `curves::by_name` compares them.
 ///
 /// Not `==`: a registered curve that only answered to the exact spelling
@@ -305,6 +369,14 @@ fn same_curve_name(left: &str, right: &str) -> bool {
 /// writing: a certificate names exactly one, and picking one would be
 /// choosing for the caller.
 pub fn oids_for_curve(name: &str) -> Vec<String> {
+    // The curve's own name first, so that an alias spelled the way the
+    // caller asked for it - `SM2` for `sm2p256v1` - finds the curve.
+    // Resolved before the table is locked: `by_name` reads the table
+    // itself, for a registered curve.
+    let name = crate::ec::curves::by_name(name)
+        .map(|curve| curve.name.to_string())
+        .unwrap_or_else(|_| name.to_string());
+    let name = name.as_str();
     let table = match table().read() {
         Ok(table) => table,
         Err(_) => return Vec::new(),
@@ -533,6 +605,77 @@ mod tests {
         forget(OID);
         assert_eq!(gost_curve_for(&der), None,
                    "forgetting left the registration in place");
+    }
+
+    /// An alias of a built-in curve, spelled as another library spells
+    /// it, is found when a certificate on the curve is written and
+    /// answers when it is read.
+    ///
+    /// SM2 has no OID compiled in, and OpenSSL calls the curve `SM2`.
+    /// Registered under that spelling, writing looked for `sm2p256v1`
+    /// among names stored as `SM2` and found nothing, and reading looked
+    /// the name up among curves registered with their own parameters and
+    /// found nothing there either.
+    #[test]
+    fn test_an_alias_of_a_built_in_curve_is_written_and_read() {
+        use crate::x509::builder::{CertificateBuilder, SigningKey, SubjectKey};
+        const OID: &str = "1.3.6.1.4.1.99999.5.8";
+        let _scoped = Scoped(OID);
+        register(OID, Meaning::curve("SM2")).unwrap();
+        assert_eq!(lookup(OID), Some(Meaning::curve("sm2p256v1")));
+        assert_eq!(oids_for_curve("sm2p256v1"), vec![OID.to_string()]);
+        assert_eq!(oids_for_curve("curveSM2"), vec![OID.to_string()]);
+
+        let curve = crate::ec::curves::sm2();
+        let (private, public) = curve.generate_key_pair().unwrap();
+        let point = curve.encode_point(&public, false).unwrap();
+        let mut builder = CertificateBuilder::new(
+            "sm2.test", SubjectKey::Ec { curve: &curve, point: &point });
+        builder.serial = vec![1];
+        builder.not_before = "20200101000000Z";
+        builder.not_after = "20400101000000Z";
+        let der = builder.sign(&SigningKey::Ec { curve: &curve, private: &private })
+            .unwrap();
+        match crate::x509::Certificate::parse(&der).unwrap().public_key {
+            crate::x509::PublicKey::Ec { curve, .. } => assert_eq!(curve, "sm2p256v1"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Two different curves cannot share a name; the same curve under a
+    /// second OID is an alias and can.
+    #[test]
+    fn test_two_curves_cannot_share_a_name() {
+        const FIRST: &str = "1.3.6.1.4.1.99999.5.9";
+        const SECOND: &str = "1.3.6.1.4.1.99999.5.10";
+        let (_first, _second) = (Scoped(FIRST), Scoped(SECOND));
+        fn copy_of(curve: crate::ec::Curve, name: &str)
+                   -> crate::ec::curves::CurveParameters {
+            crate::ec::curves::CurveParameters {
+                name: name.to_string(), p: curve.p.clone(), a: curve.a.clone(),
+                b: curve.b.clone(), gx: curve.g.x().unwrap().clone(),
+                gy: curve.g.y().unwrap().clone(), n: curve.n.clone(),
+                h: curve.h.clone(),
+            }
+        }
+        use crate::ec::curves::{p256, secp256k1};
+        register(FIRST, Meaning::curve_parameters(copy_of(p256(), "shared-name"))).unwrap();
+        let refused = register(SECOND, Meaning::curve_parameters(
+            copy_of(secp256k1(), "Shared_Name"))).unwrap_err();
+        assert!(refused.contains(FIRST), "{refused}");
+        // The same numbers under another spelling of the name: an alias.
+        register(SECOND, Meaning::curve_parameters(copy_of(p256(), "Shared Name"))).unwrap();
+        assert_eq!(curve_named_by_der(&encode_oid(SECOND).unwrap()),
+                   curve_named_by_der(&encode_oid(FIRST).unwrap()));
+
+        // An alias of a curve that is then forgotten answers nothing,
+        // rather than a name that resolves to nothing.
+        forget(SECOND);
+        let alias = encode_oid(SECOND).unwrap();
+        register(SECOND, Meaning::curve("Shared_Name")).unwrap();
+        assert_eq!(curve_named_by_der(&alias), Some("shared-name"));
+        forget(FIRST);
+        assert_eq!(curve_named_by_der(&alias), None);
     }
 
     /// A registered S-box reaches the cipher, and is a different

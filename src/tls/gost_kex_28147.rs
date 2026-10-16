@@ -14,6 +14,11 @@ and a different algorithm at every step:
 and the message is RFC 4490's `TLSGostKeyTransportBlob` rather than the
 much simpler `GostKeyTransport`.
 
+That is the RFC's pairing, a 2012 suite on a 2012 key. A server may also
+put these suites on a GOST R 34.10-2001 key, and then the hash stays the
+suite's while the VKO and the S-box become the key's; `Transport` below
+carries the two separately.
+
 Four things here are the *opposite* of the CTR_OMAC path, and each is
 silent when confused with it:
 
@@ -136,7 +141,16 @@ pub fn keg_28147(curve: &Curve, private: &BigUint, peer: &Point, h: &[u8])
             "KEG_28147's H is the 32 byte Streebog-256 of the two randoms; \
              got {}.", h.len()));
     }
-    let ukm = &h[..UKM_LEN];
+    keg_2012(curve, private, peer, &h[..UKM_LEN])
+}
+
+/// `KEG_28147` from its UKM rather than the digest it is cut from, so
+/// that a suite whose UKM comes from another hash can reach it.
+fn keg_2012(curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8])
+            -> Result<Vec<u8>, String> {
+    if ukm.len() != UKM_LEN {
+        return Err(format!("The UKM is {} bytes; got {}.", UKM_LEN, ukm.len()));
+    }
     // `int` - **little endian**, which is also VKO's own wire
     // convention, so the byte string goes in as it stands. `KEG` above
     // takes `INT`, big endian, from a longer prefix.
@@ -351,31 +365,142 @@ impl KeyTransportBlob {
     }
 }
 
+// ------------------------------------------- which algorithm from where ---
+
+/// Which hash of `r_c | r_s` gives the UKM. **The suite decides it.**
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UkmHash {
+    /// GOST R 34.11-94, for `TLS_GOSTR341001_WITH_28147_CNT_IMIT`.
+    Gost94,
+    /// Streebog-256, for the two GOST R 34.10-2012 CNT_IMIT suites.
+    Streebog256,
+}
+
+/// Which GOST R 34.10 the server's certificate key is. **The key
+/// decides** the VKO and the S-box everything underneath runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyGeneration {
+    /// GOST R 34.10-2001: VKO GOST R 34.10-2001 and CryptoPro-A.
+    Gost2001,
+    /// GOST R 34.10-2012, either size: VKO_256 and `param-Z`.
+    Gost2012,
+}
+
+/// How one CNT_IMIT ClientKeyExchange is built: the UKM's hash from the
+/// suite, and the VKO and the S-box from the server's key.
+///
+/// **Two inputs rather than one**, because a server can pair the suites
+/// and the keys across generations. OpenSSL offers
+/// `GOST2012-GOST8912-GOST8912` and `LEGACY-GOST2012-GOST8912-GOST8912`
+/// on a GOST R 34.10-2001 certificate - their authentication is
+/// `aGOST12|aGOST01` - and then its client hashes the randoms with
+/// Streebog-256 because of the suite and runs gost-engine's VKO GOST R
+/// 34.10-2001 over CryptoPro-A because of the key. A client that took
+/// all three from the suite derived a key the server could not, and one
+/// that took all three from the key sent a UKM that was not the hash the
+/// suite names. `tests/test_gost_transcript.rs` holds both pairings as
+/// the engine's own handshakes and unwraps them under the server's key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Transport {
+    pub ukm_hash: UkmHash,
+    pub key: KeyGeneration,
+}
+
+impl Transport {
+    /// The 0xC102 and 0xFF85 suites on a GOST R 34.10-2012 key: RFC 9189
+    /// section 8.3.2's `KEG_28147` exactly.
+    pub const RFC_9189: Transport = Transport { ukm_hash: UkmHash::Streebog256,
+                                                key: KeyGeneration::Gost2012 };
+    /// The 0x0081 suite on its own key generation.
+    pub const GOST_2001: Transport = Transport { ukm_hash: UkmHash::Gost94,
+                                                 key: KeyGeneration::Gost2001 };
+
+    /// The transport for a CNT_IMIT suite and the server's key.
+    ///
+    /// `Err` for the pairing no implementation makes: the 2001 suite on a
+    /// GOST R 34.10-2012 key. OpenSSL's server will not choose it - the
+    /// suite authenticates with `aGOST01` alone - and its client refuses
+    /// it with "wrong certificate type", so there is no reference for
+    /// which VKO such a server would expect.
+    pub fn for_suite(suite_is_2001: bool, key: KeyGeneration)
+                     -> Result<Transport, String> {
+        match (suite_is_2001, key) {
+            (true, KeyGeneration::Gost2001) => Ok(Transport::GOST_2001),
+            (true, KeyGeneration::Gost2012) => Err(
+                "TLS_GOSTR341001_WITH_28147_CNT_IMIT needs a GOST R 34.10-2001 \
+                 key; neither OpenSSL nor gost-engine pairs it with a 2012 one, \
+                 so there is nothing to say which VKO it would take."
+                    .to_string()),
+            (false, key) => Ok(Transport { ukm_hash: UkmHash::Streebog256, key }),
+        }
+    }
+
+    /// The UKM: the first eight bytes of the suite's hash of the randoms.
+    pub fn ukm(&self, client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
+        match self.ukm_hash {
+            UkmHash::Gost94 => shared_ukm_2001(client_random, server_random),
+            UkmHash::Streebog256 =>
+                gost_kex::keg_hash(client_random, server_random)[..UKM_LEN].to_vec(),
+        }
+    }
+
+    /// The S-box: CryptoPro-A for a 2001 key, `param-Z` for a 2012 one.
+    pub fn sbox(&self) -> &'static str {
+        match self.key {
+            KeyGeneration::Gost2001 => SBOX_2001,
+            KeyGeneration::Gost2012 => SBOX,
+        }
+    }
+
+    /// The `encryptionParamSet` the blob names, which is that S-box.
+    pub fn encryption_param_set(&self) -> &'static [u8] {
+        match self.key {
+            KeyGeneration::Gost2001 => oids::GOST_28147_CRYPTOPRO_A,
+            KeyGeneration::Gost2012 => oids::GOST_28147_PARAM_Z,
+        }
+    }
+
+    /// The key encryption key: the key's VKO under this UKM, then
+    /// CryptoPro's diversification under the key's S-box.
+    pub fn kek(&self, curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8])
+               -> Result<Vec<u8>, String> {
+        match self.key {
+            KeyGeneration::Gost2001 => keg_2001(curve, private, peer, ukm),
+            KeyGeneration::Gost2012 => keg_2012(curve, private, peer, ukm),
+        }
+    }
+}
+
 // ------------------------------------------------- the two halves ---
 
 /// The client's side, with the ephemeral key and the secret supplied.
 #[allow(clippy::too_many_arguments)]
-pub fn wrap_secret(curve: &Curve, server_algorithm_id: &[u8],
-                   ephemeral_private: &BigUint,
-                   ephemeral_public: &Point, server_public: &Point,
-                   client_random: &[u8], server_random: &[u8], secret: &[u8])
-                   -> Result<Vec<u8>, String> {
+pub fn wrap_secret_with(transport: Transport, curve: &Curve,
+                        server_algorithm_id: &[u8],
+                        ephemeral_private: &BigUint, ephemeral_public: &Point,
+                        server_public: &Point, client_random: &[u8],
+                        server_random: &[u8], secret: &[u8])
+                        -> Result<Vec<u8>, String> {
     if secret.len() != PRELIMINARY_SECRET_LEN {
         return Err(format!(
             "The preliminary secret is {} bytes; got {}.",
             PRELIMINARY_SECRET_LEN, secret.len()));
     }
-    let h = gost_kex::keg_hash(client_random, server_random);
-    let ukm = h[..UKM_LEN].to_vec();
-    let key = keg_28147(curve, ephemeral_private, server_public, &h)?;
-    let wrapped = kexp28147(secret, &key, &ukm, SBOX)?;
+    let ukm = transport.ukm(client_random, server_random);
+    let key = transport.kek(curve, ephemeral_private, server_public, &ukm)?;
+    let wrapped = kexp28147(secret, &key, &ukm, transport.sbox())?;
 
     KeyTransportBlob {
         encrypted: wrapped[UKM_LEN..UKM_LEN + 32].to_vec(),
         mac: wrapped[UKM_LEN + 32..].to_vec(),
-        encryption_param_set: oids::GOST_28147_PARAM_Z.to_vec(),
+        // The S-box's own OID, which is the one field that tells a server
+        // which table the blob was built with. gost-engine's server reads
+        // it rather than inferring it.
+        encryption_param_set: transport.encryption_param_set().to_vec(),
         // The server's AlgorithmIdentifier, copied rather than rebuilt
-        // from the curve - see `gost_kex::encode_public_key_like`.
+        // from the curve - see `gost_kex::encode_public_key_like`. For a
+        // 2001 key that is also what keeps `XchA` from coming back as
+        // CryptoPro-A.
         ephemeral: gost_kex::encode_public_key_like(server_algorithm_id, curve,
                                                    ephemeral_public)?,
         ukm,
@@ -383,95 +508,20 @@ pub fn wrap_secret(curve: &Curve, server_algorithm_id: &[u8],
 }
 
 /// Pick the ephemeral key and the secret, and produce the message.
-pub fn client_key_exchange(curve: &Curve, server_algorithm_id: &[u8],
-                           server_public: &Point,
-                           client_random: &[u8], server_random: &[u8])
-                           -> Result<(Vec<u8>, Vec<u8>), String> {
-    let secret = crate::random::bytes(PRELIMINARY_SECRET_LEN)?;
-    let (private, public) = curve.generate_key_pair()?;
-    let body = wrap_secret(curve, server_algorithm_id, &private, &public,
-                           server_public, client_random, server_random, &secret)?;
-    Ok((body, secret))
-}
-
-/// The server's side.
-pub fn unwrap_secret(curve: &Curve, private: &BigUint, client_random: &[u8],
-                     server_random: &[u8], body: &[u8]) -> Result<Vec<u8>, String> {
-    let blob = KeyTransportBlob::parse(body)?;
-    let (their_curve, ephemeral) = gost_kex::decode_public_key(&blob.ephemeral)?;
-    if their_curve.name != curve.name {
-        return Err(format!(
-            "The ephemeral key is on {}, and the server's key is on {}.",
-            their_curve.name, curve.name));
-    }
-    if ephemeral.is_identity() {
-        return Err("The ephemeral public key is the identity.".to_string());
-    }
-
-    let h = gost_kex::keg_hash(client_random, server_random);
-    let ukm = h[..UKM_LEN].to_vec();
-    let key = keg_28147(curve, private, &ephemeral, &h)?;
-
-    let mut wrapped = blob.ukm.clone();
-    wrapped.extend_from_slice(&blob.encrypted);
-    wrapped.extend_from_slice(&blob.mac);
-    kimp28147(&wrapped, &key, &ukm, SBOX)
-}
-
-// --------------------------------------------- the 2001 suite's halves ---
-
-/// The client's side of `TLS_GOSTR341001_WITH_28147_CNT_IMIT`.
-///
-/// Every step has the same shape as `wrap_secret` above and a
-/// different algorithm inside it: GOST R 34.11-94 over the randoms,
-/// VKO GOST R 34.10-2001, and CryptoPro-A everywhere a table is
-/// needed. The message is the same `TLSGostKeyTransportBlob`, and the
-/// `encryptionParamSet` it carries names the S-box - which is the one
-/// field that tells a server which of the two suites' conventions the
-/// blob was built with.
-#[allow(clippy::too_many_arguments)]
-pub fn wrap_secret_2001(curve: &Curve, server_algorithm_id: &[u8],
-                        ephemeral_private: &BigUint,
-                        ephemeral_public: &Point, server_public: &Point,
-                        client_random: &[u8], server_random: &[u8],
-                        secret: &[u8]) -> Result<Vec<u8>, String> {
-    if secret.len() != PRELIMINARY_SECRET_LEN {
-        return Err(format!(
-            "The premaster secret is {} bytes; got {}.",
-            PRELIMINARY_SECRET_LEN, secret.len()));
-    }
-    let ukm = shared_ukm_2001(client_random, server_random);
-    let key = keg_2001(curve, ephemeral_private, server_public, &ukm)?;
-    let wrapped = kexp28147(secret, &key, &ukm, SBOX_2001)?;
-
-    KeyTransportBlob {
-        encrypted: wrapped[UKM_LEN..UKM_LEN + 32].to_vec(),
-        mac: wrapped[UKM_LEN + 32..].to_vec(),
-        encryption_param_set: oids::GOST_28147_CRYPTOPRO_A.to_vec(),
-        // Copied, like the 2012 path. `encode_public_key_2001` picks a
-        // CryptoPro OID from the curve's name, which is right when *we*
-        // choose the curve - writing a certificate - and wrong when the
-        // server already named it, because `XchA` and CryptoPro-A are the
-        // same curve under two OIDs.
-        ephemeral: gost_kex::encode_public_key_like(server_algorithm_id, curve,
-                                                   ephemeral_public)?,
-        ukm,
-    }.encode()
-}
-
-pub fn client_key_exchange_2001(curve: &Curve, server_algorithm_id: &[u8],
-                                server_public: &Point,
+pub fn client_key_exchange_with(transport: Transport, curve: &Curve,
+                                server_algorithm_id: &[u8], server_public: &Point,
                                 client_random: &[u8], server_random: &[u8])
                                 -> Result<(Vec<u8>, Vec<u8>), String> {
     let secret = crate::random::bytes(PRELIMINARY_SECRET_LEN)?;
     let (private, public) = curve.generate_key_pair()?;
-    let body = wrap_secret_2001(curve, server_algorithm_id, &private, &public,
-                                server_public, client_random, server_random,
-                                &secret)?;
+    let body = wrap_secret_with(transport, curve, server_algorithm_id, &private,
+                                &public, server_public, client_random,
+                                server_random, &secret)?;
     Ok((body, secret))
 }
 
-pub fn unwrap_secret_2001(curve: &Curve, private: &BigUint,
+/// The server's side.
+pub fn unwrap_secret_with(transport: Transport, curve: &Curve, private: &BigUint,
                           client_random: &[u8], server_random: &[u8],
                           body: &[u8]) -> Result<Vec<u8>, String> {
     let blob = KeyTransportBlob::parse(body)?;
@@ -485,7 +535,7 @@ pub fn unwrap_secret_2001(curve: &Curve, private: &BigUint,
         return Err("The ephemeral public key is the identity.".to_string());
     }
 
-    let ukm = shared_ukm_2001(client_random, server_random);
+    let ukm = transport.ukm(client_random, server_random);
     // draft-chudov-cryptopro-cptls section 3.6: the server MUST check
     // the UKM in the message against the one it derived, before
     // decrypting. `kimp28147` checks it again as part of the wrapping,
@@ -493,15 +543,78 @@ pub fn unwrap_secret_2001(curve: &Curve, private: &BigUint,
     // different field - the blob's own `ukm`, which a client could
     // have filled in with anything.
     if blob.ukm != ukm {
-        return Err("The key transport blob's UKM is not the hash of the two \
-                    randoms.".to_string());
+        return Err("The key transport blob's UKM is not the suite's hash of \
+                    the two randoms.".to_string());
     }
-    let key = keg_2001(curve, private, &ephemeral, &ukm)?;
+    let key = transport.kek(curve, private, &ephemeral, &ukm)?;
 
     let mut wrapped = blob.ukm.clone();
     wrapped.extend_from_slice(&blob.encrypted);
     wrapped.extend_from_slice(&blob.mac);
-    kimp28147(&wrapped, &key, &ukm, SBOX_2001)
+    kimp28147(&wrapped, &key, &ukm, transport.sbox())
+}
+
+/// `wrap_secret_with` for RFC 9189's own pairing: a 2012 suite on a 2012
+/// key.
+#[allow(clippy::too_many_arguments)]
+pub fn wrap_secret(curve: &Curve, server_algorithm_id: &[u8],
+                   ephemeral_private: &BigUint,
+                   ephemeral_public: &Point, server_public: &Point,
+                   client_random: &[u8], server_random: &[u8], secret: &[u8])
+                   -> Result<Vec<u8>, String> {
+    wrap_secret_with(Transport::RFC_9189, curve, server_algorithm_id,
+                     ephemeral_private, ephemeral_public, server_public,
+                     client_random, server_random, secret)
+}
+
+/// `client_key_exchange_with` for a 2012 suite on a 2012 key.
+pub fn client_key_exchange(curve: &Curve, server_algorithm_id: &[u8],
+                           server_public: &Point,
+                           client_random: &[u8], server_random: &[u8])
+                           -> Result<(Vec<u8>, Vec<u8>), String> {
+    client_key_exchange_with(Transport::RFC_9189, curve, server_algorithm_id,
+                             server_public, client_random, server_random)
+}
+
+/// `unwrap_secret_with` for a 2012 suite on a 2012 key.
+pub fn unwrap_secret(curve: &Curve, private: &BigUint, client_random: &[u8],
+                     server_random: &[u8], body: &[u8]) -> Result<Vec<u8>, String> {
+    unwrap_secret_with(Transport::RFC_9189, curve, private, client_random,
+                       server_random, body)
+}
+
+// --------------------------------------------- the 2001 suite's halves ---
+
+/// The client's side of `TLS_GOSTR341001_WITH_28147_CNT_IMIT`.
+///
+/// Every step has the same shape as `wrap_secret` above and a
+/// different algorithm inside it: GOST R 34.11-94 over the randoms,
+/// VKO GOST R 34.10-2001, and CryptoPro-A everywhere a table is
+/// needed. The message is the same `TLSGostKeyTransportBlob`.
+#[allow(clippy::too_many_arguments)]
+pub fn wrap_secret_2001(curve: &Curve, server_algorithm_id: &[u8],
+                        ephemeral_private: &BigUint,
+                        ephemeral_public: &Point, server_public: &Point,
+                        client_random: &[u8], server_random: &[u8],
+                        secret: &[u8]) -> Result<Vec<u8>, String> {
+    wrap_secret_with(Transport::GOST_2001, curve, server_algorithm_id,
+                     ephemeral_private, ephemeral_public, server_public,
+                     client_random, server_random, secret)
+}
+
+pub fn client_key_exchange_2001(curve: &Curve, server_algorithm_id: &[u8],
+                                server_public: &Point,
+                                client_random: &[u8], server_random: &[u8])
+                                -> Result<(Vec<u8>, Vec<u8>), String> {
+    client_key_exchange_with(Transport::GOST_2001, curve, server_algorithm_id,
+                             server_public, client_random, server_random)
+}
+
+pub fn unwrap_secret_2001(curve: &Curve, private: &BigUint,
+                          client_random: &[u8], server_random: &[u8],
+                          body: &[u8]) -> Result<Vec<u8>, String> {
+    unwrap_secret_with(Transport::GOST_2001, curve, private, client_random,
+                       server_random, body)
 }
 
 #[cfg(test)]

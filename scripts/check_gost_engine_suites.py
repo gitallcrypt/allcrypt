@@ -103,7 +103,7 @@ SUITES = [
     ("TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC",
      "GOST2012-MAGMA-MAGMAOMAC", "2012xa", ""),
     ("TLS_GOSTR341112_256_WITH_28147_CNT_IMIT",
-     "GOST2012-GOST8912-GOST8912", "2012xa", ""),
+     "IANA-GOST2012-GOST8912-GOST8912", "2012xa", ""),
     ("TLS_GOSTR341112_256_WITH_28147_CNT_IMIT_LEGACY",
      "LEGACY-GOST2012-GOST8912-GOST8912", "2012xa", ""),
     # **`@SECLEVEL=0`, and only here.** This chain is signed with
@@ -118,11 +118,42 @@ SUITES = [
     # because `tlsgost-512.cryptopro.ru` is a real deployment of it.
     ("TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC",
      "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC", "2012-512", ""),
+    # **A suite and a certificate of different generations.** The two
+    # 2012 CNT_IMIT suites authenticate with `aGOST12|aGOST01`, so
+    # OpenSSL serves them on a GOST R 34.10-2001 certificate, and then
+    # the UKM's hash follows the suite while the VKO and the S-box follow
+    # the key. Our client refused this pairing outright, and before that
+    # took all three from the suite; these rows are why neither is back.
+    #
+    # **They cannot see the UKM.** gost-engine's server reads the UKM out
+    # of the ClientKeyExchange instead of deriving it from the randoms, so
+    # a client that hashed them with GOST R 34.11-94 here passes these
+    # rows - tried, and it does - and is refused by a server that checks,
+    # as draft-chudov-cryptopro-cptls section 3.6 says a server MUST.
+    # The engine's *client* pins the hash: tests/test_gost_key_transport.rs.
+    ("TLS_GOSTR341112_256_WITH_28147_CNT_IMIT",
+     "IANA-GOST2012-GOST8912-GOST8912", "2001a", "@SECLEVEL=0"),
+    ("TLS_GOSTR341112_256_WITH_28147_CNT_IMIT_LEGACY",
+     "LEGACY-GOST2012-GOST8912-GOST8912", "2001a", "@SECLEVEL=0"),
+    # And a 512 bit key under KEG_28147, which runs VKO_256 whatever the
+    # curve - the one place the digest does not follow the key's size.
+    ("TLS_GOSTR341112_256_WITH_28147_CNT_IMIT_LEGACY",
+     "LEGACY-GOST2012-GOST8912-GOST8912", "2012-512", ""),
+]
+
+#: The pairings gost-engine's server will not make, each refused there
+#: with `no shared cipher`: RFC 9189's KEG suites on a 2001 key, and the
+#: 2001 suite on a 2012 key. Our client refuses them too, so there is no
+#: row - a row would only show the server's refusal.
+NOT_SERVED = [
+    "TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC on a 2001 key",
+    "TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC on a 2001 key",
+    "TLS_GOSTR341001_WITH_28147_CNT_IMIT on a 2012 key",
 ]
 
 #: The GOST suites this library has that no row above can reach.
 #:
-#: Listed rather than left out, so that "6 of 6 worked" cannot be read as
+#: Listed rather than left out, so that "9 of 9 worked" cannot be read as
 #: complete coverage of a library that has ten GOST rows' worth of suites.
 UNREACHABLE = [
     "TLS_GOSTR341112_256_WITH_KUZNYECHIK_MGM_L",
@@ -417,8 +448,11 @@ def main():
         # **The MGM suites, said out loud.** Four of this library's nine
         # GOST suites cannot appear above, because there is no TLS 1.3
         # GOST suite in OpenSSL or gost-engine to negotiate against. A
-        # summary that counted "6 of 6" without saying so would report
+        # summary that counted "9 of 9" without saying so would report
         # complete coverage of two thirds of them.
+        print("\n  pairings gost-engine's server will not make:")
+        for name in NOT_SERVED:
+            print(f"    {name}")
         print("\n  not reachable this way at all, and why:")
         for name in UNREACHABLE:
             print(f"    {name}")

@@ -74,6 +74,10 @@ fn compress_run(state: &mut [u32; 5], run: &[u8], sha0: bool) {
     }
 }
 
+/// The round constants, one for each twenty rounds; SHACAL-1 uses them
+/// too.
+pub(crate) const K: [u32; 4] = [0x5A82_7999, 0x6ED9_EBA1, 0x8F1B_BCDC, 0xCA62_C1D6];
+
 /// One SHA-1 (or SHA-0) block. The two differ only in the message
 /// schedule's one-bit rotation, which SHA-1 added; as a const parameter
 /// it is decided at compile time rather than once per schedule word.
@@ -115,17 +119,17 @@ pub(crate) fn compress<const SHA0: bool>(state: &mut [u32; 5], block: &[u8; 64])
     }
     // Ch, written with one fewer operation: (b & c) | (!b & d).
     for i in 0..20 {
-        round!(i, d ^ (b & (c ^ d)), 0x5A82_7999);
+        round!(i, d ^ (b & (c ^ d)), K[0]);
     }
     for i in 20..40 {
-        round!(i, b ^ c ^ d, 0x6ED9_EBA1);
+        round!(i, b ^ c ^ d, K[1]);
     }
     // Maj: (b & c) | (b & d) | (c & d).
     for i in 40..60 {
-        round!(i, (b & c) | (d & (b | c)), 0x8F1B_BCDC);
+        round!(i, (b & c) | (d & (b | c)), K[2]);
     }
     for i in 60..80 {
-        round!(i, b ^ c ^ d, 0xCA62_C1D6);
+        round!(i, b ^ c ^ d, K[3]);
     }
 
     state[0] = state[0].wrapping_add(a);

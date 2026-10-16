@@ -46,9 +46,11 @@ against that software's own tools.
 |CAST-256 / CAST6 (RFC 2612)|✓|RFC 2612's Appendix A, every quad-round; Bouncy Castle 1.77 agrees on 410 inputs over all five key lengths, `vectors/cast256.vec`|
 |DES|✓|✓|
 |3DES (EDE2, EDE3)|✓|✓|
+|FEAL-N (`feal`, FEAL-4 and FEAL-8 among them) and FEAL-NX (`feal-nx`), any even round count from 2 to 1024, constant time|✓|zilijonas/FEAL-NX's Java and Donaldduck8's Python reproduce NTT's FEAL-NX test data, 40,960 blocks under ten keys at 32 rounds, `vectors/feal_nx_ntt.txt`, and agree on 1,664 blocks and 32 iterated runs, FEAL-N at 4, 8, 16 and 32 rounds and FEAL-NX at 2, 8, 32 and 64: every single-bit key and block, repeated bytes, random blocks; `vectors/feal.vec`|
 |GOST 28147-89|✓|✓|
 |GOST 28147-89 under the DSTU 4145 default DKE (DSTU GOST 28147:2009, `dstu4145-default-dke`)|✓|Bouncy Castle 1.77, gost89 and cryptonite agree on ECB, CFB and the MAC, and on the table itself; counter mode Bouncy Castle's and cryptonite's; `vectors/dstu_gost.vec`|
 |GOST 28147-89 under Ukraine's other nine tables, DKE No. 1 from supplements 2 to 10 to instruction 114 (`dstu-dke-2` to `dstu-dke-10`; `dstu-dke-1` is the default)|✓|cryptonite and li0ard agree on the ten tables; under each of the nine, Bouncy Castle 1.77, gost89 and cryptonite agree on ECB, CFB and the MAC, Bouncy Castle and cryptonite on the counter mode; `vectors/dstu_dke.vec`|
+|HIGHT (TTAS.KO-12.0040/R1, ISO/IEC 18033-3), constant time|✓|Crypto++ 8.9.0 and go-krypto agree on 737 blocks and 17 iterated runs: KISA's known-answer tests, the standard's examples and Crypto++'s vectors, 225 blocks, every single-bit key and block, every byte repeated; the subkey constants and F0 and F1 computed from their definitions; `vectors/hight.vec`|
 |IDEA|✓|✓|
 |Kalyna (DSTU 7624:2014), all five variants (`kalyna-128`, `kalyna-256`, `kalyna-512`)|✓|the standard's ten examples; the authors' reference implementation and Bouncy Castle 1.77 agree on 75 more inputs and on the S-boxes; `vectors/kalyna.vec`|
 |Kalyna's DSTU 7624 GCM, GMAC, CCM and XTS (`kalyna-128-gcm` to `kalyna-512-ccm`, `kalyna_gmac`, `kalyna_ccm_*`, `kalyna_xts_*`)|✓|the standard's examples, which Bouncy Castle 1.77 and cryptonite both reproduce, and six more with short blocks from cryptonite's tests; 357 rows on which the two agree, all whole blocks; then each alone: Bouncy Castle for GCM and GMAC with a short last block, which the two pad differently, and CCM past 255 bytes; cryptonite for CCM with short or empty parts and XTS's ciphertext stealing; `vectors/kalyna_aead.vec`|
@@ -56,21 +58,34 @@ against that software's own tools.
 |Kuznyechik (GOST R 34.12-2015)|✓|✓|
 |Magma (GOST R 34.12-2015)|✓|✓|
 |Anubis (NESSIE submission, tweaked), constant time|✓|libtomcrypt 1.18.2, the Linux kernel's `crypto/anubis.c` and the designers' reference code agree on 2,090 blocks at all seven key lengths, 16 to 40 bytes, and 14 iterated runs: the published tests libtomcrypt and the kernel carry, every single-bit key at every length; `vectors/anubis.vec`|
+|SHACAL-1 (NESSIE submission), constant time|✓|Crypto++ 8.9.0's and OpenSSL 3.0's SHA-1 compression functions, less their feed-forward, agree on 1,254 blocks and 13 iterated runs at every key length from 16 to 64 bytes: Project Nayuki's two published tests, every single-bit key at 64 and 16 bytes and block, every byte repeated, random blocks; both encrypt only, and every row's decryption must give its block back; `vectors/shacal1.vec`|
 |SHACAL-2 (NESSIE selection), constant time|✓|Crypto++ 8.9.0 and Bouncy Castle 1.77 agree on 1,367 blocks and 10 iterated runs at every key length from 16 to 64 bytes, among them the NESSIE submission's 1,024 vectors and Botan's tests; `vectors/shacal2.vec`|
 |Noekeon (NESSIE submission), direct and indirect key modes, constant time|✓|direct: libtomcrypt 1.18.2 and Bouncy Castle 1.77 agree on 584 blocks and 16 iterated runs, with libtomcrypt's published tests; indirect: Botan 1.10.17 and Bouncy Castle under the mode's definition agree on 587, with Botan's from the NESSIE reference code; `vectors/noekeon.vec`|
+|KASUMI (3GPP TS 35.202)|✓|libtomcrypt 1.18.2 and Botan 1.10.17 agree on 520 blocks and 17 iterated runs: the 3GPP tests both carry, every single-bit key and block, every byte repeated; S7, S9 and the key schedule's constants read out of both; `vectors/kasumi.vec`|
 |Khazad (NESSIE finalist, tweaked), constant time|✓|libtomcrypt 1.18.2 and the Linux kernel's `crypto/khazad.c` agree on 523 blocks and 17 iterated runs: the published tests both carry, every single-bit key and block, every byte repeated; the S-box built from its mini boxes; `vectors/khazad.vec`|
 |MARS (AES finalist, tweaked key schedule)|✓|Crypto++ 8.9.0 and Botan 1.10.17 agree on 682 blocks over all eleven key lengths, 16 to 56 bytes, and on Monte Carlo tests of four million blocks at each length and direction; Crypto++'s published vectors and Monte Carlo tests; the S-box derived from its SHA-1 construction; `vectors/mars.vec`|
+|LEA (KS X 3246), constant time|✓|Crypto++ 8.9.0 and go-krypto agree on 2,241 blocks and 27 iterated runs at all three key lengths: KISA's 1,020 known-answer tests and Crypto++'s published vectors, 1,185 blocks, every single-bit key and block, every byte repeated; the key schedule's constants read out of both and computed from their definition; `vectors/lea.vec`|
+|LOKI97 (AES candidate), as submitted (`loki97`) and as libmcrypt computes it, its words byte-swapped and its key zero-padded to 32 bytes (`loki97-mcrypt`)|✓|32 byte keys and `loki97-mcrypt` at every length: the designers' reference C, as Crypt::Loki97 1.0.1 carries it and built with 32-bit word halves, and libmcrypt 2.5.8 agree on every row once libmcrypt's form is accounted for, both directions. **16 and 24 byte keys: the reference alone**, which no second implementation here computes - with the module's five published 128 bit tests. Those lengths differ from 32 only in deriving the missing key words with the round function, the 16 byte schedule both of them, the 24 byte one the second, which the published tests cover. 1,160 blocks - 1,062 as submitted, 98 in libmcrypt's form - and 54 iterated runs; the S-boxes computed from their definition; `vectors/loki97.vec`, its single-witness rows marked|
+|MISTY1 (RFC 2994)|✓|RFC 2994's ECB and CBC examples, read out of the document; Botan 1.10.17 and Crypt::Misty1 1.1.3 agree on 543 blocks and 17 iterated runs: Botan's published tests, every single-bit key and block, every byte repeated; S7 and S9 parsed out of the RFC at compile time, and both witnesses' tables checked against it; `vectors/misty1.vec`|
+|PRESENT (CHES 2007, ISO/IEC 29192-2), 80 and 128 bit keys|✓|Nirusu/PRESENT.go, kurtfu/present and OpenTitan's Python PRESENT agree on 601 blocks and 18 iterated runs at both key lengths: the paper's four tests and PRESENT.go's five at 128 bits, every single-bit key and block, every byte repeated, random blocks; the S-box read out of all three; `vectors/present.vec`|
 |RC2 (RFC 2268)|✓|✓|
 |RC5 (RFC 2040)|✓|spec reference; RFC 2040's vectors|
 |Rijndael, 160 to 256 bit blocks (`rijndael-160` to `rijndael-256`)|✓|Bouncy Castle 1.77 and phpseclib 1.0.23 agree on 275 inputs, eleven for each of the 25 block and key sizes; `vectors/rijndael.vec`|
 |RC6 (RC6-32/20/b, AES finalist)|✓|Bouncy Castle 1.77 agrees on 513 inputs, every key length from 1 to 64 bytes and 41 more to 255; the submission's six vectors; `vectors/rc6.vec`|
+|SAFER K-64, K-128, SK-64 and SK-128 (`safer-k64`, `safer-k128`, `safer-sk64`, `safer-sk128`), 1 to 13 rounds|✓|libtomcrypt 1.18.2 and Crypto++ 8.9.0 agree on every row from 6 to 13 rounds, and Botan 1.10.17 with them on SK-128, from 1 round with Crypto++: the published tests the three carry at the round counts their projects run them, every single-bit key and block and every byte repeated at each variant's usual count, random blocks at every other, and 44 iterated runs - 2,615 blocks; `vectors/safer.vec`|
+|SAFER+ (AES candidate), in the submission's byte order (`saferplus`) and in libmcrypt's, the 32-bit words reversed (`saferplus-reversed-words`)|✓|libtomcrypt 1.18.2 and libmcrypt 2.5.8 agree on every row once libmcrypt's word order is accounted for, both directions: 1,059 blocks and 27 iterated runs at all three key lengths - libtomcrypt's published tests, every single-bit key and block, every byte repeated, random blocks - and the published tests, random blocks and iterated runs again in libmcrypt's order; `vectors/saferplus.vec`|
 |SEED (RFC 4269)|✓|✓|
 |Serpent|✓|Botan's vectors; VeraCrypt, LUKS and KeePass files, by hand|
+|Simon at every size: Simon32/64 (`simon32`), Simon48/72, /96 (`simon48`), Simon64/96, /128 (`simon64`), Simon96/96, /144 (`simon96`) and Simon128/128, /192, /256 (`simon128`), constant time|✓|3,285 blocks and 90 iterated runs at every key length, each agreed by every witness that takes its key: Crypto++ 8.9.0 and inmcm's Python reference at 64 and 128 bits, with jedisct1/rust-lwbc at 64/128; inmcm and lwbc at 32/64, 48/96 and 96/144; inmcm alone at 48/72 and 96/96, whose 908 rows say so. Crypto++'s and the paper's published tests, every single-bit key and block, every byte repeated; the five z sequences read out of the three, each from two at least; `vectors/simon_speck.vec`|
+|Speck at every size: Speck32/64 (`speck32`), Speck48/72, /96 (`speck48`), Speck64/96, /128 (`speck64`), Speck96/96, /144 (`speck96`) and Speck128/128, /192, /256 (`speck128`), constant time|✓|3,285 blocks and 90 iterated runs at every key length, each agreed by every witness that takes its key: Crypto++ 8.9.0, the Linux kernel's Speck (v4.19) and inmcm's Python reference at 64 and 128 bits, with jedisct1/rust-lwbc at 64/128; inmcm and lwbc at 32/64, 48/96 and 96/144; inmcm alone at 48/72 and 96/96, whose 908 rows say so. Crypto++'s and the paper's published tests, every single-bit key and block, every byte repeated; `vectors/simon_speck.vec`|
+|Skipjack, in the specification's byte order (`skipjack`) and in Crypto++'s and Botan's, every string reversed (`skipjack-reversed`)|✓|libtomcrypt 1.18.2 and Bouncy Castle 1.77 agree on 496 blocks and 17 iterated runs in the specification's order, Crypto++ 8.9.0 and Botan 1.10.17 on the same in the reversed order, and all four on every row: the published tests the four carry, every single-bit key and block, every byte repeated; the F-table read out of all four; `vectors/skipjack.vec`|
 |SM4 (GB/T 32907-2016)|✓|✓|
+|Square (Rijndael's predecessor)|✓|Crypto++ 8.9.0 and Botan 1.10.17 agree on 596 blocks and 17 iterated runs: the published tests both carry, every single-bit key and block, every byte repeated; the S-box read out of both, with each one's inverse table checked against it; `vectors/square.vec`|
+|3-Way (`threeway`, also `3way` and `3-way`), constant time|✓|Crypto++ 8.9.0 and libmcrypt 2.5.8 agree on 517 blocks and 17 iterated runs: Crypto++'s published tests and libmcrypt's self-test, every single-bit key and block, every byte repeated; `vectors/threeway.vec`|
+|Threefish-256, -512 and -1024 as tweakable block ciphers (`threefish256`, `threefish512`, `threefish1024`), the key alone or followed by the 16 byte tweak, constant time|✓|Crypto++ 8.9.0, Bouncy Castle 1.77 and Skein3Fish's C agree on 1,082 blocks and 21 iterated runs, with and without a tweak: Crypto++'s published tests - the Skein team's known answers and Botan's - a single bit through every byte of the key and the block and through every bit of the tweak, repeated bytes and random blocks; Skein's known answers run through the same code; `vectors/threefish.vec`|
 |TEA|✓|spec reference; published vectors|
 |Twofish|✓|Botan's vectors; VeraCrypt, LUKS and KeePass files, by hand|
 |XTEA|✓|spec reference; published vectors|
-|Threefish|||
 |XXTEA|||
 
 XXTEA is not a 64-bit block cipher - it works on a whole message of two
@@ -242,6 +257,9 @@ for a tag. Key wrap authenticates without one. Both are in
 |CRC-32 (IEEE 802.3, zlib's) and CRC-32C (Castagnoli), as numbers that continue across calls and by name as `crc32` and `crc32c`, outside the hash catalogue|✓|PHP, Go, java.util.zip, and zlib on CRC-32 and the SSE 4.2 instruction on CRC-32C, agree on 31 messages to 100 KB, among them the CRC catalogue's check input: `vectors/checksums.vec`|
 |Adler-32 (RFC 1950, zlib's), as a number that continues across calls and by name as `adler32`, outside the hash catalogue|✓|PHP, Go, java.util.zip and zlib agree on 31 messages, among them runs of 0xff either side of the 5552 bytes its sums can take between reductions and one of 100 KB: `vectors/checksums.vec`|
 |Fletcher-16, -32 and -64, on bytes and on 16 and 32 bit little endian words with the last padded with zeros; `fletcher16`, `fletcher32`, `fletcher64`, outside the hash catalogue|✓|the C of the R package fletcher, hashlib-additional and the fletcher crate agree on 31 messages, among them every length modulo the word and a run of 100 KB of 0xff: `vectors/checksums.vec`|
+|xxHash: XXH32, XXH64, XXH3-64 and XXH3-128, seeded and, for XXH3, with a secret of 136 bytes or more; streaming, and by name as `xxh32`, `xxh64`, `xxh3` and `xxh128`, outside the hash catalogue|✓|PHP, the reference C 0.8.3 and twox-hash agree on all of 2,185 rows over 59 messages to 100 KB, with OneOfOne/xxhash and pierrec/xxHash on XXH32 and XXH64, cespare/xxhash on XXH64 and zeebo/xxh3 on seeded XXH3; every witness that takes a secret refuses one of 135 bytes: `vectors/xxhash.vec`. The primes and the default secret are read out of three implementations that agree|
+|MurmurHash3: x86_32, x86_128 and x64_128, seeded; streaming, and by name as `murmur3_32`, `murmur3_x86_128` and `murmur3_x64_128` or PHP's `murmur3a`, `murmur3c` and `murmur3f`, outside the hash catalogue|✓|PHP (PMurHash), SMHasher's reference, the murmur3 crate and murmurhash3js agree on all of 900 rows over 50 messages to 100 KB under six seeds, with spaolacci/murmur3 and twmb/murmur3 on x86_32 and x64_128: `vectors/murmur3.vec`|
+|Jenkins's one-at-a-time, from zero (PHP's `joaat`) or from a seed, whole or as a bare state to continue; by name as `joaat`, `one_at_a_time` or `oaat`, outside the hash catalogue|✓|PHP, Perl 5.24's and gVisor's agree on 28 messages to 100 KB from zero, and Perl's and gVisor's under four seeds more: `vectors/joaat.vec`|
 |FNV-0, FNV-1 and FNV-1a (RFC 9923) at 32, 64, 128, 256, 512 and 1024 bits; `fnv0_32` to `fnv1a_1024`, and PHP's `fnv132` to `fnv1a64`, outside the hash catalogue|✓|fnv-es and fnv-plus agree on FNV-1 and FNV-1a over 31 messages at every size, with PHP and Go where they have it and hashlib-additional except at 512 bits; fnv-es and hashlib-additional on FNV-0: `vectors/checksums.vec`. The primes are found by the rule that defines them, and Landon Curt Noll's C, libfnv and fnv-es carry the same|
 
 ## Public key
@@ -338,7 +356,10 @@ has both open boxes and sealed boxes made here.
 |ML-KEM's ring, NTT and compression|✓|structural; no vectors exist|
 |ML-DSA (FIPS 204)|✓|ACVP, and a second reading|
 |ML-DSA certificates and private keys (RFC 9881)|✓|RFC 9881's examples; OpenSSL 3.5 both ways|
-|SLH-DSA (FIPS 205): key generation, signing and verification, internal and external interfaces, pure and pre-hash|✓|ACVP, no differential|
+|Writing post-quantum keys: PKCS#8 for ML-DSA and ML-KEM in all three of their forms and for SLH-DSA, and SubjectPublicKeyInfo for all three|✓|RFC 9881's, RFC 9935's and RFC 9909's examples, OpenSSL 3.5's keys in every form and the IETF hackathon's SLH-DSA keys from four implementations, written again byte for byte; OpenSSL 3.5 reads, signs and decapsulates with ours, encrypted ones too, live|
+|ML-KEM certificates, public keys and private keys (RFC 9935), all three private key forms checked as section 8 says; `CertificateAuthority.issue_ml_kem`|✓|RFC 9935's examples, the four bad keys refused; OpenSSL 3.5 both ways: its keys, 9 encapsulations decapsulated here and certificates offline, and ours decapsulated and verified by it live|
+|SLH-DSA (FIPS 205): key generation, signing and verification, internal and external interfaces, pure and pre-hash|✓|ACVP; four other implementations' signatures through RFC 9909 below|
+|SLH-DSA certificates, public keys and private keys (RFC 9909), pure and HashSLH-DSA, each key held to its own form as section 8 says|✓|RFC 9909's example; the IETF hackathon's certificates and keys from OpenSSL 3.5, Bouncy Castle, Botan and Redhound offline; ours verified by OpenSSL 3.5 live at all twelve sets|
 |Streamlined NTRU Prime, sntrup761 (OpenSSH 9.0 to 9.8's default)|✓|the draft's vectors, and against sshd|
 |Hybrid TLS groups: X25519MLKEM768 and the NIST hybrids (RFC 10024)|✓|OpenSSL 3.5 both ways; Cloudflare and Google live|
 
@@ -353,11 +374,11 @@ ML-DSA's ring multiplication by Kronecker substitution), checked against
 every NIST case first and then compared with ours over hundreds of
 random cases. It is breadth rather than independence: the same reader
 of the same standard could share a misreading NIST's cases do not
-reach. **"No differential"**: nothing used by these tests implements
-SLH-DSA, so its ACVP vectors are the whole independent opinion.
-
-SLH-DSA and ML-KEM keys have no PEM or DER encoding here yet; ML-DSA's
-do. [post-quantum.md](post-quantum.md) has the detail.
+reach. For SLH-DSA no second implementation runs in the tests, but
+four have signed certificates they read: OpenSSL 3.5's, Bouncy Castle's,
+Botan's and Redhound's, at every parameter set between them, and
+OpenSSL 3.5 verifies this library's live.
+[post-quantum.md](post-quantum.md) has the detail.
 
 ## Certificates and keys
 
@@ -525,9 +546,14 @@ every parameter set, and signatures the engine made - and
 bugs: a one-block GOST MAC that was a block short, and VKO without the
 cofactor RFC 7836 specifies, which on the two cofactor-four curves
 derived a key no peer shares. `tests/transcripts/gost_handshakes.txt`
-holds seven real TLS 1.2 handshakes between OpenSSL and gost-engine at
+holds fifteen real TLS 1.2 handshakes between OpenSSL and gost-engine at
 both ends, and `tests/test_gost_transcript.rs` decrypts records the
 engine encrypted, which is the only thing that can settle the byte
 orders: our own client and server agree with each other whichever way
-round any of them is. [pitfalls.md](pitfalls.md) §7b and §7o have the
+round any of them is. `tests/test_gost_key_transport.rs` unwraps the
+engine's ClientKeyExchange under the recorded server key, which settles
+the key exchange the same way - including 0xC102 and 0xFF85 on a GOST R
+34.10-2001 certificate, where the UKM's hash follows the suite and the
+VKO and S-box follow the key. Four are on RFC 4357's and TC 26's test
+curves, which this library reaches only through `register_oid`. [pitfalls.md](pitfalls.md) §7b and §7o have the
 detail.

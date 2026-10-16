@@ -112,7 +112,9 @@ class Curve:
 
 def named_curves():
     text = open(PARAMS, encoding="utf-8").read()
-    found = re.findall(r'Params \{ m: (\d+),.*?n: "(\w+)"', text, re.S)
+    # The file also holds the normal-basis curves, as OnbParams, which
+    # this script does not use; \b keeps them out of the count.
+    found = re.findall(r'\bParams \{ m: (\d+),.*?n: "(\w+)"', text, re.S)
     if len(found) != 10:
         sys.exit(f"read {len(found)} curves from {PARAMS}")
     return [Curve(NAMES[i], int(m), int(n, 16), str(i)) for i, (m, n) in enumerate(found)]

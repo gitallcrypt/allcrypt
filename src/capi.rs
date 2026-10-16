@@ -620,6 +620,8 @@ fn kind(parts: &api::PrivateKeyParts) -> &'static str {
         api::PrivateKeyParts::Eddsa { .. } => "an EdDSA key",
         api::PrivateKeyParts::Xdh { .. } => "an X25519 or X448 key",
         api::PrivateKeyParts::MlDsa { .. } => "an ML-DSA key",
+        api::PrivateKeyParts::MlKem { .. } => "an ML-KEM key",
+        api::PrivateKeyParts::SlhDsa { .. } => "an SLH-DSA key",
         api::PrivateKeyParts::Dsa { .. } => "a DSA key",
     }
 }

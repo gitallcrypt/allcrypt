@@ -2,6 +2,10 @@
  * three widths): skeinSTATE_BITS, any whole number of bytes, through
  * Skein_256_Init, Skein_512_Init and Skein1024_Init. See
  * ../oldhashes/slurp.h. The data goes in in pieces of 1, 2, 3 ... bytes. */
+/* skein1024_2056 is 257 bytes, and the requests go up to 512 * 8 bits:
+ * the default of 64 is Skein-512's output, and Final writes the whole
+ * length asked for into this buffer. */
+#define OUT_MAX 512
 #include "slurp.h"
 #include "skein.h"
 

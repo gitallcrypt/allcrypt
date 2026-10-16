@@ -230,7 +230,8 @@ mod tests {
                     "DES" => "des".to_string(),
                     "TripleDES" => "3des".to_string(),
                     "Twofish" => "twofish".to_string(),
-                    // Threefish-512 is not implemented here.
+                    // Threefish-512 is, but CMAC here has no field for a
+                    // 512 bit block, so EAX over it is not.
                     _ => String::new(),
                 };
                 tag_len = rest.strip_prefix("EAX(")

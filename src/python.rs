@@ -3059,6 +3059,243 @@ fn crc32c(py: Python<'_>, data: Bytes, value: u32) -> u32 {
     py.allow_threads(|| api::crc32c(&data, value))
 }
 
+/// A seed for XXH3 or a secret, not both.
+fn xxh3_key(bits: usize, seed: u64, secret: Option<Bytes>) -> PyResult<api::Xxh3> {
+    match secret {
+        Some(_) if seed != 0 => Err(PyValueError::new_err(
+            "XXH3 takes a seed or a secret, not both.")),
+        Some(secret) => api::Xxh3::with_secret(bits, &secret).map_err(err),
+        None => api::Xxh3::new(bits, seed).map_err(err),
+    }
+}
+
+/// XXH32 of `data`, as an integer.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0))]
+fn xxh32(py: Python<'_>, data: Bytes, seed: u32) -> u32 {
+    py.allow_threads(|| api::xxh32(&data, seed))
+}
+
+/// XXH64 of `data`, as an integer.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0))]
+fn xxh64(py: Python<'_>, data: Bytes, seed: u64) -> u64 {
+    py.allow_threads(|| api::xxh64(&data, seed))
+}
+
+/// XXH3-64 of `data`, as an integer, with a seed or a secret.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0, secret = None))]
+fn xxh3_64(py: Python<'_>, data: Bytes, seed: u64, secret: Option<Bytes>) -> PyResult<u64> {
+    let mut hash = xxh3_key(64, seed, secret)?;
+    py.allow_threads(|| hash.update(&data));
+    Ok(hash.value_64())
+}
+
+/// XXH3-128 of `data`, as an integer, with a seed or a secret.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0, secret = None))]
+fn xxh3_128(py: Python<'_>, data: Bytes, seed: u64, secret: Option<Bytes>) -> PyResult<u128> {
+    let mut hash = xxh3_key(128, seed, secret)?;
+    py.allow_threads(|| hash.update(&data));
+    Ok(hash.value_128())
+}
+
+#[derive(Clone)]
+enum XxState {
+    Xxh32(api::Xxh32),
+    Xxh64(api::Xxh64),
+    Xxh3(api::Xxh3),
+}
+
+/// xxHash in progress, with a seed or, for XXH3, a secret.
+#[pyclass(name = "XxHash", module = "allcrypt")]
+pub struct XxHash {
+    state: XxState,
+}
+
+#[pymethods]
+impl XxHash {
+    #[new]
+    #[pyo3(signature = (name, data = None, *, seed = 0, secret = None))]
+    fn py_new(py: Python<'_>, name: &str, data: Option<Bytes>, seed: u64,
+              secret: Option<Bytes>) -> PyResult<Self> {
+        let state = match name {
+            "xxh32" | "xxh64" if secret.is_some() => return Err(PyValueError::new_err(
+                "Only XXH3 takes a secret.")),
+            "xxh32" => XxState::Xxh32(api::Xxh32::new(u32::try_from(seed).map_err(|_| {
+                PyValueError::new_err("An XXH32 seed is 32 bits.")
+            })?)),
+            "xxh64" => XxState::Xxh64(api::Xxh64::new(seed)),
+            "xxh3" | "xxh3_64" => XxState::Xxh3(xxh3_key(64, seed, secret)?),
+            "xxh128" | "xxh3_128" => XxState::Xxh3(xxh3_key(128, seed, secret)?),
+            other => return Err(PyValueError::new_err(format!(
+                "{other:?} is not xxh32, xxh64, xxh3 or xxh128."))),
+        };
+        let mut hash = XxHash { state };
+        if let Some(data) = data {
+            hash.update(py, data);
+        }
+        Ok(hash)
+    }
+
+    fn update(&mut self, py: Python<'_>, data: Bytes) {
+        let state = &mut self.state;
+        py.allow_threads(|| match state {
+            XxState::Xxh32(h) => h.update(&data),
+            XxState::Xxh64(h) => h.update(&data),
+            XxState::Xxh3(h) => h.update(&data),
+        });
+    }
+
+    /// The value as an integer.
+    fn intdigest(&self) -> u128 {
+        match &self.state {
+            XxState::Xxh32(h) => u128::from(h.value()),
+            XxState::Xxh64(h) => u128::from(h.value()),
+            XxState::Xxh3(h) => h.value_128(),
+        }
+    }
+
+    /// The value, big endian, as `xxhsum` prints it.
+    fn digest<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        let bytes = self.intdigest().to_be_bytes();
+        PyBytes::new(py, &bytes[16 - self.digest_size()..])
+    }
+
+    fn hexdigest(&self) -> String {
+        let bytes = self.intdigest().to_be_bytes();
+        bytes[16 - self.digest_size()..].iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[getter]
+    fn digest_size(&self) -> usize {
+        match &self.state {
+            XxState::Xxh32(_) => 4,
+            XxState::Xxh64(_) => 8,
+            XxState::Xxh3(h) => h.bits() / 8,
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        match &self.state {
+            XxState::Xxh32(_) => "xxh32",
+            XxState::Xxh64(_) => "xxh64",
+            XxState::Xxh3(h) if h.bits() == 64 => "xxh3",
+            XxState::Xxh3(_) => "xxh128",
+        }
+    }
+
+    fn copy(&self) -> XxHash {
+        XxHash { state: self.state.clone() }
+    }
+}
+
+/// Jenkins's one-at-a-time of `data`, starting from `seed`.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0))]
+fn joaat(py: Python<'_>, data: Bytes, seed: u32) -> u32 {
+    py.allow_threads(|| api::joaat(&data, seed))
+}
+
+/// One-at-a-time's bare state after `data`, from `state`.
+#[pyfunction]
+#[pyo3(signature = (data, state = 0))]
+fn joaat_update(py: Python<'_>, data: Bytes, state: u32) -> u32 {
+    py.allow_threads(|| api::joaat_update(state, &data))
+}
+
+/// One-at-a-time's value for a state.
+#[pyfunction]
+fn joaat_finish(state: u32) -> u32 {
+    api::joaat_finish(state)
+}
+
+/// MurmurHash3's x86_32 of `data`, as an integer.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0))]
+fn murmur3_32(py: Python<'_>, data: Bytes, seed: u32) -> u32 {
+    py.allow_threads(|| api::murmur3_32(&data, seed))
+}
+
+/// MurmurHash3's x86_128 of `data`, as an integer, the first word on top.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0))]
+fn murmur3_x86_128(py: Python<'_>, data: Bytes, seed: u32) -> u128 {
+    py.allow_threads(|| api::murmur3_x86_128(&data, seed))
+}
+
+/// MurmurHash3's x64_128 of `data`, as an integer, the first word on top.
+#[pyfunction]
+#[pyo3(signature = (data, seed = 0))]
+fn murmur3_x64_128(py: Python<'_>, data: Bytes, seed: u32) -> u128 {
+    py.allow_threads(|| api::murmur3_x64_128(&data, seed))
+}
+
+/// MurmurHash3 in progress, with a seed.
+#[pyclass(name = "Murmur3", module = "allcrypt")]
+pub struct Murmur3 {
+    inner: api::Murmur3,
+}
+
+#[pymethods]
+impl Murmur3 {
+    #[new]
+    #[pyo3(signature = (name, data = None, *, seed = 0))]
+    fn py_new(py: Python<'_>, name: &str, data: Option<Bytes>, seed: u32) -> PyResult<Self> {
+        let variant = match name {
+            "murmur3_32" | "murmur3_x86_32" | "murmur3a" => api::Murmur3Variant::X86_32,
+            "murmur3_x86_128" | "murmur3c" => api::Murmur3Variant::X86_128,
+            "murmur3_x64_128" | "murmur3f" => api::Murmur3Variant::X64_128,
+            other => return Err(PyValueError::new_err(format!(
+                "{other:?} is not murmur3_32, murmur3_x86_128 or murmur3_x64_128."))),
+        };
+        let mut hash = Murmur3 { inner: api::Murmur3::new(variant, seed) };
+        if let Some(data) = data {
+            hash.update(py, data);
+        }
+        Ok(hash)
+    }
+
+    fn update(&mut self, py: Python<'_>, data: Bytes) {
+        let inner = &mut self.inner;
+        py.allow_threads(|| inner.update(&data));
+    }
+
+    /// The value as an integer, the first word on top.
+    fn intdigest(&self) -> u128 {
+        self.inner.value_number()
+    }
+
+    /// The value, each word big endian, first word first, as PHP gives it.
+    fn digest<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.value())
+    }
+
+    fn hexdigest(&self) -> String {
+        self.inner.value().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[getter]
+    fn digest_size(&self) -> usize {
+        self.inner.value().len()
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        match self.inner.variant() {
+            api::Murmur3Variant::X86_32 => "murmur3_32",
+            api::Murmur3Variant::X86_128 => "murmur3_x86_128",
+            api::Murmur3Variant::X64_128 => "murmur3_x64_128",
+        }
+    }
+
+    fn copy(&self) -> Murmur3 {
+        Murmur3 { inner: self.inner.clone() }
+    }
+}
+
 /// SipHash, 2-4 and 8 bytes unless asked otherwise.
 #[pyfunction]
 #[pyo3(signature = (key, data, *, c_rounds = 2, d_rounds = 4, size = 8))]
@@ -4260,6 +4497,11 @@ impl PySlhDsaKey {
     #[getter]
     fn parameter_set(&self) -> &'static str { self.inner.parameter_set() }
 
+    /// The pre-hash an RFC 9909 HashSLH-DSA OID bound the key to, or
+    /// `None`.
+    #[getter]
+    fn pre_hash(&self) -> Option<&'static str> { self.inner.pre_hash() }
+
     /// `SK.seed || SK.prf || PK.seed || PK.root`.
     fn private_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, self.inner.private_bytes())
@@ -4272,6 +4514,14 @@ impl PySlhDsaKey {
 
     fn public_key(&self) -> PySlhDsaPublicKey {
         PySlhDsaPublicKey { inner: self.inner.public_key() }
+    }
+
+    /// The key as DER PKCS#8 (RFC 9909 section 7), under the OID of its
+    /// parameter set and of the pre-hash it is bound to.
+    /// `pem_wrap(.., "PRIVATE KEY")` makes the PEM and
+    /// `encrypt_private_key` encrypts it.
+    fn to_pkcs8<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.to_pkcs8().map_err(err)?))
     }
 
     /// Whether the public root inside this private key matches its seeds.
@@ -4370,8 +4620,34 @@ impl PySlhDsaPublicKey {
         Ok(PySlhDsaPublicKey { inner })
     }
 
+    /// The key in a SubjectPublicKeyInfo, DER or PEM `PUBLIC KEY` (RFC
+    /// 9909), bound to the pre-hash a HashSLH-DSA OID fixes.
+    #[staticmethod]
+    fn from_spki(py: Python<'_>, data: Bytes) -> PyResult<PySlhDsaPublicKey> {
+        let inner = py.allow_threads(|| api::SlhDsaPublicKey::from_spki(&data)).map_err(err)?;
+        Ok(PySlhDsaPublicKey { inner })
+    }
+
+    /// The subject key of a certificate, DER or PEM. Read, not verified.
+    #[staticmethod]
+    fn from_certificate(py: Python<'_>, data: Bytes) -> PyResult<PySlhDsaPublicKey> {
+        let inner = py.allow_threads(|| api::SlhDsaPublicKey::from_certificate(&data))
+            .map_err(err)?;
+        Ok(PySlhDsaPublicKey { inner })
+    }
+
     #[getter]
     fn parameter_set(&self) -> &'static str { self.inner.parameter_set() }
+
+    /// The pre-hash the key is bound to, or `None`.
+    #[getter]
+    fn pre_hash(&self) -> Option<&'static str> { self.inner.pre_hash() }
+
+    /// The key as a DER SubjectPublicKeyInfo; `pem_wrap(.., "PUBLIC KEY")`
+    /// makes the PEM.
+    fn to_spki<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.to_spki().map_err(err)?))
+    }
 
     fn public_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, self.inner.public_bytes())
@@ -4447,7 +4723,8 @@ impl PyMlKemKey {
     }
 
     /// Import an expanded decapsulation key. Raises if it fails FIPS 203's
-    /// hash check - the `H(ek)` it carries must match the `ek` it carries.
+    /// hash check - the `H(ek)` it carries must match the `ek` it carries -
+    /// or does not decapsulate what its own `ek` encapsulates.
     #[staticmethod]
     fn from_private(py: Python<'_>, parameter_set: &str, private: Bytes)
                     -> PyResult<PyMlKemKey> {
@@ -4472,6 +4749,22 @@ impl PyMlKemKey {
 
     fn public_key(&self) -> PyMlKemPublicKey {
         PyMlKemPublicKey { inner: self.inner.public_key() }
+    }
+
+    /// The 64 byte seed `d || z`, or `None` for a key imported expanded.
+    fn seed<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.inner.seed().map(|seed| PyBytes::new(py, seed))
+    }
+
+    /// The key as DER PKCS#8 (RFC 9935 section 6) in `form`: `"seed"`, which
+    /// the RFC recommends and needs a key that has its seed, `"expanded"`
+    /// or `"both"` (or OpenSSL's `"seed-only"`, `"priv-only"` and
+    /// `"seed-priv"`). `pem_wrap(.., "PRIVATE KEY")` makes the PEM and
+    /// `encrypt_private_key` encrypts it.
+    #[pyo3(signature = (form = "seed"))]
+    fn to_pkcs8<'py>(&self, py: Python<'py>, form: &str) -> PyResult<Bound<'py, PyBytes>> {
+        let form = api::PrivateKeyForm::from_name(form).map_err(err)?;
+        Ok(PyBytes::new(py, &self.inner.to_pkcs8(form).map_err(err)?))
     }
 
     /// The 32 byte shared secret for `ciphertext`.
@@ -4509,6 +4802,28 @@ impl PyMlKemPublicKey {
             || api::MlKemPublicKey::from_public(parameter_set, &public))
             .map_err(err)?;
         Ok(PyMlKemPublicKey { inner })
+    }
+
+    /// The key in a SubjectPublicKeyInfo, DER or PEM `PUBLIC KEY` (RFC 9935
+    /// section 4).
+    #[staticmethod]
+    fn from_spki(py: Python<'_>, data: Bytes) -> PyResult<PyMlKemPublicKey> {
+        let inner = py.allow_threads(|| api::MlKemPublicKey::from_spki(&data)).map_err(err)?;
+        Ok(PyMlKemPublicKey { inner })
+    }
+
+    /// The subject key of a certificate, DER or PEM. Read, not verified.
+    #[staticmethod]
+    fn from_certificate(py: Python<'_>, data: Bytes) -> PyResult<PyMlKemPublicKey> {
+        let inner = py.allow_threads(|| api::MlKemPublicKey::from_certificate(&data))
+            .map_err(err)?;
+        Ok(PyMlKemPublicKey { inner })
+    }
+
+    /// The key as a DER SubjectPublicKeyInfo; `pem_wrap(.., "PUBLIC KEY")`
+    /// makes the PEM.
+    fn to_spki<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.to_spki().map_err(err)?))
     }
 
     #[getter]
@@ -4607,6 +4922,17 @@ impl PyMlDsaKey {
         PyMlDsaPublicKey { inner: self.inner.public_key() }
     }
 
+    /// The key as DER PKCS#8 (RFC 9881 section 6) in `form`: `"seed"`, which
+    /// the RFC recommends and needs a key that has its seed, `"expanded"`
+    /// or `"both"` (or OpenSSL's `"seed-only"`, `"priv-only"` and
+    /// `"seed-priv"`). `pem_wrap(.., "PRIVATE KEY")` makes the PEM and
+    /// `encrypt_private_key` encrypts it.
+    #[pyo3(signature = (form = "seed"))]
+    fn to_pkcs8<'py>(&self, py: Python<'py>, form: &str) -> PyResult<Bound<'py, PyBytes>> {
+        let form = api::PrivateKeyForm::from_name(form).map_err(err)?;
+        Ok(PyBytes::new(py, &self.inner.to_pkcs8(form).map_err(err)?))
+    }
+
     /// Sign with fresh randomness - FIPS 204's hedged mode, and the one to
     /// use. `context` is at most 255 bytes; `prehash` names one of the
     /// twelve approved functions or is left out for the pure form. `rnd`,
@@ -4697,6 +5023,28 @@ impl PyMlDsaPublicKey {
             || api::MlDsaPublicKey::from_public(parameter_set, &public))
             .map_err(err)?;
         Ok(PyMlDsaPublicKey { inner })
+    }
+
+    /// The key in a SubjectPublicKeyInfo, DER or PEM `PUBLIC KEY` (RFC 9881
+    /// section 4).
+    #[staticmethod]
+    fn from_spki(py: Python<'_>, data: Bytes) -> PyResult<PyMlDsaPublicKey> {
+        let inner = py.allow_threads(|| api::MlDsaPublicKey::from_spki(&data)).map_err(err)?;
+        Ok(PyMlDsaPublicKey { inner })
+    }
+
+    /// The subject key of a certificate, DER or PEM. Read, not verified.
+    #[staticmethod]
+    fn from_certificate(py: Python<'_>, data: Bytes) -> PyResult<PyMlDsaPublicKey> {
+        let inner = py.allow_threads(|| api::MlDsaPublicKey::from_certificate(&data))
+            .map_err(err)?;
+        Ok(PyMlDsaPublicKey { inner })
+    }
+
+    /// The key as a DER SubjectPublicKeyInfo; `pem_wrap(.., "PUBLIC KEY")`
+    /// makes the PEM.
+    fn to_spki<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.inner.to_spki().map_err(err)?))
     }
 
     #[getter]
@@ -5574,9 +5922,9 @@ fn private_key_encryption<'py>(py: Python<'py>, data: Bytes) -> PyResult<Bound<'
 
 /// Read a private key from PEM text or DER bytes.
 ///
-/// Returns an `EcKey`, `RsaKey`, `EddsaKey` or `MlDsaKey` - whichever the
-/// file holds - so the caller passes the result straight to `TlsServer`
-/// without having to know which it got.
+/// Returns an `EcKey`, `RsaKey`, `EddsaKey`, `MlDsaKey`, `MlKemKey`,
+/// `SlhDsaKey` or `DsaKey` - whichever the file holds - so the caller passes a signing
+/// key straight to `TlsServer` without having to know which it got.
 ///
 /// PKCS#8 (`PRIVATE KEY`), SEC1 (`EC PRIVATE KEY`) and PKCS#1 (`RSA
 /// PRIVATE KEY`) are all read, and **the bytes decide rather than the
@@ -5630,6 +5978,18 @@ fn private_key(py: Python<'_>, data: Bytes, password: Option<Bytes>)
                 None => api::MlDsaKey::from_private(&parameter_set, &expanded),
             }).map_err(err)?;
             Ok(PyMlDsaKey { inner: std::sync::Arc::new(inner) }.into_pyobject(py)?.into_any().unbind())
+        }
+        api::PrivateKeyParts::SlhDsa { parameter_set, pre_hash, private } => {
+            let inner = api::SlhDsaKey::from_private(&parameter_set, &private)
+                .and_then(|key| key.with_pre_hash(pre_hash.as_deref())).map_err(err)?;
+            Ok(PySlhDsaKey { inner }.into_pyobject(py)?.into_any().unbind())
+        }
+        api::PrivateKeyParts::MlKem { parameter_set, seed, expanded } => {
+            let inner = py.allow_threads(|| match &seed {
+                Some(seed) => api::MlKemKey::from_seed(&parameter_set, seed),
+                None => api::MlKemKey::from_private(&parameter_set, &expanded),
+            }).map_err(err)?;
+            Ok(PyMlKemKey { inner }.into_pyobject(py)?.into_any().unbind())
         }
     }
 }
@@ -6081,8 +6441,9 @@ impl PyCertificateAuthority {
     /// `not_before` and `not_after` are ``YYYYMMDDHHMMSSZ`` and are
     /// required rather than defaulted: a proxy CA that outlives its
     /// usefulness is a key somebody forgot they installed.
-    /// `key_type` is a curve name, ``"ed25519"`` or an ML-DSA parameter
-    /// set (``"ML-DSA-65"``). P-256 is the
+    /// `key_type` is a curve name, ``"ed25519"``, an ML-DSA parameter
+    /// set (``"ML-DSA-65"``) or a pure SLH-DSA one
+    /// (``"SLH-DSA-SHA2-128f"``). P-256 is the
     /// default because a proxy issues a certificate while a browser
     /// waits, and it is the fastest generation here; the leaves this
     /// CA issues are of the same type as the CA itself.
@@ -6152,6 +6513,15 @@ impl PyCertificateAuthority {
         let (der, key) = self.inner.issue(host, not_before, not_after)
             .map_err(err)?;
         Ok((PyBytes::new(py, &der), PyBytes::new(py, &key)))
+    }
+
+    /// A certificate for someone else's ML-KEM key (RFC 9935), DER, with
+    /// keyUsage keyEncipherment alone.
+    fn issue_ml_kem<'py>(&self, py: Python<'py>, common_name: &str, key: &PyMlKemPublicKey,
+                         not_before: &str, not_after: &str) -> PyResult<Bound<'py, PyBytes>> {
+        let der = self.inner.issue_ml_kem(common_name, &key.inner, not_before, not_after)
+            .map_err(err)?;
+        Ok(PyBytes::new(py, &der))
     }
 
     /// The key identifier of this CA's key, which is what a leaf's
@@ -6617,6 +6987,18 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(poly1305, m)?)?;
     m.add_function(wrap_pyfunction!(siphash, m)?)?;
     m.add_function(wrap_pyfunction!(crc32c, m)?)?;
+    m.add_function(wrap_pyfunction!(xxh32, m)?)?;
+    m.add_function(wrap_pyfunction!(xxh64, m)?)?;
+    m.add_function(wrap_pyfunction!(xxh3_64, m)?)?;
+    m.add_function(wrap_pyfunction!(xxh3_128, m)?)?;
+    m.add_class::<XxHash>()?;
+    m.add_function(wrap_pyfunction!(murmur3_32, m)?)?;
+    m.add_function(wrap_pyfunction!(murmur3_x86_128, m)?)?;
+    m.add_function(wrap_pyfunction!(murmur3_x64_128, m)?)?;
+    m.add_class::<Murmur3>()?;
+    m.add_function(wrap_pyfunction!(joaat, m)?)?;
+    m.add_function(wrap_pyfunction!(joaat_update, m)?)?;
+    m.add_function(wrap_pyfunction!(joaat_finish, m)?)?;
     m.add_function(wrap_pyfunction!(halfsiphash, m)?)?;
     m.add_function(wrap_pyfunction!(poly1305_verify, m)?)?;
     m.add_function(wrap_pyfunction!(x448_generate, m)?)?;

@@ -509,3 +509,39 @@ pub fn hash_check(parameters: &'static Parameters, dk: &[u8])
     let embedded = &dk[768 * k + 32..768 * k + 64];
     Ok(h(ek)? == embedded)
 }
+
+/// Everything about an expanded decapsulation key that can be checked
+/// without its seed: the length, the hash check, and a **pairwise
+/// consistency test** - encapsulating to the `ek` it carries, which runs
+/// the modulus check on it, and decapsulating with the key.
+///
+/// The last is the only check that sees whether `dk_pke` belongs to `ek`.
+/// A key whose secret vector was altered and whose `H(ek)` was left alone
+/// passes the other three, decapsulates every ciphertext to the implicit
+/// rejection secret, and so never reports anything. RFC 9935's Appendix
+/// C.4 has one. `m` is the hash of the key, so the test is deterministic
+/// and draws nothing from the random source.
+///
+/// What no check short of the seed can see is a `z` that is not the one
+/// the key was generated with: it is used only on rejection.
+pub fn check_expanded(parameters: &'static Parameters, dk: &[u8]) -> Result<(), String> {
+    if dk.len() != parameters.decapsulation_key_len() {
+        return Err(format!("{}: a decapsulation key is {} bytes, not {}.", parameters.name,
+                           parameters.decapsulation_key_len(), dk.len()));
+    }
+    if !hash_check(parameters, dk)? {
+        return Err(format!("{}: the H(ek) the key carries is not the hash of the ek it \
+                            carries (FIPS 203's hash check).", parameters.name));
+    }
+    // Encapsulating runs the modulus check on the ek inside the key.
+    let k = parameters.k;
+    let ek = &dk[384 * k..768 * k + 32];
+    let m = h(dk)?;
+    let (shared, ciphertext) = encapsulate_internal(parameters, ek, &m)?;
+    if decapsulate_internal(parameters, dk, &ciphertext)? != shared {
+        return Err(format!("{}: the key does not decapsulate what its own ek encapsulates, so \
+                            its secret part does not belong to its public part (a pairwise \
+                            consistency test).", parameters.name));
+    }
+    Ok(())
+}

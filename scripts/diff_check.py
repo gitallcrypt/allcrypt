@@ -3384,6 +3384,40 @@ _OID_EQUIVALENTS = {
     "ID_ML_DSA_44":        None,
     "ID_ML_DSA_65":        None,
     "ID_ML_DSA_87":        None,
+    # RFC 9935's three, in the same position: OpenSSL 3.5 reads and writes
+    # keys and certificates carrying them (`vectors/ml_kem_openssl.vec`),
+    # and the vendored RFC states each one (`_OID_IN_RFCS`).
+    "ID_ML_KEM_512":       None,
+    "ID_ML_KEM_768":       None,
+    "ID_ML_KEM_1024":      None,
+    # RFC 9909's twenty-four, the same again: OpenSSL 3.5 names the twelve
+    # pure ones and verifies certificates carrying them, the IETF
+    # hackathon's artifacts (`vectors/slh_dsa_x509.vec`) carry both kinds,
+    # and the vendored RFC states each one (`_OID_IN_RFCS`).
+    "ID_SLH_DSA_SHA2_128S": None,
+    "ID_SLH_DSA_SHA2_128F": None,
+    "ID_SLH_DSA_SHA2_192S": None,
+    "ID_SLH_DSA_SHA2_192F": None,
+    "ID_SLH_DSA_SHA2_256S": None,
+    "ID_SLH_DSA_SHA2_256F": None,
+    "ID_SLH_DSA_SHAKE_128S": None,
+    "ID_SLH_DSA_SHAKE_128F": None,
+    "ID_SLH_DSA_SHAKE_192S": None,
+    "ID_SLH_DSA_SHAKE_192F": None,
+    "ID_SLH_DSA_SHAKE_256S": None,
+    "ID_SLH_DSA_SHAKE_256F": None,
+    "ID_HASH_SLH_DSA_SHA2_128S_WITH_SHA256": None,
+    "ID_HASH_SLH_DSA_SHA2_128F_WITH_SHA256": None,
+    "ID_HASH_SLH_DSA_SHA2_192S_WITH_SHA512": None,
+    "ID_HASH_SLH_DSA_SHA2_192F_WITH_SHA512": None,
+    "ID_HASH_SLH_DSA_SHA2_256S_WITH_SHA512": None,
+    "ID_HASH_SLH_DSA_SHA2_256F_WITH_SHA512": None,
+    "ID_HASH_SLH_DSA_SHAKE_128S_WITH_SHAKE128": None,
+    "ID_HASH_SLH_DSA_SHAKE_128F_WITH_SHAKE128": None,
+    "ID_HASH_SLH_DSA_SHAKE_192S_WITH_SHAKE256": None,
+    "ID_HASH_SLH_DSA_SHAKE_192F_WITH_SHAKE256": None,
+    "ID_HASH_SLH_DSA_SHAKE_256S_WITH_SHAKE256": None,
+    "ID_HASH_SLH_DSA_SHAKE_256F_WITH_SHAKE256": None,
 
     # Password based encryption, PKCS#5 and PKCS#12. None of these is in
     # python-cryptography's `x509.oid` - those tables are about
@@ -3754,6 +3788,35 @@ _OID_IN_RFCS = {
     "ID_ML_DSA_44":        "id-ml-dsa-44",
     "ID_ML_DSA_65":        "id-ml-dsa-65",
     "ID_ML_DSA_87":        "id-ml-dsa-87",
+    # RFC 9935 section 3, under the kems arc.
+    "ID_ML_KEM_512":       "id-alg-ml-kem-512",
+    "ID_ML_KEM_768":       "id-alg-ml-kem-768",
+    "ID_ML_KEM_1024":      "id-alg-ml-kem-1024",
+    # RFC 9909 section 3, under the sigAlgs arc.
+    "ID_SLH_DSA_SHA2_128S": "id-slh-dsa-sha2-128s",
+    "ID_SLH_DSA_SHA2_128F": "id-slh-dsa-sha2-128f",
+    "ID_SLH_DSA_SHA2_192S": "id-slh-dsa-sha2-192s",
+    "ID_SLH_DSA_SHA2_192F": "id-slh-dsa-sha2-192f",
+    "ID_SLH_DSA_SHA2_256S": "id-slh-dsa-sha2-256s",
+    "ID_SLH_DSA_SHA2_256F": "id-slh-dsa-sha2-256f",
+    "ID_SLH_DSA_SHAKE_128S": "id-slh-dsa-shake-128s",
+    "ID_SLH_DSA_SHAKE_128F": "id-slh-dsa-shake-128f",
+    "ID_SLH_DSA_SHAKE_192S": "id-slh-dsa-shake-192s",
+    "ID_SLH_DSA_SHAKE_192F": "id-slh-dsa-shake-192f",
+    "ID_SLH_DSA_SHAKE_256S": "id-slh-dsa-shake-256s",
+    "ID_SLH_DSA_SHAKE_256F": "id-slh-dsa-shake-256f",
+    "ID_HASH_SLH_DSA_SHA2_128S_WITH_SHA256": "id-hash-slh-dsa-sha2-128s-with-sha256",
+    "ID_HASH_SLH_DSA_SHA2_128F_WITH_SHA256": "id-hash-slh-dsa-sha2-128f-with-sha256",
+    "ID_HASH_SLH_DSA_SHA2_192S_WITH_SHA512": "id-hash-slh-dsa-sha2-192s-with-sha512",
+    "ID_HASH_SLH_DSA_SHA2_192F_WITH_SHA512": "id-hash-slh-dsa-sha2-192f-with-sha512",
+    "ID_HASH_SLH_DSA_SHA2_256S_WITH_SHA512": "id-hash-slh-dsa-sha2-256s-with-sha512",
+    "ID_HASH_SLH_DSA_SHA2_256F_WITH_SHA512": "id-hash-slh-dsa-sha2-256f-with-sha512",
+    "ID_HASH_SLH_DSA_SHAKE_128S_WITH_SHAKE128": "id-hash-slh-dsa-shake-128s-with-shake128",
+    "ID_HASH_SLH_DSA_SHAKE_128F_WITH_SHAKE128": "id-hash-slh-dsa-shake-128f-with-shake128",
+    "ID_HASH_SLH_DSA_SHAKE_192S_WITH_SHAKE256": "id-hash-slh-dsa-shake-192s-with-shake256",
+    "ID_HASH_SLH_DSA_SHAKE_192F_WITH_SHAKE256": "id-hash-slh-dsa-shake-192f-with-shake256",
+    "ID_HASH_SLH_DSA_SHAKE_256S_WITH_SHAKE256": "id-hash-slh-dsa-shake-256s-with-shake256",
+    "ID_HASH_SLH_DSA_SHAKE_256F_WITH_SHAKE256": "id-hash-slh-dsa-shake-256f-with-shake256",
 
     # Password based encryption. RFC 8018 assigns the PKCS#5 ones and
     # the PBKDF2 PRFs; RFC 7292 assigns the PKCS#12 ones.

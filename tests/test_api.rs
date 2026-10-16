@@ -338,7 +338,7 @@ fn test_catalogue_is_accurate() {
     // the one length that works, so `GostCrypto::new` **panicking** on
     // every other length went unnoticed until this loop replaced it.
     for name in BLOCK_CIPHERS {
-        let usable: Vec<usize> = [5usize, 8, 16, 24, 32, 56, 64].into_iter()
+        let usable: Vec<usize> = [5usize, 8, 10, 12, 16, 24, 32, 56, 64, 128].into_iter()
             .filter(|&n| AnyBlockCipher::new(name, &key(n), None).is_ok())
             .collect();
         assert!(!usable.is_empty(), "{} constructs at no key length", name);
@@ -386,7 +386,7 @@ fn test_cipher_names_have_one_list_of_aliases() {
     for name in BLOCK_CIPHERS {
         assert_eq!(api::block_cipher_name(name), Some(*name));
         assert_eq!(api::block_cipher_name(&name.to_ascii_uppercase()), Some(*name));
-        let n = [5usize, 8, 16, 24, 32, 56, 64].into_iter()
+        let n = [5usize, 8, 10, 12, 16, 24, 32, 56, 64, 128].into_iter()
             .find(|&n| AnyBlockCipher::new(name, &key(n), None).is_ok()).unwrap();
         assert_eq!(AnyBlockCipher::new(name, &key(n), None).unwrap().name(), *name);
     }
@@ -394,14 +394,18 @@ fn test_cipher_names_have_one_list_of_aliases() {
                    ("cast128", "cast5", 16), ("kuznechik", "kuznyechik", 32),
                    ("Grasshopper", "kuznyechik", 32), ("des3", "3des", 24),
                    ("des-ede", "3des", 24), ("DES-EDE3", "3des", 24),
-                   ("tripledes", "3des", 24)];
+                   ("tripledes", "3des", 24), ("3way", "threeway", 12),
+                   ("3-Way", "threeway", 12), ("Threefish-256", "threefish256", 48),
+                   ("threefish-512", "threefish512", 64),
+                   ("THREEFISH-1024", "threefish1024", 128)];
     for (alias, canonical, n) in aliases {
         assert_eq!(api::block_cipher_name(alias), Some(canonical));
         let encrypt = |name: &str| {
             let c = AnyBlockCipher::new(name, &key(n), None).unwrap();
             let mut s = CipherStream::new(c, Mode::Ecb, &[], false).unwrap();
-            s.update(&data(16)).unwrap()
+            s.update(&data(128)).unwrap()
         };
+        assert!(!encrypt(alias).is_empty(), "{alias}");
         assert_eq!(encrypt(alias), encrypt(canonical), "{alias}");
     }
     for unknown in ["", "nosuch", "aes-128", "kalyna-64", "rijndael-512", "3-des"] {
@@ -577,15 +581,30 @@ fn test_aead_through_the_api() {
                         "sm4-eax", "des-eax", "3des-eax", "blowfish-eax",
                         "tea-eax", "xtea-eax", "rc5-eax", "aria-eax", "rc6-eax",
                         "cast256-eax", "mars-eax", "khazad-eax", "anubis-eax", "noekeon-eax",
-                        "noekeon-indirect-eax", "kuznyechik-mgm", "magma-mgm", "aes-mgm",
+                        "noekeon-indirect-eax", "skipjack-eax", "skipjack-reversed-eax",
+                        "safer-k64-eax", "safer-k128-eax", "safer-sk64-eax", "safer-sk128-eax",
+                        "square-eax", "kasumi-eax", "misty1-eax", "saferplus-eax",
+                        "saferplus-reversed-words-eax", "loki97-eax", "loki97-mcrypt-eax", "lea-eax",
+                        "hight-eax", "speck64-eax", "speck128-eax", "simon64-eax",
+                        "simon128-eax", "present-eax", "feal-eax", "feal-nx-eax",
+                        "kuznyechik-mgm", "magma-mgm", "aes-mgm",
                         "twofish-mgm", "serpent-mgm", "camellia-mgm",
                         "sm4-mgm", "aria-mgm", "des-mgm", "3des-mgm",
                         "blowfish-mgm", "tea-mgm", "xtea-mgm", "rc5-mgm", "rc6-mgm",
                         "cast256-mgm", "mars-mgm", "khazad-mgm", "anubis-mgm", "noekeon-mgm",
-                        "noekeon-indirect-mgm", "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
+                        "noekeon-indirect-mgm", "skipjack-mgm", "skipjack-reversed-mgm",
+                        "safer-k64-mgm", "safer-k128-mgm", "safer-sk64-mgm", "safer-sk128-mgm",
+                        "square-mgm", "kasumi-mgm", "misty1-mgm", "saferplus-mgm",
+                        "saferplus-reversed-words-mgm", "loki97-mgm", "loki97-mcrypt-mgm", "lea-mgm",
+                        "hight-mgm", "speck64-mgm", "speck128-mgm", "simon64-mgm",
+                        "simon128-mgm", "present-mgm", "feal-mgm", "feal-nx-mgm",
+                        "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
                         "aria-ocb", "sm4-ocb", "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
                         "cast256-ocb", "mars-ocb", "anubis-ocb", "noekeon-ocb",
-                        "noekeon-indirect-ocb", "aes-128-cbc-hmac-sha256",
+                        "noekeon-indirect-ocb", "square-ocb", "saferplus-ocb",
+                        "saferplus-reversed-words-ocb", "loki97-ocb", "loki97-mcrypt-ocb", "lea-ocb",
+                        "speck128-ocb", "simon128-ocb",
+                        "aes-128-cbc-hmac-sha256",
                         "aes-192-cbc-hmac-sha384",
                         "aes-256-cbc-hmac-sha512", "kalyna-128-gcm", "kalyna-256-gcm",
                         "kalyna-512-gcm", "kalyna-128-ccm", "kalyna-256-ccm", "kalyna-512-ccm"]);
@@ -611,6 +630,13 @@ fn test_aead_through_the_api() {
         ("aria-eax", 16), ("aria-eax", 32), ("rc6-eax", 16), ("rc6-eax", 32),
         ("cast256-eax", 20), ("mars-eax", 40), ("khazad-eax", 16), ("anubis-eax", 40),
         ("noekeon-eax", 16), ("noekeon-indirect-eax", 16),
+        ("skipjack-eax", 10), ("skipjack-reversed-eax", 10),
+        ("safer-k64-eax", 8), ("safer-k128-eax", 16), ("safer-sk64-eax", 8),
+        ("safer-sk128-eax", 16), ("square-eax", 16), ("kasumi-eax", 16),
+        ("misty1-eax", 16), ("saferplus-eax", 24), ("saferplus-reversed-words-eax", 32),
+        ("loki97-eax", 16), ("loki97-mcrypt-eax", 24), ("lea-eax", 32),
+        ("hight-eax", 16), ("speck64-eax", 12), ("speck128-eax", 32), ("simon64-eax", 16),
+        ("simon128-eax", 24), ("present-eax", 10), ("feal-eax", 8), ("feal-nx-eax", 16),
         // MGM, the same way: the standard's own two ciphers first, then
         // one of each block size from the rest. MGM's field polynomial
         // differs between a 64 and a 128 bit block, so the two sizes
@@ -623,13 +649,22 @@ fn test_aead_through_the_api() {
         ("tea-mgm", 16), ("xtea-mgm", 16), ("rc5-mgm", 16), ("rc6-mgm", 24), ("cast256-mgm", 32),
         ("mars-mgm", 56), ("khazad-mgm", 16), ("anubis-mgm", 20),
         ("noekeon-mgm", 16), ("noekeon-indirect-mgm", 16),
+        ("skipjack-mgm", 10), ("skipjack-reversed-mgm", 10),
+        ("safer-k64-mgm", 8), ("safer-k128-mgm", 16), ("safer-sk64-mgm", 8),
+        ("safer-sk128-mgm", 16), ("square-mgm", 16), ("kasumi-mgm", 16),
+        ("misty1-mgm", 16), ("saferplus-mgm", 32), ("saferplus-reversed-words-mgm", 16),
+        ("loki97-mgm", 24), ("loki97-mcrypt-mgm", 32), ("lea-mgm", 16),
+        ("hight-mgm", 16), ("speck64-mgm", 16), ("speck128-mgm", 24), ("simon64-mgm", 12),
+        ("simon128-mgm", 16), ("present-mgm", 16), ("feal-mgm", 8), ("feal-nx-mgm", 16),
         // OCB, 128 bit blocks only.
         ("aes-ocb", 16), ("aes-ocb", 24), ("aes-ocb", 32),
         ("camellia-ocb", 16), ("twofish-ocb", 32), ("serpent-ocb", 32),
         ("aria-ocb", 16), ("sm4-ocb", 16), ("seed-ocb", 16),
         ("kuznyechik-ocb", 32), ("rc6-ocb", 16), ("cast256-ocb", 28),
         ("mars-ocb", 20), ("anubis-ocb", 32), ("noekeon-ocb", 16),
-        ("noekeon-indirect-ocb", 16),
+        ("noekeon-indirect-ocb", 16), ("square-ocb", 16), ("saferplus-ocb", 16),
+        ("saferplus-reversed-words-ocb", 24), ("loki97-ocb", 32), ("loki97-mcrypt-ocb", 16),
+        ("lea-ocb", 24), ("speck128-ocb", 16), ("simon128-ocb", 32),
         // AES-CBC with HMAC: one key size each, the MAC key and the AES
         // key together.
         ("aes-128-cbc-hmac-sha256", 32), ("aes-192-cbc-hmac-sha384", 48),

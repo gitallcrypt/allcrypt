@@ -195,6 +195,64 @@ by_name.update(data);
 assert_eq!(fnv.value(), by_name.digest());
 ```
 
+`checksum::xxhash` is xxHash: `Xxh32` and `Xxh64` with their seeds, and
+`Xxh3` at 64 or 128 bits with a seed (`Xxh3::new`) or a secret of at
+least 136 bytes (`Xxh3::with_secret`), each streaming; `api` has them,
+the one-shot `xxh32`, `xxh64`, `xxh3_64` and `xxh3_128`, and the last
+two `_with_secret`. By name they have the seed zero.
+
+```rust
+use allcrypt::api::{self, AnyHash, Xxh3};
+use allcrypt::hash_functions::HashFunction;
+
+let data = b"The quick brown fox jumps over the lazy dog";
+let mut h = Xxh3::new(128, 7)?;
+h.update(&data[..10]);
+h.update(&data[10..]);
+assert_eq!(h.value_128(), api::xxh3_128(data, 7));
+
+let mut by_name = AnyHash::new("xxh64")?;
+by_name.update(data);
+assert_eq!(by_name.digest(), api::xxh64(data, 0).to_be_bytes());
+let mut keyed = Xxh3::with_secret(64, &[0x5a; 136])?;
+keyed.update(data);
+assert_eq!(keyed.value_64(), api::xxh3_64_with_secret(data, &[0x5a; 136])?);
+```
+
+`checksum::murmur3` is MurmurHash3: `Murmur3` streams any of the three
+(`Murmur3Variant::X86_32`, `X86_128`, `X64_128`) with a 32 bit seed, and
+`api` has it and the one-shot `murmur3_32`, `murmur3_x86_128` and
+`murmur3_x64_128`. The 128 bit values are numbers with the first word
+on top, the bytes PHP prints read big endian.
+
+```rust
+use allcrypt::api::{self, AnyHash, Murmur3, Murmur3Variant};
+use allcrypt::hash_functions::HashFunction;
+
+let data = b"The quick brown fox jumps over the lazy dog";
+let mut h = Murmur3::new(Murmur3Variant::X86_128, 9);
+h.update(&data[..10]);
+h.update(&data[10..]);
+assert_eq!(h.value_number(), api::murmur3_x86_128(data, 9));
+
+let mut by_name = AnyHash::new("murmur3f")?;
+by_name.update(data);
+assert_eq!(by_name.digest(), api::murmur3_x64_128(data, 0).to_be_bytes());
+```
+
+Jenkins's one-at-a-time is `checksum::joaat(data, seed)`, with
+`joaat_update` for the bare state from zero or a seed and `joaat_finish`
+for its last mix; `api` has all three, and `AnyHash` takes `joaat`,
+`one_at_a_time` and `oaat` from zero.
+
+```rust
+use allcrypt::checksum;
+
+let data = b"The quick brown fox jumps over the lazy dog";
+let state = checksum::joaat_update(checksum::joaat_update(7, &data[..10]), &data[10..]);
+assert_eq!(checksum::joaat_finish(state), checksum::joaat(data, 7));
+```
+
 ### BLAKE3
 
 `blake3` is in `HASHES` at its default 32 bytes. Its other two modes
@@ -848,6 +906,479 @@ assert_eq!(again, out);
 
 Crypto++ and Bouncy Castle agree on every row of `vectors/shacal2.vec`,
 which holds the NESSIE submission's 1,024 vectors and every key length.
+
+### SHACAL-1
+
+SHACAL-1, SHACAL-2's sibling on SHA-1, which NESSIE did not select:
+SHA-1's compression function without its feed-forward, a 160 bit block
+(the chaining value), a key of 16 to 64 bytes (the message block,
+zero-padded to 64) and SHA-1's 80 rounds, its round constants shared
+with `hash_functions::sha1`. Constant time. Its block is 20 bytes, so it
+takes the modes Rijndael-160 takes and no AEAD.
+
+```rust
+use allcrypt::block_ciphers::shacal1::Shacal1;
+use allcrypt::block_ciphers::BlockCipher;
+
+// Project Nayuki's first SHACAL-1 test: the key 00, 01, ..., 3f.
+let key: Vec<u8> = (0..64).collect();
+let block = [0xc4, 0x2d, 0x18, 0xe5, 0x12, 0x20, 0x88, 0x47, 0x17, 0x2c,
+             0xc6, 0x33, 0x61, 0x96, 0x7c, 0xd9, 0x01, 0xf7, 0x14, 0x72];
+let mut out = Vec::new();
+Shacal1::new(&key)?.block_encrypt(&block, &mut out);
+assert_eq!(out[..4], [0x00, 0x11, 0x22, 0x33]);
+let mut back = Vec::new();
+Shacal1::new(&key)?.block_decrypt(&out, &mut back);
+assert_eq!(back, block);
+assert!(Shacal1::new(&key[..15]).is_err());
+```
+
+Crypto++'s and OpenSSL's SHA-1 compression functions, less their
+feed-forward, agree on every row of `vectors/shacal1.vec`. Both only
+encrypt; every row is decrypted here and must give its block back.
+
+### Skipjack
+
+Skipjack, the NSA's cipher for the Clipper and Fortezza devices: a 64
+bit block, an 80 bit key and 32 rounds of two stepping rules over four
+16-bit words. **Implementations disagree about byte order.** The
+specification, libtomcrypt and Bouncy Castle read the block and key as
+written (`Skipjack::new`, `skipjack`); Crypto++ and Botan read the key,
+the block and the result each backwards (`Skipjack::new_reversed`,
+`skipjack-reversed`), and their own test vector is the specification's
+reversed. Data a Crypto++ program wrote needs the second.
+
+```rust
+use allcrypt::block_ciphers::skipjack::Skipjack;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The specification's vector, and the same vector as Crypto++ prints it.
+let key = [0x00, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11];
+let block = [0x33, 0x22, 0x11, 0x00, 0xdd, 0xcc, 0xbb, 0xaa];
+let mut out = Vec::new();
+Skipjack::new(&key)?.block_encrypt(&block, &mut out);
+assert_eq!(out, [0x25, 0x87, 0xca, 0xe2, 0x7a, 0x12, 0xd3, 0x00]);
+
+let (mut rkey, mut rblock) = (key, block);
+rkey.reverse();
+rblock.reverse();
+let mut reversed = Vec::new();
+Skipjack::new_reversed(&rkey)?.block_encrypt(&rblock, &mut reversed);
+out.reverse();
+assert_eq!(reversed, out);
+```
+
+`vectors/skipjack.vec` has both orders, and libtomcrypt, Bouncy Castle,
+Crypto++ and Botan agree on every row once the order is accounted for.
+Like DES and Blowfish, it indexes a table by key and data, so it is not
+constant time.
+
+### SAFER
+
+Massey's SAFER K-64 and K-128 and their strengthened key schedules, SK-64
+and SK-128: a 64 bit block, an 8 or 16 byte key, and a round count from
+1 to 13 that is part of the cipher. `Safer::new` takes the variant's
+usual count - 6 for K-64, 8 for SK-64, 10 for the -128 variants - and
+`Safer::with_rounds` any other. Published tests are run at other counts
+too, so a vector's round count matters as much as its key.
+
+```rust
+use allcrypt::block_ciphers::safer::{Safer, SaferVariant};
+use allcrypt::block_ciphers::BlockCipher;
+
+// libtomcrypt's SAFER K-64 test, at the usual six rounds.
+let mut k64 = Safer::new(SaferVariant::K64, &[8, 7, 6, 5, 4, 3, 2, 1])?;
+let mut out = Vec::new();
+k64.block_encrypt(&[1, 2, 3, 4, 5, 6, 7, 8], &mut out);
+assert_eq!(out, [0xc8, 0xf2, 0x9c, 0xdd, 0x87, 0x78, 0x3e, 0xd9]);
+
+// Crypto++ runs its K-128 tests at twelve.
+let key = [8, 7, 6, 5, 4, 3, 2, 1, 8, 7, 6, 5, 4, 3, 2, 1];
+let mut k128 = Safer::with_rounds(SaferVariant::K128, &key, 12)?;
+let mut out = Vec::new();
+k128.block_encrypt(&[0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57], &mut out);
+assert_eq!(out, [0x38, 0xe6, 0x4d, 0xbf, 0x6e, 0x0f, 0x89, 0x6e]);
+assert!(Safer::with_rounds(SaferVariant::K128, &key, 14).is_err());
+```
+
+libtomcrypt and Crypto++ agree on every row of `vectors/safer.vec` from
+6 to 13 rounds, and Botan with them on SK-128, from one round. `exp` and
+`log` are tables indexed by data, so it is not constant time.
+
+### SAFER+
+
+SAFER+, Massey, Khachatrian and Kuregian's AES candidate and the cipher
+inside Bluetooth's legacy authentication and pairing: a 128 bit block, a 16, 24 or 32 byte key,
+and 8, 12 or 16 rounds to match. **Implementations disagree about word
+order.** The submission and libtomcrypt read the key and the block as
+byte strings (`SaferPlus::new`, `saferplus`); libmcrypt, and so PHP's
+`mcrypt`, reverses the order of their 32-bit words, and of the result's,
+leaving each word's bytes alone (`SaferPlus::new_reversed_words`,
+`saferplus-reversed-words`). Data PHP's `mcrypt` wrote needs the second.
+
+```rust
+use allcrypt::block_ciphers::saferplus::SaferPlus;
+use allcrypt::block_ciphers::BlockCipher;
+
+// libtomcrypt's 128 bit key test.
+let key = [0x29, 0x23, 0xbe, 0x84, 0xe1, 0x6c, 0xd6, 0xae,
+           0x52, 0x90, 0x49, 0xf1, 0xf1, 0xbb, 0xe9, 0xeb];
+let block = [0xb3, 0xa6, 0xdb, 0x3c, 0x87, 0x0c, 0x3e, 0x99,
+             0x24, 0x5e, 0x0d, 0x1c, 0x06, 0xb7, 0x47, 0xde];
+let mut out = Vec::new();
+SaferPlus::new(&key)?.block_encrypt(&block, &mut out);
+assert_eq!(out, [0xe0, 0x1f, 0xb6, 0x0a, 0x0c, 0xff, 0x54, 0x46,
+                0x7f, 0x0d, 0x59, 0xf9, 0x09, 0x39, 0xa5, 0xdc]);
+
+// The same test in libmcrypt's order: each string's four words reversed.
+let words = |b: &[u8]| -> Vec<u8> { b.chunks(4).rev().flatten().copied().collect() };
+let mut reversed = Vec::new();
+SaferPlus::new_reversed_words(&words(&key))?.block_encrypt(&words(&block), &mut reversed);
+assert_eq!(reversed, words(&out));
+assert!(SaferPlus::new(&[0u8; 20]).is_err());
+```
+
+libtomcrypt and libmcrypt agree on every row of `vectors/saferplus.vec`
+once the order is accounted for, at all three key lengths. `exp` and
+`log` are tables indexed by data, so it is not constant time.
+
+### 3-Way
+
+3-Way, Joan Daemen's 1994 cipher: a 96 bit block and key, eleven rounds
+of a linear mixing, rotations and a nonlinear step on three 32-bit
+words. Decryption is the same rounds under a transformed key, with the
+order of the block's 96 bits reversed before and after. The catalogue
+calls it `threeway`, as mcrypt does, and takes `3way` and `3-way` too.
+It uses no tables, so it is constant time.
+
+```rust
+use allcrypt::block_ciphers::threeway::ThreeWay;
+use allcrypt::block_ciphers::BlockCipher;
+
+// One of Crypto++'s published tests.
+let mut cipher = ThreeWay::new(&[0u8; 12])?;
+let mut out = Vec::new();
+cipher.block_encrypt(&[0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+                       0x00, 0x01, 0x00, 0x00, 0x00, 0x01], &mut out);
+assert_eq!(out, [0x40, 0x59, 0xc7, 0x6e, 0x83, 0xae,
+                0x9d, 0xc4, 0xad, 0x21, 0xec, 0xf7]);
+assert!(ThreeWay::new(&[0u8; 16]).is_err());
+```
+
+Crypto++ and libmcrypt agree on every row of `vectors/threeway.vec`. A
+96 bit block takes every mode in `MODES` and no AEAD.
+
+### LOKI97
+
+LOKI97, Brown, Pieprzyk and Seberry's AES candidate: a 128 bit block, a
+16, 24 or 32 byte key, and sixteen Feistel rounds whose function runs
+two columns of S-boxes, S1 over GF(2¹³) and S2 over GF(2¹¹), with a bit
+transposition between them. **Two ciphers share the name.**
+`Loki97::new`, `loki97`, is the submission's; libmcrypt, and so PHP's
+`mcrypt`, byte-swaps every 32-bit word of the key, the block and the
+result and always runs the 32 byte key schedule, so a shorter key is
+padded with zeros (`Loki97::new_mcrypt`, `loki97-mcrypt`). Data PHP's
+`mcrypt` wrote needs the second.
+
+```rust
+use allcrypt::block_ciphers::loki97::Loki97;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The designers' self-test, with a 32 byte key.
+let key: Vec<u8> = (0..32).collect();
+let block: Vec<u8> = (0..16).collect();
+let mut out = Vec::new();
+Loki97::new(&key)?.block_encrypt(&block, &mut out);
+assert_eq!(out, [0x75, 0x08, 0x0e, 0x35, 0x9f, 0x10, 0xfe, 0x64,
+                0x01, 0x44, 0xb3, 0x5c, 0x57, 0x12, 0x8d, 0xad]);
+
+// libmcrypt's form of the same test: every word's bytes reversed.
+let swap = |b: &[u8]| -> Vec<u8> { b.chunks(4).flat_map(|w| w.iter().rev()).copied().collect() };
+let mut theirs = Vec::new();
+Loki97::new_mcrypt(&swap(&key))?.block_encrypt(&swap(&block), &mut theirs);
+assert_eq!(theirs, swap(&out));
+```
+
+At 32 byte keys and in libmcrypt's form, the designers' reference C and
+libmcrypt agree on every row of `vectors/loki97.vec`. The 16 and 24 byte
+key schedules have one witness, the reference, and the file marks those
+rows. S1 and S2 are tables indexed by data, so it is not constant time.
+
+### LEA
+
+LEA, the Korean standard KS X 3246: a 128 bit block, a 16, 24 or 32 byte
+key, and 24, 28 or 32 rounds of additions, rotations and XORs on four
+32-bit words - read little-endian, unlike most ciphers here. It has no
+tables, so it is constant time.
+
+```rust
+use allcrypt::block_ciphers::lea::Lea;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The first of KISA's known-answer tests for a 16 byte key.
+let mut lea = Lea::new(&[0x07, 0xab, 0x63, 0x05, 0xb0, 0x25, 0xd8, 0x3f,
+                        0x79, 0xad, 0xda, 0xa6, 0x3a, 0xc8, 0xad, 0x00])?;
+let mut out = Vec::new();
+lea.block_encrypt(&[0xf2, 0x8a, 0xe3, 0x25, 0x6a, 0xad, 0x23, 0xb4,
+                   0x15, 0xe0, 0x28, 0x06, 0x3b, 0x61, 0x0c, 0x60], &mut out);
+assert_eq!(out, [0x64, 0xd9, 0x08, 0xfc, 0xb7, 0xeb, 0xfe, 0xf9,
+                0x0f, 0xd6, 0x70, 0x10, 0x6d, 0xe7, 0xc7, 0xc5]);
+assert_eq!(Lea::new(&[0u8; 32])?.rounds(), 32);
+```
+
+Crypto++ and go-krypto agree on every row of `vectors/lea.vec`, which
+holds KISA's 1,020 known-answer tests at all three key lengths.
+
+### FEAL
+
+FEAL, NTT's 1987 cipher and the first that differential and linear
+cryptanalysis were found on: FEAL-N with an 8 byte key (`Feal::new_n`,
+the catalogue's `feal`, FEAL-8 unless asked otherwise - FEAL-4 is four
+rounds) and FEAL-NX with a 16 byte key (`Feal::new_nx`, `feal-nx`, 32
+rounds unless asked otherwise, NTT's recommendation), at any even round
+count from 2 to 1024. A 64 bit block, byte additions, rotations and
+XORs, no table: constant time. It takes every 64 bit mode, `-eax` and
+`-mgm`; the catalogue's parameter is the round count.
+
+```rust
+use allcrypt::block_ciphers::feal::Feal;
+use allcrypt::block_ciphers::BlockCipher;
+
+// NTT's FEAL-NX test data, its first block.
+let key: Vec<u8> = (0..16).collect();
+let mut out = Vec::new();
+Feal::new_nx(&key, 32)?.block_encrypt(&[0, 0, 0, 1, 0, 2, 0, 3], &mut out);
+assert_eq!(out, [0x03, 0x09, 0xe9, 0x40, 0x66, 0x03, 0x5e, 0x24]);
+// FEAL-N is FEAL-NX with the key's right half zero.
+let (mut n, mut nx) = (Vec::new(), Vec::new());
+Feal::new_n(&key[..8], 8)?.block_encrypt(&[0; 8], &mut n);
+Feal::new_nx(&[&key[..8], &[0; 8][..]].concat(), 8)?.block_encrypt(&[0; 8], &mut nx);
+assert_eq!(n, nx);
+assert!(Feal::new_n(&key[..8], 7).is_err());
+```
+
+zilijonas/FEAL-NX's Java and Donaldduck8's Python reproduce NTT's 40,960
+blocks, `vectors/feal_nx_ntt.txt`, and agree on every row of
+`vectors/feal.vec`, FEAL-N and FEAL-NX at four round counts each.
+
+### HIGHT
+
+HIGHT, the Korean lightweight cipher of TTAS.KO-12.0040 and ISO/IEC
+18033-3: a 64 bit block, a 128 bit key, and 32 rounds of byte additions,
+XORs and rotations. **The standard prints its bytes backwards** - key
+byte 15 first, block byte 7 first - so its worked examples are reversed
+byte strings here, as in every implementation. It uses no tables, so it
+is constant time.
+
+```rust
+use allcrypt::block_ciphers::hight::Hight;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The standard's first example, as it prints it, reversed.
+let mut key = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+              0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+let mut block = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+let mut expected = [0x00, 0xf4, 0x18, 0xae, 0xd9, 0x4f, 0x03, 0xf2];
+key.reverse();
+block.reverse();
+expected.reverse();
+let mut out = Vec::new();
+Hight::new(&key)?.block_encrypt(&block, &mut out);
+assert_eq!(out, expected);
+```
+
+Crypto++ and go-krypto agree on every row of `vectors/hight.vec`, with
+KISA's known-answer tests.
+
+### Speck and Simon
+
+The NSA's lightweight families: Speck, additions, rotations and XORs on
+two words, and Simon, a Feistel network of ANDs, rotations and XORs.
+Every size the paper gives, one type per block size, the key length
+choosing the variant: `Speck32` and `Simon32` take an 8 byte key,
+`Speck48` and `Simon48` 9 or 12, `Speck64` and `Simon64` 12 or 16,
+`Speck96` and `Simon96` 12 or 18, `Speck128` and `Simon128` 16, 24 or
+32. The 24- and 48-bit words are kept in wider integers and masked.
+Neither family has tables, so both are constant time; only the 64 and
+128 bit blocks have AEADs here.
+
+**The paper prints its vectors in the other byte order.** Keys and blocks
+here are the little-endian encoding of the paper's numbers - each word
+little-endian, the block's `y` first, the key's first word first - which
+is what the designers specified, and what the Linux kernel and Crypto++
+read.
+
+```rust
+use allcrypt::block_ciphers::simon::Simon64;
+use allcrypt::block_ciphers::speck::Speck128;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The paper's Speck128/256 example, in byte order.
+let key: Vec<u8> = (0..32).collect();
+let mut out = Vec::new();
+Speck128::new(&key)?.block_encrypt(&[0x70, 0x6f, 0x6f, 0x6e, 0x65, 0x72, 0x2e, 0x20,
+                                  0x49, 0x6e, 0x20, 0x74, 0x68, 0x6f, 0x73, 0x65], &mut out);
+assert_eq!(out, [0x43, 0x8f, 0x18, 0x9c, 0x8d, 0xb4, 0xee, 0x4e,
+                0x3e, 0xf5, 0xc0, 0x05, 0x04, 0x01, 0x09, 0x41]);
+assert_eq!(Speck128::new(&key)?.rounds(), 34);
+
+// The paper's Simon64/96 example.
+let key = [0x00, 0x01, 0x02, 0x03, 0x08, 0x09, 0x0a, 0x0b,
+           0x10, 0x11, 0x12, 0x13];
+let mut out = Vec::new();
+Simon64::new(&key)?.block_encrypt(&[0x63, 0x6c, 0x69, 0x6e, 0x67, 0x20, 0x72, 0x6f], &mut out);
+assert_eq!(out, [0xc8, 0x8f, 0x1a, 0x11, 0x7f, 0xe2, 0xa2, 0x5c]);
+
+// And the smallest, Speck32/64: the paper's 0x6574694c under
+// 0x1918111009080100 is 0xa86842f2.
+let mut out = Vec::new();
+allcrypt::block_ciphers::speck::Speck32::new(&[0x00, 0x01, 0x08, 0x09, 0x10, 0x11, 0x18, 0x19])?
+    .block_encrypt(&[0x4c, 0x69, 0x74, 0x65], &mut out);
+assert_eq!(out, [0xf2, 0x42, 0x68, 0xa8]);
+```
+
+Every witness that takes a row's key agrees on it in
+`vectors/simon_speck.vec`: Crypto++, the Linux kernel's Speck and inmcm's
+Python reference at 64 and 128 bits, jedisct1/rust-lwbc and inmcm at
+the other sizes - lwbc at one key length each, so the rows at 48/72 and
+96/96 are inmcm's alone, and say so.
+
+### Threefish
+
+The tweakable block cipher under Skein (version 1.3): `Threefish256`,
+`Threefish512` and `Threefish1024`, a block and a key of 32, 64 or 128
+bytes and a 16 byte tweak. `new` takes the key alone, with a tweak of
+zero, or the key followed by the tweak - which is how the catalogue's
+`threefish256`, `threefish512` and `threefish1024` reach it -
+`with_tweak` takes the two apart, and `set_tweak` changes the tweak of a
+keyed cipher without keying it again. Skein's own Threefish is this one.
+Additions, rotations by fixed distances and XORs: constant time.
+
+```rust
+use allcrypt::block_ciphers::threefish::Threefish256;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The Skein team's Threefish-256 known answer with a tweak.
+let key: Vec<u8> = (0x10..0x30).collect();
+let tweak: [u8; 16] = core::array::from_fn(|i| i as u8);
+let block: Vec<u8> = (0xe0..=0xff).rev().collect();
+let mut out = Vec::new();
+Threefish256::with_tweak(&key, &tweak)?.block_encrypt(&block, &mut out);
+assert_eq!(out[..4], [0xe0, 0xd0, 0x91, 0xff]);
+
+// The key followed by the tweak is the same cipher; the key alone is a
+// tweak of zero.
+let mut joined = Vec::new();
+Threefish256::new(&[key.as_slice(), &tweak].concat())?.block_encrypt(&block, &mut joined);
+assert_eq!(joined, out);
+let mut c = Threefish256::new(&key)?;
+c.set_tweak(&tweak);
+let mut set = Vec::new();
+c.block_encrypt(&block, &mut set);
+assert_eq!(set, out);
+assert!(Threefish256::new(&[0u8; 40]).is_err());
+```
+
+No EAX, MGM or OCB here takes a block this wide. Crypto++, Bouncy Castle
+and Skein3Fish's C agree on every row of `vectors/threefish.vec`.
+
+### Square
+
+Square, Daemen, Knudsen and Rijmen's 1997 cipher and the direct ancestor
+of Rijndael: a 128 bit block and key, eight rounds of an S-box, a
+transposition and a row-wise multiplication by `2 + x + x² + 3x³` -
+over GF(2⁸) modulo 0x1f5, not AES's 0x11b. The plaintext passes through
+the inverse of that multiplication before the first key is added, which
+is the step a port from AES is likely to miss.
+
+```rust
+use allcrypt::block_ciphers::square::Square;
+use allcrypt::block_ciphers::BlockCipher;
+
+// Crypto++'s and Botan's published vector: zero key, zero block.
+let mut square = Square::new(&[0u8; 16])?;
+let mut out = Vec::new();
+square.block_encrypt(&[0u8; 16], &mut out);
+assert_eq!(out[..4], [0x3c, 0x00, 0x42, 0x8f]);
+assert!(Square::new(&[0u8; 24]).is_err());
+```
+
+Crypto++ and Botan agree on every row of `vectors/square.vec`. The
+S-box is a table indexed by state bytes, so it is not constant time.
+
+### KASUMI
+
+KASUMI, the 3GPP's cipher (TS 35.202) inside UMTS's f8 and f9 and GSM's
+A5/3 and GEA3: a 64 bit block, a 128 bit key and eight Feistel rounds of
+the functions `FL` and `FO`, alternating their order, with `FO` built on
+the nine- and seven-bit S-boxes S9 and S7. It is MISTY1's structure with
+the key schedule simplified and the S-boxes changed, so the two are not
+interchangeable.
+
+```rust
+use allcrypt::block_ciphers::kasumi::Kasumi;
+use allcrypt::block_ciphers::BlockCipher;
+
+// One of the 3GPP's tests: the key's first bit set, a zero block.
+let mut key = [0u8; 16];
+key[0] = 0x80;
+let mut kasumi = Kasumi::new(&key)?;
+let mut out = Vec::new();
+kasumi.block_encrypt(&[0u8; 8], &mut out);
+assert_eq!(out, [0x4b, 0x58, 0xa7, 0x71, 0xaf, 0xc7, 0xe5, 0xe8]);
+```
+
+libtomcrypt and Botan agree on every row of `vectors/kasumi.vec`. S7
+and S9 are tables indexed by data, so it is not constant time. The modes
+that make it f8 and f9 are not here; it takes this library's modes.
+
+### MISTY1
+
+MISTY1 (RFC 2994), Matsui's cipher and KASUMI's ancestor: a 64 bit block,
+a 128 bit key, eight Feistel rounds of `FO` and a key-dependent layer
+`FL` every two rounds and at the end. It follows the RFC step for step,
+and its S-boxes are parsed out of the vendored RFC at compile time.
+
+```rust
+use allcrypt::block_ciphers::misty1::Misty1;
+use allcrypt::block_ciphers::BlockCipher;
+
+// RFC 2994's example, its first block.
+let key = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+           0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+let mut misty = Misty1::new(&key)?;
+let mut out = Vec::new();
+misty.block_encrypt(&[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef], &mut out);
+assert_eq!(out, [0x8b, 0x1d, 0xa5, 0xf5, 0x6a, 0xb3, 0xd0, 0x7c]);
+```
+
+Botan and Crypt::Misty1 agree on every row of `vectors/misty1.vec`, and
+the RFC's ECB and CBC examples are read out of the document by the
+tests. S7 and S9 are tables indexed by data, so it is not constant time.
+
+### PRESENT
+
+PRESENT, the CHES 2007 lightweight cipher of ISO/IEC 29192-2: a 64 bit
+block, an 80 or 128 bit key - 10 or 16 bytes, the length choosing - and
+31 rounds of a round key, sixteen 4-bit S-boxes and a bit permutation.
+Keys and blocks are most significant byte first, as the paper prints
+them. It takes every 64 bit mode, `present-eax` and `present-mgm`. The
+S-box is a 16-byte table indexed by data, so it is not guaranteed
+constant time.
+
+```rust
+use allcrypt::block_ciphers::present::Present;
+use allcrypt::block_ciphers::BlockCipher;
+
+// The paper's first test vector: an 80 bit zero key, a zero block.
+let mut out = Vec::new();
+Present::new(&[0u8; 10])?.block_encrypt(&[0u8; 8], &mut out);
+assert_eq!(out, [0x55, 0x79, 0xc1, 0x38, 0x7b, 0x22, 0x84, 0x45]);
+assert!(Present::new(&[0u8; 12]).is_err());
+```
+
+PRESENT.go, kurtfu/present and OpenTitan's Python PRESENT agree on every
+row of `vectors/present.vec`.
 
 ### RC2, and the parameter that weakens a key on purpose
 
@@ -3230,7 +3761,7 @@ implementation: there is no shortcut to a Merkle root.
 
 Signatures are large in every set: 7,856 bytes at `SLH-DSA-SHA2-128s`
 and 49,856 at `SLH-DSA-SHAKE-256f`. If that is a problem, ML-DSA is the
-lattice signature standard, and it is not built yet.
+lattice signature standard; see below.
 
 ### From Python
 
@@ -3257,6 +3788,24 @@ The rest is there as well, in Rust and in Python: `from_seeds`,
 `verify_mu` for the `externalMu` variant, and ML-KEM's
 `encapsulate_with_randomness` takes FIPS 203's `m`.
 
+Keys in PEM and DER are RFC 9909's: `x509::private_key::parse` gives
+`PrivateKey::SlhDsa`, a certificate's key is `x509::PublicKey::SlhDsa`,
+`SlhDsaPublicKey::from_spki` and `from_certificate` read the public key,
+and `CertificateAuthority` takes an SLH-DSA key. Each carries the pre-hash
+its OID fixes, `None` for pure SLH-DSA: RFC 9909 section 8 keeps a key
+to its own form, so `pre_hash()` is what to pass to `sign` and `verify`,
+and verification refuses a signature in the other form by name.
+
+```rust
+use allcrypt::api::{CertificateAuthority, SlhDsaPublicKey};
+
+let ca = CertificateAuthority::generate_with("SLH-DSA-SHAKE-128f", "A CA",
+                                             "20260101000000Z", "20360101000000Z")?;
+let theirs = SlhDsaPublicKey::from_certificate(ca.certificate())?;
+assert_eq!(theirs.parameter_set(), "SLH-DSA-SHAKE-128f");
+assert_eq!(theirs.pre_hash(), None);
+```
+
 ## Post-quantum: ML-KEM
 
 FIPS 203's key encapsulation mechanism, in its three parameter sets
@@ -3281,9 +3830,30 @@ let b = MlKemKey::from_seed("ML-KEM-768", &seed)?;
 assert_eq!(a.private_bytes(), b.private_bytes());
 ```
 
-`from_public` and `from_private` run FIPS 203's modulus check and hash
-check respectively, and refuse a key that fails. Neither key type has
-`Debug` or `Clone`.
+`from_public` runs FIPS 203's modulus check; `from_private` runs the hash
+check and a pairwise consistency test, encapsulating to the key's own
+`ek` and decapsulating; each refuses a key that fails. Neither key type
+has `Debug` or `Clone`.
+
+Keys in PEM and DER are RFC 9935's: `x509::private_key::parse` gives
+`PrivateKey::MlKem` for any of the three private key forms, checked as
+section 8 says; a certificate's key is `x509::PublicKey::MlKem`;
+`MlKemPublicKey::from_spki` and `from_certificate` read the public key;
+and the certificate builder takes `SubjectKey::MlKem`, which
+`CertificateAuthority::issue_ml_kem` uses with keyUsage keyEncipherment
+alone:
+
+```rust
+use allcrypt::api::{CertificateAuthority, MlKemKey, MlKemPublicKey};
+
+let ca = CertificateAuthority::generate_with("ML-DSA-44", "A CA", "20260101000000Z",
+                                             "20360101000000Z")?;
+let key = MlKemKey::generate("ML-KEM-512")?;
+let der = ca.issue_ml_kem("a key", &key.public_key(), "20260101000000Z",
+                          "20360101000000Z")?;
+let theirs = MlKemPublicKey::from_certificate(&der)?;
+assert_eq!(theirs.public_bytes(), key.public_bytes());
+```
 
 `allcrypt::pq::ml_kem` is the layer underneath, with key generation,
 encapsulation and decapsulation as FIPS 203 states them, **taking their
@@ -3321,10 +3891,41 @@ of the wrong length, or a decapsulation key whose embedded `H(ek)` does
 not match. `modulus_check` and `hash_check` are public if you want the
 verdict without the operation.
 
-Nothing checks this against a second implementation yet - only against
-NIST's 195 ACVP cases, 30 of them keys that must be refused. See
-[post-quantum.md](post-quantum.md) and section 7v of
-[pitfalls.md](pitfalls.md).
+NIST's 195 ACVP cases check the arithmetic, 30 of them keys that must be
+refused; OpenSSL 3.5 checks it at the protocol level and in keys and
+certificates. See [post-quantum.md](post-quantum.md) and sections 7v
+and 7zzzj of [pitfalls.md](pitfalls.md).
+
+## Writing post-quantum keys
+
+`MlDsaKey`, `MlKemKey` and `SlhDsaKey` have `to_pkcs8`, and their public
+keys `to_spki`, both DER; `pem::wrap` makes the PEM and
+`encrypt_private_key` encrypts. ML-DSA and ML-KEM take a
+`PrivateKeyForm` - `Seed`, which RFC 9881 and RFC 9935 recommend,
+`Expanded` or `Both` - and a key imported with `from_private` has no
+seed, so it can be written only expanded. An SLH-DSA key is written
+under the OID of the pre-hash it is bound to. The bytes are OpenSSL
+3.5's for the same key and form (`tests/test_pq_key_writing.rs`).
+
+```rust
+use allcrypt::api::{MlDsaKey, MlDsaPublicKey, MlKemKey, PrivateKeyForm};
+use allcrypt::x509::private_key::{self, PrivateKey};
+
+let key = MlDsaKey::generate("ML-DSA-44")?;
+let der = key.to_pkcs8(PrivateKeyForm::Seed)?;
+let pem = allcrypt::pem::wrap("PRIVATE KEY", &der);
+match private_key::from_pem(&pem)? {
+    PrivateKey::MlDsa { seed, .. } => assert_eq!(seed.as_deref(), key.seed()),
+    _ => unreachable!(),
+}
+let spki = key.public_key().to_spki()?;
+assert_eq!(MlDsaPublicKey::from_spki(&spki)?.public_bytes(), key.public_bytes());
+
+let kem = MlKemKey::generate("ML-KEM-512")?;
+let expanded = MlKemKey::from_private("ML-KEM-512", kem.private_bytes())?;
+assert!(expanded.to_pkcs8(PrivateKeyForm::Seed).is_err());
+assert!(expanded.to_pkcs8(PrivateKeyForm::Expanded).is_ok());
+```
 
 ## Post-quantum: ML-DSA
 
@@ -3373,7 +3974,8 @@ In certificates (RFC 9881) the key is `x509::PublicKey::MlDsa` and the
 signature `SignatureAlgorithm::MlDsa`; `x509::builder` signs with
 `SigningKey::MlDsa`, and `api::CertificateAuthority` issues them when
 its key type is a parameter set. A private key file in any of RFC 9881's
-three forms is `x509::private_key::PrivateKey::MlDsa`:
+three forms is `x509::private_key::PrivateKey::MlDsa`, and `to_pkcs8`
+on the key types writes one - see "Writing post-quantum keys" below:
 
 ```rust
 use allcrypt::api::CertificateAuthority;

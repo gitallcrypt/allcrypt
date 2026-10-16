@@ -50,10 +50,15 @@ fn rows() -> Vec<(String, usize, Vec<u8>)> {
 fn test_every_checksum_against_its_witnesses() {
     let messages = messages();
     let rows = rows();
-    assert_eq!(CHECKSUMS.len(), 24);
+    // The rest are the fast hashes, each in a file of its own: xxHash's in
+    // vectors/xxhash.vec, MurmurHash3's in vectors/murmur3.vec and
+    // one-at-a-time's in vectors/joaat.vec.
+    assert_eq!(CHECKSUMS.len(), 32);
     assert_eq!(CHECKSUMS[..6], ["crc32", "crc32c", "adler32", "fletcher16", "fletcher32",
                                 "fletcher64"]);
-    for name in CHECKSUMS {
+    assert_eq!(CHECKSUMS[24..], ["xxh32", "xxh64", "xxh3", "xxh128", "murmur3_32",
+                                 "murmur3_x86_128", "murmur3_x64_128", "joaat"]);
+    for name in &CHECKSUMS[..24] {
         assert!(!HASHES.contains(name), "{name} is a checksum, not a hash");
         assert_eq!(rows.iter().filter(|r| r.0 == *name).count(), 31, "{name}");
     }

@@ -38,12 +38,24 @@
 //! are 2^TOP + 2^8 + LOW, with TOP and LOW from `fnv_tables.rs`, which
 //! `scripts/make_fnv_tables.py` finds by the rule that defines them.
 //!
+//! The fast hashes are here too, being of the same kind: [`xxhash`],
+//! Yann Collet's XXH32, XXH64 and XXH3, [`murmur3`], Austin Appleby's
+//! MurmurHash3, and Bob Jenkins's one-at-a-time, which is short enough
+//! to be here: each byte is added to a 32 bit state, which is mixed with
+//! two shifts, and the state is mixed with three more at the end.
+//! `joaat_update` is the bare state, starting from zero or from a seed,
+//! as Perl's hashes started it, and `joaat_finish` the last mix.
+//!
 //! [`Checksum`] streams any of them by name, as `api::AnyHash` carries
 //! it, with the value big endian, as PHP's `hash` and Go's `Sum` give it.
+//! By name, the seeded hashes have the seed zero.
 
 use crate::hash_functions::HashFunction;
 
 mod fnv_tables;
+pub mod murmur3;
+pub mod xxhash;
+mod xxhash_tables;
 
 /// The reflected CRC-32 table for a reversed polynomial.
 const fn table(polynomial: u32) -> [u32; 256] {
@@ -222,6 +234,30 @@ pub fn fletcher64(data: &[u8]) -> u64 {
     fletcher(4, data)
 }
 
+/// Jenkins's one-at-a-time state after `data`, from `state`: zero, or a
+/// seed. No final mix; `joaat_finish` is that.
+pub fn joaat_update(mut state: u32, data: &[u8]) -> u32 {
+    for &byte in data {
+        state = state.wrapping_add(u32::from(byte));
+        state = state.wrapping_add(state << 10);
+        state ^= state >> 6;
+    }
+    state
+}
+
+/// The value one-at-a-time gives for a state.
+pub fn joaat_finish(mut state: u32) -> u32 {
+    state = state.wrapping_add(state << 3);
+    state ^= state >> 11;
+    state.wrapping_add(state << 15)
+}
+
+/// Jenkins's one-at-a-time of `data`, starting from `seed` (0 for PHP's
+/// `joaat`).
+pub fn joaat(data: &[u8], seed: u32) -> u32 {
+    joaat_finish(joaat_update(seed, data))
+}
+
 /// Which FNV.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FnvVariant {
@@ -354,6 +390,9 @@ pub const NAMES: &[&str] = &[
     "fnv0_32", "fnv0_64", "fnv0_128", "fnv0_256", "fnv0_512", "fnv0_1024",
     "fnv1_32", "fnv1_64", "fnv1_128", "fnv1_256", "fnv1_512", "fnv1_1024",
     "fnv1a_32", "fnv1a_64", "fnv1a_128", "fnv1a_256", "fnv1a_512", "fnv1a_1024",
+    "xxh32", "xxh64", "xxh3", "xxh128",
+    "murmur3_32", "murmur3_x86_128", "murmur3_x64_128",
+    "joaat",
 ];
 
 #[derive(Clone)]
@@ -363,6 +402,11 @@ enum State {
     Adler32(u32),
     Fletcher(Fletcher),
     Fnv(Fnv),
+    Xxh32(xxhash::Xxh32),
+    Xxh64(xxhash::Xxh64),
+    Xxh3(xxhash::Xxh3),
+    Murmur3(murmur3::Murmur3),
+    Joaat(u32),
 }
 
 /// A checksum in progress, by name.
@@ -373,7 +417,10 @@ pub struct Checksum {
 
 impl Checksum {
     /// The checksum a name stands for, lowercase with underscores: one of
-    /// [`NAMES`], or PHP's `crc32b` for CRC-32. `None` for any other.
+    /// [`NAMES`], PHP's `crc32b` for CRC-32, `xxh3_64` and `xxh3_128` for
+    /// XXH3, `murmur3_x86_32`, or PHP's `murmur3a`, `murmur3c` and
+    /// `murmur3f`, for MurmurHash3, or `one_at_a_time` and `oaat` for
+    /// `joaat`. `None` for any other.
     pub fn from_name(name: &str) -> Option<Checksum> {
         let state = match name {
             "crc32" | "crc32b" => State::Crc32(!0),
@@ -382,6 +429,17 @@ impl Checksum {
             "fletcher16" => State::Fletcher(Fletcher::new(1)),
             "fletcher32" => State::Fletcher(Fletcher::new(2)),
             "fletcher64" => State::Fletcher(Fletcher::new(4)),
+            "xxh32" => State::Xxh32(xxhash::Xxh32::new(0)),
+            "xxh64" => State::Xxh64(xxhash::Xxh64::new(0)),
+            "xxh3" | "xxh3_64" => State::Xxh3(xxhash::Xxh3::new(64, 0).ok()?),
+            "xxh128" | "xxh3_128" => State::Xxh3(xxhash::Xxh3::new(128, 0).ok()?),
+            "murmur3_32" | "murmur3_x86_32" | "murmur3a" =>
+                State::Murmur3(murmur3::Murmur3::new(murmur3::Murmur3Variant::X86_32, 0)),
+            "murmur3_x86_128" | "murmur3c" =>
+                State::Murmur3(murmur3::Murmur3::new(murmur3::Murmur3Variant::X86_128, 0)),
+            "murmur3_x64_128" | "murmur3f" =>
+                State::Murmur3(murmur3::Murmur3::new(murmur3::Murmur3Variant::X64_128, 0)),
+            "joaat" | "one_at_a_time" | "oaat" => State::Joaat(0),
             other => State::Fnv(Fnv::from_name(other)?),
         };
         Some(Checksum { state })
@@ -394,6 +452,11 @@ impl Checksum {
             State::Adler32(value) => value.to_be_bytes().to_vec(),
             State::Fletcher(f) => f.value().to_be_bytes()[8 - 2 * f.width..].to_vec(),
             State::Fnv(f) => f.value(),
+            State::Xxh32(h) => h.value().to_be_bytes().to_vec(),
+            State::Xxh64(h) => h.value().to_be_bytes().to_vec(),
+            State::Xxh3(h) => h.value(),
+            State::Murmur3(h) => h.value(),
+            State::Joaat(state) => joaat_finish(*state).to_be_bytes().to_vec(),
         }
     }
 }
@@ -406,14 +469,27 @@ impl HashFunction for Checksum {
             State::Adler32(_) => "adler32".to_string(),
             State::Fletcher(f) => format!("fletcher{}", 16 * f.width),
             State::Fnv(f) => f.name(),
+            State::Xxh32(_) => "xxh32".to_string(),
+            State::Xxh64(_) => "xxh64".to_string(),
+            State::Xxh3(h) => if h.bits() == 64 { "xxh3" } else { "xxh128" }.to_string(),
+            State::Murmur3(h) => match h.variant() {
+                murmur3::Murmur3Variant::X86_32 => "murmur3_32",
+                murmur3::Murmur3Variant::X86_128 => "murmur3_x86_128",
+                murmur3::Murmur3Variant::X64_128 => "murmur3_x64_128",
+            }.to_string(),
+            State::Joaat(_) => "joaat".to_string(),
         }
     }
 
     fn digest_len(&self) -> usize {
         match &self.state {
-            State::Crc32(_) | State::Crc32c(_) | State::Adler32(_) => 4,
+            State::Crc32(_) | State::Crc32c(_) | State::Adler32(_) | State::Joaat(_) => 4,
             State::Fletcher(f) => 2 * f.width,
             State::Fnv(f) => f.bits / 8,
+            State::Xxh32(_) => 4,
+            State::Xxh64(_) => 8,
+            State::Xxh3(h) => h.bits() / 8,
+            State::Murmur3(h) => if h.variant() == murmur3::Murmur3Variant::X86_32 { 4 } else { 16 },
         }
     }
 
@@ -429,6 +505,11 @@ impl HashFunction for Checksum {
             State::Adler32(value) => *value = adler32_update(*value, input),
             State::Fletcher(f) => f.update(input),
             State::Fnv(f) => f.update(input),
+            State::Xxh32(h) => h.update(input),
+            State::Xxh64(h) => h.update(input),
+            State::Xxh3(h) => h.update(input),
+            State::Murmur3(h) => h.update(input),
+            State::Joaat(state) => *state = joaat_update(*state, input),
         }
     }
 

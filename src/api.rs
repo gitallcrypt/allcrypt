@@ -26,11 +26,18 @@ use crate::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 // ------------------------------------------------------------- catalogue ---
 
 pub const BLOCK_CIPHERS: &[&str] =
-    &["aes", "anubis", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des", "gost",
-      "idea", "kalyna-128", "kalyna-256", "kalyna-512", "khazad", "kuznyechik", "magma", "mars",
-      "noekeon", "noekeon-indirect", "rc2", "rc5", "rc6",
+    &["aes", "anubis", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des",
+      "feal", "feal-nx", "gost", "hight", "idea", "kalyna-128", "kalyna-256", "kalyna-512",
+      "kasumi", "khazad", "kuznyechik",
+      "lea", "loki97", "loki97-mcrypt", "magma",
+      "mars", "misty1",
+      "noekeon", "noekeon-indirect", "present", "rc2", "rc5", "rc6",
       "rijndael-128", "rijndael-160", "rijndael-192", "rijndael-224", "rijndael-256",
-      "seed", "serpent", "shacal2", "sm4", "tea", "twofish", "xtea"];
+      "safer-k64", "safer-k128", "safer-sk64", "safer-sk128", "saferplus", "saferplus-reversed-words",
+      "seed", "serpent", "shacal1", "shacal2", "simon32", "simon48", "simon64", "simon96", "simon128",
+      "skipjack", "skipjack-reversed", "sm4", "speck32", "speck48", "speck64", "speck96", "speck128",
+      "square", "tea",
+      "threefish256", "threefish512", "threefish1024", "threeway", "twofish", "xtea"];
 
 /// The catalogue name (`BLOCK_CIPHERS`) for any spelling
 /// `AnyBlockCipher::new` accepts, or `None` for a name it would refuse.
@@ -51,6 +58,12 @@ pub fn block_cipher_name(name: &str) -> Option<&'static str> {
         // "3des" is what OpenSSL and everyone else calls it; "des-ede3"
         // is the formal name and all of these reach the same place.
         "des3" | "des-ede" | "des-ede3" | "tripledes" => "3des",
+        // Crypto++ and the specification write 3-Way; mcrypt threeway.
+        "3way" | "3-way" => "threeway",
+        // Crypto++, Bouncy Castle and Botan write Threefish-512.
+        "threefish-256" => "threefish256",
+        "threefish-512" => "threefish512",
+        "threefish-1024" => "threefish1024",
         other => other,
     };
     BLOCK_CIPHERS.iter().copied().find(|known| *known == canonical)
@@ -91,6 +104,13 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "tea-eax", "xtea-eax", "rc5-eax", "aria-eax",
                              "rc6-eax", "cast256-eax", "mars-eax", "khazad-eax",
                              "anubis-eax", "noekeon-eax", "noekeon-indirect-eax",
+                             "skipjack-eax", "skipjack-reversed-eax",
+                             "safer-k64-eax", "safer-k128-eax", "safer-sk64-eax",
+                             "safer-sk128-eax", "square-eax", "kasumi-eax", "misty1-eax",
+                             "saferplus-eax", "saferplus-reversed-words-eax",
+                             "loki97-eax", "loki97-mcrypt-eax", "lea-eax", "hight-eax",
+                             "speck64-eax", "speck128-eax", "simon64-eax", "simon128-eax",
+                             "present-eax", "feal-eax", "feal-nx-eax",
                              // MGM (RFC 9058), named the same way. The
                              // first two are the ones the standard is
                              // written for and the ones RFC 9367's TLS
@@ -103,7 +123,14 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "blowfish-mgm", "tea-mgm", "xtea-mgm",
                              "rc5-mgm", "rc6-mgm", "cast256-mgm", "mars-mgm",
                              "khazad-mgm", "anubis-mgm", "noekeon-mgm",
-                             "noekeon-indirect-mgm",
+                             "noekeon-indirect-mgm", "skipjack-mgm",
+                             "skipjack-reversed-mgm", "safer-k64-mgm",
+                             "safer-k128-mgm", "safer-sk64-mgm", "safer-sk128-mgm",
+                             "square-mgm", "kasumi-mgm", "misty1-mgm",
+                             "saferplus-mgm", "saferplus-reversed-words-mgm",
+                             "loki97-mgm", "loki97-mcrypt-mgm", "lea-mgm", "hight-mgm",
+                             "speck64-mgm", "speck128-mgm", "simon64-mgm", "simon128-mgm",
+                             "present-mgm", "feal-mgm", "feal-nx-mgm",
                              // OCB (RFC 7253), which is defined for 128
                              // bit blocks only. OpenPGP's AEAD packets
                              // default to it.
@@ -111,7 +138,10 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "serpent-ocb", "aria-ocb", "sm4-ocb",
                              "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
                              "cast256-ocb", "mars-ocb", "anubis-ocb",
-                             "noekeon-ocb", "noekeon-indirect-ocb",
+                             "noekeon-ocb", "noekeon-indirect-ocb", "square-ocb",
+                             "saferplus-ocb", "saferplus-reversed-words-ocb",
+                             "loki97-ocb", "loki97-mcrypt-ocb", "lea-ocb",
+                             "speck128-ocb", "simon128-ocb",
                              // AES-CBC and HMAC-SHA-2 as one AEAD (RFC
                              // 7518 5.2): JWE's A128CBC-HS256 and its two
                              // siblings. The nonce is the 16-byte IV.
@@ -315,6 +345,72 @@ pub enum AnyBlockCipher {
     /// SHACAL-2, SHA-256's compression function as a cipher: a 256 bit
     /// block and a key of 16 to 64 bytes, zero-padded to 64.
     Shacal2(crate::block_ciphers::shacal2::Shacal2),
+    /// SHACAL-1, SHA-1's compression function as a cipher: a 160 bit
+    /// block and a key of 16 to 64 bytes, zero-padded to 64.
+    Shacal1(crate::block_ciphers::shacal1::Shacal1),
+    /// PRESENT, ISO/IEC 29192-2's lightweight cipher: a 64 bit block and
+    /// an 80 or 128 bit key.
+    Present(crate::block_ciphers::present::Present),
+    /// FEAL-N with an 8 byte key and FEAL-NX with a 16 byte one, at an
+    /// even round count from 2 to 1024: 8 and 32 by default.
+    Feal(crate::block_ciphers::feal::Feal),
+    /// Skipjack: a 64 bit block and an 80 bit key, in the
+    /// specification's byte order (`skipjack`) or in Crypto++'s and
+    /// Botan's, every byte string reversed (`skipjack-reversed`).
+    Skipjack(crate::block_ciphers::skipjack::Skipjack),
+    /// SAFER K-64, K-128, SK-64 and SK-128: a 64 bit block, an 8 or 16
+    /// byte key, and a round count from 1 to 13.
+    Safer(crate::block_ciphers::safer::Safer),
+    /// Square, Rijndael's predecessor: a 128 bit block and key.
+    Square(crate::block_ciphers::square::Square),
+    /// KASUMI, 3GPP's: a 64 bit block and a 128 bit key.
+    Kasumi(crate::block_ciphers::kasumi::Kasumi),
+    /// MISTY1 (RFC 2994): a 64 bit block and a 128 bit key.
+    Misty1(crate::block_ciphers::misty1::Misty1),
+    /// SAFER+, the AES candidate: a 128 bit block and a 16, 24 or 32 byte
+    /// key, in libtomcrypt's byte order (`saferplus`) or libmcrypt's,
+    /// the 32-bit words reversed (`saferplus-reversed-words`).
+    SaferPlus(crate::block_ciphers::saferplus::SaferPlus),
+    /// 3-Way: a 96 bit block and key.
+    ThreeWay(crate::block_ciphers::threeway::ThreeWay),
+    /// LOKI97, the AES candidate: a 128 bit block and a 16, 24 or 32 byte
+    /// key, as submitted (`loki97`) or as libmcrypt computes it, its
+    /// words byte-swapped and its key zero-padded to 32 bytes
+    /// (`loki97-mcrypt`).
+    Loki97(crate::block_ciphers::loki97::Loki97),
+    /// LEA, KS X 3246: a 128 bit block and a 16, 24 or 32 byte key.
+    Lea(crate::block_ciphers::lea::Lea),
+    /// HIGHT, the Korean lightweight cipher: a 64 bit block and a 128 bit
+    /// key.
+    Hight(crate::block_ciphers::hight::Hight),
+    /// Speck32/64: a 32 bit block and an 8 byte key.
+    Speck32(crate::block_ciphers::speck::Speck32),
+    /// Speck48/72 and /96: a 48 bit block and a 9 or 12 byte key.
+    Speck48(crate::block_ciphers::speck::Speck48),
+    /// Speck96/96 and /144: a 96 bit block and a 12 or 18 byte key.
+    Speck96(crate::block_ciphers::speck::Speck96),
+    /// Simon32/64: a 32 bit block and an 8 byte key.
+    Simon32(crate::block_ciphers::simon::Simon32),
+    /// Simon48/72 and /96: a 48 bit block and a 9 or 12 byte key.
+    Simon48(crate::block_ciphers::simon::Simon48),
+    /// Simon96/96 and /144: a 96 bit block and a 12 or 18 byte key.
+    Simon96(crate::block_ciphers::simon::Simon96),
+    /// Speck64/96 and /128: a 64 bit block and a 12 or 16 byte key.
+    Speck64(crate::block_ciphers::speck::Speck64),
+    /// Speck128/128, /192 and /256: a 128 bit block and a 16, 24 or 32
+    /// byte key.
+    Speck128(crate::block_ciphers::speck::Speck128),
+    /// Simon64/96 and /128: a 64 bit block and a 12 or 16 byte key.
+    Simon64(crate::block_ciphers::simon::Simon64),
+    /// Simon128/128, /192 and /256: a 128 bit block and a 16, 24 or 32
+    /// byte key.
+    Simon128(crate::block_ciphers::simon::Simon128),
+    /// Threefish-256, -512 and -1024, the tweakable ciphers under Skein:
+    /// a key the size of the block, with a tweak of zero, or the key
+    /// followed by the 16 byte tweak.
+    Threefish256(crate::block_ciphers::threefish::Threefish256),
+    Threefish512(crate::block_ciphers::threefish::Threefish512),
+    Threefish1024(crate::block_ciphers::threefish::Threefish1024),
     /// Rijndael at any of its five block sizes, 16 to 32 bytes, with a
     /// key of 16, 20, 24, 28 or 32 bytes. The 16 byte block is AES.
     Rijndael(crate::block_ciphers::rijndael::Rijndael),
@@ -334,6 +430,7 @@ impl AnyBlockCipher {
     /// in bits** for RC2, where it is not a length check but part of the
     /// key schedule. TLS's `RC2_CBC_40` is `("rc2", <16 bytes>, "40")`,
     /// which is a different cipher from the same 16 bytes unweakened.
+    /// For RC5, TEA, XTEA and the four SAFERs it is the round count.
     /// Ignored by everything else.
     pub fn new(name: &str, key: &[u8], param: Option<&str>) -> Result<Self, String> {
         let canonical = block_cipher_name(name).ok_or_else(|| format!(
@@ -369,6 +466,82 @@ impl AnyBlockCipher {
                 crate::block_ciphers::noekeon::Noekeon::new_indirect(key)?)),
             "shacal2" => Ok(AnyBlockCipher::Shacal2(
                 crate::block_ciphers::shacal2::Shacal2::new(key)?)),
+            "shacal1" => Ok(AnyBlockCipher::Shacal1(
+                crate::block_ciphers::shacal1::Shacal1::new(key)?)),
+            "present" => Ok(AnyBlockCipher::Present(
+                crate::block_ciphers::present::Present::new(key)?)),
+            "feal" | "feal-nx" => {
+                let nx = canonical == "feal-nx";
+                let rounds = match param {
+                    None if nx => 32,
+                    None => 8,
+                    Some(text) => text.parse::<usize>().map_err(|_| format!(
+                        "FEAL's parameter is its round count, as a number; \
+                         {:?} is not one.", text))?,
+                };
+                Ok(AnyBlockCipher::Feal(if nx {
+                    crate::block_ciphers::feal::Feal::new_nx(key, rounds)?
+                } else {
+                    crate::block_ciphers::feal::Feal::new_n(key, rounds)?
+                }))
+            }
+            // SAFER's parameter is its round count, as RC5's is. Absent
+            // means the variant's usual count: 6 for K-64, 8 for SK-64,
+            // 10 for the -128 variants.
+            "safer-k64" | "safer-k128" | "safer-sk64" | "safer-sk128" => {
+                use crate::block_ciphers::safer::{Safer, SaferVariant};
+                let variant = match canonical {
+                    "safer-k64" => SaferVariant::K64,
+                    "safer-k128" => SaferVariant::K128,
+                    "safer-sk64" => SaferVariant::Sk64,
+                    _ => SaferVariant::Sk128,
+                };
+                let rounds = match param {
+                    None => variant.default_rounds(),
+                    Some(text) => text.parse::<usize>().map_err(|_| format!(
+                        "SAFER's parameter is its round count, as a number; \
+                         {:?} is not one.", text))?,
+                };
+                Ok(AnyBlockCipher::Safer(Safer::with_rounds(variant, key, rounds)?))
+            }
+            "saferplus" => Ok(AnyBlockCipher::SaferPlus(
+                crate::block_ciphers::saferplus::SaferPlus::new(key)?)),
+            "saferplus-reversed-words" => Ok(AnyBlockCipher::SaferPlus(
+                crate::block_ciphers::saferplus::SaferPlus::new_reversed_words(key)?)),
+            "lea" => Ok(AnyBlockCipher::Lea(crate::block_ciphers::lea::Lea::new(key)?)),
+            "hight" => Ok(AnyBlockCipher::Hight(crate::block_ciphers::hight::Hight::new(key)?)),
+            "speck32" => Ok(AnyBlockCipher::Speck32(crate::block_ciphers::speck::Speck32::new(key)?)),
+            "speck48" => Ok(AnyBlockCipher::Speck48(crate::block_ciphers::speck::Speck48::new(key)?)),
+            "speck96" => Ok(AnyBlockCipher::Speck96(crate::block_ciphers::speck::Speck96::new(key)?)),
+            "simon32" => Ok(AnyBlockCipher::Simon32(crate::block_ciphers::simon::Simon32::new(key)?)),
+            "simon48" => Ok(AnyBlockCipher::Simon48(crate::block_ciphers::simon::Simon48::new(key)?)),
+            "simon96" => Ok(AnyBlockCipher::Simon96(crate::block_ciphers::simon::Simon96::new(key)?)),
+            "speck64" => Ok(AnyBlockCipher::Speck64(crate::block_ciphers::speck::Speck64::new(key)?)),
+            "speck128" => Ok(AnyBlockCipher::Speck128(crate::block_ciphers::speck::Speck128::new(key)?)),
+            "simon64" => Ok(AnyBlockCipher::Simon64(crate::block_ciphers::simon::Simon64::new(key)?)),
+            "simon128" => Ok(AnyBlockCipher::Simon128(crate::block_ciphers::simon::Simon128::new(key)?)),
+            "threefish256" => Ok(AnyBlockCipher::Threefish256(
+                crate::block_ciphers::threefish::Threefish256::new(key)?)),
+            "threefish512" => Ok(AnyBlockCipher::Threefish512(
+                crate::block_ciphers::threefish::Threefish512::new(key)?)),
+            "threefish1024" => Ok(AnyBlockCipher::Threefish1024(
+                crate::block_ciphers::threefish::Threefish1024::new(key)?)),
+            "loki97" => Ok(AnyBlockCipher::Loki97(
+                crate::block_ciphers::loki97::Loki97::new(key)?)),
+            "loki97-mcrypt" => Ok(AnyBlockCipher::Loki97(
+                crate::block_ciphers::loki97::Loki97::new_mcrypt(key)?)),
+            "threeway" => Ok(AnyBlockCipher::ThreeWay(
+                crate::block_ciphers::threeway::ThreeWay::new(key)?)),
+            "misty1" => Ok(AnyBlockCipher::Misty1(
+                crate::block_ciphers::misty1::Misty1::new(key)?)),
+            "kasumi" => Ok(AnyBlockCipher::Kasumi(
+                crate::block_ciphers::kasumi::Kasumi::new(key)?)),
+            "square" => Ok(AnyBlockCipher::Square(
+                crate::block_ciphers::square::Square::new(key)?)),
+            "skipjack" => Ok(AnyBlockCipher::Skipjack(
+                crate::block_ciphers::skipjack::Skipjack::new(key)?)),
+            "skipjack-reversed" => Ok(AnyBlockCipher::Skipjack(
+                crate::block_ciphers::skipjack::Skipjack::new_reversed(key)?)),
             "rc6" => Ok(AnyBlockCipher::Rc6(
                 crate::block_ciphers::rc6::Rc6::new(key)?)),
             // Named by block size in bits; the key's length picks the
@@ -497,6 +670,41 @@ impl AnyBlockCipher {
             AnyBlockCipher::Noekeon(n) if n.is_indirect() => "noekeon-indirect",
             AnyBlockCipher::Noekeon(_) => "noekeon",
             AnyBlockCipher::Shacal2(_) => "shacal2",
+            AnyBlockCipher::Shacal1(_) => "shacal1",
+            AnyBlockCipher::Present(_) => "present",
+            AnyBlockCipher::Feal(f) if f.is_nx() => "feal-nx",
+            AnyBlockCipher::Feal(_) => "feal",
+            AnyBlockCipher::Skipjack(s) if s.is_reversed() => "skipjack-reversed",
+            AnyBlockCipher::Skipjack(_) => "skipjack",
+            AnyBlockCipher::Square(_) => "square",
+            AnyBlockCipher::Kasumi(_) => "kasumi",
+            AnyBlockCipher::Misty1(_) => "misty1",
+            AnyBlockCipher::SaferPlus(s) if s.is_reversed_words() => "saferplus-reversed-words",
+            AnyBlockCipher::SaferPlus(_) => "saferplus",
+            AnyBlockCipher::ThreeWay(_) => "threeway",
+            AnyBlockCipher::Loki97(l) if l.is_mcrypt() => "loki97-mcrypt",
+            AnyBlockCipher::Loki97(_) => "loki97",
+            AnyBlockCipher::Lea(_) => "lea",
+            AnyBlockCipher::Hight(_) => "hight",
+            AnyBlockCipher::Speck32(_) => "speck32",
+            AnyBlockCipher::Speck48(_) => "speck48",
+            AnyBlockCipher::Speck96(_) => "speck96",
+            AnyBlockCipher::Simon32(_) => "simon32",
+            AnyBlockCipher::Simon48(_) => "simon48",
+            AnyBlockCipher::Simon96(_) => "simon96",
+            AnyBlockCipher::Speck64(_) => "speck64",
+            AnyBlockCipher::Speck128(_) => "speck128",
+            AnyBlockCipher::Simon64(_) => "simon64",
+            AnyBlockCipher::Simon128(_) => "simon128",
+            AnyBlockCipher::Threefish256(_) => "threefish256",
+            AnyBlockCipher::Threefish512(_) => "threefish512",
+            AnyBlockCipher::Threefish1024(_) => "threefish1024",
+            AnyBlockCipher::Safer(s) => match s.variant() {
+                crate::block_ciphers::safer::SaferVariant::K64 => "safer-k64",
+                crate::block_ciphers::safer::SaferVariant::K128 => "safer-k128",
+                crate::block_ciphers::safer::SaferVariant::Sk64 => "safer-sk64",
+                crate::block_ciphers::safer::SaferVariant::Sk128 => "safer-sk128",
+            },
             AnyBlockCipher::Kalyna(k) => match k.block_bytes() {
                 16 => "kalyna-128",
                 32 => "kalyna-256",
@@ -543,6 +751,32 @@ macro_rules! dispatch {
             AnyBlockCipher::Anubis($inner) => $body,
             AnyBlockCipher::Noekeon($inner) => $body,
             AnyBlockCipher::Shacal2($inner) => $body,
+            AnyBlockCipher::Shacal1($inner) => $body,
+            AnyBlockCipher::Present($inner) => $body,
+            AnyBlockCipher::Feal($inner) => $body,
+            AnyBlockCipher::Skipjack($inner) => $body,
+            AnyBlockCipher::Safer($inner) => $body,
+            AnyBlockCipher::Square($inner) => $body,
+            AnyBlockCipher::Kasumi($inner) => $body,
+            AnyBlockCipher::Misty1($inner) => $body,
+            AnyBlockCipher::SaferPlus($inner) => $body,
+            AnyBlockCipher::ThreeWay($inner) => $body,
+            AnyBlockCipher::Loki97($inner) => $body,
+            AnyBlockCipher::Lea($inner) => $body,
+            AnyBlockCipher::Hight($inner) => $body,
+            AnyBlockCipher::Speck32($inner) => $body,
+            AnyBlockCipher::Speck48($inner) => $body,
+            AnyBlockCipher::Speck96($inner) => $body,
+            AnyBlockCipher::Simon32($inner) => $body,
+            AnyBlockCipher::Simon48($inner) => $body,
+            AnyBlockCipher::Simon96($inner) => $body,
+            AnyBlockCipher::Speck64($inner) => $body,
+            AnyBlockCipher::Speck128($inner) => $body,
+            AnyBlockCipher::Simon64($inner) => $body,
+            AnyBlockCipher::Simon128($inner) => $body,
+            AnyBlockCipher::Threefish256($inner) => $body,
+            AnyBlockCipher::Threefish512($inner) => $body,
+            AnyBlockCipher::Threefish1024($inner) => $body,
             AnyBlockCipher::Rijndael($inner) => $body,
             AnyBlockCipher::Kalyna($inner) => $body,
             AnyBlockCipher::Aria($inner) => $body,
@@ -2502,6 +2736,37 @@ pub const CHECKSUMS: &[&str] = crate::checksum::NAMES;
 /// before it (0 to start), as zlib's `crc32` takes and gives CRC-32.
 pub fn crc32c(data: &[u8], value: u32) -> u32 {
     !crate::checksum::crc32c_update(!value, data)
+}
+
+// xxHash, seeded, and XXH3 with a secret of its own. By name through
+// `AnyHash` they have the seed zero; `Xxh32`, `Xxh64` and `Xxh3` stream
+// with any seed or secret.
+pub use crate::checksum::xxhash::{xxh3_128, xxh3_64, xxh32, xxh64, Xxh3, Xxh32, Xxh64,
+                                  XXH3_SECRET_MIN};
+
+// MurmurHash3, seeded. By name through `AnyHash` the seed is zero;
+// `Murmur3` streams with any. The 128 bit values are given as numbers
+// with the first word on top, which is how PHP prints them.
+pub use crate::checksum::murmur3::{murmur3_32, murmur3_x64_128, murmur3_x86_128, Murmur3,
+                                   Murmur3Variant};
+
+// Jenkins's one-at-a-time: the whole hash from a seed (0 for PHP's
+// `joaat`), and the bare state and its last mix for streaming from one.
+pub use crate::checksum::{joaat, joaat_finish, joaat_update};
+
+/// XXH3-64 of `data` with a secret of at least 136 bytes in place of a seed.
+pub fn xxh3_64_with_secret(data: &[u8], secret: &[u8]) -> Result<u64, String> {
+    let mut hash = Xxh3::with_secret(64, secret)?;
+    hash.update(data);
+    Ok(hash.value_64())
+}
+
+/// XXH3-128 of `data` with a secret of at least 136 bytes in place of a
+/// seed, high half above.
+pub fn xxh3_128_with_secret(data: &[u8], secret: &[u8]) -> Result<u128, String> {
+    let mut hash = Xxh3::with_secret(128, secret)?;
+    hash.update(data);
+    Ok(hash.value_128())
 }
 
 // Fuzzy hashes: ssdeep, as libfuzzy computes and compares it, and the
@@ -5163,7 +5428,10 @@ impl Certificate {
             x509::PublicKey::Eddsa { curve, .. } => (format!("EdDSA {}", curve), 0),
             x509::PublicKey::Dstu4145 { curve, .. } =>
                 (format!("DSTU 4145-2002 {}", x509::verify::dstu4145_curve(curve)), 0),
-            x509::PublicKey::MlDsa { parameter_set, .. } => (parameter_set.to_string(), 0),
+            x509::PublicKey::MlDsa { parameter_set, .. }
+                | x509::PublicKey::MlKem { parameter_set, .. } => (parameter_set.to_string(), 0),
+            x509::PublicKey::SlhDsa { parameter_set, pre_hash, .. } =>
+                (x509::slh_dsa_name(parameter_set, *pre_hash), 0),
             x509::PublicKey::Dsa { parameters, .. } => ("DSA".to_string(),
                 parameters.as_ref().map_or(0, |(p, _, _)| p.bit_len())),
             x509::PublicKey::UnsupportedCurve { oid, family } =>
@@ -5389,6 +5657,12 @@ pub fn parse_private_key_with_password(data: &[u8], password: Option<&[u8]>)
         crate::x509::private_key::PrivateKey::MlDsa { parameter_set, seed, expanded } =>
             Ok(PrivateKeyParts::MlDsa { parameter_set: parameter_set.to_string(), seed,
                                         expanded }),
+        crate::x509::private_key::PrivateKey::MlKem { parameter_set, seed, expanded } =>
+            Ok(PrivateKeyParts::MlKem { parameter_set: parameter_set.to_string(), seed,
+                                        expanded }),
+        crate::x509::private_key::PrivateKey::SlhDsa { parameter_set, pre_hash, private } =>
+            Ok(PrivateKeyParts::SlhDsa { parameter_set: parameter_set.to_string(),
+                                         pre_hash: pre_hash.map(str::to_string), private }),
         crate::x509::private_key::PrivateKey::Dsa { p, q, g, x } =>
             Ok(PrivateKeyParts::Dsa { p: p.to_bytes_be(), q: q.to_bytes_be(),
                                       g: g.to_bytes_be(), x: x.to_bytes_be() }),
@@ -5412,6 +5686,13 @@ pub enum PrivateKeyParts {
     /// FIPS 204's parameter set name, the seed if the file had one, and
     /// the expanded private key, already checked against each other.
     MlDsa { parameter_set: String, seed: Option<Vec<u8>>, expanded: Vec<u8> },
+    /// FIPS 203's parameter set name, the 64 byte seed `d || z` if the
+    /// file had one, and the decapsulation key, already checked against
+    /// each other.
+    MlKem { parameter_set: String, seed: Option<Vec<u8>>, expanded: Vec<u8> },
+    /// FIPS 205's parameter set name, the pre-hash a HashSLH-DSA OID
+    /// fixes, and the private key, whose length alone is checked.
+    SlhDsa { parameter_set: String, pre_hash: Option<String>, private: Vec<u8> },
     /// A DSA group and `x`, big endian - what `DsaKey::from_numbers` takes.
     Dsa { p: Vec<u8>, q: Vec<u8>, g: Vec<u8>, x: Vec<u8> },
 }
@@ -6384,6 +6665,16 @@ pub enum CaKey {
     /// ML-DSA (RFC 9881). Always made from a seed, which is what
     /// `private_bytes` hands out.
     MlDsa(MlDsaKey),
+    /// Pure SLH-DSA (RFC 9909). `private_bytes` hands out FIPS 205's
+    /// private key whole.
+    SlhDsa(SlhDsaKey),
+}
+
+/// FIPS 205's spelling of an SLH-DSA parameter set named in any case:
+/// `slh-dsa-sha2-128s` is `SLH-DSA-SHA2-128s`.
+fn slh_dsa_set(name: &str) -> Option<&'static str> {
+    slh_dsa::PARAMETER_SETS.iter().map(|set| set.name)
+        .find(|set| set.eq_ignore_ascii_case(name))
 }
 
 impl CaKey {
@@ -6392,6 +6683,7 @@ impl CaKey {
             CaKey::Ec { curve, private } => SigningKey::Ec { curve, private },
             CaKey::Eddsa { name, seed } => SigningKey::Eddsa { name, seed },
             CaKey::MlDsa(key) => SigningKey::MlDsa(key),
+            CaKey::SlhDsa(key) => SigningKey::SlhDsa(key),
         }
     }
 
@@ -6402,6 +6694,7 @@ impl CaKey {
             CaKey::Ec { curve, .. } => curve.name,
             CaKey::Eddsa { name, .. } => name,
             CaKey::MlDsa(key) => key.parameter_set(),
+            CaKey::SlhDsa(key) => key.parameter_set(),
         }
     }
 
@@ -6413,6 +6706,7 @@ impl CaKey {
             CaKey::Eddsa { seed, .. } => Ok(seed.clone()),
             CaKey::MlDsa(key) => key.seed().map(<[u8]>::to_vec)
                 .ok_or_else(|| "This ML-DSA key has no seed.".to_string()),
+            CaKey::SlhDsa(key) => Ok(key.private_bytes().to_vec()),
         }
     }
 }
@@ -6429,8 +6723,10 @@ impl CertificateAuthority {
         CertificateAuthority::generate_with("P-256", common_name, not_before, not_after)
     }
 
-    /// The same, choosing the key type: a curve name, `ed25519`, or an
-    /// ML-DSA parameter set (`ML-DSA-44`, `ML-DSA-65`, `ML-DSA-87`).
+    /// The same, choosing the key type: a curve name, `ed25519`, an
+    /// ML-DSA parameter set (`ML-DSA-44`, `ML-DSA-65`, `ML-DSA-87`), or a
+    /// pure SLH-DSA one (`SLH-DSA-SHA2-128s` and the other eleven, in any
+    /// case), which takes seconds to generate at the `s` sets.
     ///
     /// The leaves `issue` makes are of the **same** type, because a CA
     /// whose leaves are a different algorithm from itself is a
@@ -6483,6 +6779,17 @@ impl CertificateAuthority {
             }
             lower if lower.starts_with("ml-dsa") =>
                 CaKey::MlDsa(MlDsaKey::from_seed(&lower.to_ascii_uppercase(), private)?),
+            lower if slh_dsa_set(lower).is_some() => {
+                let key = SlhDsaKey::from_private(slh_dsa_set(lower).expect("checked"), private)?;
+                // The one place a stored SLH-DSA key is used to sign
+                // something others rely on, so the root is checked here
+                // even though it costs a key generation.
+                if !key.recompute_public()? {
+                    return Err("This SLH-DSA private key's PK.root is not the root its seeds \
+                                give.".to_string());
+                }
+                CaKey::SlhDsa(key)
+            }
             other => {
                 let curve = curves::by_name(other)?;
                 let scalar = BigUint::from_bytes_be(private);
@@ -6509,6 +6816,8 @@ impl CertificateAuthority {
                 *bits == public && curve == name,
             (crate::x509::PublicKey::MlDsa { key: bits, parameter_set }, CaKey::MlDsa(key)) =>
                 *bits == public && *parameter_set == key.parameter_set(),
+            (crate::x509::PublicKey::SlhDsa { key: bits, parameter_set, .. },
+             CaKey::SlhDsa(key)) => *bits == public && *parameter_set == key.parameter_set(),
             _ => false,
         };
         if !matches {
@@ -6517,6 +6826,14 @@ impl CertificateAuthority {
                         issues chains that verify against nothing."
                        .to_string());
         }
+        // A HashSLH-DSA certificate binds its key to the pre-hash its OID
+        // names, and RFC 9909 section 8 keeps the key to signatures of
+        // that form: the CA signs as its certificate says.
+        let key = match (key, &parsed.public_key) {
+            (CaKey::SlhDsa(slh), crate::x509::PublicKey::SlhDsa { pre_hash: Some(hash), .. }) =>
+                CaKey::SlhDsa(slh.with_pre_hash(Some(hash))?),
+            (key, _) => key,
+        };
 
         Ok(CertificateAuthority { key, certificate, common_name })
     }
@@ -6576,8 +6893,9 @@ impl CertificateAuthority {
         builder.not_after = not_after;
         // RFC 9881 section 5: an ML-DSA key "MUST NOT" carry
         // keyEncipherment - it cannot encrypt anything.
+        // RFC 9909 section 6 says the same of SLH-DSA.
         builder.key_usage = Some(match leaf {
-            CaKey::MlDsa(_) => key_usage::DIGITAL_SIGNATURE,
+            CaKey::MlDsa(_) | CaKey::SlhDsa(_) => key_usage::DIGITAL_SIGNATURE,
             _ => key_usage::DIGITAL_SIGNATURE | key_usage::KEY_ENCIPHERMENT,
         });
         builder.extended_key_usage = vec![crate::x509::oids::EKU_SERVER_AUTH];
@@ -6586,6 +6904,25 @@ impl CertificateAuthority {
 
         let der = builder.sign(&self.key.signing())?;
         Ok((der, leaf.private_bytes()?))
+    }
+
+    /// A certificate for someone else's ML-KEM key (RFC 9935), signed by
+    /// this CA: subject `common_name`, keyUsage keyEncipherment alone as
+    /// section 5 requires, and no extended key usage or names - a KEM key
+    /// authenticates nobody to a TLS handshake, so what it is for is the
+    /// caller's protocol's to say.
+    pub fn issue_ml_kem(&self, common_name: &str, key: &MlKemPublicKey, not_before: &str,
+                        not_after: &str) -> Result<Vec<u8>, String> {
+        let subject = SubjectKey::MlKem { parameter_set: key.parameter_set(),
+                                          key: key.public_bytes() };
+        let mut builder = CertificateBuilder::new(common_name, subject);
+        builder.serial = serial()?;
+        builder.issuer = vec![(crate::x509::oids::COMMON_NAME, self.common_name.clone())];
+        builder.not_before = not_before;
+        builder.not_after = not_after;
+        builder.key_usage = Some(key_usage::KEY_ENCIPHERMENT);
+        builder.key_identifiers = true;
+        builder.sign(&self.key.signing())
     }
 
     /// The key identifier of this CA's key, which is what a leaf's
@@ -6605,6 +6942,8 @@ fn ca_key(key_type: &str) -> Result<CaKey, String> {
         }
         lower if lower.starts_with("ml-dsa") =>
             Ok(CaKey::MlDsa(MlDsaKey::generate(&lower.to_ascii_uppercase())?)),
+        lower if slh_dsa_set(lower).is_some() =>
+            Ok(CaKey::SlhDsa(SlhDsaKey::generate(slh_dsa_set(lower).expect("checked"))?)),
         other => {
             let curve = curves::by_name(other)?;
             let (private, _) = curve.generate_key_pair()?;
@@ -6620,6 +6959,7 @@ fn ca_public(key: &CaKey) -> Result<Vec<u8>, String> {
             curve.encode_point(&curve.scalar_mul_ct(&curve.g, private), false),
         CaKey::Eddsa { name, seed } => eddsa_public_key(name, seed),
         CaKey::MlDsa(key) => Ok(key.public_bytes().to_vec()),
+        CaKey::SlhDsa(key) => Ok(key.public_bytes().to_vec()),
     }
 }
 
@@ -6630,6 +6970,8 @@ fn ca_subject<'a>(key: &'a CaKey, public: &'a [u8]) -> SubjectKey<'a> {
         CaKey::Eddsa { name, .. } => SubjectKey::Eddsa { name, key: public },
         CaKey::MlDsa(key) => SubjectKey::MlDsa { parameter_set: key.parameter_set(),
                                                  key: public },
+        CaKey::SlhDsa(key) => SubjectKey::SlhDsa { parameter_set: key.parameter_set(),
+                                                   pre_hash: None, key: public },
     }
 }
 
@@ -6690,12 +7032,16 @@ pub struct SlhDsaKey {
     parameters: &'static slh_dsa::Parameters,
     /// `SK.seed ‖ SK.prf ‖ PK.seed ‖ PK.root`.
     private: Vec<u8>,
+    /// The pre-hash the key is bound to, where something - an RFC 9909
+    /// HashSLH-DSA OID - binds it to one. See [`SlhDsaKey::pre_hash`].
+    pre_hash: Option<&'static str>,
 }
 
 /// The verifying half of an SLH-DSA key: `PK.seed ‖ PK.root`.
 pub struct SlhDsaPublicKey {
     parameters: &'static slh_dsa::Parameters,
     public: Vec<u8>,
+    pre_hash: Option<&'static str>,
 }
 
 /// Turn a pre-hash name into the thing itself, treating "no pre-hash" as
@@ -6710,6 +7056,12 @@ fn slh_pre_hash(name: Option<&str>) -> Result<Option<slh_dsa::PreHash>, String> 
         None => Ok(None),
         Some(name) => Ok(Some(slh_dsa::PreHash::by_name(name)?)),
     }
+}
+
+/// A pre-hash name as the key stores it: one of the twelve, by its own
+/// static name.
+fn bound_pre_hash(name: Option<&str>) -> Result<Option<&'static str>, String> {
+    Ok(slh_pre_hash(name)?.map(|which| which.name()))
 }
 
 impl SlhDsaKey {
@@ -6727,7 +7079,7 @@ impl SlhDsaKey {
         let seed = crate::random::bytes(3 * n)?;
         let (private, _public) = slh_dsa::key_gen_internal(
             parameters, &seed[..n], &seed[n..2 * n], &seed[2 * n..])?;
-        Ok(SlhDsaKey { parameters, private })
+        Ok(SlhDsaKey { parameters, private, pre_hash: None })
     }
 
     /// A key pair from its three seeds, `SK.seed`, `SK.prf` and `PK.seed`,
@@ -6739,7 +7091,7 @@ impl SlhDsaKey {
         let parameters = slh_dsa::parameters(parameter_set)?;
         let (private, _public) = slh_dsa::key_gen_internal(parameters, sk_seed, sk_prf,
                                                            pk_seed)?;
-        Ok(SlhDsaKey { parameters, private })
+        Ok(SlhDsaKey { parameters, private, pre_hash: None })
     }
 
     /// Import a private key: the `4n` bytes FIPS 205 defines.
@@ -6757,7 +7109,7 @@ impl SlhDsaKey {
                 "{}: a private key is {} bytes, not {}.", parameters.name,
                 parameters.secret_key_len(), private.len()));
         }
-        Ok(SlhDsaKey { parameters, private: private.to_vec() })
+        Ok(SlhDsaKey { parameters, private: private.to_vec(), pre_hash: None })
     }
 
     pub fn parameter_set(&self) -> &'static str { self.parameters.name }
@@ -6775,7 +7127,36 @@ impl SlhDsaKey {
         SlhDsaPublicKey {
             parameters: self.parameters,
             public: self.public_bytes().to_vec(),
+            pre_hash: self.pre_hash,
         }
+    }
+
+    /// The key as PKCS#8 (RFC 9909 section 7), DER: its `4n` bytes under
+    /// the OID of its parameter set and the pre-hash it is bound to.
+    /// `pem::wrap("PRIVATE KEY", ..)` makes the PEM, and
+    /// `encrypt_private_key` encrypts it.
+    pub fn to_pkcs8(&self) -> Result<Vec<u8>, String> {
+        Ok(crate::x509::private_key::write_pkcs8(
+            crate::x509::slh_dsa_oid(self.parameters.name, self.pre_hash)?, &self.private))
+    }
+
+    /// The pre-hash this key is bound to, or `None` for pure SLH-DSA or
+    /// a key nothing has bound.
+    ///
+    /// RFC 9909 puts the form in the key's OID: a key read from a
+    /// HashSLH-DSA OID - `x509::private_key`, `SlhDsaPublicKey::from_spki`
+    /// or `from_certificate` - comes back bound to the pre-hash that OID
+    /// fixes, and section 8 keeps it to signatures of that form. The
+    /// signing and verifying methods still take the pre-hash as an
+    /// argument; pass this one. A certificate issued for the key, or
+    /// signed with it, carries the OID this names.
+    pub fn pre_hash(&self) -> Option<&'static str> { self.pre_hash }
+
+    /// The same key bound to `pre_hash` - one of the twelve names
+    /// `slh_dsa_pre_hashes` lists - or to none.
+    pub fn with_pre_hash(mut self, pre_hash: Option<&str>) -> Result<SlhDsaKey, String> {
+        self.pre_hash = bound_pre_hash(pre_hash)?;
+        Ok(self)
     }
 
     /// Regenerate the public root from the seeds and compare it with the
@@ -6883,12 +7264,58 @@ impl SlhDsaPublicKey {
                 "{}: a public key is {} bytes, not {}.", parameters.name,
                 parameters.public_key_len(), public.len()));
         }
-        Ok(SlhDsaPublicKey { parameters, public: public.to_vec() })
+        Ok(SlhDsaPublicKey { parameters, public: public.to_vec(), pre_hash: None })
     }
 
     pub fn parameter_set(&self) -> &'static str { self.parameters.name }
 
     pub fn public_bytes(&self) -> &[u8] { &self.public }
+
+    /// The pre-hash the key is bound to; see [`SlhDsaKey::pre_hash`].
+    pub fn pre_hash(&self) -> Option<&'static str> { self.pre_hash }
+
+    /// The same key bound to `pre_hash`, or to none.
+    pub fn with_pre_hash(mut self, pre_hash: Option<&str>) -> Result<SlhDsaPublicKey, String> {
+        self.pre_hash = bound_pre_hash(pre_hash)?;
+        Ok(self)
+    }
+
+    /// The key in a SubjectPublicKeyInfo (RFC 9909), DER or PEM labelled
+    /// `PUBLIC KEY`, bound to the pre-hash a HashSLH-DSA OID fixes.
+    pub fn from_spki(data: &[u8]) -> Result<SlhDsaPublicKey, String> {
+        let der = der_of(data, &["PUBLIC KEY"])?;
+        let mut reader = crate::asn1::Reader::new(&der);
+        let key = x509::read_public_key(&mut reader)?;
+        reader.finish()?;
+        SlhDsaPublicKey::from_x509(&key)
+    }
+
+    /// The subject key of a certificate, DER or PEM. Read, not verified.
+    pub fn from_certificate(data: &[u8]) -> Result<SlhDsaPublicKey, String> {
+        let der = der_of(data, &["CERTIFICATE"])?;
+        let certificate = x509::Certificate::parse(&der)?;
+        SlhDsaPublicKey::from_x509(&certificate.public_key)
+    }
+
+    fn from_x509(key: &x509::PublicKey<'_>) -> Result<SlhDsaPublicKey, String> {
+        match key {
+            x509::PublicKey::SlhDsa { parameter_set, pre_hash, key } =>
+                SlhDsaPublicKey::from_public(parameter_set, key)?.with_pre_hash(*pre_hash),
+            other => Err(format!("This is an {} key, not an SLH-DSA one.",
+                                 x509::verify::describe_key(other))),
+        }
+    }
+
+    /// The key as a SubjectPublicKeyInfo, DER: what [`Self::from_spki`]
+    /// reads, under the OID
+    /// of the pre-hash it is bound to. `pem::wrap("PUBLIC KEY", ..)` makes the PEM.
+    pub fn to_spki(&self) -> Result<Vec<u8>, String> {
+        let mut writer = crate::asn1::Writer::new();
+        crate::x509::builder::write_spki(&mut writer, &crate::x509::builder::SubjectKey::SlhDsa { parameter_set: self.parameters.name,
+                                                        pre_hash: self.pre_hash,
+                                                        key: &self.public })?;
+        Ok(writer.finish())
+    }
 
     /// `false` for a signature that is well formed and wrong, `Err` only
     /// for an input that could never be one - a context over 255 bytes,
@@ -6921,6 +7348,10 @@ pub fn slh_dsa_pre_hashes() -> Vec<&'static str> {
 // -------------------------------------------------------------- ML-KEM ---
 
 use crate::pq::ml_kem;
+/// Which of the three private key forms of RFC 9881 and RFC 9935 to
+/// write an ML-DSA or ML-KEM key in.
+pub use crate::x509::private_key::PrivateKeyForm;
+
 
 /// An ML-KEM decapsulation key (FIPS 203): the half that recovers shared
 /// secrets. [`MlKemPublicKey`] is the encapsulation key, the half that
@@ -6931,6 +7362,8 @@ use crate::pq::ml_kem;
 /// arrangement as SLH-DSA.
 pub struct MlKemKey {
     parameters: &'static ml_kem::Parameters,
+    /// `d ‖ z`, when the key was made from it.
+    seed: Option<Vec<u8>>,
     /// `dk_pke ‖ ek ‖ H(ek) ‖ z`, FIPS 203's decapsulation key.
     private: Vec<u8>,
 }
@@ -6970,18 +7403,18 @@ impl MlKemKey {
         }
         let (_ek, private) = ml_kem::key_gen_internal(
             parameters, &seed[..32], &seed[32..])?;
-        Ok(MlKemKey { parameters, private })
+        Ok(MlKemKey { parameters, seed: Some(seed.to_vec()), private })
     }
 
     /// Import an expanded decapsulation key.
     ///
     /// **Checked on import** with FIPS 203's hash check - the `H(ek)` the
-    /// key carries must match the `ek` it carries - because decapsulation
-    /// would refuse the key anyway, and an error at import says where the
-    /// problem came from. What the check cannot establish is that
-    /// `dk_pke` belongs to `ek`: nothing short of the seed can, and a
-    /// mismatched pair decapsulates every ciphertext to the
-    /// implicit-rejection secret.
+    /// key carries must match the `ek` it carries - and a pairwise
+    /// consistency test, encapsulating to that `ek` and decapsulating:
+    /// `ml_kem::check_expanded`. Without the second, a key whose `dk_pke`
+    /// does not belong to its `ek` imports and decapsulates every
+    /// ciphertext to the implicit-rejection secret. What no check can
+    /// establish short of the seed is the rejection seed `z`.
     pub fn from_private(parameter_set: &str, private: &[u8])
             -> Result<MlKemKey, String> {
         let parameters = ml_kem::parameters(parameter_set)?;
@@ -6991,13 +7424,8 @@ impl MlKemKey {
                 parameters.name, private.len(),
                 parameters.decapsulation_key_len()));
         }
-        if !ml_kem::hash_check(parameters, private)? {
-            return Err(format!(
-                "{}: the decapsulation key fails FIPS 203's hash check - the \
-                 H(ek) it carries does not match the ek it carries, so it \
-                 has been altered or assembled wrongly.", parameters.name));
-        }
-        Ok(MlKemKey { parameters, private: private.to_vec() })
+        ml_kem::check_expanded(parameters, private)?;
+        Ok(MlKemKey { parameters, seed: None, private: private.to_vec() })
     }
 
     pub fn parameter_set(&self) -> &'static str { self.parameters.name }
@@ -7017,6 +7445,21 @@ impl MlKemKey {
             parameters: self.parameters,
             public: self.public_bytes().to_vec(),
         }
+    }
+
+    /// The 64 byte seed `d ‖ z`, if the key was made from one rather than
+    /// imported expanded.
+    pub fn seed(&self) -> Option<&[u8]> { self.seed.as_deref() }
+
+    /// The key as PKCS#8 (RFC 9935 section 6), DER, in `form`. The seed
+    /// form, which the RFC recommends, needs a key that has its seed.
+    /// `pem::wrap("PRIVATE KEY", ..)` makes the PEM, and
+    /// `encrypt_private_key` encrypts it.
+    pub fn to_pkcs8(&self, form: PrivateKeyForm) -> Result<Vec<u8>, String> {
+        let inner = crate::x509::private_key::pq_private_key(
+            self.parameters.name, form, self.seed.as_deref(), &self.private)?;
+        Ok(crate::x509::private_key::write_pkcs8(
+            crate::x509::ml_kem_oid(self.parameters.name)?, &inner))
     }
 
     /// Recover the 32 byte shared secret from a ciphertext.
@@ -7054,6 +7497,44 @@ impl MlKemPublicKey {
                  a coefficient is encoded at or above q.", parameters.name));
         }
         Ok(MlKemPublicKey { parameters, public: public.to_vec() })
+    }
+
+    /// The key in a SubjectPublicKeyInfo (RFC 9935 section 4), DER or PEM
+    /// labelled `PUBLIC KEY`: the parameters absent, the length right
+    /// and the modulus check passed.
+    pub fn from_spki(data: &[u8]) -> Result<MlKemPublicKey, String> {
+        let der = der_of(data, &["PUBLIC KEY"])?;
+        let mut reader = crate::asn1::Reader::new(&der);
+        let key = x509::read_public_key(&mut reader)?;
+        reader.finish()?;
+        MlKemPublicKey::from_x509(&key)
+    }
+
+    /// The subject key of a certificate, DER or PEM, which is where a KEM
+    /// key usually arrives. The certificate is read, not verified:
+    /// `verify_chain` is how to trust it.
+    pub fn from_certificate(data: &[u8]) -> Result<MlKemPublicKey, String> {
+        let der = der_of(data, &["CERTIFICATE"])?;
+        let certificate = x509::Certificate::parse(&der)?;
+        MlKemPublicKey::from_x509(&certificate.public_key)
+    }
+
+    fn from_x509(key: &x509::PublicKey<'_>) -> Result<MlKemPublicKey, String> {
+        match key {
+            x509::PublicKey::MlKem { parameter_set, key } =>
+                MlKemPublicKey::from_public(parameter_set, key),
+            other => Err(format!("This is an {} key, not an ML-KEM one.",
+                                 x509::verify::describe_key(other))),
+        }
+    }
+
+    /// The key as a SubjectPublicKeyInfo, DER: what [`Self::from_spki`]
+    /// reads. `pem::wrap("PUBLIC KEY", ..)` makes the PEM.
+    pub fn to_spki(&self) -> Result<Vec<u8>, String> {
+        let mut writer = crate::asn1::Writer::new();
+        crate::x509::builder::write_spki(&mut writer, &crate::x509::builder::SubjectKey::MlKem { parameter_set: self.parameters.name,
+                                                       key: &self.public })?;
+        Ok(writer.finish())
     }
 
     pub fn parameter_set(&self) -> &'static str { self.parameters.name }
@@ -7339,6 +7820,17 @@ impl MlDsaKey {
                          public: self.public.to_vec() }
     }
 
+    /// The key as PKCS#8 (RFC 9881 section 6), DER, in `form`. The seed
+    /// form, which the RFC recommends, needs a key that has its seed.
+    /// `pem::wrap("PRIVATE KEY", ..)` makes the PEM, and
+    /// `encrypt_private_key` encrypts it.
+    pub fn to_pkcs8(&self, form: PrivateKeyForm) -> Result<Vec<u8>, String> {
+        let inner = crate::x509::private_key::pq_private_key(
+            self.parameters.name, form, self.seed.as_deref(), &self.private)?;
+        Ok(crate::x509::private_key::write_pkcs8(
+            crate::x509::ml_dsa_oid(self.parameters.name)?, &inner))
+    }
+
     /// Sign with fresh randomness: FIPS 204's **hedged** mode, the default
     /// the standard recommends.
     ///
@@ -7427,6 +7919,41 @@ impl MlDsaPublicKey {
                 parameters.name, public.len(), parameters.public_key_len()));
         }
         Ok(MlDsaPublicKey { parameters, public: public.to_vec() })
+    }
+
+    /// The key in a SubjectPublicKeyInfo (RFC 9881), DER or PEM labelled
+    /// `PUBLIC KEY`.
+    pub fn from_spki(data: &[u8]) -> Result<MlDsaPublicKey, String> {
+        let der = der_of(data, &["PUBLIC KEY"])?;
+        let mut reader = crate::asn1::Reader::new(&der);
+        let key = x509::read_public_key(&mut reader)?;
+        reader.finish()?;
+        MlDsaPublicKey::from_x509(&key)
+    }
+
+    /// The subject key of a certificate, DER or PEM. Read, not verified.
+    pub fn from_certificate(data: &[u8]) -> Result<MlDsaPublicKey, String> {
+        let der = der_of(data, &["CERTIFICATE"])?;
+        let certificate = x509::Certificate::parse(&der)?;
+        MlDsaPublicKey::from_x509(&certificate.public_key)
+    }
+
+    fn from_x509(key: &x509::PublicKey<'_>) -> Result<MlDsaPublicKey, String> {
+        match key {
+            x509::PublicKey::MlDsa { parameter_set, key } =>
+                MlDsaPublicKey::from_public(parameter_set, key),
+            other => Err(format!("This is an {} key, not an ML-DSA one.",
+                                 x509::verify::describe_key(other))),
+        }
+    }
+
+    /// The key as a SubjectPublicKeyInfo, DER: what [`Self::from_spki`]
+    /// reads. `pem::wrap("PUBLIC KEY", ..)` makes the PEM.
+    pub fn to_spki(&self) -> Result<Vec<u8>, String> {
+        let mut writer = crate::asn1::Writer::new();
+        crate::x509::builder::write_spki(&mut writer, &crate::x509::builder::SubjectKey::MlDsa { parameter_set: self.parameters.name,
+                                                       key: &self.public })?;
+        Ok(writer.finish())
     }
 
     pub fn parameter_set(&self) -> &'static str { self.parameters.name }
@@ -7817,7 +8344,12 @@ impl Drop for SlhDsaKey {
 }
 
 impl Drop for MlKemKey {
-    fn drop(&mut self) { wipe(&mut self.private); }
+    fn drop(&mut self) {
+        if let Some(seed) = &mut self.seed {
+            wipe(seed);
+        }
+        wipe(&mut self.private);
+    }
 }
 
 impl Drop for MlDsaKey {

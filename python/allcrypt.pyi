@@ -256,7 +256,9 @@ class Cipher:
 
     Holds no mode state, so one instance can spawn any number of independent
     encryptors and decryptors. ``param`` selects the S-box parameter set for
-    ``gost`` and is ignored by the other ciphers.
+    ``gost``, is the effective key length in bits for ``rc2`` and the round
+    count for ``rc5``, ``tea``, ``xtea`` and the four ``safer-`` ciphers, and
+    is ignored by the other ciphers.
     """
 
     def __init__(self, name: str, key: BytesLike, param: Optional[str] = None, *,
@@ -1017,12 +1019,15 @@ def private_key_encryption(data: BytesLike) -> Dict[str, Any]:
     """How an encrypted private key was encrypted: scheme, prf, iterations, salt, iv."""
 def private_key(data: BytesLike,
                 password: Optional[BytesLike] = None
-                ) -> Union["EcKey", "RsaKey", "EddsaKey", "MlDsaKey", "DsaKey",
-                           Tuple[str, bytes]]:
+                ) -> Union["EcKey", "RsaKey", "EddsaKey", "MlDsaKey", "MlKemKey",
+                           "SlhDsaKey", "DsaKey", Tuple[str, bytes]]:
     """Read a private key from PEM text or DER bytes.
 
-    Returns whichever kind the file holds, so the result goes straight
+    Returns whichever kind the file holds, so a signing key goes straight
     to ``TlsServer`` without the caller having to know which it got. An
+    ML-KEM key (RFC 9935, in any of its three forms, checked as section 8
+    says) comes back as an ``MlKemKey``, and an SLH-DSA key (RFC 9909) as
+    an ``SlhDsaKey``, bound to its OID's pre-hash for HashSLH-DSA. An
     X25519 or X448 key (RFC 8410), which has no key object here, comes
     back as ``("x25519", private)`` or ``("x448", private)``: the bytes
     ``x25519_exchange`` and ``x448_exchange`` take.
@@ -1315,11 +1320,14 @@ class CertificateAuthority:
                  not_after: str, key_type: str = "P-256") -> None:
         """Generate a CA: a fresh key and a self-signed certificate.
 
-        ``key_type`` is a curve name, ``"ed25519"``, or an ML-DSA
-        parameter set (``"ML-DSA-44"``, ``"ML-DSA-65"``, ``"ML-DSA-87"``,
-        RFC 9881). The leaves ``issue`` makes are of the same type; an
-        ML-DSA leaf carries ``digitalSignature`` only, and its private key
-        is the 32 byte seed ``MlDsaKey.from_seed`` takes.
+        ``key_type`` is a curve name, ``"ed25519"``, an ML-DSA parameter
+        set (``"ML-DSA-44"``, ``"ML-DSA-65"``, ``"ML-DSA-87"``, RFC 9881),
+        or an SLH-DSA one (``"SLH-DSA-SHA2-128s"`` and the other eleven,
+        RFC 9909, pure; seconds to generate at the ``s`` sets). The leaves
+        ``issue`` makes are of the same type; an ML-DSA or SLH-DSA leaf
+        carries ``digitalSignature`` only, and its private key is the 32
+        byte seed ``MlDsaKey.from_seed`` takes, or the whole SLH-DSA
+        private key.
 
         The dates are ``YYYYMMDDHHMMSSZ`` and are required rather than
         defaulted, because a proxy CA that outlives its usefulness is a
@@ -1353,6 +1361,13 @@ class CertificateAuthority:
         written as a ``dNSName`` matches nothing and says nothing about
         why.
         """
+
+    def issue_ml_kem(self, common_name: str, key: "MlKemPublicKey", not_before: str,
+                     not_after: str) -> bytes:
+        """A certificate for someone else's ML-KEM key (RFC 9935), DER:
+        subject ``common_name``, keyUsage ``keyEncipherment`` alone, as
+        section 5 requires, and no extended key usage or names - what the
+        key is for is the caller's protocol's to say."""
 
     @property
     def certificate(self) -> bytes:
@@ -2543,6 +2558,81 @@ def crc32c(data: BytesLike, value: int = 0) -> int:
     """CRC-32C (Castagnoli) of ``data``, continuing from ``value``, the
     CRC-32C of what came before it, as ``zlib.crc32`` does for CRC-32."""
 
+def xxh32(data: BytesLike, seed: int = 0) -> int:
+    """XXH32 of ``data`` with a 32 bit seed. Not cryptographic."""
+
+def xxh64(data: BytesLike, seed: int = 0) -> int:
+    """XXH64 of ``data`` with a 64 bit seed. Not cryptographic."""
+
+def xxh3_64(data: BytesLike, seed: int = 0, secret: Optional[BytesLike] = None) -> int:
+    """XXH3-64 of ``data``, with a 64 bit seed or a secret of at least 136
+    bytes, not both. Not cryptographic: a secret does not make it a MAC."""
+
+def xxh3_128(data: BytesLike, seed: int = 0, secret: Optional[BytesLike] = None) -> int:
+    """XXH3-128 of ``data``, as XXH3-64 takes it; the high half is the
+    integer's top 64 bits."""
+
+def joaat(data: BytesLike, seed: int = 0) -> int:
+    """Jenkins's one-at-a-time of ``data``, from a 32 bit seed - zero for
+    PHP's ``joaat``. Not cryptographic."""
+
+def joaat_update(data: BytesLike, state: int = 0) -> int:
+    """One-at-a-time's bare state after ``data``, from ``state``, with no
+    final mix: ``joaat_finish(joaat_update(b, joaat_update(a)))`` is
+    ``joaat(a + b)``."""
+
+def joaat_finish(state: int) -> int:
+    """One-at-a-time's final mix: its value for a state."""
+
+def murmur3_32(data: BytesLike, seed: int = 0) -> int:
+    """MurmurHash3's x86_32 of ``data`` with a 32 bit seed. Not
+    cryptographic."""
+
+def murmur3_x86_128(data: BytesLike, seed: int = 0) -> int:
+    """MurmurHash3's x86_128, the first 32 bit word on top: the bytes PHP's
+    ``murmur3c`` prints, read big endian."""
+
+def murmur3_x64_128(data: BytesLike, seed: int = 0) -> int:
+    """MurmurHash3's x64_128, the first 64 bit word on top: the bytes PHP's
+    ``murmur3f`` prints, read big endian. ``mmh3.hash128`` puts the second
+    word on top."""
+
+class Murmur3:
+    """MurmurHash3 in progress: ``murmur3_32``, ``murmur3_x86_128`` or
+    ``murmur3_x64_128`` (or ``murmur3_x86_32``, and PHP's ``murmur3a``,
+    ``murmur3c`` and ``murmur3f``), with a 32 bit seed. ``allcrypt.new(name)`` is the same
+    with the seed zero."""
+    def __init__(self, name: str, data: Optional[BytesLike] = None, *,
+                 seed: int = 0) -> None: ...
+    def update(self, data: BytesLike) -> None: ...
+    def digest(self) -> bytes:
+        """Each word big endian, first word first, as PHP gives it."""
+    def hexdigest(self) -> str: ...
+    def intdigest(self) -> int: ...
+    def copy(self) -> "Murmur3": ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def digest_size(self) -> int: ...
+
+class XxHash:
+    """xxHash in progress: ``xxh32``, ``xxh64``, ``xxh3`` (also
+    ``xxh3_64``) or ``xxh128`` (also ``xxh3_128``), with a seed or, for
+    the last two, a secret. ``allcrypt.new(name)`` is the same with the
+    seed zero."""
+    def __init__(self, name: str, data: Optional[BytesLike] = None, *, seed: int = 0,
+                 secret: Optional[BytesLike] = None) -> None: ...
+    def update(self, data: BytesLike) -> None: ...
+    def digest(self) -> bytes:
+        """The value big endian, as ``xxhsum`` prints it."""
+    def hexdigest(self) -> str: ...
+    def intdigest(self) -> int: ...
+    def copy(self) -> "XxHash": ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def digest_size(self) -> int: ...
+
 def siphash(key: BytesLike, data: BytesLike, *, c_rounds: int = 2, d_rounds: int = 4,
             size: int = 8) -> bytes:
     """SipHash under a 16 byte key: 8 or 16 bytes. SipHash-2-4 is the
@@ -2681,6 +2771,10 @@ class SlhDsaKey:
         """
 
     parameter_set: str
+    #: The pre-hash an RFC 9909 HashSLH-DSA OID bound the key to, such as
+    #: ``"SHA2-256"``, or ``None``. Section 8 keeps such a key to
+    #: signatures of that form: pass it as ``prehash``.
+    pre_hash: Optional[str]
 
     def private_bytes(self) -> bytes:
         """``SK.seed || SK.prf || PK.seed || PK.root``."""
@@ -2689,6 +2783,9 @@ class SlhDsaKey:
         """``PK.seed || PK.root``, which is the tail of the private key."""
 
     def public_key(self) -> "SlhDsaPublicKey": ...
+    def to_pkcs8(self) -> bytes:
+        """The key as DER PKCS#8 (RFC 9909 section 7), under the OID of its
+        parameter set and of the pre-hash it is bound to."""
 
     def recompute_public(self) -> bool:
         """Whether the public root matches the seeds. Costs a whole key
@@ -2738,9 +2835,24 @@ class SlhDsaPublicKey:
     @staticmethod
     def from_public(parameter_set: str, public: BytesLike) -> "SlhDsaPublicKey": ...
 
+    @staticmethod
+    def from_spki(data: BytesLike) -> "SlhDsaPublicKey":
+        """The key in a SubjectPublicKeyInfo, DER or PEM ``PUBLIC KEY``
+        (RFC 9909), bound to the pre-hash a HashSLH-DSA OID fixes."""
+
+    @staticmethod
+    def from_certificate(data: BytesLike) -> "SlhDsaPublicKey":
+        """The subject key of a certificate, DER or PEM. Read, not
+        verified."""
+
     parameter_set: str
+    #: As ``SlhDsaKey.pre_hash``.
+    pre_hash: Optional[str]
 
     def public_bytes(self) -> bytes: ...
+    def to_spki(self) -> bytes:
+        """The key as a DER SubjectPublicKeyInfo; ``pem_wrap(..,
+        "PUBLIC KEY")`` makes the PEM."""
     def verify(self, message: BytesLike, signature: BytesLike,
                context: Optional[BytesLike] = None,
                prehash: Optional[str] = None) -> bool: ...
@@ -2778,7 +2890,8 @@ class MlKemKey:
     @staticmethod
     def from_private(parameter_set: str, private: BytesLike) -> "MlKemKey":
         """Import ``dk_pke || ek || H(ek) || z``. Raises if the ``H(ek)``
-        it carries does not match the ``ek`` it carries."""
+        it carries does not match the ``ek`` it carries, or if the key does
+        not decapsulate what its own ``ek`` encapsulates."""
 
     parameter_set: str
 
@@ -2789,6 +2902,15 @@ class MlKemKey:
         """``ek``, carried inside the decapsulation key."""
 
     def public_key(self) -> "MlKemPublicKey": ...
+    def seed(self) -> Optional[bytes]:
+        """The 64 byte seed ``d || z``, or ``None`` for a key imported
+        expanded."""
+    def to_pkcs8(self, form: str = "seed") -> bytes:
+        """The key as DER PKCS#8 (RFC 9935 section 6) in ``form``: ``"seed"``,
+        which the RFC recommends and which needs a key that has its seed,
+        ``"expanded"`` or ``"both"`` (or OpenSSL's ``"seed-only"``,
+        ``"priv-only"`` and ``"seed-priv"``). ``pem_wrap(.., "PRIVATE
+        KEY")`` makes the PEM; ``encrypt_private_key`` encrypts it."""
 
     def decapsulate(self, ciphertext: BytesLike) -> bytes:
         """The 32 byte shared secret.
@@ -2807,9 +2929,22 @@ class MlKemPublicKey:
         """Import ``ek``. Raises if a coefficient is encoded at or above
         q - FIPS 203's modulus check."""
 
+    @staticmethod
+    def from_spki(data: BytesLike) -> "MlKemPublicKey":
+        """The key in a SubjectPublicKeyInfo, DER or PEM ``PUBLIC KEY``
+        (RFC 9935): parameters absent, and the modulus check passed."""
+
+    @staticmethod
+    def from_certificate(data: BytesLike) -> "MlKemPublicKey":
+        """The subject key of a certificate, DER or PEM. The certificate is
+        read, not verified: ``verify_chain`` is how to trust it."""
+
     parameter_set: str
 
     def public_bytes(self) -> bytes: ...
+    def to_spki(self) -> bytes:
+        """The key as a DER SubjectPublicKeyInfo; ``pem_wrap(..,
+        "PUBLIC KEY")`` makes the PEM."""
 
     def encapsulate(self, m: Optional[BytesLike] = None) -> Tuple[bytes, bytes]:
         """``(shared_secret, ciphertext)``: keep the first, send the
@@ -2909,6 +3044,12 @@ class MlDsaKey:
     def private_bytes(self) -> bytes: ...
     def public_bytes(self) -> bytes: ...
     def public_key(self) -> "MlDsaPublicKey": ...
+    def to_pkcs8(self, form: str = "seed") -> bytes:
+        """The key as DER PKCS#8 (RFC 9881 section 6) in ``form``: ``"seed"``,
+        which the RFC recommends and which needs a key that has its seed,
+        ``"expanded"`` or ``"both"`` (or OpenSSL's ``"seed-only"``,
+        ``"priv-only"`` and ``"seed-priv"``). ``pem_wrap(.., "PRIVATE
+        KEY")`` makes the PEM; ``encrypt_private_key`` encrypts it."""
 
     def sign(self, message: BytesLike, context: Optional[BytesLike] = None,
              prehash: Optional[str] = None,
@@ -2950,9 +3091,22 @@ class MlDsaPublicKey:
     @staticmethod
     def from_public(parameter_set: str, public: BytesLike) -> "MlDsaPublicKey": ...
 
+    @staticmethod
+    def from_spki(data: BytesLike) -> "MlDsaPublicKey":
+        """The key in a SubjectPublicKeyInfo, DER or PEM ``PUBLIC KEY``
+        (RFC 9881)."""
+
+    @staticmethod
+    def from_certificate(data: BytesLike) -> "MlDsaPublicKey":
+        """The subject key of a certificate, DER or PEM. Read, not
+        verified."""
+
     parameter_set: str
 
     def public_bytes(self) -> bytes: ...
+    def to_spki(self) -> bytes:
+        """The key as a DER SubjectPublicKeyInfo; ``pem_wrap(..,
+        "PUBLIC KEY")`` makes the PEM."""
 
     def verify(self, message: BytesLike, signature: BytesLike,
                context: Optional[BytesLike] = None,

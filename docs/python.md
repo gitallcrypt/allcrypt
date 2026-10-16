@@ -323,6 +323,63 @@ assert allcrypt.new("fnv1a64", data).digest() == allcrypt.new("FNV-1a-64", data)
 assert allcrypt.new("fnv1a_1024", data).digest_size == 128
 ```
 
+xxHash is there too, as `"xxh32"`, `"xxh64"`, `"xxh3"` and `"xxh128"`
+with the seed zero. `xxh32`, `xxh64`, `xxh3_64` and `xxh3_128` give the
+value as an integer with any seed, the last two with a secret of at
+least 136 bytes instead, and `XxHash` streams with either:
+
+```python
+import allcrypt
+
+data = b"The quick brown fox jumps over the lazy dog"
+h = allcrypt.XxHash("xxh64", seed=42)
+h.update(data[:10])
+h.update(data[10:])
+assert h.intdigest() == allcrypt.xxh64(data, 42)
+assert h.digest() == allcrypt.xxh64(data, 42).to_bytes(8, "big")
+assert allcrypt.new("xxh3", data).hexdigest() == "%016x" % allcrypt.xxh3_64(data)
+
+secret = bytes(range(136))
+assert allcrypt.XxHash("xxh128", data, secret=secret).intdigest() == \
+    allcrypt.xxh3_128(data, secret=secret)
+```
+
+A seed and a secret together are refused, as is a secret shorter than
+136 bytes; a secret does not make XXH3 a MAC.
+
+MurmurHash3 is there as `"murmur3_32"`, `"murmur3_x86_128"` and
+`"murmur3_x64_128"`, or PHP's `"murmur3a"`, `"murmur3c"` and
+`"murmur3f"`, with the seed zero; `murmur3_32`, `murmur3_x86_128` and
+`murmur3_x64_128` take a 32 bit seed and give an integer, and `Murmur3`
+streams. A 128 bit value is the first word on top, which is what PHP
+prints; `mmh3.hash128` puts the second word on top.
+
+```python
+import allcrypt
+
+data = b"The quick brown fox jumps over the lazy dog"
+h = allcrypt.Murmur3("murmur3_x64_128", seed=42)
+h.update(data[:10])
+h.update(data[10:])
+assert h.intdigest() == allcrypt.murmur3_x64_128(data, 42)
+assert allcrypt.new("murmur3a", data).digest() == allcrypt.murmur3_32(data).to_bytes(4, "big")
+```
+
+Jenkins's one-at-a-time is `"joaat"`, PHP's name for it, or
+`"one_at_a_time"`. `joaat(data, seed=0)` starts from a seed, as Perl's
+hashes did, and `joaat_update` and `joaat_finish` are the bare state and
+the last mix, for streaming from one:
+
+```python
+import allcrypt
+
+data = b"The quick brown fox jumps over the lazy dog"
+state = allcrypt.joaat_update(data[:10], 7)
+state = allcrypt.joaat_update(data[10:], state)
+assert allcrypt.joaat_finish(state) == allcrypt.joaat(data, 7)
+assert allcrypt.new("joaat", data).digest() == allcrypt.joaat(data).to_bytes(4, "big")
+```
+
 ## Names as enumerations
 
 Every catalogue is also an enumeration, so an editor can complete the
@@ -631,6 +688,18 @@ assert allcrypt.Cipher("noekeon-indirect", bytes(16)).encrypt("ecb", bytes(16)).
     == "ba6933819299c71699a99f08f678178b"
 ```
 
+PRESENT, ISO/IEC 29192-2's lightweight cipher, is `present`, with a 10
+or 16 byte key - 80 or 128 bits - and a 64 bit block, most significant
+byte first as the paper prints it. It takes every 64 bit mode,
+`present-eax` and `present-mgm`:
+
+```python
+import allcrypt
+
+# The paper's first test vector.
+assert allcrypt.Cipher("present", bytes(10)).encrypt("ecb", bytes(8)).hex() == "5579c1387b228445"
+```
+
 SHACAL-2 is SHA-256's compression function as a cipher, with a 32 byte
 block and a key of 16 to 64 bytes that is zero-padded to 64, so a short
 key and the same key padded are one key. Constant time, in the modes a
@@ -644,6 +713,221 @@ assert allcrypt.Cipher("shacal2", key).encrypt("ecb", bytes(32)).hex()[:16] \
     == "361ab6322fa9e7a7"
 assert allcrypt.Cipher("shacal2", key[:16]).encrypt("ecb", bytes(32)) \
     == allcrypt.Cipher("shacal2", key).encrypt("ecb", bytes(32))
+```
+
+SHACAL-1, `shacal1`, is the same on SHA-1: a 20 byte block and a key of
+16 to 64 bytes, zero-padded to 64, in the modes a 160 bit block takes:
+
+```python
+import allcrypt
+
+# Project Nayuki's first SHACAL-1 test.
+key = bytes(range(64))
+block = bytes.fromhex("c42d18e512208847172cc63361967cd901f71472")
+assert allcrypt.Cipher("shacal1", key).encrypt("ecb", block).hex()[:8] == "00112233"
+```
+
+Skipjack, the NSA's Clipper cipher, has a 64 bit block and a 10 byte key,
+and two names because implementations read it in opposite byte orders:
+`skipjack` is the specification's, as libtomcrypt and Bouncy Castle
+compute it, and `skipjack-reversed` reads the key, the block and the
+result each backwards, as Crypto++ and Botan do. Both take every 64 bit
+mode and `-eax` and `-mgm`:
+
+```python
+import allcrypt
+
+# The specification's vector, and Crypto++'s printing of the same one.
+key, block = bytes.fromhex("00998877665544332211"), bytes.fromhex("33221100ddccbbaa")
+assert allcrypt.Cipher("skipjack", key).encrypt("ecb", block).hex() == "2587cae27a12d300"
+assert allcrypt.Cipher("skipjack-reversed", key[::-1]).encrypt("ecb", block[::-1]).hex() \
+    == "00d3127ae2ca8725"
+```
+
+SAFER comes as four ciphers - `safer-k64`, `safer-k128`, `safer-sk64` and
+`safer-sk128`, with an 8 or 16 byte key - and its round count, 1 to 13,
+is the parameter, as RC5's is. Leaving it out means the variant's usual
+count: 6, 10, 8 and 10. Each takes every 64 bit mode, `-eax` and
+`-mgm`:
+
+```python
+import allcrypt
+
+# libtomcrypt's K-64 test at the usual six rounds, and one of Crypto++'s
+# K-128 tests, which it runs at twelve.
+assert allcrypt.Cipher("safer-k64", bytes([8, 7, 6, 5, 4, 3, 2, 1])) \
+    .encrypt("ecb", bytes(range(1, 9))).hex() == "c8f29cdd87783ed9"
+key = bytes.fromhex("08070605040302010807060504030201")
+assert allcrypt.Cipher("safer-k128", key, "12").encrypt("ecb", bytes.fromhex("5051525354555657")) \
+    .hex() == "38e64dbf6e0f896e"
+```
+
+SAFER+, the AES candidate, takes a 16, 24 or 32 byte key, every 128 bit
+mode, `-eax`, `-mgm` and `-ocb`, and two names, because libmcrypt - and
+PHP's `mcrypt` with it - reverses the order of the 32-bit words of the
+key, the block and the result: `saferplus` is the submission's order, as
+libtomcrypt computes it, and `saferplus-reversed-words` libmcrypt's.
+
+```python
+import allcrypt
+
+# libtomcrypt's 192 bit key test, and the same in libmcrypt's order.
+key = bytes.fromhex("48d38f75e6d91d2ae5c0f72b788187440e5f5000d4618dbe")
+block = bytes.fromhex("7b0515073b33821f187092da6454ceb1")
+assert allcrypt.Cipher("saferplus", key).encrypt("ecb", block).hex() \
+    == "5c88043f395f640096828210c16fdb85"
+words = lambda b: b"".join(b[i:i + 4] for i in range(len(b) - 4, -1, -4))
+assert allcrypt.Cipher("saferplus-reversed-words", words(key)).encrypt("ecb", words(block)) \
+    == words(bytes.fromhex("5c88043f395f640096828210c16fdb85"))
+```
+
+3-Way, Daemen's 96 bit cipher, is `threeway` - or `3way` or `3-way` -
+with a 12 byte key. Its block is 12 bytes, so it takes every mode and no
+AEAD:
+
+```python
+import allcrypt
+
+# One of Crypto++'s published tests.
+key = bytes.fromhex("def01234456789abbcdef012")
+assert allcrypt.Cipher("threeway", key).encrypt("ecb", bytes.fromhex("234567899abcdef001234567")).hex() \
+    == "0aa55dbb9cdddb6d7cdb76b2"
+assert allcrypt.Cipher("3-Way", key).block_size == 12
+```
+
+LOKI97, the AES candidate, takes a 16, 24 or 32 byte key, every 128 bit
+mode, `-eax`, `-mgm` and `-ocb`, and two names: `loki97` is the
+submission's, and `loki97-mcrypt` is what libmcrypt and PHP's `mcrypt`
+compute under that name - every 32-bit word byte-swapped, and the key
+zero-padded to 32 bytes:
+
+```python
+import allcrypt
+
+# One of Crypt::Loki97's published tests, with a 16 byte key.
+key = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+assert allcrypt.Cipher("loki97", key).encrypt("ecb", bytes.fromhex("000102030405060708090a0b0c0d0e0f")).hex() \
+    == "f65cf3b53c5c7d3a44e4190cb2057622"
+# libmcrypt's own self-test.
+key = bytes((j * 2 + 10) % 256 for j in range(32))
+assert allcrypt.Cipher("loki97-mcrypt", key).encrypt("ecb", bytes(range(16))).hex() \
+    == "8cb28c958024bae27a94c698f96f12a9"
+```
+
+LEA, the Korean standard, takes a 16, 24 or 32 byte key, every 128 bit
+mode, `lea-eax`, `lea-mgm` and `lea-ocb`:
+
+```python
+import allcrypt
+
+# One of KISA's known-answer tests for a 32 byte key.
+key = bytes.fromhex("4f6779e2bd1e9319c63015acffefd7a791f0ed59df1b700769fe82e2f0668c35")
+assert allcrypt.Cipher("lea", key).encrypt("ecb", bytes.fromhex("dc31cae3da5e0a11c966b020d7cffede")).hex() \
+    == "eda2042098f667e857a02db8caa7dff2"
+```
+
+FEAL is `feal`, FEAL-N with an 8 byte key and 8 rounds unless the
+cipher's parameter says otherwise, and `feal-nx`, FEAL-NX with a 16 byte
+key and 32 rounds; any even count from 2 to 1024. Both take every 64 bit
+mode, `-eax` and `-mgm`:
+
+```python
+import allcrypt
+
+# NTT's FEAL-NX test data, its first block.
+key = bytes(range(16))
+assert allcrypt.Cipher("feal-nx", key).encrypt("ecb", bytes.fromhex("0000000100020003")).hex() \
+    == "0309e94066035e24"
+# FEAL-4: the round count is the parameter.
+assert allcrypt.Cipher("feal", key[:8], "4").encrypt("ecb", bytes(8)) \
+    != allcrypt.Cipher("feal", key[:8]).encrypt("ecb", bytes(8))
+```
+
+HIGHT, the Korean 64 bit cipher, takes a 16 byte key, every 64 bit mode,
+`hight-eax` and `hight-mgm`. Its standard prints keys and blocks most
+significant byte first, so its examples are reversed here:
+
+```python
+import allcrypt
+
+# The standard's first example.
+key, block = bytes.fromhex("00112233445566778899aabbccddeeff"), bytes(8)
+assert allcrypt.Cipher("hight", key[::-1]).encrypt("ecb", block[::-1])[::-1].hex() \
+    == "00f418aed94f03f2"
+```
+
+Speck and Simon, the NSA's lightweight families, are named by block
+size: `speck32` and `simon32` with an 8 byte key, `speck48` and
+`simon48` with 9 or 12, `speck64` and `simon64` with 12 or 16, `speck96`
+and `simon96` with 12 or 18, and `speck128` and `simon128` with 16, 24
+or 32 - the length choosing the variant. They take every mode of their
+block size; the 64 and 128 bit ones `-eax` and `-mgm`, and the 128 bit
+ones `-ocb`.
+Keys and blocks are the little-endian encoding of the paper's numbers,
+so the paper's printed vectors read backwards here:
+
+```python
+import allcrypt
+
+# The paper's Speck128/256 example.
+assert allcrypt.Cipher("speck128", bytes(range(32))).encrypt(
+    "ecb", bytes.fromhex("706f6f6e65722e20496e2074686f7365")).hex() == "438f189c8db4ee4e3ef5c00504010941"
+# And Simon64/96's.
+assert allcrypt.Cipher("simon64", bytes.fromhex("0001020308090a0b10111213")).encrypt(
+    "ecb", bytes.fromhex("636c696e6720726f")).hex() == "c88f1a117fe2a25c"
+```
+
+Threefish, the tweakable cipher under Skein, is `threefish256`,
+`threefish512` and `threefish1024` (`Threefish-512` and the like
+spell them too): a block of 32, 64 or 128 bytes, and a key of the same
+length, with a tweak of zero, or the key followed by the 16 byte tweak.
+It takes every mode; no AEAD here takes a block this wide.
+
+```python
+import allcrypt
+
+# The Skein team's Threefish-256 known answer with a tweak: the key, then
+# the tweak.
+key, tweak = bytes(range(0x10, 0x30)), bytes(range(16))
+block = bytes(range(0xff, 0xdf, -1))
+assert allcrypt.Cipher("threefish256", key + tweak).encrypt("ecb", block)[:4].hex() == "e0d091ff"
+# The key alone is a tweak of zero.
+assert (allcrypt.Cipher("threefish256", key).encrypt("ecb", block)
+        == allcrypt.Cipher("threefish256", key + bytes(16)).encrypt("ecb", block))
+```
+
+Square, Rijndael's predecessor, has a 128 bit block and a 16 byte key and
+takes every 128 bit mode, `square-eax`, `square-mgm` and `square-ocb`:
+
+```python
+import allcrypt
+
+# Crypto++'s published vector.
+assert allcrypt.Cipher("square", bytes(range(16))).encrypt("ecb", bytes(16)).hex() \
+    == "ff596fa668bfc3014200ae01e2bba0a0"
+```
+
+KASUMI, 3GPP's 64 bit cipher, takes a 16 byte key, every 64 bit mode,
+`kasumi-eax` and `kasumi-mgm`:
+
+```python
+import allcrypt
+
+# One of the 3GPP's tests.
+key = bytes([0x80]) + bytes(15)
+assert allcrypt.Cipher("kasumi", key).encrypt("ecb", bytes(8)).hex() == "4b58a771afc7e5e8"
+```
+
+MISTY1 (RFC 2994), KASUMI's ancestor, likewise takes a 16 byte key, every
+64 bit mode, `misty1-eax` and `misty1-mgm`. RFC 2994's CBC example:
+
+```python
+import allcrypt
+
+key = bytes.fromhex("00112233445566778899aabbccddeeff")
+plain = bytes.fromhex("0123456789abcdeffedcba9876543210")
+sealed = allcrypt.Cipher("misty1", key).encrypt("cbc", plain, iv=bytes(range(1, 9)))
+assert sealed[:16].hex() == "461c1e879c18c27fb9adf2d80c89031f"
 ```
 
 RC5 (RFC 2040) is `RC5-32/r/b`: a 64 bit block, a round count, and a key
@@ -3689,7 +3973,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.5.0"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.6.0"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and
@@ -4233,6 +4517,17 @@ for name in ["1.3.6.1.4.1.99999.1.1", "1.3.6.1.4.1.99999.3.1"]:
 Exactly one of `hash=`, `curve=`, `gost_sbox=` or `curve_parameters=`,
 because an OID names one thing.
 
+`curve=` takes any spelling `EcKey.generate` does, such as `"GOST256_A"`,
+`"SM2"`, or the name of a curve registered with `curve_parameters=`. It
+stores the curve's own name, which is what `registered_oids()` lists. A
+registered curve then works wherever a built-in one does. Certificates on
+it are read and can be issued, EC and GOST R 34.10 of either generation.
+PKCS#8 and SEC1 private keys on it load, and the TLS client takes a GOST
+server on it. Two different curves cannot share a name, because a curve is
+found by its name. The same numbers under a second OID are an alias. A
+certificate names one OID, so issuing on a curve registered under two is
+refused until one is forgotten.
+
 ### A curve this library does not carry
 
 `curve=` above moves a *name*. `curve_parameters=` supplies the curve:
@@ -4628,18 +4923,34 @@ inside it matches its seeds is a separate and expensive question.
 worth doing once on a key from somewhere you do not control, pointless on
 one this library generated.
 
-### What is not here
+SLH-DSA keys in **PEM and DER** are RFC 9909's. `allcrypt.private_key`
+reads a private key and returns an `SlhDsaKey`; `SlhDsaPublicKey.from_spki`
+reads a `PUBLIC KEY` and `from_certificate` the key a certificate
+carries; and a `CertificateAuthority` can have an SLH-DSA key:
 
-There is no PEM or DER encoding for these keys, and no certificate
-support: this library has the algorithm, not the not-yet-settled ways of
-putting it in a file. `private_bytes()` and `public_bytes()` are the FIPS
-205 byte strings, which is what every implementation agrees on.
+```python
+import allcrypt
 
-None of the references the tests use implements SLH-DSA - not
-`cryptography`, and not the OpenSSL 3.0 the differential checks run
-against - so unlike every other algorithm here there is no second
-opinion to compare against. What checks it is NIST's own ACVP validation
-data: see [status.md](status.md#post-quantum).
+ca = allcrypt.CertificateAuthority("A CA", "20260101000000Z", "20360101000000Z",
+                                   key_type="SLH-DSA-SHAKE-128f")
+leaf, _ = ca.issue("example.test", "20260101000000Z", "20360101000000Z")
+assert allcrypt.Certificate(leaf).to_dict()["keyUsage"] == ["digitalSignature"]
+
+theirs = allcrypt.SlhDsaPublicKey.from_certificate(ca.certificate)
+assert theirs.parameter_set == "SLH-DSA-SHAKE-128f" and theirs.pre_hash is None
+```
+
+RFC 9909 puts the form in the OID: a key read from a HashSLH-DSA one
+comes back with `pre_hash` set to the hash that OID fixes, and section 8
+keeps it to signatures of that form - pass `prehash=key.pre_hash` to
+`sign` and `verify`. A certificate signed in the other form is refused
+by name. A CA generated here is pure; `CertificateAuthority.from_parts`
+with a HashSLH-DSA certificate signs as that certificate says.
+
+NIST's ACVP validation data checks the arithmetic; RFC 9909's example
+and the IETF hackathon's certificates from OpenSSL 3.5, Bouncy Castle,
+Botan and Redhound check it and the encodings together
+(`pytests/test_slh_dsa_keys.py`): see [status.md](status.md#post-quantum).
 
 ## Post-quantum: ML-KEM
 
@@ -4714,16 +5025,38 @@ assert again.public_bytes() == key.public_bytes()
 `MlKemPublicKey.from_public` refuses a coefficient encoded at or above
 `q` — without that, two different byte strings would be the same key —
 and `MlKemKey.from_private` refuses a key whose embedded `H(ek)` does not
-match its embedded `ek`. Both raise `ValueError`. What no check can tell
-is whether the secret part of an imported decapsulation key belongs to
-its public part: a mismatched pair decapsulates everything to the
-rejection secret. Storing the seed instead avoids the question.
+match its embedded `ek`, or whose secret part does not decapsulate what
+its own `ek` encapsulates. Both raise `ValueError`. What no check can
+tell, short of the seed, is a rejection seed `z` other than the key's:
+it is used only when a ciphertext is refused. Storing the seed instead
+avoids the question.
 
-There is no PEM, DER or certificate support for ML-KEM keys, and nothing
-on this machine implements ML-KEM to compare against. What checks it is
-NIST's ACVP data — 195 cases, 30 of them keys that must be refused — and
-`pytests/test_ml_kem.py` reads those itself rather than trusting the Rust
-tests' parse.
+ML-KEM keys in **PEM and DER** are RFC 9935's. `allcrypt.private_key`
+reads a private key in any of its three forms and returns an
+`MlKemKey`; `MlKemPublicKey.from_spki` reads a `PUBLIC KEY` and
+`from_certificate` the key a certificate carries; and a
+`CertificateAuthority` issues a certificate for someone's key with
+`issue_ml_kem`, keyUsage `keyEncipherment` alone:
+
+```python
+import allcrypt
+
+ca = allcrypt.CertificateAuthority("A CA", "20260101000000Z", "20360101000000Z",
+                                   key_type="ML-DSA-65")
+key = allcrypt.MlKemKey.generate("ML-KEM-768")
+der = ca.issue_ml_kem("a key", key.public_key(), "20260101000000Z", "20360101000000Z")
+assert allcrypt.Certificate(der).to_dict()["keyUsage"] == ["keyEncipherment"]
+
+theirs = allcrypt.MlKemPublicKey.from_certificate(der)
+shared, ciphertext = theirs.encapsulate()
+assert key.decapsulate(ciphertext) == shared
+```
+
+NIST's ACVP data checks the arithmetic — 195 cases, 30 of them keys that
+must be refused — and `pytests/test_ml_kem.py` reads those itself rather
+than trusting the Rust tests' parse. RFC 9935's examples and OpenSSL
+3.5's keys, encapsulations and certificates check the encodings
+(`pytests/test_ml_kem_keys.py`).
 
 ## Post-quantum: sntrup761
 
@@ -4832,6 +5165,42 @@ assert allcrypt.Certificate(leaf).to_dict()["publicKeyType"] == "ML-DSA-65"
 three forms, as OpenSSL 3.5 writes them - into an `MlDsaKey`, checking
 that the seed and the expanded key, where both are present, belong
 together.
+
+### Writing post-quantum keys
+
+`to_pkcs8` writes a private key and `to_spki` a public one, as DER, for
+ML-DSA, ML-KEM and SLH-DSA alike; `pem_wrap` makes the PEM and
+`encrypt_private_key` encrypts the private key. ML-DSA and ML-KEM keys
+take a form: `"seed"`, which RFC 9881 and RFC 9935 recommend,
+`"expanded"` or `"both"` - or OpenSSL's names for them, `"seed-only"`,
+`"priv-only"` and `"seed-priv"`. A key imported expanded has no seed and
+can be written only expanded. An SLH-DSA key is written under the OID of
+the pre-hash it is bound to.
+
+```python
+import allcrypt
+
+key = allcrypt.MlDsaKey.generate("ML-DSA-65")
+pem = allcrypt.pem_wrap(key.to_pkcs8(), "PRIVATE KEY")
+assert allcrypt.private_key(pem.encode()).seed() == key.seed()
+assert len(key.to_pkcs8("both")) > len(key.to_pkcs8("expanded")) > len(key.to_pkcs8("seed"))
+
+spki = key.public_key().to_spki()
+assert allcrypt.MlDsaPublicKey.from_spki(spki).public_bytes() == key.public_bytes()
+
+kem = allcrypt.MlKemKey.generate("ML-KEM-768")
+sealed = allcrypt.encrypt_private_key(kem.to_pkcs8(), b"hunter2", "aes-256-cbc")
+assert allcrypt.private_key(sealed, b"hunter2").private_bytes() == kem.private_bytes()
+
+slh = allcrypt.SlhDsaKey.generate("SLH-DSA-SHAKE-128f")
+assert allcrypt.private_key(slh.to_pkcs8()).public_bytes() == slh.public_bytes()
+```
+
+What is written is what OpenSSL 3.5 writes for the same key in the same
+form, byte for byte, and what the IETF hackathon's four SLH-DSA
+implementations wrote: `pytests/test_pq_key_writing.py` writes their
+files again and compares. `scripts/check_pq_key_writing.py` has OpenSSL
+read, sign and decapsulate with keys written here.
 
 ### The randomness and the internal interfaces
 

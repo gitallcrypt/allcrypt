@@ -26,10 +26,10 @@ description and test vectors.
 
 ## What is in it
 
-- **Block ciphers** - AES, Anubis, ARIA, Blowfish, Camellia, CAST5, CAST-256, DES and 3DES,
-  GOST 28147-89, IDEA, Kalyna, Khazad, Kuznyechik, Magma, MARS, Noekeon, RC2, RC5, RC6, Rijndael
-  at every block size, SEED, Serpent, SHACAL-2, SM4,
-  TEA, Twofish, XTEA - in the modes each one's block size allows: ECB,
+- **Block ciphers** - AES, Anubis, ARIA, Blowfish, Camellia, CAST5, CAST-256, DES and 3DES, FEAL,
+  GOST 28147-89, HIGHT, IDEA, Kalyna, KASUMI, Khazad, Kuznyechik, LEA, LOKI97, Magma, MARS, MISTY1, Noekeon, PRESENT, RC2, RC5, RC6, Rijndael
+  at every block size, SAFER K and SK, SAFER+, SEED, Serpent, SHACAL-1 and SHACAL-2, Simon, Skipjack, SM4, Speck, Square,
+  TEA, Threefish, 3-Way, Twofish, XTEA - in the modes each one's block size allows: ECB,
   CBC, PCBC, CFB, OFB, CTR, ciphertext stealing, XTS, LRW, GCM, CCM,
   EAX, OCB, MGM and key wrap.
 - **Stream ciphers** - ChaCha20 and XChaCha20, Salsa20 and XSalsa20, RC4,

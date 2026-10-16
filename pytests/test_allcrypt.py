@@ -524,19 +524,28 @@ def test_catalogue_entries_all_work():
     # loop in `test_name_enums.py`.
     for name in allcrypt.block_ciphers_available:
         sizes = []
-        for length in (5, 8, 16, 24, 32, 56, 64):
+        for length in (5, 8, 10, 12, 16, 24, 32, 56, 64, 128):
             try:
                 sizes.append(allcrypt.Cipher(name, bytes(length)).block_size)
             except allcrypt.CryptoError:
                 pass
         assert sizes, f"{name} constructs at no key length"
-        # Rijndael and Kalyna are the families named by block size, and
-        # SHACAL-2's block is SHA-256's 256 bit state; every other cipher
-        # is a 64 or 128 bit block.
+        # Rijndael, Kalyna, Threefish, Simon and Speck are the families
+        # named by block size, SHACAL-2's block is SHA-256's 256 bit
+        # state, SHACAL-1's SHA-1's 160 bit one and 3-Way's is 96 bits;
+        # every other cipher is a 64 or 128 bit block.
         if name.startswith(("rijndael-", "kalyna-")):
             allowed = {int(name.split("-")[1]) // 8}
+        elif name.startswith("threefish"):
+            allowed = {int(name[len("threefish"):]) // 8}
         elif name == "shacal2":
             allowed = {32}
+        elif name == "shacal1":
+            allowed = {20}
+        elif name.startswith(("speck", "simon")):
+            allowed = {int(name[5:]) // 8}
+        elif name == "threeway":
+            allowed = {12}
         else:
             allowed = {8, 16}
         assert set(sizes) <= allowed, f"{name} reports {set(sizes)}"

@@ -34,6 +34,16 @@ encrypted with no passphrase given is refused by name, because "this
 needs a password" and "this is not a private key" send the reader in
 completely different directions.
 
+## Writing
+
+The post-quantum keys are written here, since the classical ones
+have writers everywhere and these, so far, do not: `write_pkcs8` puts an
+already encoded private key under an OID with absent parameters, as RFC
+9881, RFC 9935 and RFC 9909 all say, version 0 and no public key - which
+is what OpenSSL 3.5 writes - and `pq_private_key` encodes ML-DSA's and
+ML-KEM's CHOICE in whichever of its three forms is asked for. The
+`api` key types call them.
+
 ## What is not here
 
 **Key agreement between the two halves.** `parse` returns what the file
@@ -83,6 +93,22 @@ pub enum PrivateKey {
     /// Whichever form arrived, the key has been checked for consistency
     /// before it gets here - see `ml_dsa_private_key`.
     MlDsa { parameter_set: &'static str, seed: Option<Vec<u8>>, expanded: Vec<u8> },
+    /// An ML-KEM key, RFC 9935. `parameter_set` is FIPS 203's name;
+    /// `expanded` is the decapsulation key, always present (computed from
+    /// the seed when the file carried only that); `seed` is the 64 byte
+    /// `d || z` when the file carried it.
+    ///
+    /// Checked for consistency before it gets here - see
+    /// `ml_kem_private_key`.
+    MlKem { parameter_set: &'static str, seed: Option<Vec<u8>>, expanded: Vec<u8> },
+    /// An SLH-DSA key, RFC 9909: FIPS 205's parameter set, the pre-hash
+    /// a HashSLH-DSA OID fixes (`None` for pure), and the private key as
+    /// FIPS 205 defines it, `SK.seed || SK.prf || PK.seed || PK.root`.
+    ///
+    /// Only its length is checked: whether `PK.root` is the root the
+    /// seeds give costs a key generation, seconds at the `s` sets, and
+    /// `api::SlhDsaKey::recompute_public` is how to ask.
+    SlhDsa { parameter_set: &'static str, pre_hash: Option<&'static str>, private: Vec<u8> },
     /// A DSA key: the group, checked for structure, and `x`. From PKCS#8
     /// (RFC 5208 with RFC 3279's Dss-Parms) or OpenSSL's traditional
     /// `DSA PRIVATE KEY`, whose stored `y` is checked against `g^x`.
@@ -103,8 +129,10 @@ impl core::fmt::Debug for PrivateKey {
             PrivateKey::Ec { curve, .. } => write!(f, "PrivateKey(EC {})", curve),
             PrivateKey::Eddsa { curve, .. } => write!(f, "PrivateKey(EdDSA {})", curve),
             PrivateKey::Xdh { curve, .. } => write!(f, "PrivateKey(XDH {})", curve),
-            PrivateKey::MlDsa { parameter_set, .. } =>
+            PrivateKey::MlDsa { parameter_set, .. } | PrivateKey::MlKem { parameter_set, .. } =>
                 write!(f, "PrivateKey({})", parameter_set),
+            PrivateKey::SlhDsa { parameter_set, pre_hash, .. } =>
+                write!(f, "PrivateKey({})", crate::x509::slh_dsa_name(parameter_set, *pre_hash)),
             PrivateKey::Dsa { p, .. } =>
                 write!(f, "PrivateKey(DSA {} bits)", p.bit_len()),
         }
@@ -121,6 +149,8 @@ impl PrivateKey {
             PrivateKey::Xdh { curve: "x25519", .. } => "X25519",
             PrivateKey::Xdh { .. } => "X448",
             PrivateKey::MlDsa { parameter_set, .. } => parameter_set,
+            PrivateKey::MlKem { parameter_set, .. } => parameter_set,
+            PrivateKey::SlhDsa { parameter_set, .. } => parameter_set,
             PrivateKey::Dsa { .. } => "DSA",
         }
     }
@@ -367,9 +397,31 @@ pub(crate) fn pkcs8(data: &[u8]) -> Result<PrivateKey, String> {
                  parameters (RFC 9881 section 2).", parameter_set));
         }
         ml_dsa_private_key(parameter_set, inner)
+    } else if let Some(parameter_set) = crate::x509::ml_kem_parameter_set(bytes) {
+        if parameters.is_some() {
+            return Err(format!(
+                "An {} private key must have absent AlgorithmIdentifier \
+                 parameters (RFC 9935 section 3).", parameter_set));
+        }
+        ml_kem_private_key(parameter_set, inner)
+    } else if let Some((parameter_set, pre_hash)) = crate::x509::slh_dsa_parameter_set(bytes) {
+        // RFC 9909 section 7: the privateKey OCTET STRING *is* FIPS 205's
+        // key - no CHOICE and no second OCTET STRING, unlike ML-DSA's and
+        // RFC 8410's.
+        let name = crate::x509::slh_dsa_name(parameter_set, pre_hash);
+        if parameters.is_some() {
+            return Err(format!("An {name} private key must have absent AlgorithmIdentifier \
+                                parameters (RFC 9909 section 3)."));
+        }
+        let expected = crate::pq::slh_dsa::parameters(parameter_set)?.secret_key_len();
+        if inner.len() != expected {
+            return Err(format!("An {name} private key is {expected} bytes; got {}.",
+                               inner.len()));
+        }
+        Ok(PrivateKey::SlhDsa { parameter_set, pre_hash, private: inner.to_vec() })
     } else {
-        Err(format!("PKCS#8 algorithm {} is not RSA, EC, EdDSA, X25519, X448, ML-DSA or \
-                     DSA.", oid))
+        Err(format!("PKCS#8 algorithm {} is not RSA, EC, EdDSA, X25519, X448, ML-DSA, ML-KEM, \
+                     SLH-DSA or DSA.", oid))
     }
 }
 
@@ -481,6 +533,80 @@ fn ml_dsa_private_key(parameter_set: &'static str, inner: &[u8])
             ml_dsa::public_from_private(parameters, expanded).map_err(|reason| format!(
                 "This {} expanded private key is inconsistent: {}", parameter_set, reason))?;
             Ok(PrivateKey::MlDsa { parameter_set, seed: None, expanded: expanded.to_vec() })
+        }
+        (None, None) => unreachable!("every arm above reads one or both"),
+    }
+}
+
+/// RFC 9935 section 6's `ML-KEM-*-PrivateKey`, the same CHOICE as
+/// ML-DSA's with a 64 byte seed, `d || z`:
+///
+/// ```text
+/// seed        [0] IMPLICIT OCTET STRING (SIZE (64))      -- 0x80
+/// expandedKey OCTET STRING                               -- 0x04
+/// both        SEQUENCE { seed OCTET STRING, expandedKey OCTET STRING }
+/// ```
+///
+/// **Every form is checked, because each can lie** (section 8). `both`
+/// is regenerated from the seed and compared, which is the only check
+/// that sees a `z` other than the key's: it is used only on rejection.
+/// An expanded key alone goes through `ml_kem::check_expanded` - the
+/// hash check, the modulus check on the `ek` inside it, and a pairwise
+/// consistency test, without which a key whose secret part was altered
+/// decapsulates everything to the rejection secret and says nothing.
+/// Appendix C.4 has four such keys, and all four are refused.
+fn ml_kem_private_key(parameter_set: &'static str, inner: &[u8])
+                      -> Result<PrivateKey, String> {
+    use crate::pq::ml_kem;
+    let parameters = ml_kem::parameters(parameter_set)?;
+    let expanded_len = parameters.decapsulation_key_len();
+    let mut reader = Reader::new(inner);
+    let (seed, expanded) = match reader.peek_tag() {
+        Some(t) if t == Tag::context(0, false) =>
+            (Some(reader.read_tagged(Tag::context(0, false))?), None),
+        Some(t) if t == Tag::universal(tag::OCTET_STRING) =>
+            (None, Some(reader.read_octet_string()?)),
+        Some(t) if t == Tag::sequence() => {
+            let mut both = reader.read_sequence()?;
+            let seed = both.read_octet_string()?;
+            let expanded = both.read_octet_string()?;
+            both.finish()?;
+            (Some(seed), Some(expanded))
+        }
+        _ => return Err(format!(
+            "An {} private key is a [0] seed, an OCTET STRING or a SEQUENCE \
+             of both (RFC 9935 section 6).", parameter_set)),
+    };
+    reader.finish()?;
+
+    if let Some(seed) = seed {
+        if seed.len() != 64 {
+            return Err(format!("An {} seed is 64 bytes, d and z; got {}.", parameter_set,
+                               seed.len()));
+        }
+    }
+    if let Some(expanded) = expanded {
+        if expanded.len() != expanded_len {
+            return Err(format!("An {} expanded private key is {} bytes; got {}.",
+                               parameter_set, expanded_len, expanded.len()));
+        }
+    }
+    match (seed, expanded) {
+        (Some(seed), expanded) => {
+            let (_, derived) = ml_kem::key_gen_internal(parameters, &seed[..32], &seed[32..])?;
+            if let Some(expanded) = expanded {
+                if derived != expanded {
+                    return Err(format!(
+                        "This {} private key's seed and expanded key do not \
+                         belong together (RFC 9935 section 8).", parameter_set));
+                }
+            }
+            Ok(PrivateKey::MlKem { parameter_set, seed: Some(seed.to_vec()), expanded: derived })
+        }
+        (None, Some(expanded)) => {
+            ml_kem::check_expanded(parameters, expanded).map_err(|reason| format!(
+                "This {} expanded private key is inconsistent: {}", parameter_set, reason))?;
+            Ok(PrivateKey::MlKem { parameter_set, seed: None, expanded: expanded.to_vec() })
         }
         (None, None) => unreachable!("every arm above reads one or both"),
     }
@@ -635,7 +761,9 @@ fn named_curve(parameters: &[u8]) -> Result<&'static str, String> {
         b if b == oids::SECP384R1 => Ok("P-384"),
         b if b == oids::SECP521R1 => Ok("P-521"),
         b if b == oids::SECP256K1 => Ok("secp256k1"),
-        _ => Err(format!(
+        // And a curve a caller registered, which a certificate on it
+        // could already be read with and a private key on it could not.
+        b => crate::registry::curve_named_by_der(b).ok_or_else(|| format!(
             "The curve {} is not one this library computes on.", oid)),
     }
 }
@@ -643,6 +771,69 @@ fn named_curve(parameters: &[u8]) -> Result<&'static str, String> {
 /// The tag module is used for nothing else here; naming it keeps the
 /// import honest rather than pulling in a wildcard.
 const _: u32 = tag::SEQUENCE;
+
+/// Which of the three forms of RFC 9881's and RFC 9935's private key
+/// CHOICE to write: the seed alone, which both RECOMMEND; the expanded key
+/// alone, for readers that cannot expand a seed; or both, which lets a
+/// reader check one against the other. OpenSSL calls them `seed-only`,
+/// `priv-only` and `seed-priv`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PrivateKeyForm {
+    Seed,
+    Expanded,
+    Both,
+}
+
+impl PrivateKeyForm {
+    /// `seed`, `expanded` or `both`, or OpenSSL's `seed-only`,
+    /// `priv-only` and `seed-priv`.
+    pub fn from_name(name: &str) -> Result<PrivateKeyForm, String> {
+        match name.to_ascii_lowercase().as_str() {
+            "seed" | "seed-only" => Ok(PrivateKeyForm::Seed),
+            "expanded" | "priv-only" => Ok(PrivateKeyForm::Expanded),
+            "both" | "seed-priv" => Ok(PrivateKeyForm::Both),
+            _ => Err(format!("{name:?} is not a private key form: seed, expanded or both \
+                              (OpenSSL's seed-only, priv-only and seed-priv).")),
+        }
+    }
+}
+
+/// A OneAsymmetricKey (RFC 5958) - PKCS#8 - with version 0, `oid` and
+/// absent parameters, and `private_key` as the privateKey OCTET STRING's
+/// contents.
+pub fn write_pkcs8(oid: &[u8], private_key: &[u8]) -> Vec<u8> {
+    let mut writer = crate::asn1::Writer::new();
+    writer.write_sequence(|w| {
+        w.write_u32(0);
+        w.write_sequence(|w| w.write_oid(oid));
+        w.write_octet_string(private_key);
+    });
+    writer.finish()
+}
+
+/// ML-DSA's or ML-KEM's private key CHOICE (RFC 9881 and RFC 9935 section
+/// 6) in `form`: `[0] IMPLICIT` seed, the expanded key in an OCTET
+/// STRING, or a SEQUENCE of the two. `name` is for the error when the
+/// seed is asked for and there is none.
+pub fn pq_private_key(name: &str, form: PrivateKeyForm, seed: Option<&[u8]>, expanded: &[u8])
+                      -> Result<Vec<u8>, String> {
+    let mut writer = crate::asn1::Writer::new();
+    let seed = || seed.ok_or_else(|| format!(
+        "This {name} key has no seed - it was imported expanded - so it can be written \
+         only in the expanded form."));
+    match form {
+        PrivateKeyForm::Seed => writer.write_tlv(Tag::context(0, false), seed()?),
+        PrivateKeyForm::Expanded => writer.write_octet_string(expanded),
+        PrivateKeyForm::Both => {
+            let seed = seed()?;
+            writer.write_sequence(|w| {
+                w.write_octet_string(seed);
+                w.write_octet_string(expanded);
+            });
+        }
+    }
+    Ok(writer.finish())
+}
 
 #[cfg(test)]
 mod tests {

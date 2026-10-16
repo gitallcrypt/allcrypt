@@ -40,7 +40,17 @@
  * It writes the vector file's MGM, OMAC and KExp15 sections to stdout
  * in the same `[section]` / `Name = hex` form as the rest, and exits
  * non-zero with a message on stderr if anything it asked for was not
- * there. **Nothing in the test gate builds or runs this.** It is a
+ * there.
+ *
+ * `--curve KEY.pem` instead prints the domain parameters of the curve a
+ * GOST private key is on, as the engine holds them in memory: the
+ * parameter set's OID, then `p`, `a`, `b`, `q`, the generator's `x` and
+ * `y`, and the cofactor, in hex. `scripts/capture_gost_transcripts.py`
+ * asks it for the curve of a key on a parameter set this library does
+ * not carry, so that the test which reads the capture can register that
+ * curve from the engine's own numbers.
+ *
+ * **Nothing in the test gate builds or runs this.** It is a
  * development tool, like `scripts/check_live.py`; what ships is the
  * vector file it helped write.
  */
@@ -62,6 +72,9 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/objects.h>
+#include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/pem.h>
 
 static ENGINE *gost;
 
@@ -450,6 +463,71 @@ static void tlstree_row(tlstree_fn tlstree, const char *cipher_name,
     put_hex("Out", out, sizeof out);
 }
 
+/* --------------------------------------------------------------- curve */
+
+static void put_bignum(const char *label, const BIGNUM *value)
+{
+    char *hex = BN_bn2hex(value);
+    if (hex == NULL)
+        die("BN_bn2hex");
+    printf("%s = %s\n", label, hex);
+    OPENSSL_free(hex);
+}
+
+/* The curve a key is on, as the engine built it from its own table.
+ * Read from the group the key carries rather than from the table, so
+ * what is printed is what the engine computed with. */
+static void report_curve(const char *path)
+{
+    FILE *file = fopen(path, "r");
+    if (file == NULL)
+        die("cannot open the key");
+    EVP_PKEY *key = PEM_read_PrivateKey(file, NULL, NULL, NULL);
+    fclose(file);
+    if (key == NULL)
+        die("PEM_read_PrivateKey");
+    const EC_KEY *ec = EVP_PKEY_get0(key);
+    if (ec == NULL)
+        die("the key is not one the engine holds as an EC_KEY");
+    const EC_GROUP *group = EC_KEY_get0_group(ec);
+    if (group == NULL)
+        die("the key has no group");
+
+    BN_CTX *ctx = BN_CTX_new();
+    BIGNUM *p = BN_new(), *a = BN_new(), *b = BN_new();
+    BIGNUM *x = BN_new(), *y = BN_new(), *h = BN_new();
+    if (ctx == NULL || p == NULL || a == NULL || b == NULL || x == NULL
+        || y == NULL || h == NULL)
+        die("out of memory");
+    if (EC_GROUP_get_curve(group, p, a, b, ctx) != 1)
+        die("EC_GROUP_get_curve");
+    if (EC_POINT_get_affine_coordinates(group, EC_GROUP_get0_generator(group),
+                                        x, y, ctx) != 1)
+        die("EC_POINT_get_affine_coordinates");
+    if (EC_GROUP_get_cofactor(group, h, ctx) != 1)
+        die("EC_GROUP_get_cofactor");
+
+    char oid[128];
+    int nid = EC_GROUP_get_curve_name(group);
+    if (nid == NID_undef
+        || OBJ_obj2txt(oid, sizeof oid, OBJ_nid2obj(nid), 1) <= 0)
+        die("the group has no parameter set OID");
+
+    printf("oid = %s\n", oid);
+    put_bignum("p", p);
+    put_bignum("a", a);
+    put_bignum("b", b);
+    put_bignum("q", EC_GROUP_get0_order(group));
+    put_bignum("x", x);
+    put_bignum("y", y);
+    put_bignum("h", h);
+
+    BN_free(p); BN_free(a); BN_free(b);
+    BN_free(x); BN_free(y); BN_free(h);
+    BN_CTX_free(ctx);
+    EVP_PKEY_free(key);
+}
+
 /* ---------------------------------------------------------------- main */
 
 int main(int argc, char **argv)
@@ -479,8 +557,14 @@ int main(int argc, char **argv)
         ENGINE_free(gost);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "--curve") == 0) {
+        report_curve(argv[2]);
+        ENGINE_finish(gost);
+        ENGINE_free(gost);
+        return 0;
+    }
     if (argc != 1)
-        die("usage: gost_engine_probe [--lengths]");
+        die("usage: gost_engine_probe [--lengths | --curve KEY.pem]");
 
     check_the_macs_are_the_ciphers_own();
 
