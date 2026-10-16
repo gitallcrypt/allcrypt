@@ -2013,6 +2013,31 @@ assert_eq!(any.update(b"pieces of one stream")?, data);
 assert!(any.seek(0).is_err());
 ```
 
+Rabbit (RFC 4503), HC-128, HC-256 and SOSEMANUK are the eSTREAM
+portfolio's software ciphers, HC-256 its larger sibling: `rabbit` takes
+a 16 byte key and an 8 byte IV or none, `hc128` 16 bytes of each,
+`hc256` 32 of each, and `sosemanuk` a key of 1 to 32 bytes and a 16
+byte IV, the IV as the nonce. Key, IV and keystream are bytes with each
+32 bit word little endian, as the eSTREAM submissions have them; RFC
+4503 prints Rabbit's as big-endian numbers, so its first `S[0]`, `B1 57
+54 F0 .. F7 02`, is the first block here reversed. None has a counter,
+so none seeks. Rabbit and SOSEMANUK are constant time; HC-128 and
+HC-256 index their tables by the state, which is the design.
+
+```rust
+use allcrypt::api::AnyStreamCipher;
+use allcrypt::stream_ciphers::rabbit::Rabbit;
+
+let mut block = [0u8; 16];
+Rabbit::new(&[0; 16], &[])?.apply_keystream(&mut block);
+assert_eq!(block, [0x02, 0xF7, 0x4A, 0x1C, 0x26, 0x45, 0x6B, 0xF5, 0xEC, 0xD6, 0xA5, 0x36, 0xF0, 0x54, 0x57, 0xB1]);
+
+let mut sosemanuk = AnyStreamCipher::new("sosemanuk", &[0xA7, 0xC0, 0x83, 0xFE, 0xB7],
+                                         &[0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])?;
+assert_eq!(sosemanuk.update(&[0; 16])?, [0xFE, 0x81, 0xD2, 0x16, 0x2C, 0x9A, 0x10, 0x0D, 0x04, 0x89, 0x5C, 0x45, 0x4A, 0x77, 0x51, 0x5B]);
+assert!(sosemanuk.seek(0).is_err());
+```
+
 Office XOR obfuscation (`stream_ciphers::office_xor`, [MS-OFFCRYPTO]
 method 1) is the `.xls` password protection before RC4. The password
 gives a 16-byte array that the data is XORed with, repeating, each byte
@@ -2135,6 +2160,25 @@ mac.update(&[0u8; 14]);
 assert_eq!(mac.digest(), vec![0xd8, 0xb5, 0xa9, 0x78, 0xdf, 0x19, 0x17, 0xcb]);
 ```
 
+### PMAC
+
+`mac::pmac::Pmac` is Black and Rogaway's parallelizable MAC over a block
+cipher with a 64 or 128 bit block; `api::pmac` is the one-call form. Every
+block but the last is encrypted on its own under a position-dependent
+offset, so they go through `encrypt_blocks` in batches. The value is
+Rogaway's PMAC-AES-128-3B:
+
+```rust
+use allcrypt::mac::Pmac;
+use allcrypt::Mac;
+
+let key: Vec<u8> = (0u8..16).collect();
+let mut mac = Pmac::with_key("aes", &key)?;
+mac.update(&[0, 1, 2]);
+assert_eq!(allcrypt::to_hex(&mac.digest()), "256BA5193C1B991B4DF0C51F388A9E27");
+assert_eq!(allcrypt::api::pmac("aes", &key, &[0, 1, 2])?, mac.digest());
+```
+
 ### UMAC
 
 `mac::umac::Umac` is RFC 4418: a 16 byte AES key, a tag of 4, 8, 12 or
@@ -2153,6 +2197,48 @@ It is one-shot: the whole message is in hand, as it is for an SSH
 packet. In SSH it is reached by name - `umac-64@openssh.com`,
 `umac-128@openssh.com` and their `-etm` forms - with the packet sequence
 number as the nonce.
+
+### VMAC
+
+`mac::vmac::Vmac` is VMAC (draft-krovetz-vmac-01): VHASH and a pad from
+a nonce, over a 128 bit block cipher - AES unless another is named - with
+an 8 or 16 byte tag. The nonce is 1 to 16 bytes, 16 only with its top bit
+clear, and **must not repeat** under one key. The value is the draft's
+own:
+
+```rust
+use allcrypt::mac::vmac::Vmac;
+
+let mut vmac = Vmac::new("aes", b"abcdefghijklmnop", 8)?;
+let tag = vmac.tag(b"abc", b"bcdefghi")?;
+assert_eq!(tag, [0x2D, 0x37, 0x6C, 0xF5, 0xB1, 0x81, 0x3C, 0xE5]);
+assert_eq!(allcrypt::api::vmac("aes", b"abcdefghijklmnop", b"bcdefghi", b"abc", 8)?, tag);
+```
+
+Like UMAC it is one-shot. For a 64 bit tag, nonces that differ only in
+their last bit share one block cipher call and take its two halves.
+
+### Chaskey
+
+`mac::chaskey::Chaskey` is Chaskey under a 16 byte key with the round
+count named: 8, the original; 12, Chaskey-12, which its designers
+proposed in 2015; or 16, Chaskey-LTS. The tag is 16 bytes, and the paper
+shortens one by keeping its first bytes. It streams, and `digest` leaves
+the state as it was. The value is go-chaskey's first published tag:
+
+```rust
+use allcrypt::api;
+use allcrypt::mac::chaskey::Chaskey;
+use allcrypt::Mac;
+
+let key = [0x33, 0x34, 0x3D, 0x83, 0x9F, 0x38, 0x9F, 0x00, 0x4F, 0xE6, 0x98, 0x23, 0x39, 0xCF, 0x7A, 0x41];
+assert_eq!(api::chaskey(&key, b"", 8)?, [0xE5, 0x8F, 0x2E, 0x79, 0xAA, 0x87, 0xCE, 0x75, 0xB5, 0x50, 0x14, 0x2D, 0x0B, 0x97, 0x91, 0x11]);
+
+let mut mac = Chaskey::new(&key, 12)?;
+mac.update(b"ab");
+mac.update(b"c");
+assert_eq!(mac.digest(), api::chaskey(&key, b"abc", 12)?);
+```
 
 ### SipHash
 

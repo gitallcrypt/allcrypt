@@ -159,11 +159,22 @@ fn test_facade_update_into() {
 fn stream_nonce(name: &str) -> Vec<u8> {
     match name {
         "rc4" | "zipcrypto" => vec![],
-        "salsa20" | "salsa12" | "salsa8" => iv(8),
+        "salsa20" | "salsa12" | "salsa8" | "rabbit" => iv(8),
+        "hc128" | "sosemanuk" => iv(16),
         "xchacha20" | "xsalsa20" => iv(24),
-        "strumok" => iv(32),
+        "strumok" | "hc256" => iv(32),
         _ => iv(12),
     }
+}
+
+/// A key the stream cipher takes: the first length, longest first, that
+/// constructs. Found by trying rather than tabulated, for the reason the
+/// block cipher loop in `test_catalogue_is_accurate` gives.
+fn stream_key(name: &str) -> Vec<u8> {
+    let length = [32usize, 16, 64, 24, 8, 1].into_iter()
+        .find(|&n| AnyStreamCipher::new(name, &key(n), &stream_nonce(name)).is_ok())
+        .unwrap_or_else(|| panic!("{name} constructs at no key length"));
+    key(length)
 }
 
 #[test]
@@ -275,7 +286,7 @@ fn test_hash_facade() {
 fn test_stream_cipher_facade() {
     for name in STREAM_CIPHERS {
         let nonce = stream_nonce(name);
-        let mut c = AnyStreamCipher::new(name, &key(32), &nonce).unwrap();
+        let mut c = AnyStreamCipher::new(name, &stream_key(name), &nonce).unwrap();
         let pt = data(500);
 
         // Streamed in pieces equals one call.
@@ -287,16 +298,16 @@ fn test_stream_cipher_facade() {
             i = e;
             step = step * 2 + 1;
         }
-        let mut c2 = AnyStreamCipher::new(name, &key(32), &nonce).unwrap();
+        let mut c2 = AnyStreamCipher::new(name, &stream_key(name), &nonce).unwrap();
         assert_eq!(streamed, c2.encrypt(&pt).unwrap(), "{} streaming", name);
 
         // Round trip.
-        let mut c3 = AnyStreamCipher::new(name, &key(32), &nonce).unwrap();
+        let mut c3 = AnyStreamCipher::new(name, &stream_key(name), &nonce).unwrap();
         assert_eq!(c3.decrypt(&streamed).unwrap(), pt, "{} roundtrip", name);
 
         // `update` is the keystream, for the ciphers that have one, and
         // refused for the one that does not.
-        let mut c4 = AnyStreamCipher::new(name, &key(32), &nonce).unwrap();
+        let mut c4 = AnyStreamCipher::new(name, &stream_key(name), &nonce).unwrap();
         if c4.is_keystream() {
             assert_eq!(c4.update(&pt).unwrap(), streamed, "{} update", name);
         } else {
@@ -304,7 +315,8 @@ fn test_stream_cipher_facade() {
         }
     }
     let keystreamless: Vec<&&str> = STREAM_CIPHERS.iter()
-        .filter(|n| !AnyStreamCipher::new(n, &key(32), &stream_nonce(n)).unwrap().is_keystream())
+        .filter(|n| !AnyStreamCipher::new(n, &stream_key(n), &stream_nonce(n)).unwrap()
+                .is_keystream())
         .collect();
     assert_eq!(keystreamless, [&"zipcrypto"]);
 
@@ -364,7 +376,21 @@ fn test_catalogue_is_accurate() {
     }
     for name in STREAM_CIPHERS {
         let nonce = stream_nonce(name);
-        assert!(AnyStreamCipher::new(name, &key(32), &nonce).is_ok(), "{} should construct", name);
+        assert!(AnyStreamCipher::new(name, &stream_key(name), &nonce).is_ok(),
+                "{} should construct", name);
+    }
+    // A wrong key or nonce length is an `Err`, never a panic, for the
+    // reason the block cipher loop above gives.
+    for name in STREAM_CIPHERS {
+        for key_length in [0usize, 1, 5, 8, 15, 16, 17, 24, 31, 32, 33, 64, 100] {
+            for nonce_length in [0usize, 1, 4, 7, 8, 9, 12, 15, 16, 17, 24, 31, 32, 33] {
+                let attempt = std::panic::catch_unwind(|| {
+                    AnyStreamCipher::new(name, &key(key_length), &iv(nonce_length)).is_ok()
+                });
+                assert!(attempt.is_ok(), "{name} panicked on a {key_length} byte key and a \
+                                          {nonce_length} byte nonce instead of returning an error");
+            }
+        }
     }
     for name in MODES {
         assert!(Mode::from_name(name).is_ok(), "{} should resolve", name);

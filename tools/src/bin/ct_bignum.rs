@@ -721,6 +721,47 @@ fn run(case: &str) {
             publish_bytes(&z);
         }
 
+        "rabbit_keystream" => {
+            // A secret key, then an IV, and 300 bytes of keystream: the
+            // key and IV setups and whole and partial blocks.
+            let key = secret_bytes32(AES_KEY);
+            for iv in [&[][..], &[0x5a; 8][..]] {
+                let mut rabbit =
+                    allcrypt::stream_ciphers::rabbit::Rabbit::new(&key[..16], iv).unwrap();
+                let mut z = vec![0u8; 300];
+                rabbit.apply_keystream(&mut z);
+                publish_bytes(&z);
+            }
+        }
+
+        "sosemanuk_keystream" => {
+            // A secret 32 byte key, a public IV, and 300 bytes of
+            // keystream: Serpent24, the register's folds by alpha and its
+            // inverse, the multiplexer and the output S-box.
+            let key = secret_bytes32(AES_KEY);
+            let mut sosemanuk =
+                allcrypt::stream_ciphers::sosemanuk::Sosemanuk::new(&key[..32], &[0x5a; 16]).unwrap();
+            let mut z = vec![0u8; 300];
+            sosemanuk.apply_keystream(&mut z);
+            publish_bytes(&z);
+        }
+
+        "hc128_keystream" => {
+            let key = secret_bytes32(AES_KEY);
+            let mut hc = allcrypt::stream_ciphers::hc::Hc128::new(&key[..16], &[0x5a; 16]).unwrap();
+            let mut z = vec![0u8; 300];
+            hc.apply_keystream(&mut z);
+            publish_bytes(&z);
+        }
+
+        "hc256_keystream" => {
+            let key = secret_bytes32(AES_KEY);
+            let mut hc = allcrypt::stream_ciphers::hc::Hc256::new(&key[..32], &[0x5a; 32]).unwrap();
+            let mut z = vec![0u8; 300];
+            hc.apply_keystream(&mut z);
+            publish_bytes(&z);
+        }
+
         "dstu9041_public_key" => {
             // e·P on both curves under a secret e: the range check by
             // constant-time comparison, the fixed window with its masked
@@ -849,6 +890,51 @@ fn run(case: &str) {
             let opened = api::aead_decrypt("aes-ocb", &key[..16], &[7u8; 12], b"header",
                                            &ciphertext, &tag).unwrap();
             publish_bytes(&opened);
+        }
+
+        "cmac_noekeon" => {
+            // CMAC over a cipher whose single block is constant time, so
+            // that what is measured is CMAC: L under a secret key, the
+            // two subkeys by doubling, the chain, a padded final block.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let tag = api::cmac("noekeon", &key[..16], &data[..37]).unwrap();
+            publish_bytes(&tag);
+        }
+
+        "aes_pmac" => {
+            // A secret key and a secret message, across two batches and a
+            // short final block: L, L(-1), the offsets, the sum and the tag.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let message: Vec<u8> = data.iter().cycle().take(16 * 40 + 5).copied().collect();
+            let tag = api::pmac("aes", &key[..16], &message).unwrap();
+            publish_bytes(&tag);
+        }
+
+        "aes_vmac" => {
+            // A secret key and a secret message over three NH segments and
+            // a partial one, both tags: the KDF, NH, the polynomial mod
+            // 2^127 - 1, L3 mod 2^64 - 257 and the pad.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let message: Vec<u8> = data.iter().cycle().take(3 * 128 + 21).copied().collect();
+            for tag_len in [8, 16] {
+                let tag = api::vmac("aes", &key[..16], b"nonce", &message, tag_len).unwrap();
+                publish_bytes(&tag);
+            }
+        }
+
+        "chaskey" => {
+            // A secret key and a secret message of three blocks and a
+            // short one, at every round count: the doublings, the chain
+            // and the padded final block.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            let message: Vec<u8> = data.iter().cycle().take(3 * 16 + 5).copied().collect();
+            for rounds in [8, 12, 16] {
+                publish_bytes(&api::chaskey(&key[..16], &message, rounds).unwrap());
+            }
         }
 
         "aes_mgm_open" => {
@@ -1094,6 +1180,10 @@ const CASES: &[&str] = &[
     "noekeon_blocks",
     "shacal2_blocks",
     "strumok_keystream",
+    "rabbit_keystream",
+    "sosemanuk_keystream",
+    "hc128_keystream",
+    "hc256_keystream",
     "dstu9041_public_key",
     "aes_gcm_seal",
     "aes_xts",
@@ -1105,6 +1195,10 @@ const CASES: &[&str] = &[
     "secretbox_open",
     "box_beforenm",
     "aes_ocb_open",
+    "cmac_noekeon",
+    "aes_pmac",
+    "aes_vmac",
+    "chaskey",
     "aes_mgm_open",
     "aes_lrw",
     "aes_ctr_acpkm",

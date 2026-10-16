@@ -758,6 +758,15 @@ fn cmac<'py>(py: Python<'py>, cipher: &str, key: Bytes, data: Bytes)
     Ok(PyBytes::new(py, &out))
 }
 
+/// PMAC (Black and Rogaway) over a 64 or 128 bit block cipher: the
+/// whole message at once.
+#[pyfunction]
+fn pmac<'py>(py: Python<'py>, cipher: &str, key: Bytes, data: Bytes)
+             -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::pmac(cipher, &key, &data)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
 /// CBC-MAC. `iv` defaults to zeros; `zero_pad` pads to whole blocks with
 /// zeros first, and without it the data must be whole blocks.
 #[pyfunction]
@@ -852,6 +861,18 @@ impl Hmac {
 fn umac<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, data: Bytes, tag_len: usize)
              -> PyResult<Bound<'py, PyBytes>> {
     let out = py.allow_threads(|| api::umac(&key, &nonce, &data, tag_len)).map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// VMAC (draft-krovetz-vmac-01), one shot, over a 128 bit block cipher -
+/// AES unless `cipher` says otherwise. `nonce` is 1 to 16 bytes, never
+/// repeated under one key; `tag_len` 8 or 16.
+#[pyfunction]
+#[pyo3(signature = (key, nonce, data, tag_len = 8, cipher = "aes"))]
+fn vmac<'py>(py: Python<'py>, key: Bytes, nonce: Bytes, data: Bytes, tag_len: usize,
+             cipher: &str) -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::vmac(cipher, &key, &nonce, &data, tag_len))
+        .map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -3313,6 +3334,16 @@ fn halfsiphash<'py>(py: Python<'py>, key: Bytes, data: Bytes, c_rounds: usize,
                     d_rounds: usize, size: usize) -> PyResult<Bound<'py, PyBytes>> {
     let out = py.allow_threads(|| api::halfsiphash(&key, &data, c_rounds, d_rounds, size))
         .map_err(err)?;
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Chaskey with the round count the caller names - 8, 12 (Chaskey-12)
+/// or 16 (Chaskey-LTS) - giving the 16 byte tag.
+#[pyfunction]
+#[pyo3(signature = (key, data, *, rounds))]
+fn chaskey<'py>(py: Python<'py>, key: Bytes, data: Bytes, rounds: usize)
+                -> PyResult<Bound<'py, PyBytes>> {
+    let out = py.allow_threads(|| api::chaskey(&key, &data, rounds)).map_err(err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -6865,6 +6896,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pad_pkcs7, m)?)?;
     m.add_function(wrap_pyfunction!(unpad_pkcs7, m)?)?;
     m.add_function(wrap_pyfunction!(cmac, m)?)?;
+    m.add_function(wrap_pyfunction!(pmac, m)?)?;
     m.add_function(wrap_pyfunction!(kbkdf_counter, m)?)?;
     m.add_function(wrap_pyfunction!(kbkdf_feedback, m)?)?;
     m.add_function(wrap_pyfunction!(concat_kdf, m)?)?;
@@ -6917,6 +6949,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(blake3, m)?)?;
     m.add_function(wrap_pyfunction!(blake3_xof, m)?)?;
     m.add_function(wrap_pyfunction!(umac, m)?)?;
+    m.add_function(wrap_pyfunction!(vmac, m)?)?;
     m.add_function(wrap_pyfunction!(pbkdf2_hmac, m)?)?;
     m.add_function(wrap_pyfunction!(shake, m)?)?;
     m.add_function(wrap_pyfunction!(scrypt, m)?)?;
@@ -7000,6 +7033,7 @@ fn allcrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(joaat_update, m)?)?;
     m.add_function(wrap_pyfunction!(joaat_finish, m)?)?;
     m.add_function(wrap_pyfunction!(halfsiphash, m)?)?;
+    m.add_function(wrap_pyfunction!(chaskey, m)?)?;
     m.add_function(wrap_pyfunction!(poly1305_verify, m)?)?;
     m.add_function(wrap_pyfunction!(x448_generate, m)?)?;
     m.add_function(wrap_pyfunction!(x448_public_key, m)?)?;

@@ -1444,11 +1444,16 @@ assert rc4.update(bytes(16)).hex() == "b2396305f03dc027ccc3524a0a1118a8"
 ```
 
 Names are `chacha20`, `chacha12`, `chacha8`, `xchacha20`, `salsa20`,
-`salsa12`, `salsa8`, `xsalsa20`, `strumok`, `rc4` and `zipcrypto`
-(`allcrypt.stream_ciphers_available`). ChaCha takes an 8 or 12 byte nonce,
-XChaCha20 and XSalsa20 a 24 byte one, Salsa20 an 8 byte one; RC4 and ZipCrypto take
-none. Strumok (DSTU 8845:2019) takes a 32 or 64 byte key and its 32 byte
-IV as the nonce, each 64-bit word of key, IV and keystream little endian.
+`salsa12`, `salsa8`, `xsalsa20`, `strumok`, `rabbit`, `hc128`, `hc256`,
+`sosemanuk`, `rc4` and `zipcrypto` (`allcrypt.stream_ciphers_available`).
+ChaCha takes an 8 or 12 byte nonce, XChaCha20 and XSalsa20 a 24 byte one,
+Salsa20 an 8 byte one; RC4 and ZipCrypto take none. Strumok (DSTU
+8845:2019) takes a 32 or 64 byte key and its 32 byte IV as the nonce,
+each 64-bit word of key, IV and keystream little endian. The eSTREAM
+ciphers take their IV as the nonce: Rabbit a 16 byte key and an 8 byte
+IV or none, HC-128 16 bytes of each, HC-256 32 of each, SOSEMANUK a key
+of 1 to 32 bytes and a 16 byte IV, every 32 bit word little endian - so
+RFC 4503's Rabbit vectors, printed as numbers, read here reversed.
 Keystream position carries across calls.
 
 `update` XORs the keystream onto the data, which encrypts and decrypts
@@ -1488,8 +1493,8 @@ assert c.update(bytes(50)) == whole[150:]
 
 With a 12 byte nonce ChaCha's counter is 32 bits, and the stream ends
 after block 2^32 - 1 rather than wrapping onto block 0. With an 8 byte
-nonce, and for Salsa20, it is 64 bits. RC4, Strumok and ZipCrypto have
-no counter, so they refuse both.
+nonce, and for Salsa20, it is 64 bits. RC4, Strumok, the eSTREAM
+ciphers and ZipCrypto have no counter, so they refuse both.
 
 ### The pieces underneath
 
@@ -1553,6 +1558,21 @@ assert len(allcrypt.siphash(key, b"abc", size=16)) == 16
 assert len(allcrypt.halfsiphash(key[:8], b"abc")) == 4
 ```
 
+## Chaskey
+
+A MAC for 32 bit microcontrollers under a 16 byte key, 16 bytes out.
+`rounds` has no default, because each count is a different MAC: 8 is
+the original Chaskey, 12 Chaskey-12 and 16 Chaskey-LTS. The value is
+go-chaskey's first published tag:
+
+```python
+import allcrypt
+
+key = bytes.fromhex("33343d839f389f004fe6982339cf7a41")
+assert allcrypt.chaskey(key, b"", rounds=8).hex() == "e58f2e79aa87ce75b550142d0b979111"
+assert allcrypt.chaskey(key, b"", rounds=12) != allcrypt.chaskey(key, b"", rounds=8)
+```
+
 ## Office XOR obfuscation
 
 The binary Office formats' oldest password protection, which an `.xls`
@@ -1590,6 +1610,16 @@ streamed.update(b"second")
 assert streamed.digest_size == 64
 ```
 
+`allcrypt.pmac` is Black and Rogaway's PMAC over a 64 or 128 bit block
+cipher, one shot; the value is Rogaway's PMAC-AES-128-3B:
+
+```python
+import allcrypt
+
+tag = allcrypt.pmac("aes", bytes(range(16)), b"\x00\x01\x02")
+assert tag.hex() == "256ba5193c1b991b4df0c51f388a9e27"
+```
+
 `allcrypt.umac` is RFC 4418's UMAC, one shot. The nonce must never
 repeat under one key; the value is the RFC's own example:
 
@@ -1598,6 +1628,17 @@ import allcrypt
 
 tag = allcrypt.umac(b"abcdefghijklmnop", b"bcdefghi", b"abc" * 500, tag_len=8)
 assert tag.hex() == "d4cf26ddefd5c01a"
+```
+
+`allcrypt.vmac` is VMAC (draft-krovetz-vmac-01), one shot, over AES
+unless `cipher` names another 128 bit block cipher; the nonce must never
+repeat under one key, and the value is the draft's own:
+
+```python
+import allcrypt
+
+tag = allcrypt.vmac(b"abcdefghijklmnop", b"bcdefghi", b"abc", tag_len=16)
+assert tag.hex() == "4ee815a06a1d71edd36fc75d51188a42"
 ```
 
 The key derivation functions return bytes directly:
@@ -3988,7 +4029,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.6.1"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.7.0"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and

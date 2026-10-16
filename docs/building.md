@@ -912,6 +912,24 @@ $ python3 scripts/make_rc6_vectors.py           # rewrites vectors/rc6.vec
 $ python3 scripts/make_cast256_vectors.py       # rewrites vectors/cast256.vec
 ```
 
+**PMAC, VMAC and Chaskey**: `scripts/witness/macs` builds libtomcrypt 1.18.2
+twice - with `-DLTC_NO_FAST`, the witness, and as it is, whose PMAC is
+wrong over 64 bit ciphers and is kept to show it - miscreant.go's PMAC,
+RustCrypto's `pmac` 0.7.1 from crates checked against `crates.sha256`,
+offline, Crypto++ 8.9.0's VMAC, and the Linux kernel's `crypto/vmac.c`
+(v6.6, checked against its SHA-256), whose VMAC core is compiled
+unchanged in user space over OpenSSL's AES. For Chaskey it builds
+dgryski/go-chaskey twice, its amd64 assembly and its portable Go,
+sacundim's chaskey crate from its git commit, with its two dependencies
+from `crates.sha256`, and volexity's pure Python chaskey-lts.
+
+```console
+$ sh scripts/witness/macs/build.sh               # builds /opt/macwitness
+$ python3 scripts/make_pmac_vectors.py           # rewrites vectors/pmac.vec
+$ python3 scripts/make_vmac_vectors.py           # rewrites vectors/vmac.vec
+$ python3 scripts/make_chaskey_vectors.py        # rewrites vectors/chaskey.vec
+```
+
 **CMAC and EAX over the wide blocks**: `scripts/witness/widemac` builds
 Crypto++ 8.9.0 and a minimized Botan 3.6.1 from pinned commits, each
 under a small driver, and a Java driver over Bouncy Castle's jar; it
@@ -1388,6 +1406,22 @@ the reference's `main.c`.
 ```console
 $ scripts/witness/kupyna/build.sh               # builds /opt/kupyna
 $ python3 scripts/make_kupyna_vectors.py        # rewrites vectors/kupyna.vec
+```
+
+**Rabbit, HC-128, HC-256 and SOSEMANUK**: `scripts/witness/estream`
+builds the eSTREAM submissions as SUPERCOP carries them (a sparse clone
+of floodyberry/supercop's `crypto_stream` and `include` at a pinned
+commit), every version of each under one ECRYPT driver; Crypto++ 8.9.0;
+libtomcrypt's develop branch, whose Rabbit and SOSEMANUK are in no
+release; Bouncy Castle 1.77 from the system's jar; and RustCrypto's
+rabbit 0.5.0 and hc-256 0.6.0 from crates checked against
+`crates.sha256`, offline. Its self-test requires every published row to
+be reproduced, and Crypto++'s HC-256 to still disagree with the
+submissions.
+
+```console
+$ sh scripts/witness/estream/build.sh            # builds /opt/estreamwitness
+$ python3 scripts/make_estream_vectors.py        # rewrites vectors/estream.vec
 ```
 
 **Strumok** has two implementations that share no code: UAPKI's

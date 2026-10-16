@@ -162,6 +162,9 @@ for a tag. Key wrap authenticates without one. Both are in
 |Salsa20 (20, 12 and 8 rounds)|✓|spec reference|
 |XSalsa20 and HSalsa20 ("Extending the Salsa20 nonce")|✓|NaCl's own values; libsodium 1.0.18 and golang.org/x/crypto, `vectors/nacl.vec`|
 |Strumok (DSTU 8845:2019), 256 and 512-bit keys, `strumok`|✓|the standard's eight Annex D examples, UAPKI's self-test and the conformance letter's two; UAPKI's `dstu8845.c` and uacrypt's `hazmat/strumok.rs` agree on every single-bit key and IV at both key lengths, 30 random keystreams and two of 1 MiB; `vectors/strumok.vec`. Not constant time: table lookups, as in the standard|
+|Rabbit (RFC 4503), with and without an IV, `rabbit`|✓|RFC 4503's vectors and its debugging states, read out of `rfcs/rfc4503.txt` with erratum 2504 applied; the eSTREAM submission, Crypto++ 8.9.0, libtomcrypt and RustCrypto agree: `vectors/estream.vec`|
+|HC-128 and HC-256, `hc128`, `hc256`|✓|HC-128: the eSTREAM submission's three versions, Crypto++ 8.9.0 and Bouncy Castle 1.77 agree; HC-256: the submission's two versions, Bouncy Castle and RustCrypto 0.6.0 agree, with the designer's three vectors - Crypto++'s HC-256 reads key and IV words rotated and is not a witness for it: `vectors/estream.vec`|
+|SOSEMANUK, keys of 1 to 32 bytes, `sosemanuk`|✓|the submission's own vector; the submission, Crypto++ 8.9.0 and libtomcrypt agree at every key length: `vectors/estream.vec`|
 |ZipCrypto (PKWARE traditional ZIP encryption)|✓|✓|
 |WEP (RC4 with the per-frame IV; IEEE 802.11)|✓|spec reference|
 |TKIP per-packet key mixing and frame encryption (WPA; IEEE 802.11)|✓|spec reference; frames against python-cryptography's RC4 and zlib's CRC-32|
@@ -178,9 +181,12 @@ for a tag. Key wrap authenticates without one. Both are in
 |CMAC / OMAC (SP 800-38B, RFC 4493)|✓|✓|
 |CMAC over 160 to 1024 bit blocks: Threefish, SHACAL-2, Kalyna-256 and -512, Rijndael-160 to -256|✓|Botan 3.6.1, Crypto++ 8.9.0 and Bouncy Castle 1.77, each where it has the cipher - the Rijndaels Bouncy Castle alone - and Botan's published CMAC(Threefish-512) test: `vectors/cmac_eax_wide.vec`. The field polynomials are computed from their rule and checked against all three libraries' tables|
 |CBC-MAC (ISO/IEC 9797-1 algorithm 1; DES-MAC, X9.9)|✓|✓|
+|PMAC (Black and Rogaway), over 64 and 128 bit block ciphers|✓|Rogaway's fourteen published PMAC-AES tests; libtomcrypt 1.18.2, RustCrypto's `pmac` 0.7.1 and miscreant.go agree over AES, DES, 3DES and Blowfish, each where it has the cipher: `vectors/pmac.vec`|
 |Poly1305|✓|✓|
 |UMAC (RFC 4418), 32 to 128 bit tags|✓|✓|
+|VMAC (draft-krovetz-vmac-01), 64 and 128 bit tags, over any 128 bit block cipher|✓|the draft's own vectors, read out of `rfcs/draft-krovetz-vmac-01.txt`; Crypto++ 8.9.0 over AES, Twofish, Serpent, Camellia, ARIA, SEED and SM4, and the Linux kernel's `vmac64` over AES-128 with the 64 bit tag, agree: `vectors/vmac.vec`|
 |SipHash at any round counts, 64 and 128 bit; HalfSipHash, 32 and 64 bit|✓|the designers' 256 vectors (`rfcs/siphash-vectors.h`); their reference, OpenSSL 3.5 and Bouncy Castle 1.77 agree on SipHash at 1-3, 2-4, 3-5 and 4-8 over 46 messages and two keys; HalfSipHash at the same counts from the reference alone: `vectors/siphash.vec`|
+|Chaskey, Chaskey-12 and Chaskey-LTS (8, 12 and 16 rounds)|✓|the 64 tags at each of 8 and 12 rounds that dgryski/go-chaskey publishes; go-chaskey's assembly and portable builds and sacundim's Rust crate agree at 8 and 12 rounds and sacundim's crate alone gives the 16 round MAC, whose permutation volexity's Chaskey-LTS block cipher and sacundim's agree on, the FELIX block among the rows: `vectors/chaskey.vec`|
 |Michael (TKIP's MIC; IEEE 802.11)|✓|spec reference; the Linux kernel's vectors|
 |ACPKM re-keying, CTR-ACPKM (RFC 8645)|✓|✓|
 

@@ -69,8 +69,8 @@ pub fn block_cipher_name(name: &str) -> Option<&'static str> {
     BLOCK_CIPHERS.iter().copied().find(|known| *known == canonical)
 }
 pub const STREAM_CIPHERS: &[&str] =
-    &["chacha20", "chacha12", "chacha8", "xchacha20", "rc4", "salsa20", "salsa12", "salsa8",
-      "strumok", "xsalsa20", "zipcrypto"];
+    &["chacha20", "chacha12", "chacha8", "xchacha20", "hc128", "hc256", "rabbit", "rc4",
+      "salsa20", "salsa12", "salsa8", "sosemanuk", "strumok", "xsalsa20", "zipcrypto"];
 pub const MODES: &[&str] = &["ecb", "cbc", "pcbc", "cfb", "ofb", "ctr", "ctr-le",
                               "cbc-cs1", "cbc-cs2", "cbc-cs3"];
 /// Authenticated modes, which are not in `MODES` because they do not
@@ -1552,8 +1552,17 @@ impl CipherStream {
 
 pub enum AnyStreamCipher {
     Chacha(Chacha),
+    /// HC-128: a 16 byte key and a 16 byte IV as the nonce.
+    Hc128(crate::stream_ciphers::hc::Hc128),
+    /// HC-256: a 32 byte key and a 32 byte IV as the nonce.
+    Hc256(crate::stream_ciphers::hc::Hc256),
+    /// Rabbit: a 16 byte key and an 8 byte IV as the nonce, or an empty
+    /// nonce for none.
+    Rabbit(crate::stream_ciphers::rabbit::Rabbit),
     Rc4(RC4),
     Salsa20(crate::stream_ciphers::salsa20::Salsa20),
+    /// SOSEMANUK: a key of 1 to 32 bytes and a 16 byte IV as the nonce.
+    Sosemanuk(crate::stream_ciphers::sosemanuk::Sosemanuk),
     /// Strumok, DSTU 8845:2019: a 32 or 64 byte key, the 32 byte IV as
     /// the nonce.
     Strumok(crate::stream_ciphers::strumok::Strumok),
@@ -1605,6 +1614,14 @@ impl AnyStreamCipher {
             }
             "strumok" => Ok(AnyStreamCipher::Strumok(
                 crate::stream_ciphers::strumok::Strumok::new(key, nonce)?)),
+            "rabbit" => Ok(AnyStreamCipher::Rabbit(
+                crate::stream_ciphers::rabbit::Rabbit::new(key, nonce)?)),
+            "hc128" | "hc-128" => Ok(AnyStreamCipher::Hc128(
+                crate::stream_ciphers::hc::Hc128::new(key, nonce)?)),
+            "hc256" | "hc-256" => Ok(AnyStreamCipher::Hc256(
+                crate::stream_ciphers::hc::Hc256::new(key, nonce)?)),
+            "sosemanuk" => Ok(AnyStreamCipher::Sosemanuk(
+                crate::stream_ciphers::sosemanuk::Sosemanuk::new(key, nonce)?)),
             // The key is the password, of any length, the empty one
             // included.
             "zipcrypto" => {
@@ -1676,6 +1693,22 @@ impl AnyStreamCipher {
                 c.crypt(input, out);
                 Ok(())
             }
+            AnyStreamCipher::Rabbit(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::Hc128(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::Hc256(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::Sosemanuk(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
             AnyStreamCipher::ZipCrypto(_) => Err(
                 "ZipCrypto has no keystream independent of the data.".to_string()),
         }
@@ -1708,10 +1741,12 @@ impl AnyStreamCipher {
                 Ok(())
             }
             AnyStreamCipher::Rc4(_) | AnyStreamCipher::Strumok(_)
-            | AnyStreamCipher::ZipCrypto(_) => Err(
-                "RC4, Strumok and ZipCrypto cannot seek: their state is everything \
-                 that came before, not a counter. Start a new one and discard up \
-                 to the offset.".to_string()),
+            | AnyStreamCipher::ZipCrypto(_) | AnyStreamCipher::Rabbit(_)
+            | AnyStreamCipher::Hc128(_) | AnyStreamCipher::Hc256(_)
+            | AnyStreamCipher::Sosemanuk(_) => Err(
+                "Only ChaCha and Salsa20 can seek. The other stream ciphers' state is \
+                 everything that came before, not a counter: start a new one and \
+                 discard up to the offset.".to_string()),
         }
     }
 
@@ -1804,6 +1839,15 @@ pub fn halfsiphash(key: &[u8], data: &[u8], c_rounds: usize, d_rounds: usize, si
     let key = key.try_into().map_err(|_| format!("A HalfSipHash key is 8 bytes, not {}.",
                                                    key.len()))?;
     crate::mac::siphash::halfsiphash(key, data, c_rounds, d_rounds, size)
+}
+
+/// Chaskey of `data` under a 16 byte key with `rounds` rounds: 8, 12
+/// (Chaskey-12) or 16 (Chaskey-LTS). The tag is 16 bytes.
+///
+/// # Errors
+/// A key that is not 16 bytes, or another round count.
+pub fn chaskey(key: &[u8], data: &[u8], rounds: usize) -> Result<Vec<u8>, String> {
+    crate::mac::chaskey::chaskey(key, data, rounds)
 }
 
 /// Check a Poly1305 tag in constant time. `false` for a tag of the
@@ -2507,6 +2551,15 @@ pub fn hmac(hash_name: &str, key: &[u8], message: &[u8]) -> Result<Vec<u8>, Stri
 pub fn umac(key: &[u8], nonce: &[u8], message: &[u8], tag_len: usize)
             -> Result<Vec<u8>, String> {
     crate::mac::umac::Umac::new(key, tag_len)?.tag(message, nonce)
+}
+
+/// One shot VMAC (draft-krovetz-vmac-01) over a 128 bit block cipher,
+/// AES by default: a nonce of 1 to 16 bytes that must never repeat
+/// under one key (16 only with its top bit clear), and a tag of 8 or 16
+/// bytes.
+pub fn vmac(cipher_name: &str, key: &[u8], nonce: &[u8], message: &[u8], tag_len: usize)
+            -> Result<Vec<u8>, String> {
+    crate::mac::vmac::vmac(cipher_name, key, nonce, message, tag_len)
 }
 
 /// HKDF (RFC 5869), extract then expand. An empty `salt` means the all-zero
@@ -8001,6 +8054,12 @@ pub fn ml_dsa_parameter_sets() -> Vec<&'static str> {
 /// CMAC (SP 800-38B) over any block cipher here, the whole message at once.
 pub fn cmac(cipher_name: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     crate::mac::cmac::cmac(cipher_name, key, data)
+}
+
+/// PMAC (Black and Rogaway) over a block cipher with a 64 or 128 bit
+/// block: the tag, one block, over the whole message.
+pub fn pmac(cipher_name: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    crate::mac::pmac::pmac(cipher_name, key, data)
 }
 
 // ------------------------------------------------------ GOST primitives ---

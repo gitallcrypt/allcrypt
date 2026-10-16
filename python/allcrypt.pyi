@@ -2308,6 +2308,13 @@ def umac(key: BytesLike, nonce: BytesLike, data: BytesLike, tag_len: int = 8) ->
     16. SSH's ``umac-64@openssh.com`` is ``tag_len=8`` with the packet
     sequence number as an 8 byte big-endian nonce."""
 
+def vmac(key: BytesLike, nonce: BytesLike, data: BytesLike, tag_len: int = 8,
+         cipher: str = "aes") -> bytes:
+    """VMAC (draft-krovetz-vmac-01) over a 128 bit block cipher, AES unless
+    ``cipher`` names another. ``nonce`` is 1 to 16 bytes (16 only with its
+    top bit clear) and must never repeat under one key; ``tag_len`` is 8 or
+    16."""
+
 def hkdf(ikm: BytesLike, length: int, salt: Optional[BytesLike] = None,
          info: Optional[BytesLike] = None, digestmod: str = "sha256") -> bytes:
     """HKDF (RFC 5869). ``salt=None`` uses the all-zero salt from the RFC."""
@@ -2644,8 +2651,14 @@ def halfsiphash(key: BytesLike, data: BytesLike, *, c_rounds: int = 2, d_rounds:
     """HalfSipHash, SipHash on 32 bit words, under an 8 byte key: 4 or 8
     bytes."""
 
+def chaskey(key: BytesLike, data: BytesLike, *, rounds: int) -> bytes:
+    """Chaskey under a 16 byte key, the 16 byte tag. ``rounds`` is 8
+    (Chaskey), 12 (Chaskey-12) or 16 (Chaskey-LTS), and has no default."""
+
 def cmac(cipher: str, key: BytesLike, data: BytesLike) -> bytes:
     """CMAC (SP 800-38B, RFC 4493) over any block cipher here."""
+def pmac(cipher: str, key: BytesLike, data: BytesLike) -> bytes:
+    """PMAC (Black and Rogaway) over a 64 or 128 bit block cipher."""
 def cbc_mac(cipher: str, key: BytesLike, data: BytesLike, iv: Optional[BytesLike] = None,
             zero_pad: bool = False) -> bytes:
     """CBC-MAC (ISO/IEC 9797-1 algorithm 1). Forgeable over messages of

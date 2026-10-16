@@ -550,16 +550,26 @@ def test_catalogue_entries_all_work():
             allowed = {8, 16}
         assert set(sizes) <= allowed, f"{name} reports {set(sizes)}"
     # The nonce each stream cipher takes, which they do not agree on:
-    # RC4 has none, Salsa20 wants exactly 8 bytes, ChaCha 12, XChaCha20 and
-    # XSalsa20 24, Strumok's IV 32. Spelled out rather than assumed, so a cipher
-    # with a different nonce fails here loudly instead of being handed the
-    # wrong length.
+    # RC4 has none, Salsa20 and Rabbit want exactly 8 bytes, ChaCha 12,
+    # HC-128 and SOSEMANUK 16, XChaCha20 and XSalsa20 24, Strumok's IV and
+    # HC-256's 32. Spelled out rather than assumed, so a cipher with a
+    # different nonce fails here loudly instead of being handed the wrong
+    # length. The key is found by trying lengths, longest first.
     nonce_length = {"rc4": None, "zipcrypto": None, "salsa20": 8, "salsa12": 8, "salsa8": 8,
-                    "strumok": 32, "xchacha20": 24, "xsalsa20": 24}
+                    "rabbit": 8, "hc128": 16, "sosemanuk": 16, "strumok": 32, "hc256": 32,
+                    "xchacha20": 24, "xsalsa20": 24}
     for name in allcrypt.stream_ciphers_available:
         size = nonce_length.get(name, 12)
         nonce = None if size is None else bytes(size)
-        assert allcrypt.StreamCipher(name, bytes(32), nonce).encrypt(b"x")
+        built = []
+        for key_length in (32, 16, 64, 24, 8):
+            try:
+                built.append(allcrypt.StreamCipher(name, bytes(key_length), nonce))
+                break
+            except allcrypt.CryptoError:
+                pass
+        assert built, f"{name} constructs at no key length"
+        assert built[0].encrypt(b"x")
     for mode in allcrypt.modes_available:
         c = allcrypt.Cipher("aes", KEY128)
         assert c.encryptor(mode, iv_for(mode)).mode == mode

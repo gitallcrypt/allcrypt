@@ -468,6 +468,27 @@ CASES = [
      "S-boxes and MDS column as eight tables. Documented in "
      "stream_ciphers/strumok.rs and docs/pitfalls.md; the additions, "
      "shifts and the register around them must stay out of the list."),
+    ("rabbit_keystream", CLEAN,
+     "Rabbit under a secret key, without and with an IV: the key and IV "
+     "setups and the keystream are additions, a 32 by 32 bit square, "
+     "rotations and XORs, the counter's carry taken from the wide sum."),
+    ("sosemanuk_keystream", CLEAN,
+     "SOSEMANUK under a secret 32 byte key: Serpent24 through Serpent's "
+     "bitsliced S-boxes, the register's folds by alpha and its inverse as "
+     "masked XORs of a word per bit rather than the reference's 256-word "
+     "tables, the multiplexer as a mask, and the output S-box."),
+    ("hc128_keystream", {"allcrypt::stream_ciphers::hc::h128"},
+     "HC-128 under a secret key: the initialisation's 1024 steps and the "
+     "keystream. h reads two words of the other table at indices from the "
+     "state, which is the design - every implementation does - and is "
+     "documented in stream_ciphers/hc.rs and docs/pitfalls.md. The update, "
+     "whose indices are the public step counter, must stay out of the list."),
+    ("hc256_keystream", {"allcrypt::stream_ciphers::hc::h256",
+                         "allcrypt::stream_ciphers::hc::g256"},
+     "HC-256 under a secret key: the initialisation's 4096 steps and the "
+     "keystream. h reads four words of the other table and g one, at "
+     "indices from the state, which is the design; documented in "
+     "stream_ciphers/hc.rs and docs/pitfalls.md."),
     ("dstu9041_public_key", {"allcrypt::ec::dstu9041::Engine<_>::scalar"},
      "DSTU 9041's e·P on E256/1 and E512/1 under a secret e. The one site "
      "is the range check's verdict - 2 <= e <= n - 2, compared by "
@@ -522,6 +543,26 @@ CASES = [
      "the partial block's pad, the checksum and the tag. The one report is "
      "the verdict. The single blocks (L_*, Ktop, the pad, the tag) went "
      "through AES's one-block table path until this row measured them."),
+    ("cmac_noekeon", CLEAN,
+     "CMAC over Noekeon, whose one block is constant time, so the row "
+     "measures CMAC itself: L under a secret key, both subkeys by masked "
+     "doubling, the chain and a padded final block."),
+    ("aes_pmac", CLEAN,
+     "PMAC under a secret key over a secret message of forty blocks and a "
+     "short one: L and L(-1), the offsets, two batches, the sum and the "
+     "tag, every block on the bitsliced path."),
+    ("aes_vmac", {"allcrypt::mac::vmac::Vmac::new"},
+     "VMAC under a secret key over a secret message of three NH segments and "
+     "a partial one, both tags: the key derivation, NH's products, the "
+     "polynomial mod 2^127 - 1 and L3 mod 2^64 - 257 with every carry and "
+     "reduction computed, and the pad. The reports are L3's key rejection, "
+     "which the draft defines as a branch on the key: a candidate half at or "
+     "above 2^64 - 257 is skipped, which happens with probability 2^-55, so "
+     "what it shows is that it almost never happened."),
+    ("chaskey", CLEAN,
+     "Chaskey at 8, 12 and 16 rounds under a secret key over a secret "
+     "message of three blocks and a short one: both doublings, whose carry "
+     "is folded in with a mask, the chain and the padded final block."),
     ("aes_mgm_open", {"allcrypt::block_ciphers::mgm::Mgm::decrypt"},
      "MGM opened under a secret key: Y_1 and Z_1, both counters, the H "
      "batches, the field multiplications and the tag. The one report is "

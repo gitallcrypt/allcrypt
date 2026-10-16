@@ -146,6 +146,10 @@ to be someone's CVE.**
 - [7zzzzzz. SHACAL-1](#7zzzzzz-shacal-1)
 - [7zzzzzzz. PRESENT](#7zzzzzzz-present)
 - [7zzzzzzzz. FEAL](#7zzzzzzzz-feal)
+- [7zzzzzzzzz. PMAC](#7zzzzzzzzz-pmac)
+- [7zzzzzzzzza. VMAC](#7zzzzzzzzza-vmac)
+- [7zzzzzzzzzb. Chaskey](#7zzzzzzzzzb-chaskey)
+- [7zzzzzzzzzc. Rabbit, HC-128, HC-256 and SOSEMANUK](#7zzzzzzzzzc-rabbit-hc-128-hc-256-and-sosemanuk)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -361,6 +365,7 @@ the route only where the mode has the blocks to fill it.
 | OCB, MGM, LRW, CTR-ACPKM | nothing | batches through `encrypt_blocks`, and so are the single blocks among them - OCB's `L_*`, `Ktop`, a partial block's pad and its tag; MGM's `Y_1`, `Z_1`, last `H` and tag; ACPKM's re-keying. Those took the table route until `ct_check.py` had rows for these modes |
 | MGM's counters and field | nothing | both counters start at a block enciphered under the key, so they are incremented through every byte rather than stopping where the carry does; the multiplier's bits and the reduction go through `bignum::ct::opaque`, because LLVM compiled the masks back into jumps |
 | GHASH | nothing | 64x64 carry-less products by integer multiplication with masked operands (BearSSL's `ghash_ctmul64`); see `ghash.rs` |
+| CMAC's subkey doubling | nothing | the polynomial is folded in under a mask through `bignum::ct::opaque`; written as a plain mask over a loop of bytes it compiled to a jump on the bit shifted out of `L`, which the `cmac_noekeon` row reports |
 | XTS tweak doubling | nothing | the reduction is folded in with a mask; it branched on the tweak's top bit, which is secret, before `ct_check.py` reported it |
 | XTS key-halves check | only whether they are equal | every byte is compared before the verdict; `==` on the slices stopped at the first difference |
 | tag comparison | nothing | fixed-length XOR accumulation, no early return |
@@ -11670,11 +11675,12 @@ vector compares the ciphertext XORed with the plaintext. Read as a
 Threefish answer it fails. The published tests here are Crypto++'s,
 which are Threefish's alone, and Skein3Fish is checked against them.
 
-### No AEAD at this width
+### EAX is the one AEAD at this width
 
-**Status: accepted.** CMAC, EAX, OCB and MGM here are defined over 64
-and 128 bit blocks only, so Threefish has the unauthenticated modes and
-none of the AEADs.
+**Status: accepted.** CMAC and EAX take Threefish's blocks, with the
+low-weight polynomials Botan, Crypto++ and Bouncy Castle use (7zzn), so
+`threefish256-eax` to `threefish1024-eax` are offered. OCB, GCM and MGM
+fix their fields at 64 and 128 bits and do not.
 
 ### It is constant time
 
@@ -11795,6 +11801,210 @@ so a reader that missed them would fail rather than pass on nothing.
 
 **Status: mitigated.** Byte additions, rotations by two and XORs, with no
 table and no branch on data.
+
+## 7zzzzzzzzz. PMAC
+
+`src/mac/pmac.rs`. Checked against libtomcrypt 1.18.2, RustCrypto's
+`pmac` 0.7.1 and miscreant.go, with Rogaway's fourteen published tests:
+`vectors/pmac.vec`.
+
+### The offsets are a Gray code
+
+**Status: mitigated.** Block `i`'s offset is the previous one XOR
+`L(ntz(i))`, where `ntz` counts trailing zero bits - not `i . L`. Both give
+a MAC that agrees with itself. The vectors run to 130 blocks, so offsets
+up to `L(7)` are used, and the tests feed them in pieces of every size.
+
+### The last block is not encrypted before it joins the sum, and the empty message is padded
+
+**Status: mitigated.** A whole final block is XORed in with `L(-1)`; a
+shorter one, the empty message included, is padded `10*`. Only the sum is
+encrypted. The published tests cover 0, 3, 16, 20, 32, 34 and 1000
+bytes.
+
+### libtomcrypt's default build gives other tags over 64 bit ciphers
+
+**Status: accepted.** libtomcrypt's `LTC_FAST` path in `pmac_process`, on
+by default on x86-64, takes 16 bytes as a block whatever the cipher's
+block is, so its PMAC over DES, 3DES or Blowfish differs from this one,
+from RustCrypto's and from its own `LTC_NO_FAST` build for any message
+over 16 bytes passed in one call. Tags from such a build do not verify
+here; the witness is built with `LTC_NO_FAST`, and its self-test checks
+that the default build still differs.
+
+### Only 64 and 128 bit blocks
+
+**Status: mitigated, by refusing.** PMAC's field is CMAC's, and a wider
+one exists here, but nothing else found computes PMAC over a wider block,
+so `Pmac::new` refuses one rather than offer a value nobody can check.
+
+### It is constant time
+
+**Status: mitigated.** Every encryption goes through `encrypt_blocks` -
+the independent blocks in batches, and `L` and the final sum one block at
+a time - so AES takes its bitsliced path, and `L(-1)` is computed with a
+mask through `bignum::ct::opaque`. `ct_check.py`'s `aes_pmac` row runs a
+forty-block message under a secret key.
+
+## 7zzzzzzzzza. VMAC
+
+`src/mac/vmac.rs`. Checked against the draft's own vectors, read out of
+`rfcs/draft-krovetz-vmac-01.txt`, Crypto++ 8.9.0 and the Linux kernel's
+`vmac64`: `vectors/vmac.vec`.
+
+### Four readings that agree with themselves
+
+**Status: mitigated.** The message is read as **little-endian** 64 bit
+words while every key, the pad and the tag are big-endian; the length
+term is in **bits** and taken mod 1024, so a message of whole 128 byte
+segments adds nothing; the empty message skips the first two layers and
+L2 is its key; and for a 64 bit tag the nonce's **last bit is an
+index** into the encrypted block, cleared before encrypting. Each wrong
+reading gives a VMAC that verifies its own tags. The vectors cover every
+nonce length with both last bits, messages either side of 16 and 128
+bytes and of several segments, and the draft's million-repetition
+message.
+
+### The nonce must not repeat, and a 16 byte one must start with a zero bit
+
+**Status: accepted.** VMAC is a Wegman-Carter MAC: two tags under one
+key and one nonce over different messages give away enough to forge, as
+the draft says. Nothing here can see a repeat; the nonce is the caller's
+to manage. The draft takes nonces shorter than the block, so a 16 byte
+nonce is accepted only with its top bit clear - what the kernel requires
+too. Crypto++ also takes one with the bit set, so that is the one input
+the two disagree on.
+
+### It is constant time, except where the draft branches on the key
+
+**Status: accepted.** NH's products, the polynomial mod 2^127 - 1 and L3
+mod 2^64 - 257 compute every carry and reduction rather than branching,
+and every encryption goes through `encrypt_blocks`. L3's key is drawn by
+rejection, as the draft defines it: a candidate half at or above
+2^64 - 257 is skipped, which happens with probability 2^-55, so the
+branch shows only that it almost never happened. `ct_check.py`'s
+`aes_vmac` row names that one site.
+
+## 7zzzzzzzzzb. Chaskey
+
+`src/mac/chaskey.rs`. Checked against go-chaskey's published tags,
+go-chaskey, sacundim's Rust crate and volexity's Chaskey-LTS block
+cipher: `vectors/chaskey.vec`.
+
+### Five readings that agree with themselves
+
+**Status: mitigated.** The round is HalfSipHash's with the rotations by
+7 and 13 the other way round; the key, the message and the tag are
+little-endian words, and so is the doubling that makes the two subkeys,
+with 0x87 folded into the bottom; a whole final block takes the first
+subkey and a short one - the empty message included - is padded with a
+0x01 byte and takes the second; that subkey is XORed in both before and
+after the last permutation; and the state starts as the key. Each wrong
+reading gives a MAC that verifies its own tags. The vectors cover every
+length either side of 16, 32, 48 and 64 bytes and longer ones, keys
+whose doublings do and do not carry, and the three round counts; a unit
+test holds the round apart from HalfSipHash's.
+
+### The round count is part of the name
+
+**Status: accepted.** Chaskey, Chaskey-12 and Chaskey-LTS differ only in
+how many rounds the permutation runs, 8, 12 or 16, and nothing in a tag
+says which made it. The Python function has no default for that reason;
+a caller names the variant.
+
+### Chaskey-LTS has one other MAC to agree with
+
+**Status: accepted.** Two implementations here compute the MAC at 8 and
+12 rounds, and only sacundim's crate at 16. What differs at 16 is the
+permutation's round count and nothing else, so the 16 round permutation
+is checked on its own against a second implementation that goes through
+no MAC - volexity's Chaskey-LTS block cipher, `pi(x ^ K) ^ K`, with the
+FELIX block it and sacundim's cipher both reproduce - while the mode
+around it is the one the 8 and 12 round rows check.
+
+### It is constant time
+
+**Status: mitigated.** The permutation is additions, rotations and XORs,
+and the doubling folds its carry in with a mask; the branches are on
+the message's length, which is public. `ct_check.py`'s `chaskey` row
+runs all three round counts under a secret key and reports nothing.
+
+## 7zzzzzzzzzc. Rabbit, HC-128, HC-256 and SOSEMANUK
+
+`src/stream_ciphers/rabbit.rs`, `hc.rs` and `sosemanuk.rs`. Checked
+against the eSTREAM submissions as SUPERCOP carries them, Crypto++
+8.9.0, libtomcrypt, Bouncy Castle 1.77 and RustCrypto, and Rabbit
+against RFC 4503's own text: `vectors/estream.vec`.
+
+### RFC 4503 prints Rabbit backwards, and one of its keys wrong
+
+**Status: mitigated.** The RFC writes keys, IVs and output as big-endian
+numbers; every implementation takes and gives bytes in the other order,
+so its `S[0]` for the zero key, `B1 57 .. F7 02`, is the keystream's
+first block reversed. Crypto++'s test file says the published vectors
+"arrived at the incorrect result" for that reason. The tests read the
+RFC's appendix and reverse each octet string. Appendix B's debugging
+states print their key as `.. 2E ED ..` where the key that produces
+them is `.. 2E 3D ..`, Appendix A's; that is verified erratum 2504, and
+the tests apply it to the one printed line, asserting the line is still
+there, and check that the printed key does not give the states.
+
+### Rabbit's carry and its two halves of setup
+
+**Status: mitigated.** The counters add as one 256 bit number whose
+carry out of the top word is kept for the next step - through the key
+setup, the IV setup and the keystream alike - and the key setup ends by
+XORing each counter with a state word. Both are silent when wrong, and
+RFC 4503's Appendix B prints the state after each part, which the tests
+compare word for word.
+
+### Rabbit without an IV must never reuse a key
+
+**Status: accepted.** An empty nonce skips the IV setup, as RFC 4503
+2.4 allows, and then the keystream depends on the key alone. Nothing
+here can see a key used twice.
+
+### HC-128 and HC-256 initialise differently
+
+**Status: mitigated.** HC-128's 1024 setup steps leave each step's
+output in place of the word it updated; HC-256's 4096 do not. HC-128's
+second-table step rotates left where its first rotates right, and
+HC-256's rotate right in both. The vectors run past 4096 and 8192
+bytes, where the tables have each been rewritten.
+
+### An HC-256 keystream from Crypto++ will not match
+
+**Status: accepted.** Crypto++ 8.9.0 reads each 32 bit key and IV word
+rotated by a byte rather than little endian, so its HC-256 agrees with
+the designer's three vectors - whose words have only their first byte
+set - and with nobody else's on any other key; its test file's 286
+further rows reproduce only under Crypto++ itself. RustCrypto's hc-256
+before 0.6.0 used the wrong table in half of its output function, so
+it was wrong from byte 4096 on. This library agrees with both eSTREAM
+submissions, Bouncy Castle and RustCrypto 0.6.0.
+
+### HC-128 and HC-256 are not constant time
+
+**Status: accepted.** Every step reads table words at indices taken
+from the secret state - `h`, and HC-256's `g` - which is the design and
+what every implementation does; a cache-timing observer learns about
+the state. The look-ups are kept to three functions, which
+`ct_check.py`'s `hc128_keystream` and `hc256_keystream` rows name as
+the only places they leak.
+
+### SOSEMANUK is constant time where its reference is not
+
+**Status: mitigated.** The reference implementation multiplies by `α`
+and `α^-1` through 256-word tables indexed by a byte of the secret
+register. Both products are linear in that byte, so here each is eight
+masked XORs of a precomputed word per bit; the multiplexer is a mask,
+and Serpent's S-boxes are the bitsliced normal forms. The
+`sosemanuk_keystream` row, like `rabbit_keystream`, reports nothing.
+
+### None of them seeks
+
+**Status: accepted.** Each state is everything that came before, not a
+counter, so `seek` refuses, as it does for RC4 and Strumok.
 
 ---
 

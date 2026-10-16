@@ -1,0 +1,11 @@
+[package]
+name = "stream-witness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rabbit = "=0.5.0"
+hc-256 = "=0.6.0"
+cipher = "=0.5.2"
+
+[workspace]

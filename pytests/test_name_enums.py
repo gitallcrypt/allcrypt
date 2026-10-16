@@ -129,6 +129,14 @@ def test_a_stream_cipher_enum_is_accepted_where_its_name_is():
     allcrypt.StreamCipher(allcrypt.StreamCipherName.CHACHA20, bytes(32), bytes(12))
 
 
+def _stream_constructs(name, key_length, nonce):
+    try:
+        allcrypt.StreamCipher(name, bytes(key_length), nonce)
+        return True
+    except allcrypt.CryptoError:
+        return False
+
+
 def _constructs(name, key_len):
     try:
         allcrypt.Aead(bytes(key_len), name)
@@ -184,6 +192,9 @@ def test_every_member_of_every_enum_actually_constructs():
             nonce = bytes(12)
         if name.value.startswith(("xchacha", "xsalsa")):
             nonce = bytes(24)
-        if name == allcrypt.StreamCipherName.STRUMOK:
+        if name in (allcrypt.StreamCipherName.STRUMOK, allcrypt.StreamCipherName.HC256):
             nonce = bytes(32)
-        allcrypt.StreamCipher(name, bytes(32), nonce)
+        if name in (allcrypt.StreamCipherName.HC128, allcrypt.StreamCipherName.SOSEMANUK):
+            nonce = bytes(16)
+        # And the key: the first length, longest first, that constructs.
+        assert any(_stream_constructs(name, n, nonce) for n in (32, 16)), name

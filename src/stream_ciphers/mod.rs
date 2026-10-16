@@ -2,9 +2,12 @@ pub mod chacha;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 mod chacha_simd;
 pub mod chacha20poly1305;
+pub mod hc;
 pub mod office_xor;
+pub mod rabbit;
 pub mod rc4;
 pub mod salsa20;
+pub mod sosemanuk;
 pub mod strumok;
 pub mod tkip;
 pub mod wep;

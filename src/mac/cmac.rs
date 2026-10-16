@@ -78,9 +78,12 @@ pub(crate) fn double(block: &mut [u8], rb: &[u8]) {
     block[last] <<= 1;
     // Branchless: `carry` is a bit of the cipher's output under the key,
     // and this is the one place in the construction where branching on it
-    // would leak. `carry.wrapping_neg()` is 0x00 or 0xff, and every byte
-    // of `rb` is masked whether it is zero or not.
-    let mask = carry.wrapping_neg();
+    // would leak. The mask is 0x00 or 0xff, and every byte of `rb` is
+    // masked whether it is zero or not. It goes through `opaque` because
+    // a mask is not enough: over a loop of bytes LLVM saw it was all or
+    // nothing and compiled a jump around the XORs, which `ct_check.py`'s
+    // `cmac_noekeon` row reports.
+    let mask = (crate::bignum::ct::opaque(u64::from(carry)) as u8).wrapping_neg();
     for (byte, low) in block.iter_mut().zip(rb) {
         *byte ^= low & mask;
     }

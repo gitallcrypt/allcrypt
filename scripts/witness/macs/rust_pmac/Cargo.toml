@@ -1,0 +1,14 @@
+[package]
+name = "pmac-witness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pmac = "=0.7.1"
+aes = "=0.8.4"
+des = "=0.8.1"
+blowfish = "=0.9.1"
+digest = "=0.10.7"
+cipher = "=0.4.4"
+
+[workspace]

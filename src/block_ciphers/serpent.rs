@@ -158,7 +158,7 @@ fn sbox_from_anf(forms: [u16; 4], x: &mut [u32; 4]) {
 
 /// Apply one S-box across four words, bitsliced: bit `i` of each of the
 /// four words forms one nibble, `x0` the low bit.
-fn apply_sbox(box_index: usize, x: &mut [u32; 4]) {
+pub(crate) fn apply_sbox(box_index: usize, x: &mut [u32; 4]) {
     match box_index {
         0 => sbox_from_anf(ANF[0], x),
         1 => sbox_from_anf(ANF[1], x),
@@ -208,7 +208,7 @@ fn slice_through(table: &[u8; 16], x: &mut [u32; 4]) {
 }
 
 /// The linear transform, applied after every round but the last.
-fn linear(x: &mut [u32; 4]) {
+pub(crate) fn linear(x: &mut [u32; 4]) {
     x[0] = x[0].rotate_left(13);
     x[2] = x[2].rotate_left(3);
     x[1] ^= x[0] ^ x[2];
@@ -240,52 +240,58 @@ pub struct Serpent {
     subkeys: [[u32; 4]; 33],
 }
 
+/// Serpent's thirty-three subkeys from a key of up to 32 bytes. Serpent
+/// takes 16, 24 or 32; SOSEMANUK, which uses the first 25, any length up
+/// to 32.
+pub(crate) fn key_schedule(key: &[u8]) -> [[u32; 4]; 33] {
+    // **A short key is padded with a single 1 bit, not with
+    // zeros.** The specification extends any key below 256 bits by
+    // appending `1` and then zeros, so a 128 bit key of all zeros
+    // is *not* the same as a 256 bit key of all zeros - and an
+    // implementation that zero-pads produces a cipher that agrees
+    // with itself and with nothing else. Only the multi-key-size
+    // vectors catch it.
+    let mut padded = key.to_vec();
+    if padded.len() < 32 {
+        padded.push(0x01);
+        padded.resize(32, 0);
+    }
+
+    let mut w = [0u32; 140];
+    for (i, word) in w.iter_mut().take(8).enumerate() {
+        *word = u32::from_le_bytes([padded[4 * i], padded[4 * i + 1],
+                                    padded[4 * i + 2], padded[4 * i + 3]]);
+    }
+    // w[8..140] are the real schedule; the first eight are the key
+    // itself and are consumed by the recurrence.
+    for i in 8..140 {
+        let value = w[i - 8] ^ w[i - 5] ^ w[i - 3] ^ w[i - 1]
+                    ^ PHI ^ (i as u32 - 8);
+        w[i] = value.rotate_left(11);
+    }
+
+    let mut subkeys = [[0u32; 4]; 33];
+    for (round, subkey) in subkeys.iter_mut().enumerate() {
+        // The S-box used for round `i`'s subkey is `(3 - i) mod 8`,
+        // counting *backwards* - not the same index as the round
+        // uses on the data.
+        let which = (3 + 8 - (round % 8)) % 8;
+        let mut block = [w[8 + 4 * round], w[9 + 4 * round],
+                         w[10 + 4 * round], w[11 + 4 * round]];
+        apply_sbox(which, &mut block);
+        *subkey = block;
+    }
+
+    subkeys
+}
+
 impl Serpent {
     pub fn new(key: &[u8]) -> Result<Serpent, String> {
         if !matches!(key.len(), 16 | 24 | 32) {
             return Err(format!(
                 "A Serpent key is 16, 24 or 32 bytes; this one is {}.", key.len()));
         }
-
-        // **A short key is padded with a single 1 bit, not with
-        // zeros.** The specification extends any key below 256 bits by
-        // appending `1` and then zeros, so a 128 bit key of all zeros
-        // is *not* the same as a 256 bit key of all zeros - and an
-        // implementation that zero-pads produces a cipher that agrees
-        // with itself and with nothing else. Only the multi-key-size
-        // vectors catch it.
-        let mut padded = key.to_vec();
-        if padded.len() < 32 {
-            padded.push(0x01);
-            padded.resize(32, 0);
-        }
-
-        let mut w = [0u32; 140];
-        for (i, word) in w.iter_mut().take(8).enumerate() {
-            *word = u32::from_le_bytes([padded[4 * i], padded[4 * i + 1],
-                                        padded[4 * i + 2], padded[4 * i + 3]]);
-        }
-        // w[8..140] are the real schedule; the first eight are the key
-        // itself and are consumed by the recurrence.
-        for i in 8..140 {
-            let value = w[i - 8] ^ w[i - 5] ^ w[i - 3] ^ w[i - 1]
-                        ^ PHI ^ (i as u32 - 8);
-            w[i] = value.rotate_left(11);
-        }
-
-        let mut subkeys = [[0u32; 4]; 33];
-        for (round, subkey) in subkeys.iter_mut().enumerate() {
-            // The S-box used for round `i`'s subkey is `(3 - i) mod 8`,
-            // counting *backwards* - not the same index as the round
-            // uses on the data.
-            let which = (3 + 8 - (round % 8)) % 8;
-            let mut block = [w[8 + 4 * round], w[9 + 4 * round],
-                             w[10 + 4 * round], w[11 + 4 * round]];
-            apply_sbox(which, &mut block);
-            *subkey = block;
-        }
-
-        Ok(Serpent { subkeys })
+        Ok(Serpent { subkeys: key_schedule(key) })
     }
 
     fn encrypt_block(&self, input: &[u8], result: &mut Vec<u8>) {
