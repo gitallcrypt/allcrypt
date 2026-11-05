@@ -4777,8 +4777,17 @@ pub fn gost_client_key_exchange(suite: &crate::tls::suites::CipherSuite,
             // key, which no implementation makes.
             let transport = Transport::for_suite(suite_is_2001, key_generation)
                 .map_err(|_| refuse("GOST R 34.10-2001", server_key))?;
-            crate::tls::gost_kex_28147::client_key_exchange_with(
-                transport, &curve, algorithm_id, &public,
+            // **And the tables from the certificate**, where it names
+            // them: the `encryptionParamSet` for CPDivers and the wrap,
+            // and a 2001 key's `digestParamSet` for its VKO. gost-engine's
+            // certificates name neither table but CryptoPro's hash, so
+            // they get the defaults; other servers take both from the
+            // certificate. See "Which tables" in `gost_kex_28147`.
+            let tables = crate::tls::gost_kex_28147::Tables::for_key(key_generation,
+                                                                     algorithm_id)
+                .map_err(|e| Error::new(AlertDescription::UNSUPPORTED_CERTIFICATE, e))?;
+            crate::tls::gost_kex_28147::client_key_exchange_with_tables(
+                transport, &tables, &curve, algorithm_id, &public,
                 client_random, server_random)
         }
     }.map_err(|e| Error::new(AlertDescription::INTERNAL_ERROR, e))?;

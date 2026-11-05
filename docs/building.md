@@ -370,6 +370,24 @@ header should say why, and that belongs in the commit message.
 these algorithms, each of which would have produced a plausible-looking
 file.
 
+**The CryptoPro key wrap under every parameter set** is a second file,
+`vectors/gost_keywrap.vec`, because the engine's key transport fixes
+the S-box from the key and neither `openssl` nor the probe can choose
+it. `scripts/witness/gost_keywrap` compiles gost-engine's own
+`gost89.c` and `gost_keywrap.c` at a pinned commit under a small
+driver that takes the parameter set by name - test, CryptoPro-A to -D
+and TC 26's param-Z - and answers `keyDiversifyCryptoPro` (RFC 4357
+6.5) and `keyWrapCryptoPro` (6.3). It needs OpenSSL's headers and
+libcrypto, and nothing else from the engine:
+
+```console
+$ sh scripts/witness/gost_keywrap/build.sh        # builds /opt/gostwrapwitness
+$ python3 scripts/make_gost_keywrap_vectors.py    # rewrites vectors/gost_keywrap.vec
+```
+
+`CFLAGS_EXTRA` adds flags to the build, for a sanitizer run; the driver
+built with `-DOFFSET=1` puts every buffer at an odd address.
+
 ## Our TLS client against gost-engine's server, every suite
 
 `scripts/check_gost_engine_suites.py` puts **our client** in front of

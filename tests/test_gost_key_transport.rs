@@ -28,7 +28,7 @@ hash; the engine's client is what pins it.
 
 use allcrypt::bignum::BigUint;
 use allcrypt::ec::{curves, Curve, Point};
-use allcrypt::tls::gost_kex_28147::{KeyGeneration, KeyTransportBlob, Transport, UkmHash};
+use allcrypt::tls::gost_kex_28147::{KeyGeneration, KeyTransportBlob, Tables, Transport, UkmHash};
 use allcrypt::tls::handshake::{extension, ServerHello};
 use allcrypt::tls::suites::{self, CipherSuite, KeyExchange};
 use allcrypt::tls::{gost_kex, gost_kex_28147, keys, Version};
@@ -72,6 +72,8 @@ struct Exchange {
     curve: Curve,
     private: BigUint,
     key: KeyGeneration,
+    /// The certificate's `AlgorithmIdentifier`, verbatim.
+    algorithm_id: Vec<u8>,
     client_random: [u8; 32],
     server_random: [u8; 32],
     client_key_exchange: Vec<u8>,
@@ -116,8 +118,9 @@ fn exchange(transcript: &Transcript) -> Exchange {
         as usize;
     let leaf = Certificate::parse(&certificates[6..6 + size])
         .unwrap_or_else(|e| panic!("{name}: the certificate: {e}"));
-    let (curve, x, y, legacy) = match &leaf.public_key {
-        PublicKey::Gost { curve, x, y, legacy, .. } => (*curve, x.clone(), y.clone(), *legacy),
+    let (curve, x, y, legacy, algorithm_id) = match &leaf.public_key {
+        PublicKey::Gost { curve, x, y, legacy, algorithm_id, .. } =>
+            (*curve, x.clone(), y.clone(), *legacy, algorithm_id.to_vec()),
         other => panic!("{name}: not a GOST key: {other:?}"),
     };
     let curve = curves::by_name(curve).unwrap();
@@ -143,6 +146,7 @@ fn exchange(transcript: &Transcript) -> Exchange {
     Exchange {
         suite, curve, private,
         key: if legacy { KeyGeneration::Gost2001 } else { KeyGeneration::Gost2012 },
+        algorithm_id,
         client_random, server_random: hello.random,
         client_key_exchange: client[1][4..].to_vec(),
         session_hash: hash.session_hash(),
@@ -234,6 +238,32 @@ fn test_the_ukm_follows_the_suite_and_the_s_box_the_key() {
                    "{}: the engine's UKM is not the suite's hash", transcript.name);
         assert_eq!(blob.encryption_param_set, transport.encryption_param_set(),
                    "{}: the engine named another S-box", transcript.name);
+    }
+    assert!(seen >= 5, "only {seen} CNT_IMIT captures");
+}
+
+/// gost-engine's certificates name no encryption parameter set and, for
+/// a 2001 key, CryptoPro's digest set, so the tables a client reads from
+/// them are exactly the key generation's defaults - which is what the
+/// engine's own client wrapped under. A client that follows a
+/// certificate's tables is the same client against gost-engine.
+#[test]
+fn test_the_engine_s_certificates_name_the_default_tables() {
+    let mut seen = 0;
+    for transcript in &load_gost() {
+        let exchange = exchange(transcript);
+        let Some(transport) = exchange.chosen() else { continue };
+        seen += 1;
+        let tables = Tables::for_key(exchange.key, &exchange.algorithm_id)
+            .unwrap_or_else(|e| panic!("{}: {e}", transcript.name));
+        assert_eq!(tables, Tables::defaults(exchange.key), "{}", transcript.name);
+        let blob = KeyTransportBlob::parse(&exchange.client_key_exchange).unwrap();
+        assert_eq!(blob.encryption_param_set, tables.sbox_oid, "{}", transcript.name);
+        assert_eq!(gost_kex_28147::unwrap_secret_with_tables(
+                       transport, &tables, &exchange.curve, &exchange.private,
+                       &exchange.client_random, &exchange.server_random,
+                       &exchange.client_key_exchange).map(|p| p.len()),
+                   Ok(32), "{}", transcript.name);
     }
     assert!(seen >= 5, "only {seen} CNT_IMIT captures");
 }

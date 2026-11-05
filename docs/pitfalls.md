@@ -6008,6 +6008,37 @@ handshake with it. Tried, and it does. A server that checks the UKM, as
 draft-chudov-cryptopro-cptls section 3.6 says it MUST, refuses that
 client. Only the engine's *client* shows which hash it should be.
 
+### The certificate can name the tables, and the message names the S-box
+
+**Status: mitigated.** Under the table above sit two tables: the GOST
+28147-89 S-box of CPDivers and the key wrap, and for a 2001 key the GOST
+R 34.11-94 parameter set VKO hashes its point under. RFC 4357 hashes
+under CryptoPro's set, and gost-engine's client takes the S-box from the
+key's generation; its certificates carry CryptoPro's `digestParamSet` and
+no `encryptionParamSet`. Deployed servers exist that read both from the
+certificate - the `digestParamSet` and `encryptionParamSet` that follow
+the curve in `GostR3410-2001-PublicKeyParameters`, often an
+organisation's own sets registered with `register_oid` - and a client
+that keeps the defaults derives a key such a server cannot.
+
+So the client takes each table from the certificate when it names one and
+keeps the default when it does not (`gost_kex_28147::Tables::for_key`),
+which gives every gost-engine certificate exactly the defaults; a set
+neither built in nor registered is refused rather than defaulted. The
+fields are read by position, the digest set second and the encryption
+set third, as the ASN.1 defines them. The server unwraps under the S-box
+the message's `encryptionParamSet` names - RFC 4490 section 4.2 has it
+"used for all encryption operations", and gost-engine's server reads
+it - where it used the key's default and refused any client that chose
+another. `GOST R 34.11-94` also takes a parameter set by OID now, a
+registered one included, which the `digestParamSet` path needs.
+
+The defaults are held by `tests/test_gost_key_transport.rs` on every
+captured gost-engine certificate. Nothing reachable from here builds the
+other case, so its tests are this library's own round trips with each
+table shown to be load bearing; the outside check is the server it was
+written for, which works with it.
+
 ### Two OpenSSL names for one cipher string
 
 In OpenSSL 3.0, `GOST2012-GOST8912-GOST8912` is not the old name of

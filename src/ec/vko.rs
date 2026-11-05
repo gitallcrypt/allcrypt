@@ -229,8 +229,25 @@ impl Curve {
     /// family shares and RFC 4357 does not restate it.
     pub fn vko_2001(&self, private: &BigUint, peer: &Point, ukm: &[u8])
                     -> Result<Vec<u8>, String> {
+        self.vko_2001_with(private, peer, ukm,
+                           crate::hash_functions::gost94::CRYPTOPRO_PARAM_SET)
+    }
+
+    /// `vko_2001` with the point hashed under another GOST R 34.11-94
+    /// parameter set: a name or OID `Gost94::with_param_set` takes.
+    ///
+    /// RFC 4357 hashes under the CryptoPro set, and so does gost-engine
+    /// whatever the key says. Some deployed servers instead hash under
+    /// the set their certificate's `digestParamSet` names, and a client
+    /// has to do what its server does; `gost_kex_28147::Tables` is where
+    /// that choice is made.
+    pub fn vko_2001_with(&self, private: &BigUint, peer: &Point, ukm: &[u8],
+                         digest_param_set: &str) -> Result<Vec<u8>, String> {
         use crate::hash_functions::gost94::Gost94;
         use crate::hash_functions::HashFunction;
+        // Resolved before any arithmetic, so a name it cannot use is
+        // the error rather than whatever the curve says first.
+        let mut hash = Gost94::with_param_set(&[], digest_param_set)?;
 
         if ukm.is_empty() {
             return Err("VKO needs a user keying material value.".to_string());
@@ -275,7 +292,8 @@ impl Curve {
         y_bytes.reverse();
         input.extend_from_slice(&y_bytes);
 
-        Ok(Gost94::new(&input).digest())
+        hash.update(&input);
+        Ok(hash.digest())
     }
 
     /// VKO with the user keying material already an integer.
@@ -401,6 +419,24 @@ mod tests {
 
     /// A 512 bit curve is refused rather than hashed with the wrong
     /// thing: GOST R 34.10-2001 has one key size.
+    /// The point's hash follows the parameter set it is given, and
+    /// CryptoPro's is the default; a name it cannot use is refused
+    /// before any arithmetic.
+    #[test]
+    fn test_the_2001_agreement_hashes_under_the_set_it_is_given() {
+        use crate::hash_functions::gost94::{CRYPTOPRO_PARAM_SET, TEST_PARAM_SET};
+        let curve = curves::by_name("gost256-a").unwrap();
+        let (a, _) = key(&curve, 3);
+        let (_, b_public) = key(&curve, 4);
+        let ukm = [1, 2, 3, 4, 5, 6, 7, 8];
+        let default = curve.vko_2001(&a, &b_public, &ukm).unwrap();
+        assert_eq!(curve.vko_2001_with(&a, &b_public, &ukm, CRYPTOPRO_PARAM_SET).unwrap(),
+                   default);
+        assert_ne!(curve.vko_2001_with(&a, &b_public, &ukm, TEST_PARAM_SET).unwrap(),
+                   default);
+        assert!(curve.vko_2001_with(&a, &b_public, &ukm, "no such set").is_err());
+    }
+
     #[test]
     fn test_the_2001_agreement_refuses_a_512_bit_curve() {
         let curve = curves::by_name("gost512-a").unwrap();

@@ -92,7 +92,12 @@ def test_a_tls12_connection_uses_no_hybrid_group():
 def test_a_server_that_knows_no_hybrid_still_connects(tmp_path, version):
     """OpenSSL 3.0 has never heard of 0x11EC. Our hello leads with it -
     in supported_groups and as the first key share - and the server must
-    skip it and pick X25519, with no retry."""
+    skip it and pick X25519, with no retry.
+
+    From OpenSSL 3.5 the `ssl` module's server knows the hybrid and picks
+    it, so the server is held to X25519: `set_ecdh_curve` is
+    `SSL_CTX_set1_groups` with one group under OpenSSL 3, which leaves it
+    the same server on any version."""
     from cryptography.hazmat.primitives.asymmetric import ec as pyec
     from test_tls_server import make_cert
 
@@ -106,6 +111,7 @@ def test_a_server_that_knows_no_hybrid_still_connects(tmp_path, version):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = context.maximum_version = version
     context.load_cert_chain(str(identity))
+    context.set_ecdh_curve("X25519")
     incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
     server = context.wrap_bio(incoming, outgoing, server_side=True)
 

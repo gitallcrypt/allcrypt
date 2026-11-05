@@ -420,6 +420,12 @@ oids! {
     // The 28147-89 S-box the 0x0081 suite encrypts with, named in the
     // key transport message's `encryptionParamSet`.
     GOST_28147_CRYPTOPRO_A = "1.2.643.2.2.31.1";
+    // RFC 4357 section 10.2's other encryption parameter sets, which a
+    // key's `encryptionParamSet` or a key transport message can name.
+    GOST_28147_TEST        = "1.2.643.2.2.31.0";
+    GOST_28147_CRYPTOPRO_B = "1.2.643.2.2.31.2";
+    GOST_28147_CRYPTOPRO_C = "1.2.643.2.2.31.3";
+    GOST_28147_CRYPTOPRO_D = "1.2.643.2.2.31.4";
 
     // Curve parameter sets. The 256 bit curves have two names each: the
     // CryptoPro ones from RFC 4357, which is what certificates in the

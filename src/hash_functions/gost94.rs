@@ -122,6 +122,11 @@ pub enum EmptyMessage {
 /// ten named tables: a key's own, read from its parameters.
 const CUSTOM_DKE: &str = "custom DKE";
 
+/// The `name` of the hash under a parameter set a caller registered
+/// with `registry::register` - an organisation's own table, which a
+/// key's `digestParamSet` can name.
+const REGISTERED: &str = "registered parameter set";
+
 #[derive(Clone)]
 pub struct Gost94 {
     /// The running hash, in byte stream order.
@@ -165,7 +170,10 @@ impl Gost94 {
             .expect("the CryptoPro parameter set is built in")
     }
 
-    /// With a named parameter set.
+    /// With a named parameter set: a name, or the dotted OID a
+    /// certificate's `digestParamSet` writes - the two RFC 4357 sets by
+    /// their own OIDs, and any other by the OID it was registered under
+    /// (`registry::register` with `Meaning::gost_param_set`).
     ///
     /// An unknown name is an error rather than a default. The two sets
     /// give different hashes of the same message, so quietly
@@ -178,6 +186,19 @@ impl Gost94 {
     /// With a named parameter set and a reading of the empty message.
     pub fn with_reading(data: &[u8], name: &str, empty: EmptyMessage)
                         -> Result<Gost94, String> {
+        // A certificate names the set by OID, and a registered one has
+        // nothing else to go by.
+        let cryptopro_oid = crate::asn1::Oid::new(crate::x509::oids::GOST3411_94_CRYPTOPRO_PARAMSET)?
+            .to_string();
+        let test_oid = crate::asn1::Oid::new(crate::x509::oids::GOST3411_94_TEST_PARAMSET)?
+            .to_string();
+        let name = if name == cryptopro_oid {
+            CRYPTOPRO_PARAM_SET
+        } else if name == test_oid {
+            TEST_PARAM_SET
+        } else {
+            name
+        };
         let (sbox, canonical) = match name {
             CRYPTOPRO_PARAM_SET => (GostCrypto::sbox_named(CRYPTOPRO_PARAM_SET)?,
                                     CRYPTOPRO_PARAM_SET),
@@ -193,9 +214,15 @@ impl Gost94 {
                 let canonical = if index == 0 { DSTU_PARAM_SET } else { DSTU_DKE_NAMES[index] };
                 (GostCrypto::sbox_named(canonical)?, canonical)
             }
+            // **Then the registry**, as `GostCrypto::sbox_named` consults
+            // it: the hash is the block cipher under the same tables, so
+            // a parameter set registered for one is one for the other.
+            other if crate::registry::gost_param_set(other).is_some() =>
+                (crate::registry::gost_param_set(other).expect("just checked"), REGISTERED),
             other => return Err(format!(
-                "GOST R 34.11-94 takes {:?}, {:?}, and {:?} or one of {} (GOST \
-                 34.311-95) here; {:?} is none of them.",
+                "GOST R 34.11-94 takes {:?}, {:?} or their OIDs, {:?} or one of \
+                 {} (GOST 34.311-95), or the OID of a parameter set registered \
+                 with allcrypt.register_oid; {:?} is none of them.",
                 CRYPTOPRO_PARAM_SET, TEST_PARAM_SET, DSTU_PARAM_SET,
                 DSTU_DKE_NAMES.join(", "), other)),
         };
@@ -300,6 +327,8 @@ impl HashFunction for Gost94 {
             &dke
         } else if self.name == CUSTOM_DKE {
             "gost34311_custom_dke"
+        } else if self.name == REGISTERED {
+            "gost94_registered"
         } else {
             // CRYPTOPRO_PARAM_SET, the only other one `with_param_set`
             // accepts.
@@ -597,6 +626,41 @@ fn read_power(text: &[char], at: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A certificate's `digestParamSet` names the set by OID: RFC 4357's
+    /// two by their own, and a registered one by the OID it was
+    /// registered under - the hash then being the registered table's.
+    #[test]
+    fn test_a_parameter_set_can_be_named_by_its_oid() {
+        let message = b"a message of a few blocks, longer than one, and then some";
+        for (name, oid) in [(CRYPTOPRO_PARAM_SET, "1.2.643.2.2.30.1"),
+                            (TEST_PARAM_SET, "1.2.643.2.2.30.0")] {
+            assert_eq!(Gost94::with_param_set(message, oid).unwrap().digest(),
+                       Gost94::with_param_set(message, name).unwrap().digest(), "{oid}");
+        }
+        // The OIDs those lines name are the ones the OID table holds.
+        assert_eq!(crate::asn1::encode_oid("1.2.643.2.2.30.1").unwrap(),
+                   crate::x509::oids::GOST3411_94_CRYPTOPRO_PARAMSET);
+        assert_eq!(crate::asn1::encode_oid("1.2.643.2.2.30.0").unwrap(),
+                   crate::x509::oids::GOST3411_94_TEST_PARAMSET);
+
+        const OID: &str = "1.3.6.1.4.1.99999.8.1";
+        assert!(Gost94::with_param_set(message, OID).is_err());
+        let mut rows = GostCrypto::sbox_named(CRYPTOPRO_PARAM_SET).unwrap();
+        rows[3].reverse();
+        crate::registry::register(OID, crate::registry::Meaning::gost_param_set(rows.clone()))
+            .unwrap();
+        let registered = Gost94::with_param_set(message, OID).map(|mut h| h.digest());
+        crate::registry::forget(OID);
+        let registered = registered.unwrap();
+        assert_ne!(registered, Gost94::new(message).digest());
+        // The same table given another way: the hash is the table's.
+        crate::registry::register(OID, crate::registry::Meaning::gost_param_set(rows)).unwrap();
+        let mut again = Gost94::with_param_set(message, OID).unwrap();
+        crate::registry::forget(OID);
+        assert_eq!(again.digest(), registered);
+        assert_eq!(again.name(), "gost94_registered");
+    }
     use crate::block_ciphers::BlockCipher;
 
     /// A DKE given as bytes is the named table when it is one - the

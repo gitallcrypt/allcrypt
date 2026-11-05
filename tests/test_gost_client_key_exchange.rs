@@ -319,3 +319,60 @@ fn test_the_canonical_encoders_still_agree_with_themselves() {
         }
     }
 }
+
+/// A certificate that names its own tables - CryptoPro-B for the wrap and
+/// GOST R 34.11-94's test set for VKO's hash - gets a ClientKeyExchange
+/// built under them, through the client's own function: the message
+/// names CryptoPro-B, a server holding that certificate unwraps the
+/// premaster, and one keeping the defaults does not.
+///
+/// gost-engine's certificates name neither table, so every capture above
+/// gets the defaults and none of them would notice a client that ignored
+/// the certificate; this is the test that does.
+#[test]
+fn test_a_certificate_s_own_tables_are_used() {
+    use allcrypt::asn1::{Oid, Writer};
+    use allcrypt::tls::gost_kex_28147::{self, KeyGeneration, KeyTransportBlob, Tables,
+                                        Transport};
+    use allcrypt::x509::{oids, PublicKey};
+
+    let mut writer = Writer::new();
+    writer.write_sequence(|algid| {
+        algid.write_oid(oids::GOST3410_2001);
+        algid.write_sequence(|params| {
+            params.write_oid(oids::GOST_2001_CRYPTOPRO_A);
+            params.write_oid(oids::GOST3411_94_TEST_PARAMSET);
+            params.write_oid(oids::GOST_28147_CRYPTOPRO_B);
+        });
+    });
+    let algorithm_id = writer.finish();
+
+    let curve = curves::by_name("gost256-a").expect("CryptoPro-A");
+    let (server_private, server_public) = curve.generate_key_pair().expect("a server key");
+    let key = PublicKey::Gost {
+        curve: "gost256-a",
+        x: server_public.x().expect("x").clone(),
+        y: server_public.y().expect("y").clone(),
+        param_set: Oid::new(oids::GOST_2001_CRYPTOPRO_A).expect("the OID"),
+        algorithm_id: &algorithm_id,
+        legacy: true,
+    };
+    let suite = suites::by_code(0x0081).expect("TLS_GOSTR341001_WITH_28147_CNT_IMIT");
+    let (randoms_c, randoms_s) = ([5u8; 32], [6u8; 32]);
+    let (premaster, body) = allcrypt::tls::client::gost_client_key_exchange(
+        suite, &key, &randoms_c, &randoms_s)
+        .unwrap_or_else(|e| panic!("our ClientKeyExchange: {}", e.describe()));
+
+    let blob = KeyTransportBlob::parse(&body).expect("the blob");
+    assert_eq!(blob.encryption_param_set, oids::GOST_28147_CRYPTOPRO_B,
+               "the message does not name the certificate's S-box");
+    let tables = Tables::for_key(KeyGeneration::Gost2001, &algorithm_id).expect("the tables");
+    assert_eq!(gost_kex_28147::unwrap_secret_with_tables(
+                   Transport::GOST_2001, &tables, &curve, &server_private,
+                   &randoms_c, &randoms_s, &body).expect("the server's unwrap"),
+               premaster);
+    assert!(gost_kex_28147::unwrap_secret_2001(&curve, &server_private, &randoms_c,
+                                               &randoms_s, &body).is_err(),
+            "a server hashing VKO under CryptoPro's set unwrapped it: the \
+             certificate's digest set was not used");
+}

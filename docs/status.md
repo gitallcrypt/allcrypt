@@ -219,8 +219,8 @@ for a tag. Key wrap authenticates without one. Both are in
 |KDF_GOSTR3411_2012_256 and KDF_TREE (RFC 7836)|✓|spec reference|
 |TLSTREE (RFC 9189)|✓|✓|
 |KEG, KExp15/KImp15 (RFC 9189)|✓|spec reference; gost-engine's KExp15; RFC 9189 appendix A|
-|KEG_28147, KExp28147/KImp28147 (RFC 9189)|✓|spec reference; RFC 9189 appendix A|
-|CryptoPro key meshing and KEK diversification (RFC 4357)|✓|spec reference; RFC 9189 appendix A|
+|KEG_28147, KExp28147/KImp28147 (RFC 9189)|✓|spec reference; RFC 9189 appendix A; gost-engine's `keyWrapCryptoPro` under all six GOST 28147-89 parameter sets: `vectors/gost_keywrap.vec`|
+|CryptoPro key meshing and KEK diversification (RFC 4357)|✓|spec reference; RFC 9189 appendix A; gost-engine's `keyDiversifyCryptoPro` under all six GOST 28147-89 parameter sets: `vectors/gost_keywrap.vec`|
 
 ## Hashes
 

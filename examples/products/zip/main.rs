@@ -469,8 +469,21 @@ mod tests {
             for (entry, (name, data)) in listed.iter().zip(sample()) {
                 assert_eq!(entry.name, name);
                 assert_eq!(read(&archive, entry, Some(b"pw")).unwrap(), data);
-                if !matches!(sealing, Sealing::None) {
+                if matches!(sealing, Sealing::ZipCrypto) {
+                    // ZipCrypto checks one byte of its header, so one wrong
+                    // password in 256 passes it, and for the empty entry the
+                    // CRC then agrees too and the read succeeds. With a
+                    // single wrong password this test failed one run in
+                    // about 256; five or more of sixteen passing is about
+                    // one run in 2^28.
+                    let accepted = (0..16u8)
+                        .filter(|i| read(&archive, entry, Some(&[b'w', *i])).is_ok())
+                        .count();
+                    assert!(accepted < 5, "{}: {accepted} of 16 wrong passwords read", entry.name);
+                } else if !matches!(sealing, Sealing::None) {
                     assert!(read(&archive, entry, Some(b"wrong")).is_err());
+                }
+                if !matches!(sealing, Sealing::None) {
                     assert!(read(&archive, entry, None).is_err());
                 }
             }

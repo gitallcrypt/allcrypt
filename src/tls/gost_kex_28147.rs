@@ -19,6 +19,25 @@ put these suites on a GOST R 34.10-2001 key, and then the hash stays the
 suite's while the VKO and the S-box become the key's; `Transport` below
 carries the two separately.
 
+## Which tables
+
+Two tables run underneath: the GOST 28147-89 S-box of CPDivers and the
+key wrap, and - for a 2001 key - the GOST R 34.11-94 parameter set VKO
+hashes its point under. **The message names the first** (its
+`encryptionParamSet`, RFC 4490 section 4.2: "used for all encryption
+operations"), so a server unwraps under whatever the message says.
+
+What a *client* puts there is a choice. RFC 4357 and gost-engine take
+both tables from the key's generation alone - CryptoPro-A or `param-Z`,
+and CryptoPro's hash parameters - and gost-engine's certificates carry
+the CryptoPro `digestParamSet` and no `encryptionParamSet`. Deployed
+servers exist that take both from the certificate instead: the
+`encryptionParamSet` and `digestParamSet` after the curve in
+`GostR3410-2001-PublicKeyParameters`, often an organisation's own sets
+registered with `registry::register`. `Tables::for_key` takes each from
+the certificate when it is there and keeps the generation's default when
+it is not, which gives gost-engine's certificates exactly the defaults.
+
 Four things here are the *opposite* of the CTR_OMAC path, and each is
 silent when confused with it:
 
@@ -84,6 +103,7 @@ use crate::ec::{Curve, Point};
 use crate::tls::gost_kex::{self, PRELIMINARY_SECRET_LEN};
 use crate::tls::record_cnt_imit::{gost28147imit, SBOX, SBOX_2001, TAG_LEN};
 use crate::x509::oids;
+use crate::hash_functions::gost94::{CRYPTOPRO_PARAM_SET, TEST_PARAM_SET};
 
 /// `UKM = H[1..8]`, and the same bytes are `KExp28147`'s IV.
 pub const UKM_LEN: usize = 8;
@@ -148,6 +168,12 @@ pub fn keg_28147(curve: &Curve, private: &BigUint, peer: &Point, h: &[u8])
 /// that a suite whose UKM comes from another hash can reach it.
 fn keg_2012(curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8])
             -> Result<Vec<u8>, String> {
+    keg_2012_with(curve, private, peer, ukm, SBOX)
+}
+
+/// `keg_2012` with CPDivers under another S-box.
+fn keg_2012_with(curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8], sbox: &str)
+                 -> Result<Vec<u8>, String> {
     if ukm.len() != UKM_LEN {
         return Err(format!("The UKM is {} bytes; got {}.", UKM_LEN, ukm.len()));
     }
@@ -164,7 +190,7 @@ fn keg_2012(curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8])
     // this is the difference between a shared key and a private one.
     let shared = curve.vko_using(private, peer, ukm, 256,
                                  crate::ec::vko::Cofactor::AsSpecified)?;
-    cp_divers(ukm, &shared, SBOX)
+    cp_divers(ukm, &shared, sbox)
 }
 
 /// The 2001 suite's key derivation: VKO GOST R 34.10-2001 and the same
@@ -178,13 +204,20 @@ fn keg_2012(curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8])
 /// everything underneath uses.
 pub fn keg_2001(curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8])
                 -> Result<Vec<u8>, String> {
+    keg_2001_with(curve, private, peer, ukm, SBOX_2001, CRYPTOPRO_PARAM_SET)
+}
+
+/// `keg_2001` with CPDivers under another S-box and VKO's point hashed
+/// under another GOST R 34.11-94 parameter set.
+pub fn keg_2001_with(curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8],
+                     sbox: &str, digest_param_set: &str) -> Result<Vec<u8>, String> {
     if ukm.len() != UKM_LEN {
         return Err(format!(
             "The 2001 suite's UKM is {} bytes, the first half of a GOST R \
              34.11-94 digest; got {}.", UKM_LEN, ukm.len()));
     }
-    let shared = curve.vko_2001(private, peer, ukm)?;
-    cp_divers(ukm, &shared, SBOX_2001)
+    let shared = curve.vko_2001_with(private, peer, ukm, digest_param_set)?;
+    cp_divers(ukm, &shared, sbox)
 }
 
 /// `shared_ukm`, draft-chudov-cryptopro-cptls section 3.6: the first
@@ -444,7 +477,8 @@ impl Transport {
         }
     }
 
-    /// The S-box: CryptoPro-A for a 2001 key, `param-Z` for a 2012 one.
+    /// The default S-box: CryptoPro-A for a 2001 key, `param-Z` for a
+    /// 2012 one - `Tables::defaults`, which a key can override.
     pub fn sbox(&self) -> &'static str {
         match self.key {
             KeyGeneration::Gost2001 => SBOX_2001,
@@ -452,7 +486,8 @@ impl Transport {
         }
     }
 
-    /// The `encryptionParamSet` the blob names, which is that S-box.
+    /// The default S-box's OID, which the blob names when the key does
+    /// not name another.
     pub fn encryption_param_set(&self) -> &'static [u8] {
         match self.key {
             KeyGeneration::Gost2001 => oids::GOST_28147_CRYPTOPRO_A,
@@ -464,16 +499,176 @@ impl Transport {
     /// CryptoPro's diversification under the key's S-box.
     pub fn kek(&self, curve: &Curve, private: &BigUint, peer: &Point, ukm: &[u8])
                -> Result<Vec<u8>, String> {
+        self.kek_with(&Tables::defaults(self.key), curve, private, peer, ukm)
+    }
+
+    /// `kek` under the given tables.
+    pub fn kek_with(&self, tables: &Tables, curve: &Curve, private: &BigUint, peer: &Point,
+                    ukm: &[u8]) -> Result<Vec<u8>, String> {
         match self.key {
-            KeyGeneration::Gost2001 => keg_2001(curve, private, peer, ukm),
-            KeyGeneration::Gost2012 => keg_2012(curve, private, peer, ukm),
+            KeyGeneration::Gost2001 =>
+                keg_2001_with(curve, private, peer, ukm, &tables.sbox, &tables.vko_digest),
+            KeyGeneration::Gost2012 => keg_2012_with(curve, private, peer, ukm, &tables.sbox),
         }
+    }
+}
+
+// ------------------------------------------------------ the tables ---
+
+/// The tables one CNT_IMIT exchange runs on. See "Which tables" at the
+/// top of this file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tables {
+    /// The GOST 28147-89 S-box of CPDivers and the key wrap, as
+    /// `GostCrypto::sbox_named` knows it: a built-in name, or the dotted
+    /// OID of a registered parameter set.
+    pub sbox: String,
+    /// That parameter set's OID, which the message's
+    /// `encryptionParamSet` carries.
+    pub sbox_oid: Vec<u8>,
+    /// The GOST R 34.11-94 parameter set VKO GOST R 34.10-2001 hashes its
+    /// point under, as `Gost94::with_param_set` takes it. A 2012 key's
+    /// VKO hashes with Streebog-256 and does not read it.
+    pub vko_digest: String,
+}
+
+impl Tables {
+    /// The key generation's own: CryptoPro-A and CryptoPro's hash
+    /// parameters for a 2001 key, `param-Z` for a 2012 one - RFC 4357,
+    /// RFC 9189, and what gost-engine always uses.
+    pub fn defaults(key: KeyGeneration) -> Tables {
+        let (sbox, sbox_oid) = match key {
+            KeyGeneration::Gost2001 => (SBOX_2001, oids::GOST_28147_CRYPTOPRO_A),
+            KeyGeneration::Gost2012 => (SBOX, oids::GOST_28147_PARAM_Z),
+        };
+        Tables { sbox: sbox.to_string(), sbox_oid: sbox_oid.to_vec(),
+                 vko_digest: CRYPTOPRO_PARAM_SET.to_string() }
+    }
+
+    /// The tables the server's key names, each one it names replacing
+    /// the generation's default: `algorithm_id` is the certificate's
+    /// `AlgorithmIdentifier`, as `PublicKey::Gost::algorithm_id` keeps it.
+    ///
+    /// # Errors
+    /// Parameters that are not a GOST key's, or a parameter set that is
+    /// neither built in nor registered - refused rather than replaced by
+    /// a default, which would give a key the server cannot derive and
+    /// nothing to say why.
+    pub fn for_key(key: KeyGeneration, algorithm_id: &[u8]) -> Result<Tables, String> {
+        let KeyParameterSets { digest, encryption } = key_parameter_sets(algorithm_id)?;
+        let mut tables = Tables::defaults(key);
+        if let Some(oid) = encryption {
+            tables.sbox = encryption_sbox(&oid)?;
+            tables.sbox_oid = oid;
+        }
+        // A 2012 key's `digestParamSet` names Streebog, which its VKO
+        // uses whatever the field says.
+        if let (KeyGeneration::Gost2001, Some(oid)) = (key, digest) {
+            tables.vko_digest = digest_param_set(&oid)?;
+        }
+        Ok(tables)
+    }
+}
+
+/// The parameter sets after the curve in a GOST key's parameters.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyParameterSets {
+    /// The `digestParamSet` OID.
+    pub digest: Option<Vec<u8>>,
+    /// The `encryptionParamSet` OID.
+    pub encryption: Option<Vec<u8>>,
+}
+
+/// The `digestParamSet` and `encryptionParamSet` of a GOST key's
+/// `AlgorithmIdentifier`, each if present.
+///
+/// ```text
+/// GostR3410-2001-PublicKeyParameters ::= SEQUENCE {
+///     publicKeyParamSet   OBJECT IDENTIFIER,
+///     digestParamSet      OBJECT IDENTIFIER,
+///     encryptionParamSet  OBJECT IDENTIFIER OPTIONAL }    RFC 4357
+/// ```
+///
+/// RFC 9215 makes `digestParamSet` optional for a 2012 key and has no
+/// `encryptionParamSet`. The fields are read by position, as the ASN.1
+/// defines them: an encryption set is the third OID, never the second.
+pub fn key_parameter_sets(algorithm_id: &[u8]) -> Result<KeyParameterSets, String> {
+    let mut outer = Reader::new(algorithm_id);
+    let mut algid = outer.read_sequence()?;
+    outer.finish()?;
+    let algorithm = algid.read_tagged(Tag::universal(tag::OID))?;
+    if algorithm != oids::GOST3410_2001 && algorithm != oids::GOST3410_12_256
+        && algorithm != oids::GOST3410_12_512 {
+        return Err("The key's algorithm is not a GOST R 34.10 one.".to_string());
+    }
+    let mut params = algid.read_sequence()?;
+    algid.finish()?;
+    params.read_tagged(Tag::universal(tag::OID))?;
+    let mut sets = Vec::new();
+    while !params.is_empty() {
+        sets.push(params.read_tagged(Tag::universal(tag::OID))?.to_vec());
+    }
+    if sets.len() > 2 {
+        return Err(format!(
+            "A GOST key's parameters are a curve, a digest and an encryption \
+             parameter set; these have {} OIDs.", sets.len() + 1));
+    }
+    let mut sets = sets.into_iter();
+    Ok(KeyParameterSets { digest: sets.next(), encryption: sets.next() })
+}
+
+/// The S-box an `encryptionParamSet` names, as `GostCrypto::sbox_named`
+/// knows it: RFC 4357's five and `param-Z` by name, any other by the
+/// dotted OID it was registered under.
+///
+/// # Errors
+/// An OID that is neither.
+pub fn encryption_sbox(oid: &[u8]) -> Result<String, String> {
+    let built_in = [
+        (oids::GOST_28147_TEST, "id-Gost28147-89-TestParamSet"),
+        (oids::GOST_28147_CRYPTOPRO_A, "id-Gost28147-89-CryptoPro-A-ParamSet"),
+        (oids::GOST_28147_CRYPTOPRO_B, "id-Gost28147-89-CryptoPro-B-ParamSet"),
+        (oids::GOST_28147_CRYPTOPRO_C, "id-Gost28147-89-CryptoPro-C-ParamSet"),
+        (oids::GOST_28147_CRYPTOPRO_D, "id-Gost28147-89-CryptoPro-D-ParamSet"),
+        (oids::GOST_28147_PARAM_Z, SBOX),
+    ];
+    if let Some((_, name)) = built_in.iter().find(|(known, _)| *known == oid) {
+        return Ok(name.to_string());
+    }
+    let dotted = crate::asn1::Oid::new(oid)?.to_string();
+    match crate::registry::lookup(&dotted) {
+        Some(crate::registry::Meaning::GostParamSet(_)) => Ok(dotted),
+        _ => Err(format!(
+            "The encryption parameter set {dotted} is not one this library \
+             carries; give it with allcrypt.register_oid(oid, gost_sbox=...).")),
+    }
+}
+
+/// The GOST R 34.11-94 parameter set a 2001 key's `digestParamSet`
+/// names, as `Gost94::with_param_set` takes it.
+///
+/// # Errors
+/// An OID that is neither RFC 4357's two nor registered.
+pub fn digest_param_set(oid: &[u8]) -> Result<String, String> {
+    if oid == oids::GOST3411_94_CRYPTOPRO_PARAMSET {
+        return Ok(CRYPTOPRO_PARAM_SET.to_string());
+    }
+    if oid == oids::GOST3411_94_TEST_PARAMSET {
+        return Ok(TEST_PARAM_SET.to_string());
+    }
+    let dotted = crate::asn1::Oid::new(oid)?.to_string();
+    match crate::registry::lookup(&dotted) {
+        Some(crate::registry::Meaning::GostParamSet(_)) => Ok(dotted),
+        _ => Err(format!(
+            "The digest parameter set {dotted} is not one this library \
+             carries; give it with allcrypt.register_oid(oid, gost_sbox=...).")),
     }
 }
 
 // ------------------------------------------------- the two halves ---
 
-/// The client's side, with the ephemeral key and the secret supplied.
+/// The client's side, with the ephemeral key and the secret supplied,
+/// under the key generation's default tables.
 #[allow(clippy::too_many_arguments)]
 pub fn wrap_secret_with(transport: Transport, curve: &Curve,
                         server_algorithm_id: &[u8],
@@ -481,14 +676,29 @@ pub fn wrap_secret_with(transport: Transport, curve: &Curve,
                         server_public: &Point, client_random: &[u8],
                         server_random: &[u8], secret: &[u8])
                         -> Result<Vec<u8>, String> {
+    wrap_secret_with_tables(transport, &Tables::defaults(transport.key), curve,
+                            server_algorithm_id, ephemeral_private, ephemeral_public,
+                            server_public, client_random, server_random, secret)
+}
+
+/// The client's side under the given tables: CPDivers and the wrap under
+/// `tables.sbox`, which the message names, and a 2001 key's VKO under
+/// `tables.vko_digest`.
+#[allow(clippy::too_many_arguments)]
+pub fn wrap_secret_with_tables(transport: Transport, tables: &Tables, curve: &Curve,
+                               server_algorithm_id: &[u8],
+                               ephemeral_private: &BigUint, ephemeral_public: &Point,
+                               server_public: &Point, client_random: &[u8],
+                               server_random: &[u8], secret: &[u8])
+                               -> Result<Vec<u8>, String> {
     if secret.len() != PRELIMINARY_SECRET_LEN {
         return Err(format!(
             "The preliminary secret is {} bytes; got {}.",
             PRELIMINARY_SECRET_LEN, secret.len()));
     }
     let ukm = transport.ukm(client_random, server_random);
-    let key = transport.kek(curve, ephemeral_private, server_public, &ukm)?;
-    let wrapped = kexp28147(secret, &key, &ukm, transport.sbox())?;
+    let key = transport.kek_with(tables, curve, ephemeral_private, server_public, &ukm)?;
+    let wrapped = kexp28147(secret, &key, &ukm, &tables.sbox)?;
 
     KeyTransportBlob {
         encrypted: wrapped[UKM_LEN..UKM_LEN + 32].to_vec(),
@@ -496,7 +706,7 @@ pub fn wrap_secret_with(transport: Transport, curve: &Curve,
         // The S-box's own OID, which is the one field that tells a server
         // which table the blob was built with. gost-engine's server reads
         // it rather than inferring it.
-        encryption_param_set: transport.encryption_param_set().to_vec(),
+        encryption_param_set: tables.sbox_oid.clone(),
         // The server's AlgorithmIdentifier, copied rather than rebuilt
         // from the curve - see `gost_kex::encode_public_key_like`. For a
         // 2001 key that is also what keeps `XchA` from coming back as
@@ -507,24 +717,53 @@ pub fn wrap_secret_with(transport: Transport, curve: &Curve,
     }.encode()
 }
 
-/// Pick the ephemeral key and the secret, and produce the message.
+/// Pick the ephemeral key and the secret, and produce the message, under
+/// the key generation's default tables.
 pub fn client_key_exchange_with(transport: Transport, curve: &Curve,
                                 server_algorithm_id: &[u8], server_public: &Point,
                                 client_random: &[u8], server_random: &[u8])
                                 -> Result<(Vec<u8>, Vec<u8>), String> {
+    client_key_exchange_with_tables(transport, &Tables::defaults(transport.key), curve,
+                                    server_algorithm_id, server_public, client_random,
+                                    server_random)
+}
+
+/// `client_key_exchange_with` under the given tables - the TLS client's
+/// call, with `Tables::for_key` over the server's certificate.
+pub fn client_key_exchange_with_tables(transport: Transport, tables: &Tables, curve: &Curve,
+                                       server_algorithm_id: &[u8], server_public: &Point,
+                                       client_random: &[u8], server_random: &[u8])
+                                       -> Result<(Vec<u8>, Vec<u8>), String> {
     let secret = crate::random::bytes(PRELIMINARY_SECRET_LEN)?;
     let (private, public) = curve.generate_key_pair()?;
-    let body = wrap_secret_with(transport, curve, server_algorithm_id, &private,
-                                &public, server_public, client_random,
-                                server_random, &secret)?;
+    let body = wrap_secret_with_tables(transport, tables, curve, server_algorithm_id,
+                                       &private, &public, server_public, client_random,
+                                       server_random, &secret)?;
     Ok((body, secret))
 }
 
-/// The server's side.
+/// The server's side, with a 2001 key's VKO under CryptoPro's hash
+/// parameters. The S-box is the one the message names.
 pub fn unwrap_secret_with(transport: Transport, curve: &Curve, private: &BigUint,
                           client_random: &[u8], server_random: &[u8],
                           body: &[u8]) -> Result<Vec<u8>, String> {
+    unwrap_secret_with_tables(transport, &Tables::defaults(transport.key), curve, private,
+                              client_random, server_random, body)
+}
+
+/// The server's side with a 2001 key's VKO under `tables.vko_digest` -
+/// from `Tables::for_key` over the server's own certificate.
+///
+/// **The S-box is the message's**, not `tables.sbox`: RFC 4490 section
+/// 4.2 has its `encryptionParamSet` "used for all encryption
+/// operations", and gost-engine's server reads it. One this library
+/// does not carry is refused.
+pub fn unwrap_secret_with_tables(transport: Transport, tables: &Tables, curve: &Curve,
+                                 private: &BigUint, client_random: &[u8],
+                                 server_random: &[u8], body: &[u8])
+                                 -> Result<Vec<u8>, String> {
     let blob = KeyTransportBlob::parse(body)?;
+    let sbox = encryption_sbox(&blob.encryption_param_set)?;
     let (their_curve, ephemeral) = gost_kex::decode_public_key(&blob.ephemeral)?;
     if their_curve.name != curve.name {
         return Err(format!(
@@ -546,12 +785,15 @@ pub fn unwrap_secret_with(transport: Transport, curve: &Curve, private: &BigUint
         return Err("The key transport blob's UKM is not the suite's hash of \
                     the two randoms.".to_string());
     }
-    let key = transport.kek(curve, private, &ephemeral, &ukm)?;
+    let message_tables = Tables { sbox: sbox.clone(),
+                                  sbox_oid: blob.encryption_param_set.clone(),
+                                  vko_digest: tables.vko_digest.clone() };
+    let key = transport.kek_with(&message_tables, curve, private, &ephemeral, &ukm)?;
 
     let mut wrapped = blob.ukm.clone();
     wrapped.extend_from_slice(&blob.encrypted);
     wrapped.extend_from_slice(&blob.mac);
-    kimp28147(&wrapped, &key, &ukm, transport.sbox())
+    kimp28147(&wrapped, &key, &ukm, &sbox)
 }
 
 /// `wrap_secret_with` for RFC 9189's own pairing: a 2012 suite on a 2012
@@ -819,6 +1061,238 @@ mod tests {
                  which means the [0] tag was written explicitly");
 
         assert_eq!(KeyTransportBlob::parse(&body).unwrap().ephemeral, spki);
+    }
+
+    const KEYWRAP: &str = include_str!("../../vectors/gost_keywrap.vec");
+
+    /// The parameter set a `gost_keywrap.vec` row names, as the OID a
+    /// message's `encryptionParamSet` would carry.
+    fn set_oid(name: &str) -> &'static [u8] {
+        match name {
+            "test" => oids::GOST_28147_TEST,
+            "a" => oids::GOST_28147_CRYPTOPRO_A,
+            "b" => oids::GOST_28147_CRYPTOPRO_B,
+            "c" => oids::GOST_28147_CRYPTOPRO_C,
+            "d" => oids::GOST_28147_CRYPTOPRO_D,
+            "z" => oids::GOST_28147_PARAM_Z,
+            other => panic!("no parameter set {other}"),
+        }
+    }
+
+    /// CPDivers and the key wrap under every parameter set a message can
+    /// name, against gost-engine's own `keyDiversifyCryptoPro` and
+    /// `keyWrapCryptoPro` (`vectors/gost_keywrap.vec`), each set reached
+    /// through its OID as a message names it. RFC 9189's example pins
+    /// `param-Z` alone.
+    #[test]
+    fn test_the_wrap_under_every_parameter_set_is_gost_engine_s() {
+        let mut seen = std::collections::BTreeMap::new();
+        for line in KEYWRAP.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+            let mut fields = line.split(' ');
+            let kind = fields.next().unwrap();
+            let f: std::collections::HashMap<&str, &str> =
+                fields.map(|w| w.split_once('=').unwrap()).collect();
+            let sbox = encryption_sbox(set_oid(f["set"])).unwrap();
+            let (kek, ukm) = (unhex(f["kek"]), unhex(f["ukm"]));
+            let key = cp_divers(&ukm, &kek, &sbox).unwrap();
+            match kind {
+                "diversify" => assert_eq!(key, unhex(f["key"]), "{line}"),
+                "wrap" => {
+                    let (cek, wrapped) = (unhex(f["cek"]), unhex(f["wrapped"]));
+                    assert_eq!(kexp28147(&cek, &key, &ukm, &sbox).unwrap(), wrapped, "{line}");
+                    assert_eq!(kimp28147(&wrapped, &key, &ukm, &sbox).unwrap(), cek, "{line}");
+                }
+                other => panic!("a {other} row"),
+            }
+            *seen.entry(f["set"].to_string()).or_insert(0) += 1;
+        }
+        // A parser that found nothing would pass every assertion above.
+        assert_eq!(seen.len(), 6, "{seen:?}");
+        assert!(seen.values().all(|&n| n >= 6), "{seen:?}");
+    }
+
+    /// The derivations hand CPDivers the S-box they are given, and a 2001
+    /// key's VKO the digest set: the composition, under every set.
+    #[test]
+    fn test_the_derivations_use_the_tables_they_are_given() {
+        let curve = curves::by_name("gost256-a").unwrap();
+        let (a, _) = curve.generate_key_pair().unwrap();
+        let (_, b) = curve.generate_key_pair().unwrap();
+        let ukm = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        for set in ["test", "a", "b", "c", "d", "z"] {
+            let sbox = encryption_sbox(set_oid(set)).unwrap();
+            let shared = curve.vko_2001_with(&a, &b, &ukm, TEST_PARAM_SET).unwrap();
+            assert_eq!(keg_2001_with(&curve, &a, &b, &ukm, &sbox, TEST_PARAM_SET).unwrap(),
+                       cp_divers(&ukm, &shared, &sbox).unwrap(), "{set}");
+            let shared = curve.vko_using(&a, &b, &ukm, 256,
+                                         crate::ec::vko::Cofactor::AsSpecified).unwrap();
+            assert_eq!(keg_2012_with(&curve, &a, &b, &ukm, &sbox).unwrap(),
+                       cp_divers(&ukm, &shared, &sbox).unwrap(), "{set}");
+        }
+    }
+
+    /// A 2001 key's `AlgorithmIdentifier` on CryptoPro-A, with the given
+    /// parameter sets after the curve.
+    fn algorithm_id_2001(sets: &[&[u8]]) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_sequence(|algid| {
+            algid.write_oid(oids::GOST3410_2001);
+            algid.write_sequence(|params| {
+                params.write_oid(oids::GOST_2001_CRYPTOPRO_A);
+                for set in sets {
+                    params.write_oid(set);
+                }
+            });
+        });
+        w.finish()
+    }
+
+    /// Registers an S-box under `oid` for the test's lifetime: CryptoPro-A
+    /// with its first row reversed, a table nothing else carries.
+    struct Registered(&'static str);
+    impl Registered {
+        fn new(oid: &'static str) -> Registered {
+            let mut rows = GostCrypto::sbox_named(SBOX_2001).unwrap();
+            rows[0].reverse();
+            crate::registry::register(oid, crate::registry::Meaning::gost_param_set(rows))
+                .unwrap();
+            Registered(oid)
+        }
+        fn der(&self) -> Vec<u8> {
+            crate::asn1::encode_oid(self.0).unwrap()
+        }
+    }
+    impl Drop for Registered {
+        fn drop(&mut self) {
+            crate::registry::forget(self.0);
+        }
+    }
+
+    /// gost-engine's own key parameters - CryptoPro's digest set and no
+    /// encryption set - and none at all after the curve, give the
+    /// defaults; so does a 2012 key's Streebog `digestParamSet`.
+    #[test]
+    fn test_keys_that_name_no_tables_get_the_defaults() {
+        for sets in [&[][..], &[oids::GOST3411_94_CRYPTOPRO_PARAMSET][..]] {
+            assert_eq!(Tables::for_key(KeyGeneration::Gost2001, &algorithm_id_2001(sets)),
+                       Ok(Tables::defaults(KeyGeneration::Gost2001)));
+        }
+        for name in ["gost256-a", "gost512-a"] {
+            let curve = curves::by_name(name).unwrap();
+            let algorithm_id = gost_kex::algorithm_id_for(&curve).unwrap();
+            assert!(key_parameter_sets(&algorithm_id).unwrap().digest.is_some(),
+                    "{name}: the 2012 identifier carries a Streebog digestParamSet");
+            assert_eq!(Tables::for_key(KeyGeneration::Gost2012, &algorithm_id),
+                       Ok(Tables::defaults(KeyGeneration::Gost2012)), "{name}");
+        }
+    }
+
+    /// The sets are read by position: the second OID is the digest set
+    /// and the third the encryption set.
+    #[test]
+    fn test_the_key_s_tables_are_read_by_position() {
+        let algorithm_id = algorithm_id_2001(&[oids::GOST3411_94_TEST_PARAMSET,
+                                               oids::GOST_28147_CRYPTOPRO_B]);
+        assert_eq!(key_parameter_sets(&algorithm_id),
+                   Ok(KeyParameterSets {
+                       digest: Some(oids::GOST3411_94_TEST_PARAMSET.to_vec()),
+                       encryption: Some(oids::GOST_28147_CRYPTOPRO_B.to_vec()) }));
+        let tables = Tables::for_key(KeyGeneration::Gost2001, &algorithm_id).unwrap();
+        assert_eq!(tables.sbox, "id-Gost28147-89-CryptoPro-B-ParamSet");
+        assert_eq!(tables.sbox_oid, oids::GOST_28147_CRYPTOPRO_B);
+        assert_eq!(tables.vko_digest, TEST_PARAM_SET);
+
+        // An encryption set in the digest's place is a digest set this
+        // library does not know, not an encryption set.
+        let swapped = algorithm_id_2001(&[oids::GOST_28147_CRYPTOPRO_B]);
+        assert!(Tables::for_key(KeyGeneration::Gost2001, &swapped).unwrap_err()
+                    .contains("digest parameter set"));
+        let four = algorithm_id_2001(&[oids::GOST3411_94_CRYPTOPRO_PARAMSET,
+                                       oids::GOST_28147_CRYPTOPRO_B,
+                                       oids::GOST_28147_CRYPTOPRO_C]);
+        assert!(key_parameter_sets(&four).is_err());
+    }
+
+    /// A set neither built in nor registered is refused, not replaced by
+    /// a default.
+    #[test]
+    fn test_an_unknown_table_is_refused() {
+        let unknown = crate::asn1::encode_oid("1.3.6.1.4.1.99999.7.1").unwrap();
+        let as_digest = algorithm_id_2001(&[&unknown]);
+        let as_encryption = algorithm_id_2001(&[oids::GOST3411_94_CRYPTOPRO_PARAMSET, &unknown]);
+        for algorithm_id in [as_digest, as_encryption] {
+            let err = Tables::for_key(KeyGeneration::Gost2001, &algorithm_id).unwrap_err();
+            assert!(err.contains("1.3.6.1.4.1.99999.7.1") && err.contains("register_oid"),
+                    "{err}");
+        }
+    }
+
+    /// A key naming other tables: the client wraps under them and names
+    /// the S-box, the server unwraps under the S-box the message names
+    /// and its own key's digest set - and each table is load bearing.
+    #[test]
+    fn test_a_key_s_own_tables_carry_the_exchange() {
+        let encryption = Registered::new("1.3.6.1.4.1.99999.7.2");
+        let digest = Registered::new("1.3.6.1.4.1.99999.7.3");
+        let curve = curves::by_name("gost256-a").unwrap();
+        let (server_private, server_public) = curve.generate_key_pair().unwrap();
+        let (private, public) = curve.generate_key_pair().unwrap();
+        let secret = [0x42u8; PRELIMINARY_SECRET_LEN];
+        let transport = Transport::GOST_2001;
+        let (random_c, random_s) = ([1u8; 32], [2u8; 32]);
+
+        for sets in [vec![oids::GOST3411_94_TEST_PARAMSET.to_vec(),
+                          oids::GOST_28147_CRYPTOPRO_B.to_vec()],
+                     vec![digest.der(), encryption.der()]] {
+            let refs: Vec<&[u8]> = sets.iter().map(|s| s.as_slice()).collect();
+            let algorithm_id = algorithm_id_2001(&refs);
+            let tables = Tables::for_key(KeyGeneration::Gost2001, &algorithm_id).unwrap();
+            assert_ne!(tables.sbox, SBOX_2001);
+            assert_ne!(tables.vko_digest, CRYPTOPRO_PARAM_SET);
+            let body = wrap_secret_with_tables(transport, &tables, &curve, &algorithm_id,
+                                               &private, &public, &server_public,
+                                               &random_c, &random_s, &secret).unwrap();
+            assert_eq!(KeyTransportBlob::parse(&body).unwrap().encryption_param_set,
+                       sets[1], "the message names the S-box it was wrapped under");
+            assert_eq!(unwrap_secret_with_tables(transport, &tables, &curve, &server_private,
+                                                 &random_c, &random_s, &body),
+                       Ok(secret.to_vec()));
+            // The server's own key decides the VKO's digest set: the
+            // defaults' CryptoPro set derives another key.
+            assert!(unwrap_secret_with(transport, &curve, &server_private, &random_c,
+                                       &random_s, &body).is_err());
+            // And the defaults' wrap does not unwrap as these tables.
+            let default_body = wrap_secret_with(transport, &curve, &algorithm_id, &private,
+                                                &public, &server_public, &random_c,
+                                                &random_s, &secret).unwrap();
+            assert_ne!(default_body, body);
+        }
+    }
+
+    /// The server unwraps under the S-box the message names, whatever its
+    /// own defaults: a client that wrapped under CryptoPro-B is read.
+    #[test]
+    fn test_the_server_unwraps_under_the_message_s_s_box() {
+        let curve = curves::by_name("gost256-a").unwrap();
+        let (server_private, server_public) = curve.generate_key_pair().unwrap();
+        let (private, public) = curve.generate_key_pair().unwrap();
+        let secret = [0x5au8; PRELIMINARY_SECRET_LEN];
+        let algorithm_id = algorithm_id_2001(&[oids::GOST3411_94_CRYPTOPRO_PARAMSET,
+                                               oids::GOST_28147_CRYPTOPRO_B]);
+        let tables = Tables::for_key(KeyGeneration::Gost2001, &algorithm_id).unwrap();
+        assert_eq!(tables.vko_digest, CRYPTOPRO_PARAM_SET);
+        let body = wrap_secret_with_tables(Transport::GOST_2001, &tables, &curve, &algorithm_id,
+                                           &private, &public, &server_public,
+                                           &[1u8; 32], &[2u8; 32], &secret).unwrap();
+        assert_eq!(unwrap_secret_2001(&curve, &server_private, &[1u8; 32], &[2u8; 32], &body),
+                   Ok(secret.to_vec()));
+
+        // A message naming a table nobody registered is refused.
+        let mut blob = KeyTransportBlob::parse(&body).unwrap();
+        blob.encryption_param_set = crate::asn1::encode_oid("1.3.6.1.4.1.99999.7.4").unwrap();
+        let err = unwrap_secret_2001(&curve, &server_private, &[1u8; 32], &[2u8; 32],
+                                     &blob.encode().unwrap()).unwrap_err();
+        assert!(err.contains("register_oid"), "{err}");
     }
 
     /// The whole exchange, both halves, on every GOST curve.
