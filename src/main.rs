@@ -1063,6 +1063,10 @@ fn describe_key(key: &allcrypt::x509::PublicKey<'_>) -> String {
         PublicKey::Dsa { parameters: Some((p, _, _)), .. } => format!("DSA-{}", p.bit_len()),
         PublicKey::Dsa { parameters: None, .. } => "DSA with inherited parameters".to_string(),
         PublicKey::Unsupported { .. } => "an unsupported algorithm".to_string(),
+        // The binary is a crate of its own, so `#[non_exhaustive]` asks
+        // for this arm; a key type added to the library lands here until
+        // it is described above.
+        _ => "a key type not described here".to_string(),
     }
 }
 

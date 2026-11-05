@@ -69,8 +69,9 @@ pub fn block_cipher_name(name: &str) -> Option<&'static str> {
     BLOCK_CIPHERS.iter().copied().find(|known| *known == canonical)
 }
 pub const STREAM_CIPHERS: &[&str] =
-    &["chacha20", "chacha12", "chacha8", "xchacha20", "hc128", "hc256", "rabbit", "rc4",
-      "salsa20", "salsa12", "salsa8", "sosemanuk", "strumok", "xsalsa20", "zipcrypto"];
+    &["chacha20", "chacha12", "chacha8", "xchacha20", "grain128", "grainv1", "hc128", "hc256",
+      "rabbit", "rc4", "salsa20", "salsa12", "salsa8", "sosemanuk", "strumok", "trivium",
+      "xsalsa20", "zipcrypto"];
 pub const MODES: &[&str] = &["ecb", "cbc", "pcbc", "cfb", "ofb", "ctr", "ctr-le",
                               "cbc-cs1", "cbc-cs2", "cbc-cs3"];
 /// Authenticated modes, which are not in `MODES` because they do not
@@ -224,6 +225,7 @@ pub const HASHES: &[&str] = &[
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Mode {
     Ecb, Cbc, Pcbc, Cfb, Ofb, Ctr,
     /// CTR with the whole block as a little-endian counter (WinZip AES).
@@ -300,6 +302,7 @@ impl Mode {
 /// schedule are built boxed. Hundreds of bytes are not 4 KB, and the line
 /// is drawn between them deliberately rather than by following the lint.
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum AnyBlockCipher {
     Aes(AesCrypto),
     Blowfish(Blowfish),
@@ -1550,6 +1553,7 @@ impl CipherStream {
 
 // --------------------------------------------------------- stream ciphers ---
 
+#[non_exhaustive]
 pub enum AnyStreamCipher {
     Chacha(Chacha),
     /// HC-128: a 16 byte key and a 16 byte IV as the nonce.
@@ -1563,6 +1567,12 @@ pub enum AnyStreamCipher {
     Salsa20(crate::stream_ciphers::salsa20::Salsa20),
     /// SOSEMANUK: a key of 1 to 32 bytes and a 16 byte IV as the nonce.
     Sosemanuk(crate::stream_ciphers::sosemanuk::Sosemanuk),
+    /// Trivium: a 10 byte key and a 4, 6, 8 or 10 byte IV as the nonce.
+    Trivium(crate::stream_ciphers::trivium::Trivium),
+    /// Grain v1: a 10 byte key and an 8 byte IV as the nonce.
+    GrainV1(crate::stream_ciphers::grain::GrainV1),
+    /// Grain-128: a 16 byte key and a 12 byte IV as the nonce.
+    Grain128(crate::stream_ciphers::grain::Grain128),
     /// Strumok, DSTU 8845:2019: a 32 or 64 byte key, the 32 byte IV as
     /// the nonce.
     Strumok(crate::stream_ciphers::strumok::Strumok),
@@ -1622,6 +1632,12 @@ impl AnyStreamCipher {
                 crate::stream_ciphers::hc::Hc256::new(key, nonce)?)),
             "sosemanuk" => Ok(AnyStreamCipher::Sosemanuk(
                 crate::stream_ciphers::sosemanuk::Sosemanuk::new(key, nonce)?)),
+            "trivium" => Ok(AnyStreamCipher::Trivium(
+                crate::stream_ciphers::trivium::Trivium::new(key, nonce)?)),
+            "grainv1" | "grain-v1" => Ok(AnyStreamCipher::GrainV1(
+                crate::stream_ciphers::grain::GrainV1::new(key, nonce)?)),
+            "grain128" | "grain-128" => Ok(AnyStreamCipher::Grain128(
+                crate::stream_ciphers::grain::Grain128::new(key, nonce)?)),
             // The key is the password, of any length, the empty one
             // included.
             "zipcrypto" => {
@@ -1709,6 +1725,18 @@ impl AnyStreamCipher {
                 c.crypt(input, out);
                 Ok(())
             }
+            AnyStreamCipher::Trivium(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::GrainV1(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::Grain128(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
             AnyStreamCipher::ZipCrypto(_) => Err(
                 "ZipCrypto has no keystream independent of the data.".to_string()),
         }
@@ -1743,7 +1771,8 @@ impl AnyStreamCipher {
             AnyStreamCipher::Rc4(_) | AnyStreamCipher::Strumok(_)
             | AnyStreamCipher::ZipCrypto(_) | AnyStreamCipher::Rabbit(_)
             | AnyStreamCipher::Hc128(_) | AnyStreamCipher::Hc256(_)
-            | AnyStreamCipher::Sosemanuk(_) => Err(
+            | AnyStreamCipher::Sosemanuk(_) | AnyStreamCipher::Trivium(_)
+            | AnyStreamCipher::GrainV1(_) | AnyStreamCipher::Grain128(_) => Err(
                 "Only ChaCha and Salsa20 can seek. The other stream ciphers' state is \
                  everything that came before, not a counter: start a new one and \
                  discard up to the offset.".to_string()),
@@ -2059,6 +2088,7 @@ pub fn wpa_pmkid(pmk: &[u8], aa: &[u8], spa: &[u8]) -> Result<Vec<u8>, String> {
 /// Every hash the library knows, as one concrete `Clone`able type, so that
 /// `copy()` (which callers coming from hashlib expect) is just a clone.
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum AnyHash {
     Md5(MD5),
     Sha1(SHA1),
@@ -5732,6 +5762,7 @@ pub fn parse_private_key_with_password(data: &[u8], password: Option<&[u8]>)
 }
 
 /// A private key as bytes, for crossing into Python.
+#[non_exhaustive]
 pub enum PrivateKeyParts {
     /// The curve by name, and the scalar big endian, padded to the
     /// curve's width.
@@ -6032,6 +6063,7 @@ pub struct ClientIdentity {
 }
 
 /// The private half of a client identity.
+#[non_exhaustive]
 pub enum ClientKeyMaterial {
     /// The scalar big endian, and the curve by name. Named rather than
     /// inferred from the certificate for the same reason the server's
@@ -6720,6 +6752,7 @@ pub struct CertificateAuthority {
 /// are now ordinary, and because a signature scheme with no way to
 /// issue a certificate is unreachable - that was the thing blocking
 /// `ed25519` as a TLS signature scheme.
+#[non_exhaustive]
 pub enum CaKey {
     Ec { curve: crate::ec::Curve, private: BigUint },
     /// The **seed**, not a scalar. See `EddsaKey`.

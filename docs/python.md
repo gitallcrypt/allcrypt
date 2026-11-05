@@ -1445,7 +1445,8 @@ assert rc4.update(bytes(16)).hex() == "b2396305f03dc027ccc3524a0a1118a8"
 
 Names are `chacha20`, `chacha12`, `chacha8`, `xchacha20`, `salsa20`,
 `salsa12`, `salsa8`, `xsalsa20`, `strumok`, `rabbit`, `hc128`, `hc256`,
-`sosemanuk`, `rc4` and `zipcrypto` (`allcrypt.stream_ciphers_available`).
+`sosemanuk`, `trivium`, `grainv1`, `grain128`, `rc4` and `zipcrypto`
+(`allcrypt.stream_ciphers_available`).
 ChaCha takes an 8 or 12 byte nonce, XChaCha20 and XSalsa20 a 24 byte one,
 Salsa20 an 8 byte one; RC4 and ZipCrypto take none. Strumok (DSTU
 8845:2019) takes a 32 or 64 byte key and its 32 byte IV as the nonce,
@@ -1454,6 +1455,10 @@ ciphers take their IV as the nonce: Rabbit a 16 byte key and an 8 byte
 IV or none, HC-128 16 bytes of each, HC-256 32 of each, SOSEMANUK a key
 of 1 to 32 bytes and a 16 byte IV, every 32 bit word little endian - so
 RFC 4503's Rabbit vectors, printed as numbers, read here reversed.
+Trivium takes a 10 byte key and a 4, 6, 8 or 10 byte IV, Grain v1 a 10
+byte key and an 8 byte IV, Grain-128 a 16 byte key and a 12 byte IV,
+bits taken from each byte least significant first, as the eSTREAM test
+vectors have them.
 Keystream position carries across calls.
 
 `update` XORs the keystream onto the data, which encrypts and decrypts
@@ -4029,7 +4034,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.7.1"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.8.0"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and

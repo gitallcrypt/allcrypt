@@ -78,6 +78,9 @@ fn main() {
                 SignatureAlgorithm::Dsa(hash) => format!("dsa-{}", hash),
                 SignatureAlgorithm::Unsupported(name) => format!("unsupported-{}", name),
                 SignatureAlgorithm::Unknown => "unknown".to_string(),
+                // An algorithm added since: named so the checker reports
+                // the row rather than matching it by accident.
+                other => format!("unlisted-{:?}", other),
             });
             println!("field {} public_key {}", label, match &certificate.public_key {
                 PublicKey::Rsa { n, .. } => format!("rsa-{}", n.bit_len()),
@@ -95,6 +98,7 @@ fn main() {
                 PublicKey::UnsupportedCurve { oid, .. } =>
                     format!("ec-unsupported-{}", oid),
                 PublicKey::Unsupported { .. } => "unsupported".to_string(),
+                _ => "unlisted-key-type".to_string(),
             });
 
             let names: Vec<String> = certificate.extensions.subject_alt_names.iter()

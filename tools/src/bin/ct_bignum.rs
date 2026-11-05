@@ -746,6 +746,34 @@ fn run(case: &str) {
             publish_bytes(&z);
         }
 
+        "trivium_keystream" => {
+            // A secret key and IV, and 300 bytes of keystream: the set-up
+            // and whole and partial 64 bit steps.
+            let key = secret_bytes32(AES_KEY);
+            let mut trivium =
+                allcrypt::stream_ciphers::trivium::Trivium::new(&key[..10], &key[10..20]).unwrap();
+            let mut z = vec![0u8; 300];
+            trivium.apply_keystream(&mut z);
+            publish_bytes(&z);
+        }
+
+        "grain_keystream" => {
+            // Secret keys and IVs for both, and 300 bytes of keystream
+            // each: the set-ups, which add the output back into the
+            // registers, and whole and partial steps.
+            let key = secret_bytes32(AES_KEY);
+            let mut v1 =
+                allcrypt::stream_ciphers::grain::GrainV1::new(&key[..10], &key[10..18]).unwrap();
+            let mut z = vec![0u8; 300];
+            v1.apply_keystream(&mut z);
+            publish_bytes(&z);
+            let mut g128 =
+                allcrypt::stream_ciphers::grain::Grain128::new(&key[..16], &key[16..28]).unwrap();
+            let mut z = vec![0u8; 300];
+            g128.apply_keystream(&mut z);
+            publish_bytes(&z);
+        }
+
         "hc128_keystream" => {
             let key = secret_bytes32(AES_KEY);
             let mut hc = allcrypt::stream_ciphers::hc::Hc128::new(&key[..16], &[0x5a; 16]).unwrap();
@@ -1182,6 +1210,8 @@ const CASES: &[&str] = &[
     "strumok_keystream",
     "rabbit_keystream",
     "sosemanuk_keystream",
+    "trivium_keystream",
+    "grain_keystream",
     "hc128_keystream",
     "hc256_keystream",
     "dstu9041_public_key",

@@ -35,6 +35,7 @@ pub const MAX_HANDSHAKE_MESSAGE: usize = 65536;
 // ------------------------------------------------------------------- types ---
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum HandshakeType {
     HelloRequest,
     ClientHello,
@@ -1064,6 +1065,7 @@ impl ServerRsaParams {
 /// A record payload's content type paired with its bytes, for the state
 /// machine to dispatch on.
 #[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Incoming {
     Handshake(HandshakeMessage),
     ChangeCipherSpec,

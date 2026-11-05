@@ -124,6 +124,7 @@ impl NistCurve {
 /// `RsaPublicKey::new` accepts, an EC point on its curve, an Ed25519
 /// point that decodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PublicKey {
     Rsa(RsaPublicKey),
     /// `point` is SEC1 uncompressed, as RFC 5656 requires on the wire.

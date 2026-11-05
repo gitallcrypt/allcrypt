@@ -70,6 +70,7 @@ pub enum HostKeyCheck {
 }
 
 /// How to authenticate.
+#[non_exhaustive]
 pub enum Auth {
     PublicKey(PrivateKey),
     Password(String),

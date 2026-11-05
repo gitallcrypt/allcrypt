@@ -62,6 +62,7 @@ use super::wire::Writer;
 
 /// What a method is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Method {
     /// `mlkem768x25519-sha256`: ML-KEM-768 and X25519, hybrid.
     MlKem768X25519,

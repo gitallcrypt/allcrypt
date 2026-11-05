@@ -150,6 +150,7 @@ to be someone's CVE.**
 - [7zzzzzzzzza. VMAC](#7zzzzzzzzza-vmac)
 - [7zzzzzzzzzb. Chaskey](#7zzzzzzzzzb-chaskey)
 - [7zzzzzzzzzc. Rabbit, HC-128, HC-256 and SOSEMANUK](#7zzzzzzzzzc-rabbit-hc-128-hc-256-and-sosemanuk)
+- [7zzzzzzzzzd. Trivium, Grain v1 and Grain-128](#7zzzzzzzzzd-trivium-grain-v1-and-grain-128)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -12036,6 +12037,70 @@ and Serpent's S-boxes are the bitsliced normal forms. The
 
 **Status: accepted.** Each state is everything that came before, not a
 counter, so `seek` refuses, as it does for RC4 and Strumok.
+
+## 7zzzzzzzzzd. Trivium, Grain v1 and Grain-128
+
+`src/stream_ciphers/trivium.rs` and `grain.rs`. Checked against the
+eSTREAM project's own test vectors, read as published from
+`vectors/estream/` by `tests/test_trivium_grain.rs`, and against the
+eSTREAM Trivium submission, pedroalbanese/trivium, the trivium and
+grain128 crates, the Grain v1 reference, gSTREAM and Bouncy Castle 1.77:
+`vectors/trivium_grain.vec`.
+
+### Trivium's specification and its submission load the key in opposite orders
+
+**Status: mitigated.** The specification writes `(s1 .. s93) <- (K1 ..
+K80, 0 .. 0)`; the eSTREAM submission loads `K80 .. K1`, and the IV
+likewise, reading each byte least significant bit first, and its
+comment says why. The test vectors were made with the submission, and
+this library follows it. An implementation written from the
+specification - pedroalbanese/trivium is one, and the trivium crate by
+default - gives other keystreams from the same bytes: the same cipher
+with the key's and IV's bytes reversed and each byte's bits reversed.
+Every keystream is plausible, so only vectors can tell which order an
+implementation took; the witness drivers convert, as pedroalbanese's own
+test does.
+
+### A short Trivium IV goes at the end
+
+**Status: mitigated.** The submission takes IVs of 32, 48, 64 and 80
+bits and places a short one at the end of its buffer, so it is the 80
+bit IV with zero bytes in front. Zeros at the end give another
+keystream. The eSTREAM vectors cover 32 and 64 bits, and the generated
+rows check 48 as well, each against the witnesses that take only 80 bit
+IVs given the padded form.
+
+### Grain-128 is not Grain-128a
+
+**Status: mitigated.** The two have the same registers and set-up, and
+their pre-output functions differ in one bit: Grain-128's ends `b12 b95
+s95`, Grain-128a's `b12 b95 s94`. Using the wrong one gives a keystream
+of the right length that matches nothing. Bouncy Castle made that
+change to its Grain-128 in 1.86, changing its test's expected values
+with it, so from 1.86 its Grain-128 agrees with neither the paper, the
+eSTREAM vectors, the reference nor its own earlier releases; this
+library agrees with Bouncy Castle 1.77 to 1.85. A test asserts the
+Grain-128a filter gives a different keystream here. Grain-128a and
+Grain-128AEAD are not implemented.
+
+### Grain v1's and Trivium's keys are 80 bits
+
+**Status: accepted.** Both were designed for a security level of 80
+bits, which exhaustive search reaches with enough hardware. They are
+kept, and correct, for what uses them.
+
+### All three are constant time
+
+**Status: mitigated.** The registers are 128 bit words clocked 64,
+16 or 32 bits at a time by shifts, ANDs and XORs - no tap is nearer the
+input end than that, by design - and nothing branches on or indexes by
+the state. `ct_check.py`'s `trivium_keystream` and `grain_keystream`
+rows report nothing.
+
+### None of them seeks
+
+**Status: accepted.** As with the software-profile ciphers above, the
+state is everything that came before.
 
 ---
 

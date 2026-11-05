@@ -22,6 +22,7 @@ use crate::hash_functions::HashFunction;
 /// SP 800-108's PRF: HMAC over a named hash, or CMAC over a named block
 /// cipher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Prf<'a> {
     Hmac(&'a str),
     Cmac(&'a str),

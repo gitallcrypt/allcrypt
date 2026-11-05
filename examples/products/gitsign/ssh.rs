@@ -159,6 +159,8 @@ pub fn type_name(key: &PublicKey) -> &'static str {
         PublicKey::Ecdsa { .. } => "ECDSA",
         PublicKey::Ed25519(_) => "ED25519",
         PublicKey::Dsa(_) => "DSA",
+        // A key type the library learns later, until it is named here.
+        _ => "UNKNOWN",
     }
 }
 

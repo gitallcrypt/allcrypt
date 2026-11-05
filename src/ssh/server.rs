@@ -79,6 +79,7 @@ const CHANNEL_ID: u32 = 0;
 
 /// What a user may authenticate with.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Credential {
     PublicKey(PublicKey),
     Password(String),
@@ -146,6 +147,7 @@ impl ServerConfig {
 
 /// What the client asked the session channel to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SessionRequest {
     Exec(String),
     Shell,

@@ -1442,6 +1442,28 @@ $ sh scripts/witness/estream/build.sh            # builds /opt/estreamwitness
 $ python3 scripts/make_estream_vectors.py        # rewrites vectors/estream.vec
 ```
 
+**Trivium, Grain v1 and Grain-128**: `scripts/witness/trivium_grain`
+builds the eSTREAM Trivium submission as SUPERCOP carries it, under the
+ECRYPT driver of `scripts/witness/estream`; pedroalbanese/trivium (Go,
+written in the specification's bit order, which its driver converts);
+the Grain v1 reference as a copy on GitHub carries it, cut at the test
+`main()` that copy appends and does not compile; gSTREAM's word-wide
+Grain v1; Bouncy Castle 1.77's Grain engines from the system's jar - not
+a later one, since 1.86 changed its Grain-128 to Grain-128a's filter;
+and the trivium and grain128 crates, offline, from `crates.sha256`. Its
+self-test requires every eSTREAM vector in `vectors/estream/` to be
+reproduced by every witness that takes it, to the last byte through the
+vector's digest. It needs go, a JDK and cargo.
+
+```console
+$ sh scripts/witness/trivium_grain/build.sh          # builds /opt/hwwitness
+$ python3 scripts/make_trivium_grain_vectors.py      # rewrites vectors/trivium_grain.vec
+```
+
+`vectors/estream/` holds the eSTREAM project's own files, from
+avr-crypto-lib's `testvectors/` (nerilex/avr-crypto-lib a705bca), and is
+not generated.
+
 **Strumok** has two implementations that share no code: UAPKI's
 `dstu8845.c` (specinfo-ua/UAPKI), compiled with the three library files
 it links against, and uacrypt's `hazmat/strumok.rs` (user137/uacrypt),

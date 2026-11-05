@@ -2038,6 +2038,34 @@ assert_eq!(sosemanuk.update(&[0; 16])?, [0xFE, 0x81, 0xD2, 0x16, 0x2C, 0x9A, 0x1
 assert!(sosemanuk.seek(0).is_err());
 ```
 
+Trivium, Grain v1 and Grain-128 are the eSTREAM portfolio's hardware
+ciphers: `trivium` takes a 10 byte key and a 4, 6, 8 or 10 byte IV,
+`grainv1` a 10 byte key and an 8 byte IV, and `grain128` a 16 byte key
+and a 12 byte IV, the IV as the nonce (`stream_ciphers::trivium` and
+`stream_ciphers::grain` for the types). Bits are taken from each byte
+least significant first and written to the keystream the same way, as
+the eSTREAM submissions and their test vectors have them; Trivium's
+specification loads the key and IV in the opposite order, so an
+implementation written from it gives other keystreams from the same
+bytes. A Trivium IV shorter than ten bytes is the ten byte one with zero
+bytes in front. None seeks, and all three are constant time.
+
+```rust
+use allcrypt::api::AnyStreamCipher;
+use allcrypt::stream_ciphers::trivium::Trivium;
+
+let mut key = [0u8; 10];
+key[0] = 0x80;
+let mut block = [0u8; 16];
+Trivium::new(&key, &[0; 10])?.apply_keystream(&mut block);
+assert_eq!(block, [0x38, 0xEB, 0x86, 0xFF, 0x73, 0x0D, 0x7A, 0x9C, 0xAF, 0x8D, 0xF1, 0x3A, 0x44, 0x20, 0x54, 0x0D]);
+
+let mut grain = AnyStreamCipher::new("grain128", &[0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                                     &[0; 12])?;
+assert_eq!(grain.update(&[0; 16])?, [0xC9, 0xE0, 0x2C, 0x74, 0x6A, 0x64, 0xB9, 0x48, 0xE1, 0x03, 0x67, 0x73, 0x85, 0xCA, 0x0F, 0x96]);
+assert!(grain.seek(0).is_err());
+```
+
 Office XOR obfuscation (`stream_ciphers::office_xor`, [MS-OFFCRYPTO]
 method 1) is the `.xls` password protection before RC4. The password
 gives a 16-byte array that the data is XORed with, repeating, each byte
@@ -5383,6 +5411,15 @@ assert_eq!(allcrypt::api::block_cipher_name("nosuch"), None);
 `AnyHash` and `AnyStreamCipher` are the same idea
 for the other two families; `AnyHash` is `Clone`, so forking a hash's state is
 just a clone.
+
+All three are enums with a variant per algorithm, and they are
+`#[non_exhaustive]`, as is every public enum here that gains variants as
+the library grows - `Mode`, the key types, the TLS and SSH message and
+algorithm enums. A `match` on one outside this crate needs a `_` arm,
+and adding an algorithm is then a compatible change rather than a
+breaking one. Enums of a closed set - a CRL reason, an OCSP status, a
+side of a connection - are exhaustive, so they can be matched completely.
+`tests/test_growing_enums.rs` lists which are which.
 
 Code that knows its algorithm at compile time should prefer the concrete
 types above — they avoid the dispatch entirely.

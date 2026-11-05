@@ -53,6 +53,10 @@ fn test_facade_matches_static_api() {
                     Mode::CtrLe => c.ctr_le_encrypt(&pt, &mut want, &v).unwrap(),
                     Mode::CbcCs1 | Mode::CbcCs2 | Mode::CbcCs3 => c.cbc_cs_encrypt(
                         &pt, &mut want, &v, mode.cts_variant().unwrap()).unwrap(),
+                    // `Mode` is `#[non_exhaustive]`, so a mode added later
+                    // reaches here rather than failing to compile: it fails
+                    // the test instead, until it has an arm.
+                    _ => panic!("{mode_name} has no one-shot function listed here"),
                 }
                 assert_eq!(got, want, "{} {} len {}", name, mode_name, n);
 
@@ -159,7 +163,9 @@ fn test_facade_update_into() {
 fn stream_nonce(name: &str) -> Vec<u8> {
     match name {
         "rc4" | "zipcrypto" => vec![],
-        "salsa20" | "salsa12" | "salsa8" | "rabbit" => iv(8),
+        "salsa20" | "salsa12" | "salsa8" | "rabbit" | "grainv1" => iv(8),
+        "trivium" => iv(10),
+        "grain128" => iv(12),
         "hc128" | "sosemanuk" => iv(16),
         "xchacha20" | "xsalsa20" => iv(24),
         "strumok" | "hc256" => iv(32),
@@ -171,7 +177,7 @@ fn stream_nonce(name: &str) -> Vec<u8> {
 /// constructs. Found by trying rather than tabulated, for the reason the
 /// block cipher loop in `test_catalogue_is_accurate` gives.
 fn stream_key(name: &str) -> Vec<u8> {
-    let length = [32usize, 16, 64, 24, 8, 1].into_iter()
+    let length = [32usize, 16, 64, 24, 10, 8, 1].into_iter()
         .find(|&n| AnyStreamCipher::new(name, &key(n), &stream_nonce(name)).is_ok())
         .unwrap_or_else(|| panic!("{name} constructs at no key length"));
     key(length)

@@ -33,8 +33,9 @@ description and test vectors.
   CBC, PCBC, CFB, OFB, CTR, ciphertext stealing, XTS, LRW, GCM, CCM,
   EAX, OCB, MGM and key wrap.
 - **Stream ciphers** - ChaCha20 and XChaCha20, Salsa20 and XSalsa20, RC4,
-  Strumok (DSTU 8845), ZipCrypto, and WEP and TKIP's constructions on top
-  of them.
+  Strumok (DSTU 8845), the eSTREAM ciphers (Rabbit, HC-128 and HC-256,
+  SOSEMANUK, Trivium, Grain v1 and Grain-128), ZipCrypto, and WEP and
+  TKIP's constructions on top of them.
 - **Hashes** - MD2, MD4, MD5, SHA-0 to SHA-3, SHAKE, Keccak, BLAKE, BLAKE2, BLAKE3, Grøstl, JH, Skein,
   RIPEMD-128 to -320, HAS-160, SM3, Whirlpool and its two earlier
   versions, MD6, Tiger, HAVAL, Snefru, Streebog, GOST R 34.11-94, Ukraine's GOST 34.311-95

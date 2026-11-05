@@ -62,6 +62,7 @@ use crate::asn1::encode_oid;
 
 /// What an OID can be registered as.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Meaning {
     /// A hash function, by the name `api::AnyHash::new` knows it.
     ///

@@ -64,6 +64,7 @@ use super::Prng;
 /// How a named generator turns the seed its library function takes into
 /// the first state. See the module documentation for which uses which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Seeding {
     /// `seed mod m`.
     Direct,

@@ -116,6 +116,7 @@ const INTRINSIC: &str = "intrinsic";
 /// of half a kilobyte. Every move of a `ServerKey` would carry that. One
 /// allocation per server configuration is the better trade.
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum ServerKey {
     Rsa(Box<RsaPrivateKey>),
     Ec { curve: &'static str, private: BigUint },

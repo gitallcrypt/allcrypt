@@ -35,7 +35,8 @@ full documentation are in the repository.
   SM4, Simon, Speck and Threefish, in every mode their block size allows:
   ECB, CBC, CFB, OFB, CTR, ciphertext stealing, XTS, GCM, CCM, EAX, OCB,
   MGM, key wrap and more.
-- **Stream ciphers**: ChaCha20, Salsa20, their X variants, RC4, Strumok.
+- **Stream ciphers**: ChaCha20, Salsa20, their X variants, RC4, Strumok,
+  Rabbit, HC-128, HC-256, SOSEMANUK, Trivium, Grain v1, Grain-128.
 - **Hashes**: MD2 to SHA-3, BLAKE to BLAKE3, the SHA-3 finalists,
   RIPEMD, Whirlpool, Tiger, HAVAL, Snefru, Streebog, GOST R 34.11-94,
   Kupyna, SM3, LSH, ssdeep, xxHash, MurmurHash3 and the common checksums.

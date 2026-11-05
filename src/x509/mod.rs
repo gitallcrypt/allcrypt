@@ -73,6 +73,7 @@ use crate::bignum::BigUint;
 /// with. Anything not recognised is kept rather than rejected, so a caller
 /// can report "signed with something I do not know" rather than "malformed".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum SignatureAlgorithm {
     RsaPkcs1(&'static str),
     Ecdsa(&'static str),
@@ -236,6 +237,7 @@ impl SignatureAlgorithm {
 
 /// A subject public key, as the certificate carries it.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum PublicKey<'a> {
     Rsa { n: BigUint, e: BigUint },
     /// The curve name as this library spells it, plus the SEC1 point.

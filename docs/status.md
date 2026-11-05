@@ -165,6 +165,9 @@ for a tag. Key wrap authenticates without one. Both are in
 |Rabbit (RFC 4503), with and without an IV, `rabbit`|✓|RFC 4503's vectors and its debugging states, read out of `rfcs/rfc4503.txt` with erratum 2504 applied; the eSTREAM submission, Crypto++ 8.9.0, libtomcrypt and RustCrypto agree: `vectors/estream.vec`|
 |HC-128 and HC-256, `hc128`, `hc256`|✓|HC-128: the eSTREAM submission's three versions, Crypto++ 8.9.0 and Bouncy Castle 1.77 agree; HC-256: the submission's two versions, Bouncy Castle and RustCrypto 0.6.0 agree, with the designer's three vectors - Crypto++'s HC-256 reads key and IV words rotated and is not a witness for it: `vectors/estream.vec`|
 |SOSEMANUK, keys of 1 to 32 bytes, `sosemanuk`|✓|the submission's own vector; the submission, Crypto++ 8.9.0 and libtomcrypt agree at every key length: `vectors/estream.vec`|
+|Trivium, 32, 48, 64 and 80 bit IVs, `trivium`|✓|the eSTREAM project's 246 vectors at 32, 64 and 80 bit IVs, every byte through their digests: `vectors/estream/`; the eSTREAM submission, pedroalbanese/trivium and the trivium crate agree, a short IV checked as the long one with zero bytes in front: `vectors/trivium_grain.vec`. The submission's bit order, not the specification's|
+|Grain v1, `grainv1`|✓|the eSTREAM project's 83 vectors; the reference implementation, gSTREAM's word-wide Grain v1 and Bouncy Castle 1.77 agree: `vectors/estream/`, `vectors/trivium_grain.vec`|
+|Grain-128, `grain128`|✓|the eSTREAM project's 92 vectors; the grain128 crate (a port of the reference) and Bouncy Castle 1.77 agree - Bouncy Castle 1.86 and later use Grain-128a's output function and are not a witness: `vectors/estream/`, `vectors/trivium_grain.vec`|
 |ZipCrypto (PKWARE traditional ZIP encryption)|✓|✓|
 |WEP (RC4 with the per-frame IV; IEEE 802.11)|✓|spec reference|
 |TKIP per-packet key mixing and frame encryption (WPA; IEEE 802.11)|✓|spec reference; frames against python-cryptography's RC4 and zlib's CRC-32|

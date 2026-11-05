@@ -146,6 +146,7 @@ pub struct ClientIdentity {
 /// The same shape as the server's `ServerKey` and separate from it, because
 /// a client key signs and never decrypts - there is no RSA key transport in
 /// this direction at any version.
+#[non_exhaustive]
 pub enum ClientKey {
     Rsa(Box<crate::publickey_ciphers::rsa::RsaPrivateKey>),
     Ec { curve: &'static str, private: BigUint },
@@ -561,6 +562,7 @@ impl ClientConfig {
 /// A message that does not belong is `unexpected_message`, not a warning
 /// and not a guess.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum State {
     /// The ClientHello has been written and we are waiting for an answer.
     WaitServerHello,

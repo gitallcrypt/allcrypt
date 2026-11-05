@@ -63,6 +63,7 @@ use crate::x509::oids;
 /// is no useful thing to do with a private key we cannot use. A
 /// certificate on an unknown curve is still a link in a chain; a private
 /// key on one is nothing at all.
+#[non_exhaustive]
 pub enum PrivateKey {
     /// `(p, q, e)` - the two primes and the public exponent, which is
     /// what `RsaPrivateKey::from_primes` wants. The CRT parameters in the

@@ -108,6 +108,11 @@ impl Builtin {
                 server.write_stderr(b"ssh_serve: no shell here; give a command\n")?;
                 return server.finish(1);
             }
+            _ => {
+                self.finished = true;
+                server.write_stderr(b"ssh_serve: only commands are served\n")?;
+                return server.finish(1);
+            }
         };
         match command.trim() {
             "cat" => {

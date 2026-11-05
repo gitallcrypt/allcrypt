@@ -125,6 +125,10 @@ Three edits, all mechanical:
 
 Step 2 is what makes it reachable from Python: the bindings go through
 `api.rs`, so a cipher registered there needs no changes in `src/python.rs`.
+`AnyBlockCipher`, like the other growing public enums, is
+`#[non_exhaustive]`, so the new variant is a compatible change for code
+outside the crate; a new public enum that will gain variants gets the
+attribute and a line in `tests/test_growing_enums.rs`.
 `tests/test_api.rs` asserts every name in `BLOCK_CIPHERS` actually
 constructs, so forgetting part of step 2 fails the suite.
 

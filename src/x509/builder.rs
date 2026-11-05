@@ -25,6 +25,7 @@ use crate::publickey_ciphers::rsa::{self, RsaPrivateKey};
 use crate::x509::{ocsp, oids, verify};
 
 /// The key a certificate is signed with, and the one it carries.
+#[non_exhaustive]
 pub enum SigningKey<'a> {
     Rsa(&'a RsaPrivateKey),
     Ec { curve: &'a Curve, private: &'a BigUint },
@@ -95,6 +96,7 @@ pub type ExternalSigner<'a> = dyn Fn(&str, &[u8]) -> Result<Vec<u8>, String> + '
 
 /// A public key to put in a certificate.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum SubjectKey<'a> {
     Rsa { n: &'a BigUint, e: &'a BigUint },
     /// The curve and a SEC1 encoded point.
@@ -426,6 +428,7 @@ fn external_oid(kind: &str, hash: &str) -> Result<&'static [u8], String> {
 
 /// One entry for a subjectAltName.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum SanEntry {
     Dns(String),
     Email(String),

@@ -196,5 +196,9 @@ def test_every_member_of_every_enum_actually_constructs():
             nonce = bytes(32)
         if name in (allcrypt.StreamCipherName.HC128, allcrypt.StreamCipherName.SOSEMANUK):
             nonce = bytes(16)
+        if name == allcrypt.StreamCipherName.TRIVIUM:
+            nonce = bytes(10)
+        if name == allcrypt.StreamCipherName.GRAIN128:
+            nonce = bytes(12)
         # And the key: the first length, longest first, that constructs.
-        assert any(_stream_constructs(name, n, nonce) for n in (32, 16)), name
+        assert any(_stream_constructs(name, n, nonce) for n in (32, 16, 10)), name

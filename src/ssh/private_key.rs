@@ -75,6 +75,7 @@ const LABEL: &str = "OPENSSH PRIVATE KEY";
 
 /// A private key SSH can sign with.
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum PrivateKey {
     /// The 32 byte seed RFC 8032 calls the private key, and the public
     /// key it makes.

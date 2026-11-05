@@ -24,6 +24,7 @@ use crate::mac::hmac::Hmac;
 
 /// One of the three, by its AES key size in bits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Variant {
     Aes128HmacSha256,
     Aes192HmacSha384,

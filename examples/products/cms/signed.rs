@@ -368,28 +368,7 @@ fn inherit_dsa_parameters<'a>(cert: &Certificate<'a>, pool: &[Certificate<'a>])
         };
         return Ok(PublicKey::Dsa { parameters: Some(p.clone()), y: y.clone() });
     }
-    Ok(clone_key(&cert.public_key))
-}
-
-fn clone_key<'a>(key: &PublicKey<'a>) -> PublicKey<'a> {
-    match key {
-        PublicKey::Rsa { n, e } => PublicKey::Rsa { n: n.clone(), e: e.clone() },
-        PublicKey::Ec { curve, point } => PublicKey::Ec { curve, point },
-        PublicKey::Eddsa { curve, key } => PublicKey::Eddsa { curve, key },
-        PublicKey::Dsa { parameters, y } =>
-            PublicKey::Dsa { parameters: parameters.clone(), y: y.clone() },
-        PublicKey::MlDsa { parameter_set, key } => PublicKey::MlDsa { parameter_set, key },
-        PublicKey::MlKem { parameter_set, key } => PublicKey::MlKem { parameter_set, key },
-        PublicKey::SlhDsa { parameter_set, pre_hash, key } =>
-            PublicKey::SlhDsa { parameter_set, pre_hash: *pre_hash, key },
-        PublicKey::UnsupportedCurve { oid, family } =>
-            PublicKey::UnsupportedCurve { oid: *oid, family },
-        PublicKey::Unsupported { algorithm } => PublicKey::Unsupported { algorithm },
-        PublicKey::Gost { curve, x, y, param_set, algorithm_id, legacy } => PublicKey::Gost {
-            curve, x: x.clone(), y: y.clone(), param_set: *param_set, algorithm_id,
-            legacy: *legacy },
-        PublicKey::Dstu4145 { .. } => key.clone(),
-    }
+    Ok(cert.public_key.clone())
 }
 
 // ------------------------------------------------------------------ signing --

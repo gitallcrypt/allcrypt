@@ -30,6 +30,7 @@ use crate::tls::handshake::groups;
 /// A TLS 1.3 client keeps several, because it sends its public keys
 /// before it knows which group the server wants and the private halves
 /// have to survive until the answer names one. A server keeps one.
+#[non_exhaustive]
 pub enum EphemeralKey {
     X25519 { private: [u8; 32], public: [u8; 32] },
     /// **A variant of its own, not X25519 with a length field.**

@@ -73,6 +73,7 @@ pub const SEAL_BYTES: usize = 32 + MAC_BYTES;
 
 /// Which stream cipher a box runs on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Construction {
     /// NaCl's: XSalsa20 and Poly1305, keyed through HSalsa20.
     XSalsa20Poly1305,

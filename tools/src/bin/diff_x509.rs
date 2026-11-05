@@ -77,6 +77,9 @@ fn emit(label: &str, signer: &str, der: &[u8]) {
         // be found by a unit test instead.
         PublicKey::UnsupportedCurve { oid, .. } => format!("ec-unsupported-{}", oid),
         PublicKey::Unsupported { .. } => "unsupported".to_string(),
+        // A key type added since: named so the checker reports the row
+        // rather than matching it by accident.
+        _ => "unlisted-key-type".to_string(),
     });
     println!("field {} is_ca {}", label, certificate.extensions.is_ca());
     println!("field {} path_len {}", label,

@@ -184,6 +184,7 @@ impl SequenceNumber {
 /// `Null` is the state before the first ChangeCipherSpec, when records go
 /// out in the clear. It is a variant rather than an `Option` so that the
 /// transition is a state change rather than a special case at every use.
+#[non_exhaustive]
 pub enum Protection {
     Null,
     CbcHmac(CbcHmac),

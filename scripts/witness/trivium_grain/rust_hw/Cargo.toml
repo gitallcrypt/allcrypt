@@ -1,0 +1,10 @@
+[package]
+name = "hw-stream-witness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+trivium = "=0.1.0"
+grain128 = "=0.1.0"
+
+[workspace]

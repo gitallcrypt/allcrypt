@@ -26,6 +26,7 @@ use crate::hash_functions::HashFunction;
 /// reference would cost more than copying it, and `Option<PreHash>` in a
 /// signature is much clearer than `Option<&PreHash>`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[non_exhaustive]
 pub enum PreHash {
     Sha224,
     Sha256,

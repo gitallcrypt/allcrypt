@@ -60,6 +60,7 @@ use crate::tls::Version;
 
 /// How the two sides agree on a premaster secret.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum KeyExchange {
     /// The client encrypts the premaster under the server's RSA key. No
     /// forward secrecy: anyone who later obtains the server key can decrypt
@@ -140,6 +141,7 @@ impl KeyExchange {
 
 /// The bulk cipher, and how the record layer has to drive it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum BulkCipher {
     /// No encryption at all. Records go out in the clear, authenticated
     /// only. For diagnostics.
@@ -461,6 +463,7 @@ impl BulkCipher {
 
 /// The record MAC.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum MacAlgorithm {
     /// AEAD suites carry no separate MAC.
     Aead,

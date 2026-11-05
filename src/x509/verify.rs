@@ -45,6 +45,7 @@ use crate::x509::{crl, name_constraints, ocsp, oids, Certificate, GeneralName,
 /// happens to be in a chain must not be usable as a server certificate, and
 /// a server certificate must not be able to sign another one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Purpose {
     ServerAuth,
     ClientAuth,

@@ -477,6 +477,13 @@ CASES = [
      "bitsliced S-boxes, the register's folds by alpha and its inverse as "
      "masked XORs of a word per bit rather than the reference's 256-word "
      "tables, the multiplexer as a mask, and the output S-box."),
+    ("trivium_keystream", CLEAN,
+     "Trivium under a secret key and IV: the registers as three 128 bit "
+     "words, 64 clocks at a time by shifts, ANDs and XORs."),
+    ("grain_keystream", CLEAN,
+     "Grain v1 and Grain-128 under secret keys and IVs: the registers as "
+     "128 bit words, 16 or 32 clocks at a time by shifts, ANDs and XORs, "
+     "the set-up's output added back the same way."),
     ("hc128_keystream", {"allcrypt::stream_ciphers::hc::h128"},
      "HC-128 under a secret key: the initialisation's 1024 steps and the "
      "keystream. h reads two words of the other table at indices from the "
