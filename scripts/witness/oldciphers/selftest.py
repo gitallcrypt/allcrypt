@@ -134,7 +134,7 @@ def swap_word_bytes(data):
 TRANSFORMS = {"reverse_words": reverse_words, "swap_word_bytes": swap_word_bytes}
 SOURCES = ("libtomcrypt", "botan", "cryptopp", "bc", "reference", "mcrypt", "gokrypto", "kernel",
            "inmcm", "skein3fish", "openssl", "presentgo", "kurtfu", "opentitan", "zilijonas",
-           "donaldduck8", "lwbc")
+           "donaldduck8", "lwbc", "rustcrypto", "cryptographyrs")
 
 
 def testdata(text):

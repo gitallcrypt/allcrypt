@@ -5,6 +5,11 @@
 //!     cargo run --release --example cms -- sign IN OUT --signer CERT KEY [--signer CERT KEY]...
 //!             [--hash sha256] [--pss] [--detached] [--no-attributes] [--keyid]
 //!             [--certfile CERTS] [--smime | --pem]
+//!
+//! For an HSS, XMSS or XMSS^MT certificate, KEY is the stateful key's
+//! file - the library's `HssPrivateKey::to_bytes` or the XMSS reference's
+//! form - and `sign` writes it back moved past the leaves it spent before
+//! it writes the signature.
 //!     cargo run --release --example cms -- verify IN [OUT] [--content FILE] [--certfile CERTS]
 //!             [--roots CERTS] [--allow-weak] [--binary]
 //!     cargo run --release --example cms -- encrypt IN OUT [--recipient CERT]...
@@ -134,6 +139,15 @@ fn compressed(der: &[u8]) -> Result<Vec<u8>, String> {
     seq.finish()?;
     inflate::zlib_decompress(&content.ok_or("CompressedData without its content.")?,
                              INFLATE_LIMIT)
+}
+
+/// A stateful key's new state over its file: written beside it and
+/// renamed over it, so the file holds the old state or the new one and
+/// never part of either.
+fn write_key_state(path: &str, state: &[u8]) -> Result<(), String> {
+    let temporary = format!("{path}.new");
+    std::fs::write(&temporary, state).map_err(|e| format!("{temporary}: {e}"))?;
+    std::fs::rename(&temporary, path).map_err(|e| format!("{path}: {e}"))
 }
 
 fn now() -> i64 {
@@ -371,7 +385,12 @@ fn run(argv: &[String]) -> Result<bool, String> {
             let mut loaded = Vec::new();
             for pair in args.all("--signer") {
                 let certs = keys::load_certificates(&pair[0])?;
-                loaded.push((certs[0].clone(), Key::load(&pair[1], key_password)?));
+                let key = match Certificate::parse(&certs[0])?.public_key {
+                    allcrypt::x509::PublicKey::HashSig { scheme, .. } =>
+                        Key::load_hash_sig(&pair[1], scheme)?,
+                    _ => Key::load(&pair[1], key_password)?,
+                };
+                loaded.push((certs[0].clone(), key));
             }
             if loaded.is_empty() {
                 return Err("sign needs at least one --signer CERT KEY.".to_string());
@@ -394,6 +413,14 @@ fn run(argv: &[String]) -> Result<bool, String> {
                 .map(|(c, k)| signed::Signer { certificate: c, key: k }).collect();
             let der = signed::sign(&content, &signers, &certs_from(&args, "--certfile")?,
                                    &options)?;
+            // A stateful key's one-time keys are spent: its file moves on
+            // before the signature is written anywhere, so a failure leaves
+            // a key that has skipped leaves, never one that reuses them.
+            for (pair, (_, key)) in args.all("--signer").iter().zip(&loaded) {
+                if let Some(state) = key.state() {
+                    write_key_state(&pair[1], &state)?;
+                }
+            }
             let out = if smime_clear {
                 let boundary = format!("----{}", asn::hex(&allcrypt::api::random_bytes(16)?));
                 smime::write_clear_signed(&content, &der, &hash, &boundary)
@@ -746,6 +773,63 @@ mod tests {
                                     &Policy::at(now())).unwrap();
                 assert!(!result.ok, "{name}: changed content");
             }
+        }
+    }
+
+    /// The digest in the signed attributes is judged by the policy for
+    /// every signature type. RSA, ECDSA and DSA carry the hash inside the
+    /// signature algorithm, so the policy saw it there; EdDSA signs the
+    /// attributes themselves and names no hash, so an Ed25519 signer
+    /// whose message digest was MD5 or SHA-1 verified under the default
+    /// policy - and a content with the same digest would have verified
+    /// with it. This library's signer never writes one (it uses SHA-512
+    /// for Ed25519), so the message is built here by hand.
+    #[test]
+    fn test_the_attributes_digest_is_judged_for_every_signature() {
+        use allcrypt::asn1::Writer;
+        let key = fixture_key("ed25519");
+        let cert_der = keys::certificates(&fixture("ed25519.crt")).unwrap().remove(0);
+        let cert = Certificate::parse(&cert_der).unwrap();
+        let roots = keys::certificates(&fixture("ca.crt")).unwrap();
+        let content = b"judged by its digest";
+        for (hash, weak) in [("md5", true), ("sha1", true), ("sha256", false)] {
+            let mut ct = Writer::new();
+            ct.write_oid(&asn::oid(asn::DATA));
+            let mut md = Writer::new();
+            md.write_octet_string(&asn::digest(hash, content).unwrap());
+            let set = asn::der_set_of(vec![asn::attribute(asn::CONTENT_TYPE, ct.finish()),
+                                           asn::attribute(asn::MESSAGE_DIGEST, md.finish())],
+                                      0x31);
+            let attrs = Reader::new(&set).read_tagged(Tag::set()).unwrap().to_vec();
+            let signature = key.signing().sign_signed_data("sha512", &set).unwrap();
+            let digest_alg = asn::digest_alg(hash).unwrap();
+            let mut info = Writer::new();
+            info.write_sequence(|w| {
+                w.write_u32(1);
+                signed::write_cert_id(w, &asn::CertId::IssuerSerial(asn::IssuerSerial::of(&cert)));
+                digest_alg.write(w);
+                w.write_tlv(Tag::context(0, true), &attrs);
+                AlgId::new(asn::ED25519).write(w);
+                w.write_octet_string(&signature);
+            });
+            let mut body = Writer::new();
+            body.write_sequence(|w| {
+                w.write_u32(1);
+                w.write_raw(&asn::der_set_of(vec![digest_alg.to_der()], 0x31));
+                signed::write_encapsulated(w, asn::DATA, Some(content));
+                w.write_raw(&asn::der_set_of(vec![cert_der.clone()], 0xa0));
+                w.write_raw(&asn::der_set_of(vec![info.finish()], 0x31));
+            });
+            let input = read_input(&signed::content_info(asn::SIGNED_DATA, &body.finish()), false)
+                .unwrap();
+            let strict = verify(&input, None, &[], &roots, &Policy::at(now())).unwrap();
+            assert_eq!(strict.ok, !weak, "{hash}: {:?}", strict.lines);
+            if weak {
+                assert!(strict.lines[0].contains("collision-broken"), "{hash}: {:?}",
+                        strict.lines);
+            }
+            let legacy = verify(&input, None, &[], &roots, &Policy::legacy(now())).unwrap();
+            assert!(legacy.ok, "{hash}: {:?}", legacy.lines);
         }
     }
 
@@ -1123,5 +1207,304 @@ mod tests {
             let error = decrypt(&input, &creds, Some(&[0x11; 24])).unwrap_err();
             assert!(error.starts_with("Decryption failed"), "{name}: {error}");
         }
+    }
+
+
+    // ------------------------------------------- HSS, XMSS and XMSS^MT --
+
+    /// Inside the validity of every certificate in `vectors/hbs_cms.vec`:
+    /// Bouncy Castle's run 2025 to 2035, the builder's 2020 to 2040.
+    const HBS_TIME: i64 = 1_767_225_600;
+
+    /// `vectors/hbs_cms.vec`'s rows of one kind, written by
+    /// `scripts/make_hbs_cms_vectors.py`.
+    fn hbs_rows(kind: &str) -> Vec<BTreeMap<String, String>> {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("vectors").join("hbs_cms.vec")).unwrap();
+        let declared: usize = text.lines().find_map(|l| l.strip_prefix("# rows: ")).unwrap()
+            .parse().unwrap();
+        assert_eq!(text.lines().filter(|l| !l.starts_with('#')).count(), declared);
+        text.lines().filter(|l| l.split(' ').next() == Some(kind))
+            .map(|l| l.split(' ').skip(1).map(|w| {
+                let (k, v) = w.split_once('=').unwrap();
+                (k.to_string(), v.to_string())
+            }).collect())
+            .collect()
+    }
+
+    fn unhex(s: &str) -> Vec<u8> {
+        if s == "-" { Vec::new() } else { fixtures::unhex(s) }
+    }
+
+    /// A row's message verifies against the certificate it carries, to its
+    /// content, under the identifiers RFC 9708 and RFC 9802 give - and not
+    /// over other content. Returns the parsed message.
+    fn check_hbs_row(row: &BTreeMap<String, String>) -> signed::SignedData {
+        let message = unhex(&row["message"]);
+        let content = unhex(&row["content"]);
+        let detached = row["detached"] == "yes";
+        let what = format!("{} {}", row["scheme"],
+                           row.get("params").or(row.get("levels")).or(row.get("set")).unwrap());
+        let input = read_input(&message, false).unwrap();
+        let sd = signed::parse(&content_info(&input.der).unwrap().1).unwrap();
+        assert_eq!((sd.signers.len(), sd.certificates.len()), (1, 1), "{what}");
+        let roots = sd.certificates.clone();
+        let policy = Policy::at(HBS_TIME);
+        let given = detached.then(|| content.clone());
+        let result = verify(&input, given, &[], &roots, &policy).unwrap();
+        assert!(result.ok && result.content == content, "{what}: {:?}", result.lines);
+        assert!(result.lines[0].contains("certificate chain verified"), "{what}");
+        let signer = &sd.signers[0];
+        assert_eq!(signer.signed_attrs.is_some(), row["attrs"] == "yes", "{what}");
+        assert_eq!(sd.content.is_none(), detached, "{what}");
+        // RFC 9708 section 3 and RFC 9802: the scheme's OID, absent
+        // parameters - and for XMSS the key says which of the two.
+        let scheme = allcrypt::x509::HashSig::from_oid(&signer.sig_alg.oid).expect(&what);
+        assert!(signer.sig_alg.params.is_none(), "{what}");
+        let cert = Certificate::parse(&roots[0]).unwrap();
+        assert!(matches!(cert.public_key,
+                         allcrypt::x509::PublicKey::HashSig { scheme: s, .. } if s == scheme));
+        assert!(result.lines[0].contains(scheme.name()), "{what}: {:?}", result.lines);
+        // RFC 9708 section 5: an HSS signer's digest is the tree's hash,
+        // SHAKE256 as plain id-shake256 - by both writers.
+        // XMSS has no specification in CMS: ours follows the set's hash
+        // family, and Bouncy Castle used the digest it was told.
+        let expected = match (row.get("digest").map(String::as_str), row.get("set")) {
+            (Some("SHA256"), _) => Some(asn::SHA256),
+            (Some("SHA512"), _) => Some(asn::SHA512),
+            (Some("SHAKE256"), _) => Some(asn::SHAKE256),
+            (_, Some(set)) if set.contains("SHAKE") => Some(asn::SHAKE256),
+            (_, Some(set)) if set.ends_with("_512") => Some(asn::SHA512),
+            (_, Some(_)) => Some(asn::SHA256),
+            _ => None,
+        };
+        let expected = if scheme == allcrypt::x509::HashSig::Hss {
+            Some(if what.contains("SHAKE") { asn::SHAKE256 } else { asn::SHA256 })
+        } else {
+            expected
+        };
+        let expected = expected.unwrap_or_else(|| panic!("{what}: which digest?"));
+        assert!(signer.digest_alg.is(expected) && signer.digest_alg.params.is_none(), "{what}");
+        // Other content: the first byte changed, beside the message or in it.
+        let mut other = content.clone();
+        match other.first_mut() {
+            Some(b) => *b ^= 1,
+            None => other.push(0),
+        }
+        let refused = if detached {
+            verify(&input, Some(other), &[], &roots, &policy).unwrap()
+        } else {
+            let at = message.windows(content.len()).rposition(|w| w == content.as_slice())
+                .unwrap();
+            let mut changed = message.clone();
+            changed[at..at + content.len()].copy_from_slice(&other);
+            verify(&read_input(&changed, false).unwrap(), None, &[], &roots, &policy).unwrap()
+        };
+        assert!(!refused.ok, "{what}: other content");
+        sd
+    }
+
+    /// Bouncy Castle 1.85's HSS, XMSS and XMSS^MT messages - with and
+    /// without signed attributes, attached and detached, its own digest
+    /// and named ones - verify.
+    #[test]
+    fn test_bouncy_castle_s_hash_based_signatures() {
+        let rows = hbs_rows("bc");
+        assert_eq!(rows.len(), 12);
+        let mut schemes = std::collections::BTreeSet::new();
+        for row in &rows {
+            check_hbs_row(row);
+            schemes.insert(row["scheme"].clone());
+            assert!(row["witnesses"].contains("bc-hbs"));
+        }
+        assert_eq!(schemes.len(), 3);
+    }
+
+    /// The rows whose keys are cheap to make again in a debug build: HSS
+    /// of trees of height 5 - one level when it is SHAKE, the slow hash
+    /// there - and XMSS^MT-SHA2_20/4, whose four layers are trees of height
+    /// 5 too. The SHAKE key is the one that makes RFC 9708's plain
+    /// id-shake256 again.
+    fn cheap(row: &BTreeMap<String, String>) -> bool {
+        row.get("levels").is_some_and(|l| {
+            l.split(',').all(|t| t.contains("_H5/"))
+                && (l.split(',').count() == 1 || !l.contains("SHAKE"))
+        }) || row.get("set").is_some_and(|s| s == "XMSSMT-SHA2_20/4_256")
+    }
+
+    /// The digest each parameter set's signer uses, for every set: SHAKE256
+    /// for the SHAKE sets, SHA-512 for SHA-2 at 512 bits, SHA-256 for the
+    /// rest - RFC 9708's rule for HSS, and the same for XMSS. The signing
+    /// tests reach most XMSS sets only through keys that take minutes in a
+    /// debug build, so the choice is checked here without keys.
+    #[test]
+    fn test_each_hash_based_set_has_its_digest() {
+        let mut counts = BTreeMap::new();
+        for p in allcrypt::pq::lms::LMS_PARAMETER_SETS.iter() {
+            let digest = signed::hss_digest(p);
+            assert_eq!(digest, if p.name.contains("SHAKE") { "shake256-512" } else { "sha256" },
+                       "{}", p.name);
+            *counts.entry(digest).or_insert(0) += 1;
+        }
+        for p in allcrypt::pq::xmss::parameter_sets() {
+            let digest = signed::xmss_digest(p);
+            let expected = if p.name.contains("SHAKE") { "shake256-512" }
+                           else if p.name.ends_with("_512") { "sha512" } else { "sha256" };
+            assert_eq!(digest, expected, "{}", p.name);
+            *counts.entry(digest).or_insert(0) += 1;
+        }
+        assert_eq!(counts.len(), 3, "{counts:?}");
+        // And the 64 byte SHAKE256 goes out as plain id-shake256 for these
+        // signers, read back as the same 64 bytes.
+        assert!(asn::digest_name(&AlgId::new(asn::SHAKE256)).unwrap() == "shake256-512");
+    }
+
+    /// An `ours` row made again: the key from its state, the certificate
+    /// and the signing time from the message, signed as `sign` signs -
+    /// byte for byte, since HSS and XMSS signing are deterministic - and
+    /// the key moved on.
+    fn make_hbs_row_again(row: &BTreeMap<String, String>, sd: &signed::SignedData) {
+        let message = unhex(&row["message"]);
+        let content = unhex(&row["content"]);
+        let cert = &sd.certificates[0];
+        let scheme = allcrypt::x509::HashSig::from_oid(&sd.signers[0].sig_alg.oid).unwrap();
+        let state = unhex(&row["state"]);
+        let key = Key::hash_sig_from_bytes(&state, scheme).unwrap();
+        let detached = row["detached"] == "yes";
+        let given = detached.then_some(content.as_slice());
+        let (_, reports) = signed::verify_all(sd, given, &[], &Policy::at(HBS_TIME)).unwrap();
+        let options = signed::SignOptions {
+            attributes: row["attrs"] == "yes", detached,
+            now: reports[0].signing_time.unwrap_or(0), ..sign_options("sha384")
+        };
+        let signer = signed::Signer { certificate: cert, key: &key };
+        let again = signed::sign(&content, &[signer], &[], &options).unwrap();
+        assert!(again == message, "{:?}", row.get("levels").or(row.get("set")));
+        assert_ne!(key.state().unwrap(), state);
+    }
+
+    /// The CMS example's own messages - made by its `sign` from a key file,
+    /// and verified by Bouncy Castle 1.85 when they were written - verify,
+    /// and the cheap ones are made again byte for byte.
+    #[test]
+    fn test_this_library_s_hash_based_signatures() {
+        let rows = hbs_rows("ours");
+        assert_eq!(rows.len(), 13);
+        let mut made = 0;
+        for row in &rows {
+            let sd = check_hbs_row(row);
+            if cheap(row) {
+                make_hbs_row_again(row, &sd);
+                made += 1;
+            }
+        }
+        // HSS at both hash lengths and with SHAKE, and XMSS^MT.
+        assert_eq!(made, 6);
+    }
+
+    /// The rest of `ours` made again: XMSS trees of height 10, XMSS^MT with
+    /// SHAKE128, and a two-level SHAKE HSS key. The same code as the cheap
+    /// rows; what these add is keys whose digest
+    /// (`test_each_hash_based_set_has_its_digest`) and scheme
+    /// (`HashSig::of_xmss`, tested in the library over every set) are
+    /// otherwise checked without signing. Measured: 11 seconds in release,
+    /// 5 minutes in debug.
+    ///
+    ///     cargo test --release --example cms -- --ignored expensive_hash_based
+    #[test]
+    #[ignore]
+    fn test_the_expensive_hash_based_messages_are_made_again() {
+        let rows: Vec<_> = hbs_rows("ours").into_iter().filter(|r| !cheap(r)).collect();
+        assert_eq!(rows.len(), 7);
+        for row in &rows {
+            make_hbs_row_again(row, &check_hbs_row(row));
+        }
+    }
+
+    /// The signer's algorithm identifier is checked against RFC 9708 and
+    /// RFC 9802 and against the key: parameters present, or the other
+    /// scheme's OID - XMSS's for an XMSS^MT key, which shares its key
+    /// registry - fail.
+    #[test]
+    fn test_the_hash_based_signature_algorithm_is_checked() {
+        let policy = Policy::at(HBS_TIME);
+        let mut seen = 0;
+        for row in hbs_rows("bc") {
+            let content = unhex(&row["content"]);
+            let given = (row["detached"] == "yes").then_some(content.as_slice());
+            let input = read_input(&unhex(&row["message"]), false).unwrap();
+            let sd = signed::parse(&content_info(&input.der).unwrap().1).unwrap();
+            let (_, reports) = signed::verify_all(&sd, given, &[], &policy).unwrap();
+            assert!(reports[0].result.is_ok());
+            let mut with_null = signed::parse(&content_info(&input.der).unwrap().1).unwrap();
+            with_null.signers[0].sig_alg.params = Some(vec![0x05, 0x00]);
+            let (_, reports) = signed::verify_all(&with_null, given, &[], &policy).unwrap();
+            let error = reports[0].result.as_ref().unwrap_err();
+            assert!(error.contains("must be absent"), "{error}");
+            let scheme = allcrypt::x509::HashSig::from_oid(&sd.signers[0].sig_alg.oid).unwrap();
+            for other in [allcrypt::x509::HashSig::Hss, allcrypt::x509::HashSig::Xmss,
+                          allcrypt::x509::HashSig::XmssMt] {
+                if other == scheme {
+                    continue;
+                }
+                let mut renamed = signed::parse(&content_info(&input.der).unwrap().1).unwrap();
+                renamed.signers[0].sig_alg.oid = other.oid().to_vec();
+                let (_, reports) = signed::verify_all(&renamed, given, &[], &policy).unwrap();
+                assert!(reports[0].result.is_err(), "{scheme:?} as {other:?}");
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 24);
+    }
+
+    /// `sign` with a stateful key file, as a user runs it: the file moves
+    /// on with every message, so two messages from one file use two
+    /// different one-time keys and both verify. A key that is not the
+    /// certificate's is refused before it signs, its file and the output
+    /// left alone.
+    #[test]
+    fn test_a_stateful_key_file_moves_on() {
+        let rows = hbs_rows("ours");
+        let dir = std::env::temp_dir().join(format!("cms-hbs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+        let sd = signed::parse(&content_info(&unhex(&rows[0]["message"])).unwrap().1).unwrap();
+        std::fs::write(path("cert"), &sd.certificates[0]).unwrap();
+        std::fs::write(path("key"), unhex(&rows[0]["state"])).unwrap();
+        std::fs::write(path("content"), b"signed twice from one file").unwrap();
+        let sign = |out: &str, key: &str| run(&["sign", &path("content"), &path(out),
+                                                "--signer", &path("cert"), &path(key)]
+                                              .map(String::from));
+        let before = std::fs::read(path("key")).unwrap();
+        assert!(sign("one", "key").unwrap());
+        let middle = std::fs::read(path("key")).unwrap();
+        assert!(sign("two", "key").unwrap());
+        let after = std::fs::read(path("key")).unwrap();
+        assert!(before != middle && middle != after && before != after);
+        assert!(!std::path::Path::new(&path("key.new")).exists());
+        let roots = std::slice::from_ref(&sd.certificates[0]);
+        let mut signatures = Vec::new();
+        for out in ["one", "two"] {
+            let input = read_input(&std::fs::read(path(out)).unwrap(), false).unwrap();
+            let result = verify(&input, None, &[], roots, &Policy::at(HBS_TIME)).unwrap();
+            assert!(result.ok, "{:?}", result.lines);
+            signatures.push(signed::parse(&content_info(&input.der).unwrap().1).unwrap()
+                .signers.remove(0).signature);
+        }
+        assert_ne!(signatures[0], signatures[1]);
+        // Another HSS key under this certificate.
+        std::fs::write(path("other"), unhex(&rows[2]["state"])).unwrap();
+        let error = sign("three", "other").unwrap_err();
+        assert!(error.contains("not the certificate's key"), "{error}");
+        assert_eq!(std::fs::read(path("other")).unwrap(), unhex(&rows[2]["state"]));
+        assert!(!std::path::Path::new(&path("three")).exists());
+        // A key file that cannot be written back - a directory where its
+        // new state would go - stops the message from being written: the
+        // signature never leaves while the file still holds the leaf.
+        std::fs::create_dir(path("key.new")).unwrap();
+        assert!(sign("four", "key").is_err());
+        assert!(!std::path::Path::new(&path("four")).exists());
+        assert_eq!(std::fs::read(path("key")).unwrap(), after);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

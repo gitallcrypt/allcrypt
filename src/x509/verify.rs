@@ -260,6 +260,11 @@ pub fn verify_signed(signed: &[u8], algorithm: SignatureAlgorithm,
     if let SignatureAlgorithm::SlhDsa(parameter_set, pre_hash) = algorithm {
         return verify_slh_dsa(signed, signature, key, parameter_set, pre_hash);
     }
+    // And the stateful hash-based schemes, whose parameter sets are in
+    // the key and the signature.
+    if let SignatureAlgorithm::HashSig(scheme) = algorithm {
+        return verify_hash_sig(signed, signature, key, scheme);
+    }
 
     let hash_name = match algorithm {
         SignatureAlgorithm::RsaPkcs1(hash) | SignatureAlgorithm::Ecdsa(hash)
@@ -389,7 +394,7 @@ fn verify_eddsa(signed: &[u8], signature: &[u8], key: &PublicKey<'_>,
     }
 }
 
-/// An ML-DSA signature on a certificate, RFC 9881 section 3: pure
+/// An SLH-DSA signature on a certificate: pure
 /// SLH-DSA (FIPS 205 algorithm 24, or 25 for HashSLH-DSA) over the DER of
 /// the TBS, with an empty context string, the signature the raw bytes of
 /// the BIT STRING - RFC 9909 section 4. The key must be of the same
@@ -589,6 +594,26 @@ pub(crate) fn dstu4145_digest(hash: &str, dke: Option<&[u8]>, data: &[u8])
     }
 }
 
+/// An HSS, XMSS or XMSS^MT signature on a certificate, RFC 9802 section
+/// 7: the scheme's own verification over the DER of the TBS, the
+/// signature the raw bytes of the BIT STRING. The key must be of the
+/// scheme the signature names; within it, the key and the signature
+/// carry their parameter sets and the verifier holds them to each other.
+fn verify_hash_sig(signed: &[u8], signature: &[u8], key: &PublicKey<'_>,
+                   scheme: crate::x509::HashSig) -> Result<(), String> {
+    let key_bytes = match key {
+        PublicKey::HashSig { scheme: s, key } if *s == scheme => *key,
+        other => return Err(format!("Issuer's key ({}) cannot verify an {} signature.",
+                                    describe_key(other), scheme.name())),
+    };
+    if scheme.verify(key_bytes, signed, signature) {
+        Ok(())
+    } else {
+        Err(format!("The {} signature does not verify against the issuer's key.",
+                    scheme.name()))
+    }
+}
+
 pub(crate) fn describe_key(key: &PublicKey<'_>) -> String {
     match key {
         PublicKey::Rsa { n, .. } => format!("RSA {} bits", n.bit_len()),
@@ -598,6 +623,8 @@ pub(crate) fn describe_key(key: &PublicKey<'_>) -> String {
             parameter_set.to_string(),
         PublicKey::SlhDsa { parameter_set, pre_hash, .. } =>
             crate::x509::slh_dsa_name(parameter_set, *pre_hash),
+        PublicKey::HashSig { scheme, key } => crate::x509::hash_sig_key_name(*scheme, key)
+            .unwrap_or_else(|_| scheme.name().to_string()),
         PublicKey::Dsa { parameters: Some((p, _, _)), .. } => format!("DSA {} bits", p.bit_len()),
         PublicKey::Dsa { parameters: None, .. } => "DSA with inherited parameters".to_string(),
         PublicKey::Gost { curve, legacy: true, .. } =>

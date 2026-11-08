@@ -550,14 +550,17 @@ def test_catalogue_entries_all_work():
             allowed = {8, 16}
         assert set(sizes) <= allowed, f"{name} reports {set(sizes)}"
     # The nonce each stream cipher takes, which they do not agree on:
-    # RC4 has none, Salsa20, Rabbit and Grain v1 want exactly 8 bytes,
-    # Trivium 10, ChaCha and Grain-128 12, HC-128 and SOSEMANUK 16, XChaCha20
-    # and XSalsa20 24, Strumok's IV and HC-256's 32. Spelled out rather than
+    # RC4, ZipCrypto and ISAAC have none, Salsa20, Rabbit and Grain v1 want exactly 8 bytes,
+    # Trivium 10, ChaCha and Grain-128 12, HC-128, SOSEMANUK, SNOW 3G and
+    # ZUC-128 and 3GPP's ZUC-256 16, XChaCha20 and XSalsa20 24, ZUC-256 25, Strumok's IV and
+    # HC-256's 32. Spelled out rather than
     # assumed, so a cipher with a different nonce fails here loudly instead
     # of being handed the wrong length. The key is found by trying lengths,
     # longest first.
-    nonce_length = {"rc4": None, "zipcrypto": None, "salsa20": 8, "salsa12": 8, "salsa8": 8,
+    nonce_length = {"rc4": None, "zipcrypto": None, "isaac": None, "isaac-bouncycastle": None,
+                    "isaac64": None, "salsa20": 8, "salsa12": 8, "salsa8": 8,
                     "rabbit": 8, "grainv1": 8, "trivium": 10, "hc128": 16, "sosemanuk": 16,
+                    "snow3g": 16, "zuc128": 16, "zuc256": 25, "zuc256-3gpp": 16,
                     "strumok": 32, "hc256": 32, "xchacha20": 24, "xsalsa20": 24}
     for name in allcrypt.stream_ciphers_available:
         size = nonce_length.get(name, 12)

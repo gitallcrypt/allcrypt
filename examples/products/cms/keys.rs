@@ -1,12 +1,17 @@
 //! Certificates and private keys from files, and the private key as the
 //! library's types for signing and decrypting.
 
+use std::cell::RefCell;
+
 use allcrypt::bignum::BigUint;
 use allcrypt::ec::{curves, Curve};
 use allcrypt::publickey_ciphers::dsa::{DsaParameters, DsaPrivateKey};
+use allcrypt::pq::lms::HssPrivateKey;
+use allcrypt::pq::xmss::XmssPrivateKey;
 use allcrypt::publickey_ciphers::rsa::RsaPrivateKey;
 use allcrypt::x509::builder::SigningKey;
 use allcrypt::x509::private_key::{self, PrivateKey};
+use allcrypt::x509::HashSig;
 
 /// A private key in the form the operations want it.
 pub enum Key {
@@ -14,6 +19,11 @@ pub enum Key {
     Ec { name: &'static str, curve: Curve, private: BigUint },
     Eddsa { name: &'static str, seed: Vec<u8> },
     Dsa(DsaPrivateKey),
+    /// A stateful hash-based key (RFC 8554, RFC 8391): every signature
+    /// spends a one-time key, so the signer moves it on through the cell
+    /// and its state has to be written back before the signature leaves.
+    Hss(RefCell<HssPrivateKey>),
+    Xmss(RefCell<XmssPrivateKey>),
 }
 
 impl Key {
@@ -39,12 +49,49 @@ impl Key {
             .map_err(|e| format!("{path}: {e}"))?)
     }
 
+    /// A stateful key's file, in the library's own form for HSS (RFC 8554
+    /// defines none) and the XMSS reference implementation's for XMSS and
+    /// XMSS^MT - which share OIDs, so the certificate's scheme says which.
+    pub fn load_hash_sig(path: &str, scheme: HashSig) -> Result<Key, String> {
+        let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        Key::hash_sig_from_bytes(&data, scheme).map_err(|e| format!("{path}: {e}"))
+    }
+
+    pub fn hash_sig_from_bytes(data: &[u8], scheme: HashSig) -> Result<Key, String> {
+        Ok(match scheme {
+            HashSig::Hss => Key::Hss(RefCell::new(HssPrivateKey::from_bytes(data)?)),
+            HashSig::Xmss | HashSig::XmssMt => Key::Xmss(RefCell::new(
+                XmssPrivateKey::from_bytes(data, scheme == HashSig::XmssMt)?)),
+        })
+    }
+
+    /// The public key of a stateful key, to hold against its certificate.
+    pub fn hash_sig_public(&self) -> Option<Vec<u8>> {
+        match self {
+            Key::Hss(key) => Some(key.borrow().public_key()),
+            Key::Xmss(key) => Some(key.borrow().public_key()),
+            _ => None,
+        }
+    }
+
+    /// A stateful key's state as it now stands, for its file; `None` for
+    /// every other key.
+    pub fn state(&self) -> Option<Vec<u8>> {
+        match self {
+            Key::Hss(key) => Some(key.borrow().to_bytes()),
+            Key::Xmss(key) => Some(key.borrow().to_bytes()),
+            _ => None,
+        }
+    }
+
     pub fn signing(&self) -> SigningKey<'_> {
         match self {
             Key::Rsa(key) => SigningKey::Rsa(key),
             Key::Ec { curve, private, .. } => SigningKey::Ec { curve, private },
             Key::Eddsa { name, seed } => SigningKey::Eddsa { name, seed },
             Key::Dsa(key) => SigningKey::Dsa(key),
+            Key::Hss(key) => SigningKey::Hss(key),
+            Key::Xmss(key) => SigningKey::Xmss(key),
         }
     }
 }

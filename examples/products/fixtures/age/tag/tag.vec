@@ -1,0 +1,129 @@
+# age files to the tagged recipients, written by
+# scripts/make_age_tag_fixtures.py; do not edit. theirs: made by age
+# v1.3.2, opened here with the identity from `seed`; ours: made here
+# with `seed_number` to every seed's recipient, opened by age's test
+# identities (age-tag-witness) with each. A seed's identity is HPKE's
+# DeriveKeyPair of its bytes, over P-256 (classic) or MLKEM768-P256 (pq).
+
+[theirs]
+name = age-classic-1-0.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag one
+plain = plain-0
+name = age-classic-2-0.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag one
+plain = plain-0
+name = age-classic-2-0.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag two
+plain = plain-0
+name = age-classic-1-1000.armored.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag one
+plain = plain-1000
+name = age-classic-2-1000.armored.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag one
+plain = plain-1000
+name = age-classic-2-1000.armored.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag two
+plain = plain-1000
+name = age-classic-2-70000.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag one
+plain = plain-70000
+name = age-classic-2-70000.age
+made_by = v1.3.2
+type = classic
+seed = allcrypt tag two
+plain = plain-70000
+name = age-pq-1-0.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq one
+plain = plain-0
+name = age-pq-2-0.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq one
+plain = plain-0
+name = age-pq-2-0.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq two
+plain = plain-0
+name = age-pq-1-1000.armored.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq one
+plain = plain-1000
+name = age-pq-2-1000.armored.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq one
+plain = plain-1000
+name = age-pq-2-1000.armored.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq two
+plain = plain-1000
+name = age-pq-2-70000.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq one
+plain = plain-70000
+name = age-pq-2-70000.age
+made_by = v1.3.2
+type = pq
+seed = allcrypt tagpq two
+plain = plain-70000
+
+[ours]
+name = ours-classic-0.age
+seed_number = 300
+type = classic
+seed = allcrypt tag one + allcrypt tag two
+plain = plain-0
+name = ours-classic-1000.age
+seed_number = 310
+type = classic
+seed = allcrypt tag one + allcrypt tag two
+plain = plain-1000
+name = ours-pq-0.age
+seed_number = 305
+type = pq
+seed = allcrypt tagpq one + allcrypt tagpq two
+plain = plain-0
+name = ours-pq-1000.age
+seed_number = 315
+type = pq
+seed = allcrypt tagpq one + allcrypt tagpq two
+plain = plain-1000
+name = ours-pq-70000.age
+seed_number = 325
+type = pq
+seed = allcrypt tagpq one + allcrypt tagpq two
+plain = plain-70000
+
+[recipients]
+name = allcrypt tag one
+type = classic
+recipient = age1tag1qvu5feqdl8mfhjm0ufdqg9qn9u8c3h59a3yx4a47uhzjx6e9lrfqu080jfa
+name = allcrypt tag two
+type = classic
+recipient = age1tag1q278nav4mkk26x97tfynhqnnpqmj7nd6t3ed38gqx7vay8f98ypekyae2vz
+name = allcrypt tagpq one
+type = pq
+recipient = age1tagpq17hjxgghe28u75lpdwwrmrx3fknkyzva2fu0zwwuhg957dx7gjh4zsvjxp8u5tjfz4pxz8ym7e9yjndpmgtfccfdaw26gfq3cemvj60nr29xfzz0e3gn3zdeq2j3evt7u4rdgsetl2fxtky4xg0nrp9lhq5l5c98eva4f2f39kkjs7lt8jk6e424xg5k83qd5n64x4ep2j8q5sq7u8jc5v59rca7fgx5qelrh33mrqxs4fkes4hu9sr7nj7wr2nc28pf32tqgxy6zaljv539dvhrlag85q7sdvz56a5lye2xl0rdj0xgjeufjvmtfs4wjwc42rn25gfl062dtl0m8qldme0yg8nx8xcemz4yw3mcy3at9p5m2ftv8selxw4z66narhrx5csr6zexg78pt7x5c7a96c6a43wldnwy08948y4jt256hv8yk8x2003zx5pkh5c38r4ruwxd8zjppw7z7jwdcrx9h80j56xj6fv2pcga2xps8e9czvxd34tynn0vre27nmq47wvxpwwp99vc2nfkynw5g4q0m72uh9tsxey3txtnxymprjm96gfv6qmj96y4hc34fdjc4yjtgzv9nwh6kuhd484fyttm27fdcc2n07v6zrlmqrudtc8dr79l0x2mhzxjh728y4jvdp3zxj2jl5xyxcr36jhjktexu2tc3dsg486ynh4axa5x6nnqn5v5apt80kqp29mt38um4x45pw90rnf8y8jwvllp3qxfqg64tq4du5k70ndmy0vysxkq4hve74rc74txtjypz665nzpuu3nyppqu3ywxcnapnujvjvhueexfgxqg2jqy2zzd2mg69r9eg24kvg7amfp3wd7sqq82t60kk5vje9xrz8yzswqgl80u8g9qhwx9wzuz569kfajjc4uz8f9mzfkuswv2ry45q83e7pu9hv7a8v7shsf0xnxlxa8zf0g6g04wzc98a3gzdavhd6c6usk2mxhph0zug9p0s9qczpyqpxfy6cny4qzz3n270s25s2avjdmzckj2rdj4a5zphaqt2sj2x9sqh9savr0pk3p9sc3sce449wx4g4dmududchwxl2uvxe49eeqv5rpyufh36psxrvp7tqtpr6mpmj5mx8yld9x75v3q8xu6mf0phrjlmxw7ngj5sngpaa6zguzv2ue2vztqgxp9x5ywmx3p4fefjmjaj9grcgk8ut0ywysq5affnmw7k50qewge7vswkqp28hhx2t7fjfzlp2cqsm3myk3u48hefy8sehxp55kghvxc0saz6w65qf7z2w5j5s94nnj7l46krqz9twegvrv03efyftdr7gwzff6zvmzjcdqkwhxkpwrpsny368usr0nkvnlxr98vyu5gwds6hvqrm409n898ncwrag9uqu3390aye3wxcqmj8c2egvaygasnmpefkzkqr9fs2x6ldm97ajwc9ek2enxfvrhlgwzpt3jhhyyskev5ygwfuvyu3ptd7zvz9jmzhvc6k66vjyryne08dnwahk4erhe7y4s8ew6q7j5v6urpgw6em266z9q3qyptzya7wadxmd6mudlqmk2x345a60xgu93zpkcafc4ch2a89y8wa4zyesg72suag3md432fnz5j7wz9ldz323d5y8tw2c733ry9qzz2z7ufnf4zw3qtzk3z4pfhdhstnxksv0dax3cr52fcznpq0xqnxypfmvuvfwa2f99w8vf93qduzp9fcnud0vhnmlr0sz2tfpnje0223vnyfghpuv69qf653ex9g6pxa4ctextjqm4uutr70jp7eqk9tqxpcd052qzcrkvg75pv8n2xvvxlfv9fftkjdudyvf7u2k90fdm7ma86adjqlspf85amdfmeur7cyz3p3dl0y86wg5jyg9pktuultyly4p0nsydmpkzd94wx0x2gn7ewwhtw276wekuaydllg442asjzy847pj5lsfk7yg59vwhguwz462aqjargqg
+name = allcrypt tagpq two
+type = pq
+recipient = age1tagpq1w5xz3nn4ztjswvy4qw6vwgq7qmaq27ev97tu2w24n33wn2nr2zqpep982hhgt3pfceykce7gvmqsylzyn7drwm2hgwz3fs3kgdjuytcgyfpu3g06us2v75zf06yqpt7p8xclglegmrz6q2nqwxshqlfuzp7he0hvkajavgq5fcu4a3zrs2jvkgc2lt9puqw28dtcljxhj6u6eryzws4rhnzpulg3xn2npr7mwp0fmx8kh95rq8kxt578dsqy5qj6wzeag2v24x2m0a9t5eans8h860p90v5urcc9uzthj6y4cw4ymjtlqu23vz243j63peydf0mu4ztlv5f6kv55av2fzt4sgecvs45xue6huj3xmdfrwf9qrdw8caa5zexznvfrq4c558x4pnqajgdwv0plrppxqlcqkq5swqnkmdnt0kj3wcdg0usk0sgqn2ascukaaqgs9rjgppw3xw5cyqc9ev8h4kjv8c6k97gevkxuspr3v6km4dtky7wrwdzxkt3kchkmced6pqalw36eq5c9zg4xr0pj8fumkpac9d928pmrckhpyfuqjcqg5wy4kld6jwrkc6mtxa083vkz7p5eul9ffcd6xhehfr5wk3zmf7f6vrejfy6ks3vtdd4h6v7el7pupqvqrdxukxslfqp3rgmeajy6lzy43u3e3k3ws446a3r6v92r7muh8805tqu5335r7u72fdu9r4rsfytmjs8gt8xkge0qt0qm0yytwgqmnkw3hg50kd02tvx0qtgtz8atjzupqmvd7fzc65f4w83gr6qrr6wyw8xk0ycmlqzw3usz3c4x3495v3mvzvq0nqv5mtcv73pfe8rsg29vs2t7den998zezwmqrxes059d0wwkzcs7umu94knrq882xujthwls6e6e8j7qzegyg6509s3f52yaq7953sktmnu28w9sh3mw65galqdfshdhqxr8x38v4yw559q753wtrqwgse4pdvpl8gd8rfu5433wp4rpvlekqt5gxxt66endag7gaadtd66hv35ffrm07esh4at6dlehkp8kss6p4stj5wkqj323nkdp3ltjg58009s92zdvtqfvsk98367xdu84r9wu3gnmn7wta5kgzeymeqjzfxjrx7y6w3us9zg4tu3hnjrtqstvld304ue0j5592cr2k7j0d30rnqfxdpf730aq45psep5nkfeszvnueqv36p7y6htypqq8qugnfqfdgjv70ngmmtcq0f0y5ttyuwq27jt4udctmmcsf92l8vz2cknvlfap7rnsjlh943gq4yzf6a53lzatr43ue4xyvsezv7ja2fhfsg2fya5zkgsqepucy0e4q74mqcsjlppc5d2mtjmvn0psx4jnca3z6d7939rcnn8dn9mfuuxt4ydzqj7qr5zrh9r3wh7t6q208u97r7qpkhds9skxhxzwtywzq73gat7txn0tvrvvgf2l4975q4fvmwnh59crfw50hshqtvvjttzvc59gsf6crmx6570usn8557pnptx949zmxxazzk5exxm5aw6ep72gwg7psw4zshtjxf0lzxwg6g43jg5kd3ya54khq30g5zgp65sugrz3jh2xr92023mjvg2jdanuv25ssn0d8fpu2f7yq9e62uf59tff9yuphz6awa3j80zmc6n8w5djqet8y2ln52plyyty63f26xhz8wlqq8l7562z0c57qhpuy8nvhgvsqe8863ewwk9fy9fkh5ev8nlv2pm94gguzw59vk444nl83v2jxz80u4q7luvg8efcd4t5xdvtrvs6wvn5gpaxjl9r2esvhat5tdmuvwg60n59aknnprkevk9799t9vvnhrr9aw43eysn9z6hxadhw7s4xy9gyy4x6w9czelwu7866tvemngu258fzuvzd2uj0sa7wk5eykgefxtzaluvl4mwly7nuy8jtnnauawry82724xhjfdagvka5ws8dywmatusazrhzf

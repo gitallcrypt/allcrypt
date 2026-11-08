@@ -1,0 +1,777 @@
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| 3GPP TS 35.247 V20.0.0 (2026-03)                                                                                                                                |                                     |
++=================================================================================================================================================================+=====================================+
+| Technical Specification                                                                                                                                         |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| 3rd Generation Partnership Project;                                                                                                                             |                                     |
+|                                                                                                                                                                 |                                     |
+| Technical Specification Group Services and System Aspects;                                                                                                      |                                     |
+|                                                                                                                                                                 |                                     |
+| Specification of the ZUC based 256-bits algorithm set:                                                                                                          |                                     |
+|                                                                                                                                                                 |                                     |
+| Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;                                   |                                     |
+|                                                                                                                                                                 |                                     |
+| Document 2: implementation test data                                                                                                                            |                                     |
+|                                                                                                                                                                 |                                     |
+| (Release 20)                                                                                                                                                    |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+|                                                                                                                                                                 |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| []                                                                                                                                                              | []                                  |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+|                                                                                                                                                                 |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| The present document has been developed within the 3rd Generation Partnership Project (3GPP ^(TM)) and may be further elaborated for the purposes of 3GPP.      |                                     |
+| The present document has not been subject to any approval process by the 3GPP Organizational Partners and shall not be implemented.                             |                                     |
+| This Specification is provided for future development work within 3GPP only. The Organizational Partners accept no liability for any use of this Specification. |                                     |
+| Specifications and Reports for implementation of the 3GPP ^(TM) system should be obtained via the 3GPP Organizational Partners' Publications Offices.           |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+
++-----------------------------------------------------------------------------------------------------------------+
+|                                                                                                                 |
++=================================================================================================================+
+|   3GPP                                                                                                          |
+|                                                                                                                 |
+|   Postal address                                                                                                |
+|                                                                                                                 |
+|   3GPP support office address                                                                                   |
+|                                                                                                                 |
+|   650 Route des Lucioles - Sophia Antipolis                                                                     |
+|                                                                                                                 |
+|   Valbonne - FRANCE                                                                                             |
+|                                                                                                                 |
+|   Tel.: +33 4 92 94 42 00 Fax: +33 4 93 65 47 16                                                                |
+|                                                                                                                 |
+|   Internet                                                                                                      |
+|                                                                                                                 |
+|   http://www.3gpp.org                                                                                           |
++-----------------------------------------------------------------------------------------------------------------+
+| Copyright Notification                                                                                          |
+|                                                                                                                 |
+| No part may be reproduced except as authorized by written permission.                                           |
+| The copyright and the foregoing restriction extend to reproduction in all media.                                |
+|                                                                                                                 |
+| © 2026, 3GPP Organizational Partners (ARIB, ATIS, CCSA, ETSI, TSDSI, TTA, TTC).                                 |
+|                                                                                                                 |
+| All rights reserved.                                                                                            |
+|                                                                                                                 |
+| UMTS™ is a Trade Mark of ETSI registered for the benefit of its members                                         |
+|                                                                                                                 |
+| 3GPP™ is a Trade Mark of ETSI registered for the benefit of its Members and of the 3GPP Organizational Partners |
+| LTE™ is a Trade Mark of ETSI registered for the benefit of its Members and of the 3GPP Organizational Partners  |
+|                                                                                                                 |
+| GSM® and the GSM logo are registered and owned by the GSM Association                                           |
++-----------------------------------------------------------------------------------------------------------------+
+
+ Contents
+
+Foreword 4
+
+Introduction 5
+
+1 Scope 6
+
+2 References 6
+
+3 Definitions of terms, symbols and abbreviations 6
+
+3.1 Terms 6
+
+3.2 Symbols 6
+
+3.3 Abbreviations 6
+
+4 Preliminary information 6
+
+4.1 Introduction 6
+
+5 ZUC-256 implementors test data 7
+
+5.1 Overview 7
+
+5.2 POLYVAL dot function 7
+
+5.3 ZUC-256 Stream Cipher 7
+
+Annex A (informative): Change history 11
+
+ Foreword
+
+This Technical Specification has been produced by the 3rd Generation Partnership Project (3GPP).
+
+The contents of the present document are subject to continuing work within the TSG and may change following formal TSG approval. Should the TSG modify the contents of the present document, it will be re-released by the TSG with an identifying change of release date and an increase in version number as follows:
+
+Version x.y.z
+
+where:
+
+x the first digit:
+
+1 presented to TSG for information;
+
+2 presented to TSG for approval;
+
+3 or greater indicates TSG approved document under change control.
+
+y the second digit is incremented for all changes of substance, i.e. technical enhancements, corrections, updates, etc.
+
+z the third digit is incremented when editorial only changes have been incorporated in the document.
+
+In the present document, modal verbs have the following meanings:
+
+shall indicates a mandatory requirement to do something
+
+shall not indicates an interdiction (prohibition) to do something
+
+The constructions "shall" and "shall not" are confined to the context of normative provisions, and do not appear in Technical Reports.
+
+The constructions "must" and "must not" are not used as substitutes for "shall" and "shall not". Their use is avoided insofar as possible, and they are not used in a normative context except in a direct citation from an external, referenced, non-3GPP document, or so as to maintain continuity of style when extending or modifying the provisions of such a referenced document.
+
+should indicates a recommendation to do something
+
+should not indicates a recommendation not to do something
+
+may indicates permission to do something
+
+need not indicates permission not to do something
+
+The construction "may not" is ambiguous and is not used in normative elements. The unambiguous constructions "might not" or "shall not" are used instead, depending upon the meaning intended.
+
+can indicates that something is possible
+
+cannot indicates that something is impossible
+
+The constructions "can" and "cannot" are not substitutes for "may" and "need not".
+
+will indicates that something is certain or expected to happen as a result of action taken by an agency the behaviour of which is outside the scope of the present document
+
+will not indicates that something is certain or expected not to happen as a result of action taken by an agency the behaviour of which is outside the scope of the present document
+
+might indicates a likelihood that something will happen as a result of action taken by some agency the behaviour of which is outside the scope of the present document
+
+might not indicates a likelihood that something will not happen as a result of action taken by some agency the behaviour of which is outside the scope of the present document
+
+In addition:
+
+is (or any other verb in the indicative mood) indicates a statement of fact
+
+is not (or any other negative verb in the indicative mood) indicates a statement of fact
+
+The constructions "is" and "is not" do not indicate requirements.
+
+Introduction
+
+The present document is one of three, which between them form the entire specification set of the ZUC based 256-bit encryption and integrity protection algorithms, entitled:
+
+- 3GPP TS 35.246: "Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;
+Document 1: Algorithm Specification".
+
+- 3GPP TS 35.247: "Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;
+Document 2: Implementation Test Data".
+
+- 3GPP TS 35.248: "Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;
+Document 3: Design Conformance Test Data".
+
+ 1 Scope
+
+The present document contains the implementers’ test data of the encryption and integrity protection function 256-NEA6, 256-NIA6 and the combined authenticated encryption 256-NCA6 protection function for 3GPP systems.
+
+2 References
+
+The following documents contain provisions which, through reference in this text, constitute provisions of the present document.
+
+- References are either specific (identified by date of publication, edition number, version number, etc.) or non‑specific.
+
+- For a specific reference, subsequent revisions do not apply.
+
+- For a non-specific reference, the latest version applies. In the case of a reference to a 3GPP document (including a GSM document), a non-specific reference implicitly refers to the latest version of that document in the same Release as the present document.
+
+[1] 3GPP TR 21.905: "Vocabulary for 3GPP Specifications".
+
+[2] void
+
+[3] 3GPP TS 35.246: "3G Security; Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity algorithm, and the authenticated encryption 256-NCA6 for 5G; Document 1: algorithm specification".
+
+[4] 3GPP TS 35.248: "3G Security; Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity algorithm, and the authenticated encryption 256-NCA6 for 5G; Document 3: design conformance test data".
+
+3 Definitions of terms, symbols and abbreviations
+
+3.1 Terms
+
+For the purposes of the present document, the terms given in TR 21.905 [1] and the following apply. A term defined in the present document takes precedence over the definition of the same term, if any, in TR 21.905 [1].
+
+3.2 Symbols
+
+void
+
+3.3 Abbreviations
+
+void
+
+4 Preliminary information
+
+4.1 Introduction
+
+For the details of the algorithm specification please refer to ([3]), and for the design conformance test data please refer to ([4]).
+
+5 ZUC-256 implementors test data
+
+5.1 Overview
+
+As a general rule in this clause, values are written in arrays as 8/16/32-bit integers in hexadecimal format without the leading 0x.
+
+5.2 POLYVAL dot function
+
+=== POLYVAL TEST #1 ===
+
+A = { 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+B = { 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+A*B = { 01 00 00 00 00 00 00 00 00 00 00 00 00 00 04 92 }
+
+=== POLYVAL TEST #2 ===
+
+A = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 }
+
+B = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 }
+
+A*B = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 }
+
+=== POLYVAL TEST #3 ===
+
+A = { 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+B = { 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+A*B = { 80 70 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+=== POLYVAL TEST #4 ===
+
+A = { 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 13 }
+
+B = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 }
+
+A*B = { 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f d1 01 }
+
+=== POLYVAL TEST #5 ===
+
+A = { 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 13 }
+
+B = { 01 23 45 67 89 ab cd ef 10 32 54 76 98 ba dc fe }
+
+A*B = { d7 0d c5 23 de 78 9c 2d 20 f2 bf 52 22 8c 9f 6d }
+
+=== POLYVAL TEST #6 ===
+
+A = { ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff }
+
+B = { ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff }
+
+A*B = { 55 55 55 55 55 55 55 55 55 55 55 55 55 55 01 7a }
+
+5.3 ZUC-256 Stream Cipher
+
+=== ZUC-256 TEST #1 ===
+
+KEY = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+IV = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+State after (Key, IV) loading
+
+LFSR = { 00640000 00430000 007b0000 002a0000 00110000 00050000 00510000 00420000
+
+001a0000 00310000 00180000 00660000 00140000 002e0000 00010000 005c0000 }
+
+FSM_R1 = 0x00000000
+
+FSM_R2 = 0x00000000
+
+State after 1 initialisation clocks
+
+LFSR = { 00430000 007b0000 002a0000 00110000 00050000 00510000 00420000 001a0000
+
+00310000 00180000 00660000 00140000 002e0000 00010000 005c0000 64c00934 }
+
+FSM_R1 = 0xccd31746
+
+FSM_R2 = 0x3c9f37ae
+
+z = 0x00b800c8
+
+State after 2 initialisation clocks
+
+LFSR = { 007b0000 002a0000 00110000 00050000 00510000 00420000 001a0000 00310000
+
+00180000 00660000 00140000 002e0000 00010000 005c0000 64c00934 68d6a65e }
+
+FSM_R1 = 0x600541df
+
+FSM_R2 = 0x27ac8444
+
+z = 0x41f24e72
+
+State after 3 initialisation clocks
+
+LFSR = { 002a0000 00110000 00050000 00510000 00420000 001a0000 00310000 00180000
+
+00660000 00140000 002e0000 00010000 005c0000 64c00934 68d6a65e 3b54dfff }
+
+FSM_R1 = 0x9e7d18e0
+
+FSM_R2 = 0x63648b78
+
+z = 0xd954cdd9
+
+State after 4 initialisation clocks
+
+LFSR = { 00110000 00050000 00510000 00420000 001a0000 00310000 00180000 00660000
+
+00140000 002e0000 00010000 005c0000 64c00934 68d6a65e 3b54dfff 52b00730 }
+
+FSM_R1 = 0x5c39f954
+
+FSM_R2 = 0x5312c9cd
+
+z = 0x4c394a62
+
+State after 5 initialisation clocks
+
+LFSR = { 00050000 00510000 00420000 001a0000 00310000 00180000 00660000 00140000
+
+002e0000 00010000 005c0000 64c00934 68d6a65e 3b54dfff 52b00730 079cf1c7 }
+
+FSM_R1 = 0xb1e95b39
+
+FSM_R2 = 0x93f3f211
+
+z = 0x4c6bf05a
+
+State after 44 initialisation clocks
+
+LFSR = { 67bdb2d8 5bf2cc56 65e83b45 189b7662 50678f96 6ab455f6 48e052e5 6a8ef8a1
+
+45f44aa9 7bdca1b8 4bebec7e 6ee77732 634421c3 2f413d84 09e2f416 21e491e1 }
+
+FSM_R1 = 0xde517598
+
+FSM_R2 = 0xd79076c5
+
+z = 0x779691ca
+
+State after 45 initialisation clocks
+
+LFSR = { 5bf2cc56 65e83b45 189b7662 50678f96 6ab455f6 48e052e5 6a8ef8a1 45f44aa9
+
+7bdca1b8 4bebec7e 6ee77732 634421c3 2f413d84 09e2f416 21e491e1 2d3b6ea8 }
+
+FSM_R1 = 0x1bc211c6
+
+FSM_R2 = 0xf9dfc5b0
+
+z = 0x4e6d3728
+
+State after 46 initialisation clocks
+
+LFSR = { 65e83b45 189b7662 50678f96 6ab455f6 48e052e5 6a8ef8a1 45f44aa9 7bdca1b8
+
+4bebec7e 6ee77732 634421c3 2f413d84 09e2f416 21e491e1 2d3b6ea8 51d2ab29 }
+
+FSM_R1 = 0xab57fe21
+
+FSM_R2 = 0x90143458
+
+z = 0x4df6f232
+
+State after 47 initialisation clocks
+
+LFSR = { 189b7662 50678f96 6ab455f6 48e052e5 6a8ef8a1 45f44aa9 7bdca1b8 4bebec7e
+
+6ee77732 634421c3 2f413d84 09e2f416 21e491e1 2d3b6ea8 51d2ab29 7ad029f9 }
+
+FSM_R1 = 0xd5032a03
+
+FSM_R2 = 0xfa9b9126
+
+z = 0x16900f31
+
+State after 48 initialisation clocks
+
+LFSR = { 50678f96 6ab455f6 48e052e5 6a8ef8a1 45f44aa9 7bdca1b8 4bebec7e 6ee77732
+
+634421c3 2f413d84 09e2f416 21e491e1 2d3b6ea8 51d2ab29 7ad029f9 6ea833a7 }
+
+FSM_R1 = 0xbc1cf06e
+
+FSM_R2 = 0x24ed5236
+
+z = 0x4ec92366
+
+State after 49 initialisation clocks
+
+LFSR = { 6ab455f6 48e052e5 6a8ef8a1 45f44aa9 7bdca1b8 4bebec7e 6ee77732 634421c3
+
+2f413d84 09e2f416 21e491e1 2d3b6ea8 51d2ab29 7ad029f9 6ea833a7 55799370 }
+
+FSM_R1 = 0xe4f5945b
+
+FSM_R2 = 0xac8e945e
+
+z = 0xd4df8b02
+
+Keystream mode:
+
+Ks = { 0234e932 f0c22292 38853662 aa624def 7f99a4c7 e47a0282 b2fde38d f4cb89c5
+
+3c17ab18 87ef5093 15c53d45 af1de542 7d278dbb 839af54e e9375674 01d3207e
+
+7f1d6fb3 b5770472 c4f98e41 637788d9 83dd8a56 87488a7f b8722b87 12542fff
+
+c8f6aecf 9b7d0670 dc419a85 8c445771 a145847c 7f01fc10 c3015dca 1cbf711e }
+
+=== ZUC-256 TEST #2 ===
+
+KEY = { ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff }
+
+IV = { ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff }
+
+State after (Key, IV) loading
+
+LFSR = { 7fe4ffff 7fc3ffff 7ffbffff 7faaffff 7f91ffff 7f85ffff 7fd1ffff 7fc2ffff
+
+7f9affff 7fb1ffff 7f98ffff 7fe6ffff 7f94ffff 7faeffff 7f81ffff 7fdcffff }
+
+FSM_R1 = 0x00000000
+
+FSM_R2 = 0x00000000
+
+State after 1 initialisation clocks
+
+LFSR = { 7fc3ffff 7ffbffff 7faaffff 7f91ffff 7f85ffff 7fd1ffff 7fc2ffff 7f9affff
+
+7fb1ffff 7f98ffff 7fe6ffff 7f94ffff 7faeffff 7f81ffff 7fdcffff 64c1d718 }
+
+FSM_R1 = 0xc30c16e8
+
+FSM_R2 = 0x98b3abea
+
+z = 0x00460036
+
+State after 2 initialisation clocks
+
+LFSR = { 7ffbffff 7faaffff 7f91ffff 7f85ffff 7fd1ffff 7fc2ffff 7f9affff 7fb1ffff
+
+7f98ffff 7fe6ffff 7f94ffff 7faeffff 7f81ffff 7fdcffff 64c1d718 00f217ca }
+
+FSM_R1 = 0x19ec8945
+
+FSM_R2 = 0xf5d44225
+
+z = 0x5cbc6a86
+
+State after 3 initialisation clocks
+
+LFSR = { 7faaffff 7f91ffff 7f85ffff 7fd1ffff 7fc2ffff 7f9affff 7fb1ffff 7f98ffff
+
+7fe6ffff 7f94ffff 7faeffff 7f81ffff 7fdcffff 64c1d718 00f217ca 0ecf3027 }
+
+FSM_R1 = 0x3f57127c
+
+FSM_R2 = 0x9b0d6436
+
+z = 0xf2235f75
+
+State after 4 initialisation clocks
+
+LFSR = { 7f91ffff 7f85ffff 7fd1ffff 7fc2ffff 7f9affff 7fb1ffff 7f98ffff 7fe6ffff
+
+7f94ffff 7faeffff 7f81ffff 7fdcffff 64c1d718 00f217ca 0ecf3027 4fdb3aec }
+
+FSM_R1 = 0x884b40e8
+
+FSM_R2 = 0xa821b413
+
+z = 0x422996b9
+
+State after 5 initialisation clocks
+
+LFSR = { 7f85ffff 7fd1ffff 7fc2ffff 7f9affff 7fb1ffff 7f98ffff 7fe6ffff 7f94ffff
+
+7faeffff 7f81ffff 7fdcffff 64c1d718 00f217ca 0ecf3027 4fdb3aec 3eabb9f4 }
+
+FSM_R1 = 0x68b343f3
+
+FSM_R2 = 0x15f36532
+
+z = 0x3fe0dbc1
+
+[ State printout removed ]
+
+State after 44 initialisation clocks
+
+LFSR = { 059b9d59 54fc8fc9 38c42cb6 65b2883a 235dc7f0 12fcb8b3 6d4b158c 13a6e8d5
+
+3dd05f16 65bc7510 1704ca6c 3c8cdc40 0473aec7 7d484cc1 19e83ec2 1dd1e81b }
+
+FSM_R1 = 0x95134ef2
+
+FSM_R2 = 0x88bb3643
+
+z = 0xb7be3425
+
+State after 45 initialisation clocks
+
+LFSR = { 54fc8fc9 38c42cb6 65b2883a 235dc7f0 12fcb8b3 6d4b158c 13a6e8d5 3dd05f16
+
+65bc7510 1704ca6c 3c8cdc40 0473aec7 7d484cc1 19e83ec2 1dd1e81b 170a897c }
+
+FSM_R1 = 0x43885119
+
+FSM_R2 = 0xa861312b
+
+z = 0x1bddad44
+
+State after 46 initialisation clocks
+
+LFSR = { 38c42cb6 65b2883a 235dc7f0 12fcb8b3 6d4b158c 13a6e8d5 3dd05f16 65bc7510
+
+1704ca6c 3c8cdc40 0473aec7 7d484cc1 19e83ec2 1dd1e81b 170a897c 320fd003 }
+
+FSM_R1 = 0x9592b6c6
+
+FSM_R2 = 0xa72c5024
+
+z = 0x9dc443d4
+
+State after 47 initialisation clocks
+
+LFSR = { 65b2883a 235dc7f0 12fcb8b3 6d4b158c 13a6e8d5 3dd05f16 65bc7510 1704ca6c
+
+3c8cdc40 0473aec7 7d484cc1 19e83ec2 1dd1e81b 170a897c 320fd003 33349abd }
+
+FSM_R1 = 0x6105540e
+
+FSM_R2 = 0xa933d1a6
+
+z = 0x5f49fe56
+
+State after 48 initialisation clocks
+
+LFSR = { 235dc7f0 12fcb8b3 6d4b158c 13a6e8d5 3dd05f16 65bc7510 1704ca6c 3c8cdc40
+
+0473aec7 7d484cc1 19e83ec2 1dd1e81b 170a897c 320fd003 33349abd 7673c42e }
+
+FSM_R1 = 0xdd979d6c
+
+FSM_R2 = 0x7b710bf0
+
+z = 0x08139ed6
+
+State after 49 initialisation clocks
+
+LFSR = { 12fcb8b3 6d4b158c 13a6e8d5 3dd05f16 65bc7510 1704ca6c 3c8cdc40 0473aec7
+
+7d484cc1 19e83ec2 1dd1e81b 170a897c 320fd003 33349abd 7673c42e 4cf22b05 }
+
+FSM_R1 = 0x52515803
+
+FSM_R2 = 0x059b2b29
+
+z = 0xb96d557a
+
+Keystream mode:
+
+Ks = { 3985e2af 3533d429 338580f0 e0d80ce9 0649e5be 4961b8a2 d23a44d3 9c18ce98
+
+75f7c424 082ecf47 e1d384b8 91ace320 e46f0b16 cf903c77 f097f1a9 4bcb2079
+
+fb5c6cc1 6e9f3e05 6eff3261 89ea0373 23345e6f c2456051 938a312c 34d33ef6
+
+0f8fb8e3 a030a3f1 09ddda68 8457e05e c6f6cfa0 d1b34be0 87053c3b 79a1832d }
+
+=== ZUC-256 TEST #3 ===
+
+KEY = { 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 13
+
+12 11 10 17 16 15 14 1b 1a 19 18 1f 1e 1d 1c ff }
+
+IV = { 01 23 45 67 89 ab cd ef 10 32 54 76 98 ba dc fe }
+
+State after (Key, IV) loading
+
+LFSR = { 00e4121a 01431119 01fb1018 022a171f 0291161e 0305151d 03d1141c 04420110
+
+049a2332 05314554 05986776 06668998 0694abba 072ecddc 0781effe 09dc1bff }
+
+FSM_R1 = 0x00000000
+
+FSM_R2 = 0x00000000
+
+State after 1 initialisation clocks
+
+LFSR = { 01431119 01fb1018 022a171f 0291161e 0305151d 03d1141c 04420110 049a2332
+
+05314554 05986776 06668998 0694abba 072ecddc 0781effe 09dc1bff 692c02ee }
+
+FSM_R1 = 0x23246d64
+
+FSM_R2 = 0x4417cdc4
+
+z = 0x03a0ee36
+
+State after 2 initialisation clocks
+
+LFSR = { 01fb1018 022a171f 0291161e 0305151d 03d1141c 04420110 049a2332 05314554
+
+05986776 06668998 0694abba 072ecddc 0781effe 09dc1bff 692c02ee 4563cdc3 }
+
+FSM_R1 = 0xdaedb8a1
+
+FSM_R2 = 0xfcc07c46
+
+z = 0x228b46d9
+
+State after 3 initialisation clocks
+
+LFSR = { 022a171f 0291161e 0305151d 03d1141c 04420110 049a2332 05314554 05986776
+
+06668998 0694abba 072ecddc 0781effe 09dc1bff 692c02ee 4563cdc3 7b62cf87 }
+
+FSM_R1 = 0xb8249a6a
+
+FSM_R2 = 0x466da31a
+
+z = 0x5af53563
+
+State after 4 initialisation clocks
+
+LFSR = { 0291161e 0305151d 03d1141c 04420110 049a2332 05314554 05986776 06668998
+
+0694abba 072ecddc 0781effe 09dc1bff 692c02ee 4563cdc3 7b62cf87 310ca78b }
+
+FSM_R1 = 0x70a5e7fc
+
+FSM_R2 = 0xc7e472b6
+
+z = 0x8053fe97
+
+State after 5 initialisation clocks
+
+LFSR = { 0305151d 03d1141c 04420110 049a2332 05314554 05986776 06668998 0694abba
+
+072ecddc 0781effe 09dc1bff 692c02ee 4563cdc3 7b62cf87 310ca78b 2326bc18 }
+
+FSM_R1 = 0xcb55ca5d
+
+FSM_R2 = 0x42df4d7c
+
+z = 0xcebc9e13
+
+State after 44 initialisation clocks
+
+LFSR = { 3cf5efe8 48e9a50f 15141836 5993bbc6 797a480a 2a03f3d5 0a93db16 4fd9c1a3
+
+5057cf0e 5bfb0923 6e46feb2 193b2c4b 15b6e36b 3ab75d84 1168b7c0 004d56b5 }
+
+FSM_R1 = 0x58da0255
+
+FSM_R2 = 0xbb5e10f1
+
+z = 0xd2ff23fe
+
+State after 45 initialisation clocks
+
+LFSR = { 48e9a50f 15141836 5993bbc6 797a480a 2a03f3d5 0a93db16 4fd9c1a3 5057cf0e
+
+5bfb0923 6e46feb2 193b2c4b 15b6e36b 3ab75d84 1168b7c0 004d56b5 7a2367d8 }
+
+FSM_R1 = 0x8cef020f
+
+FSM_R2 = 0x98a401ed
+
+z = 0x0ba8bf6d
+
+State after 46 initialisation clocks
+
+LFSR = { 15141836 5993bbc6 797a480a 2a03f3d5 0a93db16 4fd9c1a3 5057cf0e 5bfb0923
+
+6e46feb2 193b2c4b 15b6e36b 3ab75d84 1168b7c0 004d56b5 7a2367d8 255daf04 }
+
+FSM_R1 = 0x4e18cf8d
+
+FSM_R2 = 0xfa72728a
+
+z = 0xaa8bc774
+
+State after 47 initialisation clocks
+
+LFSR = { 5993bbc6 797a480a 2a03f3d5 0a93db16 4fd9c1a3 5057cf0e 5bfb0923 6e46feb2
+
+193b2c4b 15b6e36b 3ab75d84 1168b7c0 004d56b5 7a2367d8 255daf04 4c6a4297 }
+
+FSM_R1 = 0x41f44bb1
+
+FSM_R2 = 0x84ddffce
+
+z = 0xb71c30f7
+
+State after 48 initialisation clocks
+
+LFSR = { 797a480a 2a03f3d5 0a93db16 4fd9c1a3 5057cf0e 5bfb0923 6e46feb2 193b2c4b
+
+15b6e36b 3ab75d84 1168b7c0 004d56b5 7a2367d8 255daf04 4c6a4297 581552c2 }
+
+FSM_R1 = 0x4f36a1aa
+
+FSM_R2 = 0xfdbfee44
+
+z = 0xae2b57a4
+
+State after 49 initialisation clocks
+
+LFSR = { 2a03f3d5 0a93db16 4fd9c1a3 5057cf0e 5bfb0923 6e46feb2 193b2c4b 15b6e36b
+
+3ab75d84 1168b7c0 004d56b5 7a2367d8 255daf04 4c6a4297 581552c2 641aa5b1 }
+
+FSM_R1 = 0x61af5b80
+
+FSM_R2 = 0xac13795b
+
+z = 0x27ca2375
+
+Keystream mode:
+
+ks = { 940ed69a ee94f2b0 d1f14a8f d997a5f1 6b1baf91 a718754f a46336c9 fcacf6cf
+
+ca5c83c8 7f9acab7 ae71823c 6eedbb18 d8949f77 184ed56d d3033bd8 711faffb
+
+01bbf863 2ffb8f54 9dcb29e2 b335d335 87f1bdc5 5fb5346a 3acdfcbb e0a41a06
+
+d87863af 9245139d 10943e26 9d479fb9 a0a7b2b1 8a6a9568 616660a1 325cdedd }
+
+ Annex A (informative): Change history
+
+  ---------------- --------- ----------- ------ ----- ----- --------------------------------------------------- -------------
+  Change history                                                                                                
+
+  Date             Meeting   TDoc        CR     Rev   Cat   Subject/Comment                                     New version
+
+  2023-11          SA3#113   S3-234431                      First time submitted for discussion and approval.   0.1.0
+
+  2024-02          SA3#115   S3-240275                      Skeleton only submitted for approval.               0.2.0
+
+  2024-02          SA3#115   S3-240595                      Technical provision content edited.                 0.3.0
+
+  2024-03          SA#103    SP-240229                      Presented for information and approval              1.0.0
+
+  2024-03          SA#103                                   Upgrade to change control version                   18.0.0
+
+  2026-03          SA#109                                   Upgrade to Rel-19                                   19.0.0
+
+  2026-03          SA#111    SP-260350   0001   2     F     Update on ZUC 256-bit Implementation Test Data      20.0.0
+  ---------------- --------- ----------- ------ ----- ----- --------------------------------------------------- -------------

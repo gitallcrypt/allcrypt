@@ -58,7 +58,7 @@ def records(path):
 
 
 def ours(binary, capture, essid, password, wep_key, out):
-    args = [binary, "decrypt", capture, "--out", out]
+    args = [binary, "decrypt", capture, "--out", out, "--airdecap"]
     stdin = None
     if wep_key:
         args += ["--wep-key", wep_key]

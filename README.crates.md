@@ -36,7 +36,9 @@ full documentation are in the repository.
   ECB, CBC, CFB, OFB, CTR, ciphertext stealing, XTS, GCM, CCM, EAX, OCB,
   MGM, key wrap and more.
 - **Stream ciphers**: ChaCha20, Salsa20, their X variants, RC4, Strumok,
-  Rabbit, HC-128, HC-256, SOSEMANUK, Trivium, Grain v1, Grain-128.
+  Rabbit, HC-128, HC-256, SOSEMANUK, Trivium, Grain v1, Grain-128,
+  SNOW 3G, ZUC-128 and ZUC-256, with UEA2, UIA2, 128-EEA1/EIA1/EEA3/EIA3 and
+  5G's 256-NEA6/NIA6/NCA6.
 - **Hashes**: MD2 to SHA-3, BLAKE to BLAKE3, the SHA-3 finalists,
   RIPEMD, Whirlpool, Tiger, HAVAL, Snefru, Streebog, GOST R 34.11-94,
   Kupyna, SM3, LSH, ssdeep, xxHash, MurmurHash3 and the common checksums.
@@ -44,7 +46,7 @@ full documentation are in the repository.
   Argon2, HKDF, and the KDFs particular formats define.
 - **Public key**: RSA, DSA, Diffie-Hellman, ElGamal, ECDSA and ECDH,
   X25519, X448, Ed25519, Ed448, GOST R 34.10, SM2, DSTU 4145, and the
-  post-quantum ML-KEM, ML-DSA, SLH-DSA and NTRU Prime.
+  post-quantum ML-KEM, ML-DSA, SLH-DSA, LMS/HSS, XMSS and NTRU Prime.
 - **Certificates and protocols**: X.509 parsing, verification and
   issuing, CRLs and OCSP, PKCS#8 and PEM keys; TLS 1.0 to 1.3 and SSH,
   client and server.

@@ -6,6 +6,7 @@ pub mod blake3;
 pub mod buffer;
 pub mod gost94;
 pub mod groestl;
+pub mod kangarootwelve;
 pub mod keccak;
 pub mod kupyna;
 pub mod lsh;

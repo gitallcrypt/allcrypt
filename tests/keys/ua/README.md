@@ -1,7 +1,9 @@
 # Ukrainian key containers
 
 Read by `tests/test_ua_keys.rs` and `pytests/test_ua_keys.py`; what
-dstu-engine's keylib found in each is in `vectors/ua_keys.vec`. Copied
+dstu-engine's keylib found in each is in `vectors/ua_keys.vec`, and what
+PrivatBank's cryptonite found in the PKCS#8 ones in
+`vectors/ua_keys_cryptonite.vec`. Copied
 by `scripts/check_ua_keys.py --record`, which checks every file taken
 from another project against its git blob ID. None was edited.
 

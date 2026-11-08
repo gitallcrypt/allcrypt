@@ -1,0 +1,84 @@
+# LUKS2 volumes stopped in the middle of `cryptsetup reencrypt`, written by
+# scripts/make_luks_reencrypt_fixtures.py; do not edit. Each was repaired,
+# finished and decrypted by cryptsetup to the plaintext whose SHA-256 is
+# data_sha256. passphrase `-`: the keyslot material is not kept; open with
+# old_key and new_key. cryptsetup 2.8.8.
+
+[cryptsetup]
+name = interrupted-checksum
+image = luks/reencrypt/interrupted-checksum.sparse
+passphrase = reencrypt passphrase
+old_key = 88df7b88103e8f337c50a46026feae10
+new_key = 1dc90a377ccbab07aad71af5648bd123924a778dd9f4d0759879f84b542c33d9
+resilience = checksum
+stopped = SIGTERM at data write 2
+state = no hotzone
+data_length = 65536
+data_sha256 = 135d2fbb4ac1895597c9c5f225328954c9582906751106bf0c9bf2368915384e
+
+name = checksum-before-write
+image = luks/reencrypt/checksum-before-write.sparse
+passphrase = -
+old_key = 88df7b88103e8f337c50a46026feae10
+new_key = 1dc90a377ccbab07aad71af5648bd123924a778dd9f4d0759879f84b542c33d9
+resilience = checksum
+stopped = exit at data write 1 after 0 of its 16384 bytes
+state = hotzone 16384 bytes at 524288
+data_length = 65536
+data_sha256 = 135d2fbb4ac1895597c9c5f225328954c9582906751106bf0c9bf2368915384e
+
+name = checksum-torn
+image = luks/reencrypt/checksum-torn.sparse
+passphrase = -
+old_key = 88df7b88103e8f337c50a46026feae10
+new_key = 1dc90a377ccbab07aad71af5648bd123924a778dd9f4d0759879f84b542c33d9
+resilience = checksum
+stopped = exit at data write 3 after 12288 of its 16384 bytes
+state = hotzone 16384 bytes at 557056
+data_length = 65536
+data_sha256 = 135d2fbb4ac1895597c9c5f225328954c9582906751106bf0c9bf2368915384e
+
+name = checksum-after-write
+image = luks/reencrypt/checksum-after-write.sparse
+passphrase = -
+old_key = 88df7b88103e8f337c50a46026feae10
+new_key = 1dc90a377ccbab07aad71af5648bd123924a778dd9f4d0759879f84b542c33d9
+resilience = checksum
+stopped = exit at data write 2 after 16384 of its 16384 bytes
+state = hotzone 16384 bytes at 540672
+data_length = 65536
+data_sha256 = 135d2fbb4ac1895597c9c5f225328954c9582906751106bf0c9bf2368915384e
+
+name = journal-before-write
+image = luks/reencrypt/journal-before-write.sparse
+passphrase = -
+old_key = 88df7b88103e8f337c50a46026feae10
+new_key = 1dc90a377ccbab07aad71af5648bd123924a778dd9f4d0759879f84b542c33d9
+resilience = journal
+stopped = exit at data write 4 after 0 of its 16384 bytes
+state = hotzone 16384 bytes at 573440
+data_length = 65536
+data_sha256 = 135d2fbb4ac1895597c9c5f225328954c9582906751106bf0c9bf2368915384e
+
+name = journal-torn
+image = luks/reencrypt/journal-torn.sparse
+passphrase = -
+old_key = 88df7b88103e8f337c50a46026feae10
+new_key = 1dc90a377ccbab07aad71af5648bd123924a778dd9f4d0759879f84b542c33d9
+resilience = journal
+stopped = exit at data write 2 after 4096 of its 16384 bytes
+state = hotzone 16384 bytes at 540672
+data_length = 65536
+data_sha256 = 135d2fbb4ac1895597c9c5f225328954c9582906751106bf0c9bf2368915384e
+
+name = interrupted-none
+image = luks/reencrypt/interrupted-none.sparse
+passphrase = -
+old_key = 88df7b88103e8f337c50a46026feae10
+new_key = 1dc90a377ccbab07aad71af5648bd123924a778dd9f4d0759879f84b542c33d9
+resilience = none
+stopped = SIGTERM at data write 3
+state = no hotzone
+data_length = 65536
+data_sha256 = 135d2fbb4ac1895597c9c5f225328954c9582906751106bf0c9bf2368915384e
+

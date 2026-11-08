@@ -11,6 +11,8 @@ __pycache__/
 examples/doc_examples.rs
 /target
 .vscode/
+downloads
+wifi-example-wip.patch
 
 # ACVP downloads cached by scripts/make_*_vectors.py --keep: tens of
 # megabytes each, and the generated vector file is what ships.

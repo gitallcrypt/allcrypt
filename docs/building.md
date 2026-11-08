@@ -198,6 +198,18 @@ small support crates.
 | `examples/doc_examples.rs` | Generated; see below |
 | `scripts/check_messages.py` | Error messages with Rust's line-continuation rule forgotten |
 
+A few tests are left out of the default run for their cost alone:
+Rust's are marked `#[ignore]` and run with `-- --ignored`, and Python's
+are marked `slow` and run with `--run-slow`, which `pytests/conftest.py`
+adds. Each one's comment gives its measured time and the command, and a
+cheaper test that does run covers the same code. Without the option a
+slow test is deselected, not skipped, so it does not appear as a skip
+in the summary.
+
+```console
+$ pytest --run-slow pytests/test_xmss.py        # XMSS: the rows that build a second tree of height 10
+```
+
 ## Differential testing
 
 Known answer tests catch known cases. What catches the rest is comparing
@@ -627,7 +639,8 @@ $ meson setup build --prefix=/opt/cryptsetup -Dcrypto-backend=openssl -Dargon-im
 $ ninja -C build install
 $ python3 scripts/check_luks.py --cryptsetup /opt/cryptsetup/run.sh \
       --cryptsetup-tests ~/src/cryptsetup/tests
-$ python3 scripts/check_luks.py --record     # rewrites examples/products/fixtures/luks*
+$ python3 scripts/check_luks.py --record     # rewrites fixtures/luks.vec and luks/*.sparse
+$ python3 scripts/make_luks_reencrypt_fixtures.py   # fixtures/luks-reencrypt.vec, luks/reencrypt/
 $ cargo test --example luks
 ```
 
@@ -644,18 +657,47 @@ VeraCrypt's key derivations run hundreds of thousands of iterations; the
 tests that use them are skipped in a debug build and run in a release
 one, as the last line does.
 
-**age**: the system's 1.1.1, and a current one with post-quantum
-recipients built from source into `/opt/age-main`. Its module wants Go
-1.25 and dependencies from vanity hosts; with Go 1.24 and no module
-proxy, clone each dependency's GitHub mirror at the version `go.mod`
-names (edwards25519, hpke, nistec, golang/crypto, sys, term), point
-`replace` lines at them, lower the `go` lines to 1.24, and build with
-`GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=mod GOSUMDB=off go build
-./cmd/age ./cmd/age-keygen`. Then:
+**age**: the system's 1.1.1, and 1.3.2 built from source with its
+plugins by `scripts/witness/agetag/build.sh`. Its module wants Go 1.25
+and dependencies from vanity hosts; the script clones each dependency's
+GitHub mirror at the version `go.mod` names (edwards25519, hpke,
+nistec, golang/crypto, sys, term), points `replace` lines at them,
+lowers the `go` lines to the local toolchain's and builds without the
+module proxy. It also builds `age-tag-witness`, which sits inside age's
+tree to reach the test identities for the tagged types. For the SSH
+recipient types, rage, the Rust implementation, from crates.io into its
+own prefix, and `ssh-keygen` from the system:
 
 ```console
-$ python3 scripts/check_age.py              # both ages, both directions
-$ cargo test --example age                  # the format's 147 test vectors
+$ sh scripts/witness/agetag/build.sh /opt/age132
+$ cargo install --locked --root /opt/rage --version 0.11.1 rage
+$ python3 scripts/check_age.py              # both ages, rage, both directions
+$ python3 scripts/make_age_ssh_fixtures.py  # rewrites fixtures/age/ssh/
+$ python3 scripts/make_age_tag_fixtures.py  # rewrites fixtures/age/tag/
+$ python3 scripts/make_age_plugin_fixtures.py   # rewrites fixtures/age/plugin/
+$ cargo test --example age                  # 147 test vectors, the SSH and tag files, the plugins
+```
+
+**Wi-Fi**: aircrack-ng 1.7's `airdecap-ng` and the captures in its test
+suite, and Wireshark's `tshark` with the captures and key list from
+Wireshark's decryption tests. `airdecap-ng` builds in its source tree
+(it needs the libnl-genl headers as well as OpenSSL's and libpcap's).
+`tshark` is built from 4.6.9's source too, since Ubuntu 24.04's 4.2.2
+does not decrypt TKIP group frames; only the `tshark` target, which
+needs glib, libpcap, libgcrypt, c-ares, speexdsp and libxml2 headers,
+not Qt:
+
+```console
+$ git clone --depth 1 --branch 1.7 https://github.com/aircrack-ng/aircrack-ng ~/src/aircrack-ng
+$ (cd ~/src/aircrack-ng && autoreconf -i && ./configure --without-experimental && make)
+$ python3 scripts/check_wifi.py --airdecap ~/src/aircrack-ng/airdecap-ng \
+      --captures ~/src/aircrack-ng/test [--record]   # --record rewrites fixtures/wifi.vec, wifi/
+$ git clone --depth 1 --branch v4.6.9 https://github.com/wireshark/wireshark ~/src/ws46
+$ cmake -S ~/src/ws46 -B ~/src/ws46/build -G Ninja -DBUILD_wireshark=OFF \
+      -DBUILD_stratoshark=OFF -DENABLE_LUA=OFF && ninja -C ~/src/ws46/build tshark
+$ python3 scripts/check_wifi_wireshark.py --wireshark ~/src/ws46 \
+      --tshark ~/src/ws46/build/run/tshark [--record]  # fixtures/wifi-wireshark.vec, wifi/wireshark/
+$ cargo test --example wifi
 ```
 
 **OpenPGP**: the system's GnuPG 2.4, and ProtonMail's go-crypto for
@@ -809,7 +851,95 @@ dependencies are found through too; a `RUNPATH` applies to the program
 only, and libkrb5 then cannot find libcom_err. The witness sets
 `k5_allow_weak_pbkdf2iter`, as MIT's own tests do, or libk5crypto
 refuses PBKDF2 counts below the type's default. The script runs a KDC
-per encryption type on a loopback port and needs nothing else.
+per encryption type on a loopback port and needs nothing else. Where
+the release tarball cannot be fetched, the `krb5-1.21.3-final` tag of
+`github.com/krb5/krb5` builds the same tree after `autoreconf -fi` in
+`src/`.
+
+**Kerberos RC4-HMAC in the library**: `scripts/witness/rc4hmac/build.sh`
+links the same driver against `/opt/krb5`, unpacks impacket 0.13.1's
+wheel (checked against its SHA-256; it needs pycryptodomex and six) and
+compiles Apache Kerby's kerb-crypto at a pinned commit with `javac`,
+only the classes the witness reaches. Its self-test has the three open
+each other's ciphertexts, impacket remake them from their confounders,
+and agree on the checksum, the PRF and string-to-key. It needs git, a
+JDK, pip and a C compiler.
+
+```console
+$ sh scripts/witness/rc4hmac/build.sh           # builds /opt/rc4hmacwitness
+$ python3 scripts/make_rc4_hmac_vectors.py      # rewrites vectors/rc4_hmac.vec
+```
+
+**HSS, XMSS and XMSS^MT certificates and SignedData** against Bouncy
+Castle 1.85: `scripts/witness/hbsx509/build.sh` fetches bc-java at its
+`r1rv85` tag, sparsely - the core, prov, pkix and util sources - and
+compiles with `javac` the classes the witness reaches, plus the PQC
+provider's LMS and XMSS registrations and the provider's digests, which
+the JCA loads by name. The system's 1.77 predates RFC 9802. Its
+self-test has Bouncy Castle verify RFC 9802's three appendix
+certificates and write their keys back unchanged, and verify a CMS
+message of its own. The generators also run `hbs_certs`, which issues
+this library's certificates - with `--state`, the key's state after it,
+for the CMS example's `sign` to take as a key file. Bouncy Castle cannot
+verify XMSS SignedData by itself (its CMS name table lacks RFC 9802's
+identifiers), so the witness names those two.
+
+```console
+$ sh scripts/witness/hbsx509/build.sh           # builds /opt/hbswitness
+$ cargo build --release -p allcrypt-tools --bin hbs_certs
+$ python3 scripts/make_hbs_x509_vectors.py      # rewrites vectors/hbs_x509.vec
+$ cargo build --release --example cms
+$ python3 scripts/make_hbs_cms_vectors.py       # rewrites vectors/hbs_cms.vec
+$ cargo test --release --example cms -- --ignored expensive_hash_based
+```
+
+**TurboSHAKE and KangarooTwelve**: the Keccak team's XKCP K12, its
+portable C permutation, built by `scripts/witness/k12/build.sh` under a
+driver that reaches its static TurboSHAKE functions, plainly and under
+ASan and UBSan (without the alignment check: XKCP XORs input through
+misaligned `uint64_t` pointers by default); and pycryptodome 3.24.1 into
+the same prefix, which has no KT256. Use 3.24 or later: 3.23.0 hashes an
+empty message with a customization string of 8190 bytes or more wrongly.
+
+```console
+$ sh scripts/witness/k12/build.sh /opt/k12witness
+$ pip install --target /opt/k12witness pycryptodome==3.24.1
+$ python3 scripts/make_turboshake_k12_vectors.py    # rewrites vectors/turboshake_k12.vec
+```
+
+**IEEE 802.11's KDFs and the fast BSS transition key hierarchy**:
+hostapd's `src/common/wpa_common.c` from wpa_supplicant 2.11 (Ubuntu's
+`wpa_2.11.orig.tar.xz` from archive.ubuntu.com, since w1.fi is not
+reachable from the development container) over its internal crypto, and
+Wireshark 4.6's `epan/crypt/dot11decrypt_util.c` against libgcrypt and
+the built tree's libwsutil, each behind a driver and each plainly and
+under ASan and UBSan on misaligned buffers. Wireshark's half is asked
+nothing it cannot answer: its KDF writes nothing for an output under an
+eighth of a hash, `dot11decrypt_derive_pmk_r0` overflows its stack
+buffer for a 64-byte key, and its names are SHA-256 at every length.
+
+```console
+$ sh scripts/witness/ft80211/build.sh ~/src/wpa211/wpa-2.11 ~/src/ws46 ~/src/ws46/build /opt/ftwitness
+$ python3 scripts/make_ieee80211_ft_vectors.py    # rewrites vectors/ieee80211_ft.vec
+```
+
+**HPKE**: pyhpke 0.6.5 (over python-cryptography, into its own prefix)
+for the DHKEMs in every mode, and filippo.io/hpke v0.4.0, the HPKE behind
+Go's crypto/hpke, for the post-quantum KEMs and the SHAKE KDFs.
+`scripts/witness/hpke/build.sh` clones it and golang.org/x/crypto from
+GitHub at fixed tags and builds without the module proxy. The vector
+file is made from the two drafts' own JSON, each checked against its
+SHA-256:
+
+```console
+$ pip install --target /opt/pyhpke pyhpke==0.6.5
+$ sh scripts/witness/hpke/build.sh /opt/hpkewitness
+$ python3 scripts/check_hpke.py [--record]      # --record rewrites vectors/hpke_witness.vec
+$ git clone https://github.com/cfrg/draft-irtf-cfrg-hpke     # commit b1f7cb0c
+$ git clone https://github.com/hpkewg/hpke-pq                # commit 6433c8fc
+$ python3 scripts/make_hpke_vectors.py --cfrg draft-irtf-cfrg-hpke/test-vectors.json \
+      --pq hpke-pq/test-vectors.json                         # rewrites vectors/hpke.vec
+```
 
 **Wallets**: python-mnemonic (`trezor/python-mnemonic`, the BIP-39
 reference) and pycoin (`richardkiss/pycoin`), both pure Python and used
@@ -946,6 +1076,7 @@ $ sh scripts/witness/macs/build.sh               # builds /opt/macwitness
 $ python3 scripts/make_pmac_vectors.py           # rewrites vectors/pmac.vec
 $ python3 scripts/make_vmac_vectors.py           # rewrites vectors/vmac.vec
 $ python3 scripts/make_chaskey_vectors.py        # rewrites vectors/chaskey.vec
+$ python3 scripts/make_chaskey_lts_vectors.py    # rewrites vectors/chaskey_lts.vec
 ```
 
 **CMAC and EAX over the wide blocks**: `scripts/witness/widemac` builds
@@ -1015,7 +1146,8 @@ kernel's Speck from v4.19 - the last release that had it - against a
 small header shim, inmcm's Python Simon and Speck through
 `inmcm_driver.py`, with its tests for the paper's vectors at every size,
 jedisct1/rust-lwbc's Speck and Simon, built offline with cargo under
-`lwbc_driver.rs`, Skein3Fish's C Threefish through
+`lwbc_driver.rs`, cryptography-rs's Simon and Speck and RustCrypto's
+speck-cipher from crates.io, pinned by `rust_simon_speck/Cargo.lock`, Skein3Fish's C Threefish through
 `skein3fish_driver.c`, Crypto++'s and the system OpenSSL's SHA-1
 compression functions, less their feed-forward, for SHACAL-1 through
 `shacal1_driver.cpp` - which encrypt only, so only encryption is asked
@@ -1134,6 +1266,18 @@ SHA-256 checked, and both witnesses must reproduce every one.
 ```console
 $ scripts/witness/cryptonite/build.sh           # builds /opt/cryptonite
 $ python3 scripts/make_kalyna_mode_vectors.py   # rewrites vectors/kalyna_modes.vec
+```
+
+The same build makes `cryptonite-storage`: cryptonite's key-container
+library (PKCS#8, IIT's PBES2 and PKCS#12, with the asn1 and pkix
+libraries under it) from a sparse checkout at commit 3618d340, with
+`storage.c` over it. It is the second reader of the Ukrainian keys,
+beside dstu-engine's keylib. `--cryptonite-tests` is cryptonite's
+`src/storageUtest/resources/`, from which the IIT-written PKCS#12 is
+copied once.
+
+```console
+$ python3 scripts/make_ua_keys_cryptonite_vectors.py   # rewrites vectors/ua_keys_cryptonite.vec
 ```
 
 Kalyna's GCM, GMAC, CCM and XTS go through the same two witnesses -
@@ -1344,6 +1488,59 @@ $ python3 scripts/make_fnv_tables.py            # rewrites src/checksum/fnv_tabl
                                                 # and fnv-es
 ```
 
+**XMSS and XMSS^MT** against three implementations, which
+`scripts/witness/xmss/build.sh` builds into `/opt/xmsswitness`: the XMSS
+reference implementation by the RFC 8391 authors at a pinned commit,
+fetched file by file from GitHub and checked against
+`xmss-reference.sha256`, built with the system's **cc** against
+OpenSSL's SHA-2; Botan 3.6.1, cloned at its tag with the commit checked
+and built minimal and static with its `xmss` module through **c++**
+(several minutes; skipped when the library is already there); and
+Bouncy Castle 1.77's XMSS and XMSS^MT from the system's jar, through
+**javac**. `selftest.py` holds them to the reference implementation's
+answers in Botan's tests, vendored in `vectors/botan_xmss/`.
+
+```console
+$ scripts/witness/xmss/build.sh                 # builds /opt/xmsswitness; needs cc, c++,
+                                                # git, javac
+$ python3 scripts/make_xmss_vectors.py          # rewrites vectors/xmss.vec
+```
+
+**LMS and HSS** against four implementations, which
+`scripts/witness/lms/build.sh` builds into `/opt/lmswitness`: Cisco's
+hash-sigs, by the RFC 8554 authors, its `192` branch at a pinned commit
+with RFC 9858's parameter sets, fetched file by file from GitHub and
+checked against `hashsigs.sha256`, built with the system's **cc** against
+OpenSSL's SHA-256; Bouncy Castle 1.77's LMS and HSS from the system's
+jar, through **javac**; pyhsslms 2.0.0 from PyPI with its hash required;
+and the hbs-lms crate, built with the system's **cargo** and pinned by
+its `Cargo.lock`, which verifies the SHA-256/256 sets only.
+`selftest.py` holds every witness to RFC 8554's and RFC 9858's worked
+examples, which the vendored RFCs print.
+
+```console
+$ scripts/witness/lms/build.sh                  # builds /opt/lmswitness; needs cc, javac,
+                                                # pip, cargo
+$ python3 scripts/make_lms_vectors.py           # rewrites vectors/lms.vec
+```
+
+**CRCs from their parameters** against six implementations, which
+`scripts/witness/crc/build.sh` installs into `/opt/crcwitness`: pycrc
+0.10.0, its bit-by-bit, bit-by-bit-fast and table-driven algorithms,
+crccheck 1.3.0 and crcmod 1.7, whose C extension pip compiles - all
+three from PyPI, with their hashes required (`requirements.txt`) - and
+the crc 3.4.0 crate at 128 bits, built with the system's **cargo** and
+pinned by its `Cargo.lock`. The catalogue of parametrised CRC algorithms
+is read from two transcriptions of it the witnesses carry, crc-catalog
+2.5.0 (the crate's dependency) and crccheck; `selftest.py` requires them
+to agree and every witness to reproduce every entry's check value.
+
+```console
+$ scripts/witness/crc/build.sh                  # builds /opt/crcwitness; needs pip, cargo, cc
+$ python3 scripts/make_crc_catalogue.py         # rewrites src/checksum/crc_catalogue.rs
+$ python3 scripts/make_crc_vectors.py           # rewrites vectors/crc.vec
+```
+
 **xxHash** against seven implementations, which
 `scripts/witness/xxhash/build.sh` fetches from GitHub at pinned commits,
 checked against `xxhash.sha256`, and builds: the reference `xxhash.h`
@@ -1463,6 +1660,97 @@ $ python3 scripts/make_trivium_grain_vectors.py      # rewrites vectors/trivium_
 `vectors/estream/` holds the eSTREAM project's own files, from
 avr-crypto-lib's `testvectors/` (nerilex/avr-crypto-lib a705bca), and is
 not generated.
+
+**Grain-128AEADv2**: `scripts/witness/grain128aead` builds Rhys
+Weatherley's lwc-finalists at a pinned commit, the grain-128aeadv2
+crate, which cargo fetches pinned by its lock file, and Bouncy Castle
+1.77's `Grain128AEADEngine` from the system's jar. Its self-test
+requires the NIST final round's known answers, which lwc-finalists
+carries, from all three, and Bouncy Castle to disagree exactly where its
+little-endian length bytes differ from DER. It needs a JDK and cargo.
+
+The same script builds the witnesses for **Grain-128AEAD v1**, before
+the round 3 tweak: the designers' reference and optimised
+implementations from their repository and Rhys Weatherley's round 2
+lightweight-crypto, each at a pinned commit, under one driver through
+the NIST interface. The self-test requires the designers' known-answer
+file from all three, the three to agree, and v1 to differ from v2 on
+every input.
+
+```console
+$ sh scripts/witness/grain128aead/build.sh       # builds /opt/grainaeadwitness
+$ python3 scripts/make_grain128aead_vectors.py   # rewrites vectors/grain128aead.vec
+$ python3 scripts/make_grain128aead_v1_vectors.py  # rewrites vectors/grain128aead_v1.vec
+```
+
+**ISAAC and ISAAC-64**: `scripts/witness/isaac` builds Jenkins's
+rand.c in its portable version, randport.c, as Rust 0.4 vendored it, and
+isaac64.c as Math::Int64 folds it into a header, each fetched by commit
+and checked against its SHA-256; coreutils's rand-isaac.c, once at each
+size; rand_isaac 0.3.0, which cargo fetches pinned by its lock file; and
+Bouncy Castle 1.77's `ISAACEngine` from the system's jar. randport.c is
+compiled with its `ub4` 32 bits wide: as standard.h declares it, it is
+`unsigned long`, and on a 64 bit machine `randinit` comes out wrong. The
+self-test requires the values rand_isaac's tests give as the reference's
+and every witness to agree. It needs a JDK and cargo.
+
+```console
+$ sh scripts/witness/isaac/build.sh              # builds /opt/isaacwitness
+$ python3 scripts/make_isaac_vectors.py          # rewrites vectors/isaac.vec
+```
+
+**UEA1 and UIA1** use two of the witnesses below: the KASUMI reference
+implementation with f8 and f9 from the specifications' annexes, as
+CryptoMobile carries it (`ref-kasumi`), and intel-ipsec-mb. The
+generator first requires both to reproduce Intel's tests in
+`vectors/kasumi_3gpp/`.
+
+```console
+$ python3 scripts/make_uea1_uia1_vectors.py      # rewrites vectors/uea1_uia1.vec
+```
+
+**SNOW 3G, ZUC-128, ZUC-256 and the 3GPP algorithms**:
+`scripts/witness/snow3g_zuc` builds the ETSI/SAGE reference code for
+SNOW 3G and ZUC as CryptoMobile carries it, under `ref_snow3g.c` and
+`ref_zuc.c`; intel-ipsec-mb 2.0.3, a static build of its `lib/`, under
+`ipsecmb.c`; GmSSL's ZUC; free5gc's NAS algorithms (Go, needing
+`GOPROXY=direct` for github.com/aead/cmac); Bouncy Castle 1.77's ZUC
+engines and MACs from the system's jar; and the zuc and oxirush-security
+crates under `rust_3gpp/`, pinned with their checksums by its
+`Cargo.lock`. Its self-test requires every witness to reproduce every
+published test set it implements - the implementors' test data out of
+`rfcs/`, Intel's ZUC-256 tests out of `vectors/zuc256/` - and the
+witnesses to agree over random inputs. It needs go, a JDK, cargo, make
+and nasm.
+
+```console
+$ sh scripts/witness/snow3g_zuc/build.sh             # builds /opt/gppwitness
+$ python3 scripts/make_snow3g_zuc_vectors.py         # rewrites vectors/snow3g_zuc.vec
+$ python3 scripts/make_zuc256_constants.py --check   # src/stream_ciphers/zuc256_constants.rs
+```
+
+The specifications' text in `rfcs/` is `pdftotext -layout` of the PDFs
+beside it, written by `python3 scripts/make_spec_text.py`; `--check`
+says whether the installed pdftotext still writes the same bytes.
+`vectors/zuc256/` is intel-ipsec-mb 2.0.3's own `test/kat-app/`
+`zuc_eea3_256.json.c` and `zuc_eia3_256.json.c`, and is not generated.
+
+**5G's 256-NEA6, 256-NIA6 and 256-NCA6** have one implementation
+besides this one: the reference code in TS 35.246's Annex A.
+`scripts/witness/zuc256_3gpp/build.sh` takes it out of the vendored text
+(`rfcs/35246-k00.txt`, every line from its first `#define` to Annex B,
+the blank lines between the Word file's paragraphs left out) and builds
+it under `driver.cpp` twice, plainly and under ASan and UBSan without
+the alignment check (Annex A's `xor128` reads through misaligned `u64`
+pointers, which that check reports at once). The vectors script runs
+the sanitizer build on aligned and misaligned buffers as well, and
+requires the same answers. The text of 3GPP's Word files is `pandoc -t
+plain --wrap=none`, which `make_spec_text.py` also writes and checks.
+
+```console
+$ sh scripts/witness/zuc256_3gpp/build.sh /opt/zuc256witness
+$ python3 scripts/make_zuc256_3gpp_vectors.py        # rewrites vectors/zuc256_3gpp.vec
+```
 
 **Strumok** has two implementations that share no code: UAPKI's
 `dstu8845.c` (specinfo-ua/UAPKI), compiled with the three library files

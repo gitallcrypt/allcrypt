@@ -1,0 +1,10 @@
+[package]
+name = "isaac-witness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand_isaac = "=0.3.0"
+rand_core = "=0.6.4"
+
+[workspace]

@@ -6,10 +6,12 @@
 //                                          1, 2, 3 .. bytes
 //   cipher <rounds> <key hex> <block hex>  its Even-Mansour block cipher,
 //                                          pi(x ^ K) ^ K
+//   decipher <rounds> <key hex> <block hex>
+//                                          its inverse, pi^-1(x ^ K) ^ K
 //
 // The answer is hex, or "error ...".
 use std::io::{self, BufRead, Write};
-use chaskey::cipher::{encrypt, Permutation};
+use chaskey::cipher::{decrypt, encrypt, Permutation};
 use chaskey::{Chaskey, Chaskey12, ChaskeyLTS, Digester};
 
 fn unhex(s: &str) -> Vec<u8> {
@@ -43,6 +45,12 @@ fn block<P: Permutation>(key: [u32; 4], x: &[u8]) -> String {
     hex(&v)
 }
 
+fn unblock<P: Permutation>(key: [u32; 4], x: &[u8]) -> String {
+    let mut v = words(x);
+    decrypt::<P>(&mut v, &key);
+    hex(&v)
+}
+
 fn main() {
     let stdin = io::stdin();
     let mut out = io::stdout().lock();
@@ -60,7 +68,11 @@ fn main() {
                 ("cipher", "8") => block::<Chaskey>(key, &data),
                 ("cipher", "12") => block::<Chaskey12>(key, &data),
                 ("cipher", "16") => block::<ChaskeyLTS>(key, &data),
-                ("chaskey" | "cipher", _) => "error unsupported".to_string(),
+                ("decipher", _) if data.len() != 16 => "error request".to_string(),
+                ("decipher", "8") => unblock::<Chaskey>(key, &data),
+                ("decipher", "12") => unblock::<Chaskey12>(key, &data),
+                ("decipher", "16") => unblock::<ChaskeyLTS>(key, &data),
+                ("chaskey" | "cipher" | "decipher", _) => "error unsupported".to_string(),
                 _ => "error request".to_string(),
             }
         } else {

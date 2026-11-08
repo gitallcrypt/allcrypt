@@ -184,18 +184,25 @@ def test_every_member_of_every_enum_actually_constructs():
         assert usable, f"{name.value} works at no key length"
 
     for name in allcrypt.StreamCipherName:
-        # RC4 takes no nonce; the others take one. Again a property of
+        # RC4, ZipCrypto and ISAAC take no nonce; the others take one. Again a property of
         # the algorithm rather than of the enum.
         nonce = b"" if name in (allcrypt.StreamCipherName.RC4,
-                                allcrypt.StreamCipherName.ZIPCRYPTO) else bytes(8)
+                                allcrypt.StreamCipherName.ZIPCRYPTO,
+                                allcrypt.StreamCipherName.ISAAC,
+                                allcrypt.StreamCipherName.ISAAC64,
+                                allcrypt.StreamCipherName.ISAAC_BOUNCYCASTLE) else bytes(8)
         if name.value.startswith("chacha"):
             nonce = bytes(12)
         if name.value.startswith(("xchacha", "xsalsa")):
             nonce = bytes(24)
         if name in (allcrypt.StreamCipherName.STRUMOK, allcrypt.StreamCipherName.HC256):
             nonce = bytes(32)
-        if name in (allcrypt.StreamCipherName.HC128, allcrypt.StreamCipherName.SOSEMANUK):
+        if name in (allcrypt.StreamCipherName.HC128, allcrypt.StreamCipherName.SOSEMANUK,
+                    allcrypt.StreamCipherName.SNOW3G, allcrypt.StreamCipherName.ZUC128,
+                    allcrypt.StreamCipherName.ZUC256_3GPP):
             nonce = bytes(16)
+        if name == allcrypt.StreamCipherName.ZUC256:
+            nonce = bytes(25)
         if name == allcrypt.StreamCipherName.TRIVIUM:
             nonce = bytes(10)
         if name == allcrypt.StreamCipherName.GRAIN128:

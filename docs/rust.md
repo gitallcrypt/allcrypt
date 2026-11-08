@@ -174,6 +174,36 @@ continues from an earlier value, starting from 1; Fletcher's are
 bits. `AnyHash::new` takes the names in `api::CHECKSUMS`,
 which are not in `HASHES`, and gives the value big endian.
 
+Any other CRC is `api::Crc` over `api::CrcParams`, the six parameters
+of Williams's model as the catalogue of parametrised CRC algorithms
+writes them - `poly` and `init` unreflected - at any width from 1 to
+128; `api::crc` is the value of one message. `api::CRC_CATALOGUE` is the
+catalogue, and `AnyHash::new` takes its names in any case, with hyphens
+or underscores, and any other CRC by its model line, which is the name
+`AnyHash::crc` gives one.
+
+```rust
+use allcrypt::api::{self, AnyHash, Crc, CrcParams};
+use allcrypt::hash_functions::HashFunction;
+
+let arc = CrcParams { width: 16, poly: 0x8005, init: 0, refin: true, refout: true, xorout: 0 };
+let entry = CrcParams::named("CRC-16/ARC").unwrap();
+assert_eq!(entry.params, arc);
+assert_eq!(api::crc(arc, b"123456789")?, entry.check);
+
+// In pieces; the check value is the CRC of "123456789".
+let usb = CrcParams::named("crc_5/usb").unwrap();
+let mut crc = Crc::new(usb.params)?;
+crc.update(b"1234");
+crc.update(b"56789");
+assert_eq!(crc.value(), usb.check);
+let mut by_name = AnyHash::new("crc-5/usb")?;
+by_name.update(b"123456789");
+assert_eq!(by_name.digest(), crc.digest());
+assert_eq!(AnyHash::crc(arc)?.name(),
+           "width=16 poly=0x8005 init=0x0000 refin=true refout=true xorout=0x0000");
+```
+
 ```rust
 use allcrypt::api::{self, AnyHash};
 use allcrypt::checksum;
@@ -277,6 +307,36 @@ let mut mac = AnyHash::blake3(Some(&[7; 32]), None)?;
 mac.update(b"abc");
 let key = api::blake3_xof(b"key material", 32, None, Some("example.com 2026 session keys"), 0)?;
 assert!(mac.digest() != digest && key.len() == 32);
+```
+
+### TurboSHAKE and KangarooTwelve
+
+RFC 9861's functions over Keccak-p[1600] at twelve rounds - the last
+twelve of SHA-3's twenty-four. TurboSHAKE128 and TurboSHAKE256 are
+SHAKE's sponges with a domain separation byte from 0x01 to 0x7F;
+KangarooTwelve (KT128, KT256) is a tree over them in 8192 byte chunks,
+with a customization string. In `HASHES` as `turboshake_128` (32
+bytes), `turboshake_256` (64), `kt128` (32) and `kt256` (64), at the
+default domain byte and with no customization, and with a length in
+bits after another underscore; `api::turboshake` and
+`api::kangarootwelve` give any length with the rest
+(`hash_functions::keccak::Keccak::turboshake` and
+`hash_functions::kangarootwelve::KangarooTwelve` for the types, which
+stream).
+
+```rust
+use allcrypt::api::{self, AnyHash};
+use allcrypt::hash_functions::HashFunction;
+
+let mut h = AnyHash::new("kt128")?;
+h.update(b"abc");
+assert_eq!(h.digest(), api::kangarootwelve("kt128", b"abc", 32, b"")?);
+// A customization string separates uses of one message.
+assert!(api::kangarootwelve("kt128", b"abc", 32, b"example.com")? != h.digest());
+// TurboSHAKE with a domain byte of its own; 0x1F is the default.
+let a = api::turboshake("turboshake256", b"abc", 64, 0x1f)?;
+let b = api::turboshake("turboshake256", b"abc", 64, 0x0b)?;
+assert!(a != b);
 ```
 
 ## SM2
@@ -878,6 +938,28 @@ assert_eq!(b[..4], [0xba, 0x69, 0x33, 0x81]);
 Bouncy Castle agree on it, the indirect one as Botan and Bouncy Castle
 under the mode's definition agree on it.
 
+### Chaskey-LTS as a block cipher
+
+`block_ciphers::chaskey_lts::ChaskeyLts` is `pi(x ^ K) ^ K`, where `pi`
+is the 16 round permutation of the Chaskey-LTS MAC (`mac::chaskey`): a
+single-key Even-Mansour cipher with a 128 bit block and key, words
+little endian, as FELIX and volexity's chaskey-lts use it. Decryption
+runs the inverse round. It is constant time.
+
+```rust
+use allcrypt::block_ciphers::chaskey_lts::ChaskeyLts;
+use allcrypt::block_ciphers::BlockCipher;
+
+let mut cipher = ChaskeyLts::new(&[7u8; 16])?;
+let (mut out, mut back) = (Vec::new(), Vec::new());
+cipher.block_encrypt(&[0u8; 16], &mut out);
+cipher.block_decrypt(&out, &mut back);
+assert_eq!(back, [0u8; 16]);
+```
+
+`vectors/chaskey_lts.vec` has the blocks sacundim's crate and volexity's
+package agree on, each decrypted back by both.
+
 ### SHACAL-2
 
 SHACAL-2, the NESSIE selection that is SHA-256's compression function
@@ -1238,10 +1320,10 @@ assert_eq!(out, [0xf2, 0x42, 0x68, 0xa8]);
 ```
 
 Every witness that takes a row's key agrees on it in
-`vectors/simon_speck.vec`: Crypto++, the Linux kernel's Speck and inmcm's
-Python reference at 64 and 128 bits, jedisct1/rust-lwbc and inmcm at
-the other sizes - lwbc at one key length each, so the rows at 48/72 and
-96/96 are inmcm's alone, and say so.
+`vectors/simon_speck.vec`, two at least: Crypto++ and the Linux kernel's
+Speck at 64 and 128 bits, jedisct1/rust-lwbc at one key length of each
+size to 96 bits, and inmcm's Python reference, cryptography-rs and, for
+Speck, RustCrypto's speck-cipher at every size.
 
 ### Threefish
 
@@ -1683,6 +1765,41 @@ assert_eq!(aead.decrypt(&[1u8; 16], b"header", &ciphertext, &tag)?, b"the payloa
 Through the facade it is `aes-128-cbc-hmac-sha256` and its two siblings,
 with the IV as the nonce.
 
+### Grain-128AEADv2
+
+The NIST lightweight cryptography finalist, with its round 3 tweak:
+`stream_ciphers::grain128aead`, a 16 byte key, a 12 byte nonce and an
+8 byte tag. It authenticates the plaintext rather than the ciphertext,
+so `decrypt` returns the plaintext only after the tag has checked, and
+through the facade, `grain128aeadv2`, it buffers. It is constant time.
+
+```rust
+use allcrypt::stream_ciphers::grain128aead::{decrypt, encrypt};
+
+let (key, nonce) = ([7u8; 16], [9u8; 12]);
+let (ciphertext, tag) = encrypt(&key, &nonce, b"header", b"the payload")?;
+assert_eq!(tag.len(), 8);
+assert_eq!(decrypt(&key, &nonce, b"header", &ciphertext, &tag)?, b"the payload");
+assert!(decrypt(&key, &nonce, b"other", &ciphertext, &tag).is_err());
+```
+
+Grain-128AEAD as it stood in the first two rounds, before the tweak, is
+`encrypt_version` and `decrypt_version` with `Version::V1`, or
+`grain128aeadv1` through the facade. It differs only in its
+initialisation, and its outputs are unrelated to v2's. The bare name
+`grain128aead` is refused rather than given either meaning.
+
+```rust
+use allcrypt::stream_ciphers::grain128aead::{decrypt, decrypt_version, encrypt_version, Version};
+
+let (key, nonce) = ([7u8; 16], [9u8; 12]);
+let (ciphertext, tag) = encrypt_version(Version::V1, &key, &nonce, b"header", b"payload")?;
+assert_eq!(decrypt_version(Version::V1, &key, &nonce, b"header", &ciphertext, &tag)?,
+           b"payload");
+assert!(decrypt(&key, &nonce, b"header", &ciphertext, &tag).is_err());
+assert!(allcrypt::api::aead_encrypt("grain128aead", &key, &nonce, b"", b"").is_err());
+```
+
 ### ChaCha20-Poly1305
 
 The other AEAD (RFC 8439), and the one to use where there is no AES
@@ -1846,7 +1963,10 @@ Windows made are read by the BitLocker product example.
 
 `stream_ciphers::wep` is WEP's RC4-over-data-and-CRC, `stream_ciphers::tkip`
 TKIP's per-packet key mixing, `mac::michael` TKIP's MIC, and
-`kdf::ieee80211` the PSK, PRF, PTK and PMKID. CCMP is `block_ciphers::ccm`
+`kdf::ieee80211` the PSK, PRF, PTK and PMKID, the KDF over SHA-256,
+SHA-384 and SHA-512, Suite B 192-bit's PTK (`try_ptk_sha384`) and the
+fast BSS transition key hierarchy (`ft_pmk_r0`, `ft_pmk_r1`, `ft_ptk`,
+whose hash follows the key's length). CCMP is `block_ciphers::ccm`
 (AES-CCM). The 802.11 frame framing lives in the `wifi` product example;
 these are the pieces:
 
@@ -1860,14 +1980,23 @@ let pmk = ieee80211::psk(b"password", b"IEEE")?;
 let ptk = ieee80211::ptk_sha1(&pmk, &[0; 6], &[1; 6], &[2; 32], &[3; 32], 384);
 assert_eq!(ptk.len(), 48);
 
+// Fast BSS transition (802.11r): the PSK names PMK-R0 for the mobility
+// domain, PMK-R1 for one access point, and the PTK over both nonces.
+let station = [2, 0, 0, 0, 2, 0];
+let (pmk_r0, r0_name) = ieee80211::ft_pmk_r0(&pmk, b"IEEE", &[1, 2], b"r0kh", &station)?;
+let (pmk_r1, _) = ieee80211::ft_pmk_r1(&pmk_r0, &r0_name, &[2, 0, 0, 0, 1, 0], &station)?;
+let ptk = ieee80211::ft_ptk(&pmk_r1, &[4; 32], &[5; 32], &[2, 0, 0, 0, 1, 0], &station, 384)?;
+assert_eq!(ptk.len(), 48);
+
 // TKIP mixes a fresh RC4 key per frame; WEP's encapsulation decrypts it.
 let rc4_key = tkip::rc4_key(&[7; 16], &[1, 2, 3, 4, 5, 6], 0x1_0002);
 let sealed = wep::seal(&rc4_key, b"payload")?;
 assert_eq!(wep::open(&rc4_key, &sealed)?, b"payload");
 ```
 
-Captures that aircrack-ng's `airdecap-ng` opens are opened the same way
-by the Wi-Fi product example.
+Captures that aircrack-ng's `airdecap-ng` and Wireshark's `tshark` open
+are opened the same way by the Wi-Fi product example, which adds the
+framing: CCMP-256 and GCMP, group keys and protected management frames.
 
 ## Key wrap
 
@@ -1990,6 +2119,30 @@ assert_eq!(back, b"hello, world");
 A ZIP entry also carries a 12-byte encryption header with a check byte;
 that is the format's, and `examples/products/zip` writes and reads it.
 
+ISAAC and ISAAC-64, Bob Jenkins's generators of 1996, are
+`stream_ciphers::isaac::Isaac` and `Isaac64`, catalogued as `isaac` and
+`isaac64`. The key is up to 1024 bytes (2048), read as little-endian
+words into the 256 word seed and zero-padded, so keys that differ only
+in trailing zero bytes are the same key. The keystream is the
+reference's `rand()` order - block 0 first, each block's words from the
+last to the first - each word little endian, which is rand_isaac's
+`fill_bytes`. `next_block` gives the generator's blocks in index order
+for any other reading. `IsaacBouncyCastle`, `isaac-bouncycastle`, is
+Bouncy Castle's: block 0 skipped, words in index order, big endian.
+Neither has a nonce or seeks, and both index the state by the state, so
+they are not constant time.
+
+```rust
+use allcrypt::stream_ciphers::isaac::Isaac;
+use allcrypt::stream_ciphers::StreamCipher;
+
+let mut words = Isaac::new(b"key")?;
+let block = words.next_block();
+let mut bytes = vec![];
+Isaac::new(b"key")?.crypt(&[0u8; 4], &mut bytes);
+assert_eq!(bytes, block[255].to_le_bytes());
+```
+
 Strumok, DSTU 8845:2019, is Ukraine's stream cipher: a 32 or 64-byte
 key, a 32-byte IV, and a keystream of 64-bit words from a register over
 GF(2^64) and a state machine built from Kalyna's round. The standard
@@ -2064,6 +2217,74 @@ let mut grain = AnyStreamCipher::new("grain128", &[0x80, 0, 0, 0, 0, 0, 0, 0, 0,
                                      &[0; 12])?;
 assert_eq!(grain.update(&[0; 16])?, [0xC9, 0xE0, 0x2C, 0x74, 0x6A, 0x64, 0xB9, 0x48, 0xE1, 0x03, 0x67, 0x73, 0x85, 0xCA, 0x0F, 0x96]);
 assert!(grain.seek(0).is_err());
+```
+
+SNOW 3G and ZUC are the ciphers under the 3GPP algorithms: `snow3g`
+takes a 16 byte key and IV, `k0` and `IV0` first and each 32 bit word
+big endian, as the implementors' test data writes them; `zuc128` a 16
+byte key and IV; `zuc256-3gpp` a 32 byte key and a 16 byte IV;
+`zuc256` a 32 byte key and a 25 byte IV - 17 bytes and
+eight six bit values, one to a byte - or the same packed into 23 bytes,
+as GmSSL and the zuc crate take it. The keystream's words are big endian.
+None seeks; all three are constant time (`stream_ciphers::snow3g` and
+`stream_ciphers::zuc` for the types).
+
+The modes over them are in `stream_ciphers::mobile` and the facade:
+`mobile_cipher` for UEA1 (KASUMI's f8), UEA2, which is also 128-EEA1 and
+5G's 128-NEA1, and 128-EEA3 (`nea3`); `mobile_mac` for 128-EIA1 and
+128-EIA3 (`nia1`, `nia3`); `uia1` and `uia2` for UMTS's UIA1 (KASUMI's
+f9) and UIA2, which take a 32 bit FRESH where the others take a 5 bit
+BEARER; and `zuc_mac` for ZUC's MAC over a raw IV -
+ZUC-128's, of which 128-EIA3 is a use, and ZUC-256's at 32, 64 or 128
+bits. The message is `bits` bits in `ceil(bits / 8)` bytes, the first bit
+the top of the first byte - all of `data` when `bits` is `None` - and a
+ciphertext comes back with the bits past `bits` cleared.
+
+5G's 256 bit algorithms over 3GPP's ZUC-256 (TS 35.246) are `nea6`,
+`nia6`, `nca6_encrypt` and `nca6_decrypt`. They take a 32 byte key - or
+16, zero-extended, which the IV records - COUNT, BEARER, DIRECTION and
+an EXTRA_IV of six bytes or none for zeros; NIA6 and NCA6 a MAC length
+of 4 to 16 bytes, and NCA6 additional data with a length of its own.
+`nca6_decrypt` returns the plaintext only when the MAC matches. The
+keystream itself is the stream cipher `zuc256-3gpp`, with the 16 byte IV
+the algorithms build.
+
+```rust
+use allcrypt::api;
+
+// TS 35.248, NIA6 set 3: 144 bits, a 6 byte MAC.
+let ik = [&[0x01][..], &[0; 31]].concat();
+let message: Vec<u8> = (1..=0x12).collect();
+let extra_iv = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16];
+let mac = api::nia6(&ik, 0x80000001, 14, 0, &extra_iv, &message, Some(144), 6)?;
+assert_eq!(mac, [0x96, 0x19, 0x76, 0xe0, 0xcf, 0xc7]);
+
+// NCA6: one key for both; the MAC covers the AAD and the ciphertext.
+let key = [7u8; 32];
+let (ciphertext, tag) = api::nca6_encrypt(&key, 5, 3, 1, &[], b"header", None,
+                                          b"a 5G message", None, 16)?;
+assert_eq!(api::nca6_decrypt(&key, 5, 3, 1, &[], b"header", None, &ciphertext, None, &tag)?,
+           b"a 5G message");
+assert!(api::nca6_decrypt(&key, 5, 3, 1, &[], b"Header", None, &ciphertext, None, &tag)
+    .is_err());
+```
+
+```rust
+use allcrypt::api::{self, AnyStreamCipher};
+
+// The implementors' test data: SNOW 3G set 1, UEA2 set 3, 128-EIA3 set 1.
+let mut snow = AnyStreamCipher::new(
+    "snow3g", &[0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48],
+    &[0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84, 0xDF, 0x1F, 0x9B, 0x25, 0x1C, 0x0B, 0xF4, 0x5F])?;
+assert_eq!(snow.update(&[0; 8])?, [0xAB, 0xEE, 0x97, 0x04, 0x7A, 0xC3, 0x13, 0x73]);
+
+let ck = [0x5A, 0xCB, 0x1D, 0x64, 0x4C, 0x0D, 0x51, 0x20, 0x4E, 0xA5, 0xF1, 0x45, 0x10, 0x10, 0xD8, 0x52];
+let plaintext = [0xAD, 0x9C, 0x44, 0x1F, 0x89, 0x0B, 0x38, 0xC4, 0x57, 0xA4, 0x9D, 0x42, 0x14, 0x07, 0xE8];
+let ciphertext = api::mobile_cipher("uea2", &ck, 0xFA556B26, 3, 1, &plaintext, Some(120))?;
+assert_eq!(ciphertext, [0xBA, 0x0F, 0x31, 0x30, 0x03, 0x34, 0xC5, 0x6B, 0x52, 0xA7, 0x49, 0x7C, 0xBA, 0xC0, 0x46]);
+
+// One bit of message.
+assert_eq!(api::mobile_mac("eia3", &[0; 16], 0, 0, 0, &[0], Some(1))?, [0xC8, 0xA9, 0x59, 0x5E]);
 ```
 
 Office XOR obfuscation (`stream_ciphers::office_xor`, [MS-OFFCRYPTO]
@@ -2353,6 +2574,29 @@ assert_ne!(concat_kdf("sha256", b"z", b"info", 32)?, x963_kdf("sha256", b"z", b"
 assert_eq!(allcrypt::to_hex(&nfold(b"012345", 8)).to_lowercase(), "be072631276b1955");
 let key = des_string_to_key(b"password", b"ATHENA.MIT.EDUraeburn")?;
 assert_eq!(allcrypt::to_hex(&key).to_lowercase(), "cbc22fae235298e3");
+```
+
+One Kerberos encryption type is in the library whole, because it is
+also Windows's: RC4-HMAC (RFC 4757), `stream_ciphers::rc4_hmac`, types
+23 and 24 (the 40 bit export variant), the `hmac-md5-arcfour` checksum
+and the PRF. Its key is the NT hash, with no salt. The key usage is
+renumbered as section 3 says - 3 is 8 and 23 is 13 - except 9, which
+stays 9 as MIT Kerberos and Heimdal have it. The confounder is the
+caller's at this level; the API's `kerberos_rc4_hmac_encrypt` draws it
+when none is given.
+
+```rust
+use allcrypt::stream_ciphers::rc4_hmac::{decrypt, encrypt, string_to_key};
+
+let key = string_to_key("password");
+assert_eq!(key, allcrypt::kdf::windows::nt_hash("password"));
+let sealed = encrypt(&key, 2, b"ticket", b"8 random", false)?;
+assert_eq!(sealed.len(), 16 + 8 + 6);
+assert_eq!(decrypt(&key, 2, &sealed, false)?, b"ticket");
+assert!(decrypt(&key, 7, &sealed, false).is_err());
+assert!(decrypt(&key, 2, &sealed, true).is_err());
+// Usage 3 is RFC 4757's 8.
+assert_eq!(encrypt(&key, 3, b"x", b"8 random", false)?, encrypt(&key, 8, b"x", b"8 random", false)?);
 ```
 
 ### From a password
@@ -3933,6 +4177,91 @@ assert_eq!(theirs.parameter_set(), "SLH-DSA-SHAKE-128f");
 assert_eq!(theirs.pre_hash(), None);
 ```
 
+## Hash-based: LMS and HSS
+
+`pq::lms` is LMS and HSS (RFC 8554), with RFC 9858's SHA-256/192,
+SHAKE256/256 and SHAKE256/192 parameter sets, which NIST SP 800-208
+approves. **The keys are stateful**: each signature spends a one-time
+key, `HssPrivateKey::sign` moves the key's count on, and the caller has
+to store `to_bytes()` before the signature leaves, or a restored copy
+signs with the same leaves again. `api::hss_generate` draws a top SEED
+and I; `api::hss_from_seed` takes them, as RFC 8554 Appendix A derives
+keys from them, and lower trees are derived as Cisco's hash-sigs derives
+them. `api::hss_verify` and `api::lms_verify` take any implementation's
+signatures. Every tree's root comes from all its leaves, so a height-20
+tree is a million one-time keys: slow to make, and above height 15 the
+path of each signature is computed again.
+
+```rust
+use allcrypt::api;
+
+let levels = [("LMS_SHA256_M24_H5", "LMOTS_SHA256_N24_W4"); 2];
+let mut key = api::hss_generate(&levels)?;
+let public = key.public_key();
+let signature = key.sign(b"firmware image")?;
+let saved = key.to_bytes();          // store this before releasing the signature
+assert!(api::hss_verify(&public, b"firmware image", &signature));
+assert_eq!(key.count(), 1);
+assert_eq!(key.remaining(), (1 << 10) - 1);
+
+let mut restored = api::HssPrivateKey::from_bytes(&saved)?;
+assert!(api::hss_verify(&public, b"next", &restored.sign(b"next")?));
+assert_eq!(api::lms_parameter_sets().len(), 20);
+```
+
+## Hash-based: XMSS and XMSS^MT
+
+`pq::xmss` is XMSS and XMSS^MT (RFC 8391), with SP 800-208's SHA-256/192
+and SHAKE256 parameter sets, and stateful like LMS: `XmssPrivateKey::sign`
+moves the index on, and `to_bytes` - the reference implementation's
+form, `OID || idx || SK_SEED || SK_PRF || root || SEED` - is what to
+store before the signature leaves. Keys come from three seeds with SP
+800-208's WOTS+ derivation, as the reference implementation and Botan 3
+derive them. The two registries number their OIDs apart, so
+`api::xmss_verify` and `api::xmssmt_verify` are two functions and
+`from_bytes` is told which.
+
+```rust
+use allcrypt::api;
+
+let mut key = api::xmss_from_seeds("XMSSMT-SHA2_20/4_192", &[1; 24], &[2; 24], &[3; 24], 0)?;
+let public = key.public_key();
+let signature = key.sign(b"firmware image")?;
+let saved = key.to_bytes();          // store this before releasing the signature
+assert!(api::xmssmt_verify(&public, b"firmware image", &signature));
+assert!(!api::xmss_verify(&public, b"firmware image", &signature));
+assert_eq!(api::XmssPrivateKey::from_bytes(&saved, true)?.index(), 1);
+assert_eq!(api::xmss_parameter_sets().len(), 77);
+```
+
+HSS, XMSS and XMSS^MT keys go in certificates as RFC 9802 has them: the
+raw key straight in the BIT STRING under one OID per scheme, the
+parameter set inside the key. `x509::PublicKey::HashSig` is what the
+reader makes of one, after checking its type codes or OID and its
+length; a signature on a certificate verifies like any other. The
+builder signs with `SigningKey::Hss` or `SigningKey::Xmss`, which take
+the stateful key through a `RefCell` because every certificate spends
+a one-time key - store the key after `sign` returns and before the
+certificate goes anywhere. `api::HashSigPublicKey` is the key on its
+own, for reading a certificate's key and verifying with it.
+
+```rust
+use std::cell::RefCell;
+use allcrypt::api::{self, HashSigPublicKey};
+use allcrypt::x509::builder::{CertificateBuilder, SigningKey, SubjectKey};
+use allcrypt::x509::HashSig;
+
+let key = RefCell::new(api::xmss_from_seeds("XMSSMT-SHA2_20/4_256", &[1; 32], &[2; 32], &[3; 32], 0)?);
+let public = key.borrow().public_key();
+let builder = CertificateBuilder::new("firmware signing",
+                                      SubjectKey::HashSig { scheme: HashSig::XmssMt, key: &public });
+let certificate = builder.sign(&SigningKey::Xmss(&key))?;
+assert_eq!(key.borrow().index(), 1);   // one leaf spent: store the key now
+
+let read = HashSigPublicKey::from_certificate(&certificate)?;
+assert_eq!((read.scheme(), read.parameter_set()), ("XMSS^MT", "XMSSMT-SHA2_20/4_256".to_string()));
+```
+
 ## Post-quantum: ML-KEM
 
 FIPS 203's key encapsulation mechanism, in its three parameter sets
@@ -4022,6 +4351,44 @@ NIST's 195 ACVP cases check the arithmetic, 30 of them keys that must be
 refused; OpenSSL 3.5 checks it at the protocol level and in keys and
 certificates. See [post-quantum.md](post-quantum.md) and sections 7v
 and 7zzzj of [pitfalls.md](pitfalls.md).
+
+## HPKE
+
+RFC 9180's hybrid public key encryption, with draft-ietf-hpke-pq's
+ML-KEM and hybrid KEMs and its SHAKE and TurboSHAKE KDFs. `api::HpkeSuite` names a KEM,
+a KDF and an AEAD as the documents print them, or by id;
+`publickey_ciphers::hpke` is the scheme itself, with derandomized
+setups for the published vectors.
+
+```rust
+use allcrypt::api::HpkeSuite;
+
+let suite = HpkeSuite::new("X25519", "HKDF-SHA256", "ChaCha20Poly1305")?;
+let (private, public) = suite.generate_key_pair()?;
+
+// Single-shot, base mode.
+let (enc, ct) = suite.seal(&public, b"info", b"aad", b"message", None, None)?;
+assert_eq!(suite.open(&enc, &private, b"info", b"aad", &ct, None, None)?, b"message");
+
+// A context, in PSK mode: messages in order, and exports.
+let psk = Some((&b"a pre-shared key"[..], &b"its id"[..]));
+let (enc, mut sender) = suite.setup_sender(&public, b"info", psk, None, None)?;
+let mut recipient = suite.setup_receiver(&enc, &private, b"info", psk, None)?;
+let first = sender.seal(b"", b"one")?;
+assert_eq!(recipient.open(b"", &first)?, b"one");
+assert_eq!(sender.export(b"label", 32)?, recipient.export(b"label", 32)?);
+
+// Post-quantum: a hybrid KEM and a one-stage KDF.
+let pq = HpkeSuite::new("MLKEM768-X25519", "SHAKE256", "AES-256-GCM")?;
+let (private, public) = pq.derive_key_pair(b"input keying material")?;
+let (enc, ct) = pq.seal(&public, b"", b"", b"pq", None, None)?;
+assert_eq!(pq.open(&enc, &private, b"", b"", &ct, None, None)?, b"pq");
+```
+
+The mode follows from the arguments: a PSK makes PSK mode, a sender key
+- its private key to `setup_sender`, its public key to `setup_receiver`
+- makes auth mode, which needs a DHKEM and a two-stage KDF. A failed
+`open` leaves the context's sequence number where it was.
 
 ## Writing post-quantum keys
 

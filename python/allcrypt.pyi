@@ -71,6 +71,9 @@ class CurveName(str, enum.Enum):
     """The named curves, generated from ``api::CURVES``."""
 block_ciphers_available: List[str]
 stream_ciphers_available: List[str]
+#: The names ``mobile_cipher`` and ``mobile_mac`` take.
+mobile_ciphers_available: List[str]
+mobile_macs_available: List[str]
 modes_available: List[str]
 aeads_available: List[str]
 #: The NaCl box constructions, for the ``construction`` arguments below.
@@ -217,6 +220,11 @@ class Aead:
         associated data together - RFC 9058 section 6, where the tag
         stops depending on the nonce and one captured tag forges every
         such message.
+
+        ``grain128aeadv2`` takes a 16 byte key and a 12 byte nonce and gives
+        an 8 byte tag, and so does ``grain128aeadv1``, the version before
+        the round 3 tweak, whose outputs are unrelated. Bare
+        ``grain128aead`` names both and is refused.
         """
         # Raises CryptoError for a key length the cipher does not have, or
         # an AEAD that is not implemented - at construction, rather than at
@@ -2381,6 +2389,18 @@ def shake(name: str, data: BytesLike, length: int) -> bytes:
     A longer request extends a shorter one, which is what makes it an
     extendable output function rather than a family of hashes."""
 
+def turboshake(name: str, data: BytesLike, length: int, *, domain: int = 0x1F) -> bytes:
+    """TurboSHAKE128 or TurboSHAKE256 (RFC 9861) - ``name`` is ``"turboshake128"``
+    or ``"turboshake256"`` - squeezed to ``length`` bytes, with a domain
+    separation byte from 0x01 to 0x7F (0x1F by default). Keccak-p[1600] at
+    twelve rounds."""
+
+def kangarootwelve(name: str, data: BytesLike, length: int, *,
+                   customization: Optional[BytesLike] = None) -> bytes:
+    """KangarooTwelve (RFC 9861) - ``name`` is ``"kt128"`` or ``"kt256"`` - over
+    ``data`` with a customization string (empty by default), squeezed to
+    ``length`` bytes."""
+
 def scrypt(password: BytesLike, *, salt: BytesLike, n: int, r: int, p: int,
            dklen: int = 64) -> bytes:
     """scrypt (RFC 7914), with the same argument names as
@@ -2463,6 +2483,23 @@ def kerberos_des_string_to_key(password: BytesLike, salt: BytesLike) -> bytes:
     """RFC 3961's DES string-to-key (mit_des_string_to_key)."""
 def kerberos_random_to_key(cipher: str, data: BytesLike) -> bytes:
     """RFC 3961's random-to-key for ``"des"`` (7 bytes) or ``"3des"`` (21)."""
+def kerberos_rc4_hmac_string_to_key(password: str) -> bytes:
+    """Kerberos RC4-HMAC's key (RFC 4757): the NT hash of the password, no salt."""
+def kerberos_rc4_hmac_encrypt(key: BytesLike, usage: int, plaintext: BytesLike,
+                              confounder: Optional[BytesLike] = None,
+                              export: bool = False) -> bytes:
+    """Kerberos RC4-HMAC encryption: type 23, or 24 (``arcfour-hmac-exp``)
+    with ``export``. The 8 byte confounder is random unless given. The
+    result is the 16 byte checksum and the encrypted confounder and
+    plaintext."""
+def kerberos_rc4_hmac_decrypt(key: BytesLike, usage: int, ciphertext: BytesLike,
+                              export: bool = False) -> bytes:
+    """Decrypt and check; raises CryptoError on a wrong key or usage or
+    altered data."""
+def kerberos_rc4_hmac_checksum(key: BytesLike, usage: int, data: BytesLike) -> bytes:
+    """The Kerberos checksum ``hmac-md5-arcfour`` (-138)."""
+def kerberos_rc4_hmac_prf(key: BytesLike, input: BytesLike) -> bytes:
+    """RC4-HMAC's PRF: HMAC-SHA1 under the key, 20 bytes."""
 def openpgp_s2k(hash_name: str, passphrase: BytesLike, salt: BytesLike, count: int,
                 length: int) -> bytes:
     """OpenPGP's string-to-key: ``count`` octets of salt || passphrase repeated."""
@@ -2514,6 +2551,55 @@ def bitlocker_password_key(password: str, salt: BytesLike) -> bytes:
     """The AES key a BitLocker password protector's salt and password give."""
 def bitlocker_recovery_password_key(recovery: str, salt: BytesLike) -> bytes:
     """The AES key a BitLocker recovery password protector's salt and password give."""
+def nea6(key: BytesLike, count: int, bearer: int, direction: int, data: BytesLike, *,
+         bits: Optional[int] = None, extra_iv: Optional[BytesLike] = None) -> bytes:
+    """5G's 256-NEA6 over 3GPP's ZUC-256 (TS 35.246): the first ``bits`` bits
+    of ``data`` (all of it by default) under a 32 byte key (or 16,
+    zero-extended), a 32 bit COUNT, a 5 bit BEARER, a DIRECTION bit and an
+    EXTRA_IV of six bytes (zeros by default). Encryption and decryption are
+    the same; the bits past ``bits`` come back cleared."""
+def nia6(key: BytesLike, count: int, bearer: int, direction: int, data: BytesLike, *,
+         mac_bytes: int, bits: Optional[int] = None,
+         extra_iv: Optional[BytesLike] = None) -> bytes:
+    """5G's 256-NIA6: the MAC of ``mac_bytes`` bytes, 4 to 16, over the first
+    ``bits`` bits of ``data``, under the inputs ``nea6`` takes."""
+def nca6_encrypt(key: BytesLike, count: int, bearer: int, direction: int, data: BytesLike, *,
+                 mac_bytes: int, aad: Optional[BytesLike] = None, bits: Optional[int] = None,
+                 aad_bits: Optional[int] = None,
+                 extra_iv: Optional[BytesLike] = None) -> Tuple[bytes, bytes]:
+    """5G's 256-NCA6 encryption: ``(ciphertext, mac)``, the MAC of ``mac_bytes``
+    bytes, 4 to 16, over the first ``aad_bits`` bits of ``aad`` and the
+    ciphertext."""
+def nca6_decrypt(key: BytesLike, count: int, bearer: int, direction: int, data: BytesLike,
+                 mac: BytesLike, *, aad: Optional[BytesLike] = None,
+                 bits: Optional[int] = None, aad_bits: Optional[int] = None,
+                 extra_iv: Optional[BytesLike] = None) -> bytes:
+    """5G's 256-NCA6 decryption: the plaintext, or ``ValueError`` if ``mac`` is
+    not the MAC over ``aad`` and the ciphertext."""
+def mobile_cipher(name: str, key: BytesLike, count: int, bearer: int, direction: int,
+                  data: BytesLike, bits: Optional[int] = None) -> bytes:
+    """A 3GPP confidentiality algorithm - "uea1", "uea2", "eea1", "eea3" and 5G's
+    "nea1" and "nea3" - over the first ``bits`` bits of ``data`` (all of
+    it by default, which must be ``ceil(bits / 8)`` bytes), under a 16 byte
+    key, a 32 bit COUNT, a 5 bit BEARER and a DIRECTION bit. Encryption and
+    decryption are the same; the bits past ``bits`` come back cleared."""
+def mobile_mac(name: str, key: BytesLike, count: int, bearer: int, direction: int,
+               data: BytesLike, bits: Optional[int] = None) -> bytes:
+    """A 3GPP integrity algorithm's 4 byte MAC - "eia1", "eia3" and 5G's
+    "nia1" and "nia3" - over the first ``bits`` bits of ``data``."""
+def uia1(key: BytesLike, count: int, fresh: int, direction: int, data: BytesLike,
+         bits: Optional[int] = None) -> bytes:
+    """UMTS's UIA1, KASUMI's f9: the 4 byte MAC under a 16 byte key, a 32
+    bit COUNT, a 32 bit FRESH and a DIRECTION bit."""
+def uia2(key: BytesLike, count: int, fresh: int, direction: int, data: BytesLike,
+         bits: Optional[int] = None) -> bytes:
+    """UMTS's UIA2: the 4 byte MAC under a 16 byte key, a 32 bit COUNT, a
+    32 bit FRESH and a DIRECTION bit."""
+def zuc_mac(key: BytesLike, iv: BytesLike, data: BytesLike, *, tag_bits: int = 32,
+            bits: Optional[int] = None) -> bytes:
+    """ZUC's MAC over a raw IV: ZUC-128's (a 16 byte key and IV, a 32 bit
+    tag) or ZUC-256's (a 32 byte key, a 25 byte IV or 23 packed, a tag of
+    32, 64 or 128 bits)."""
 def michael(key: BytesLike, data: BytesLike) -> bytes:
     """Michael, TKIP's message integrity code. The key is 8 bytes."""
 def wep_encrypt(key: BytesLike, iv: BytesLike, plaintext: BytesLike) -> bytes:
@@ -2526,14 +2612,28 @@ def wpa_psk(passphrase: BytesLike, ssid: BytesLike) -> bytes:
     """The WPA/WPA2 pre-shared key from a passphrase and the SSID."""
 def wpa_ptk(akm: str, pmk: BytesLike, aa: BytesLike, spa: BytesLike, anonce: BytesLike,
             snonce: BytesLike, bits: int) -> bytes:
-    """The pairwise transient key (akm "sha1" or "sha256"; bits 512 TKIP, 384 CCMP)."""
+    """The pairwise transient key (akm "sha1", "sha256" or "sha384"; bits 512
+    TKIP, 384 CCMP, 704 for Suite B 192-bit's GCMP-256)."""
 def wpa_pmkid(pmk: BytesLike, aa: BytesLike, spa: BytesLike) -> bytes:
     """The PMKID that names a cached pairwise master key."""
+def wpa_ft_pmk_r0(xxkey: BytesLike, ssid: BytesLike, mdid: BytesLike, r0kh_id: BytesLike,
+                  s0kh_id: BytesLike) -> Tuple[bytes, bytes]:
+    """Fast BSS transition's PMK-R0 and PMKR0Name; XXKey of 32, 48 or 64 bytes
+    picks SHA-256, SHA-384 or SHA-512."""
+def wpa_ft_pmk_r1(pmk_r0: BytesLike, pmk_r0_name: BytesLike, r1kh_id: BytesLike,
+                  s1kh_id: BytesLike) -> Tuple[bytes, bytes]:
+    """Fast BSS transition's PMK-R1 and PMKR1Name for one access point."""
+def wpa_ft_ptk(pmk_r1: BytesLike, snonce: BytesLike, anonce: BytesLike, bssid: BytesLike,
+               sta: BytesLike, bits: int) -> bytes:
+    """Fast BSS transition's PTK: KDF(PMK-R1, "FT-PTK", SNonce || ANonce || BSSID || STA)."""
 def ieee80211_prf(key: BytesLike, label: BytesLike, data: BytesLike, bits: int) -> bytes:
     """IEEE 802.11's PRF-n over HMAC-SHA-1: ``bits`` of it."""
 def ieee80211_kdf_sha256(key: BytesLike, label: BytesLike, context: BytesLike,
                          bits: int) -> bytes:
     """IEEE 802.11's KDF over SHA-256, as 802.11w and WPA3 derive."""
+def ieee80211_kdf(hash: str, key: BytesLike, label: BytesLike, context: BytesLike,
+                  bits: int) -> bytes:
+    """IEEE 802.11's KDF over ``hash``: "sha256", "sha384" or "sha512"."""
 def tkip_encrypt(tk: BytesLike, ta: BytesLike, tsc: int, plaintext: BytesLike) -> bytes:
     """A TKIP MPDU's payload: RC4 under the frame's key over the plaintext
     and its CRC-32 ICV. ``tsc`` is the 48 bit sequence counter."""
@@ -2560,6 +2660,20 @@ def poly1305(key: BytesLike, message: BytesLike) -> bytes:
 
 def poly1305_verify(key: BytesLike, message: BytesLike, tag: BytesLike) -> bool:
     """Check a Poly1305 tag in constant time."""
+
+def crc(width: int, poly: int, init: int = 0, refin: bool = False, refout: bool = False,
+        xorout: int = 0, data: Optional[BytesLike] = None) -> Hash:
+    """A CRC from the six parameters of Williams's model, as the CRC
+    catalogue writes them - ``poly`` and ``init`` unreflected, width 1 to
+    128 - streamed as a hash object. The digest is the value in
+    ``ceil(width / 8)`` bytes, big endian; the name is the model line,
+    which ``new`` reads back. A catalogue CRC is also ``new("crc-16/arc")``.
+    Not cryptographic."""
+
+def crc_parameters(name: str) -> Dict[str, Any]:
+    """A CRC catalogue entry by its name in any case: ``name`` as the
+    catalogue writes it, ``width``, ``poly``, ``init``, ``refin``,
+    ``refout``, ``xorout`` and ``check``, the CRC of ``b"123456789"``."""
 
 def crc32c(data: BytesLike, value: int = 0) -> int:
     """CRC-32C (Castagnoli) of ``data``, continuing from ``value``, the
@@ -2747,6 +2861,112 @@ def gost_sbox(name: str) -> List[List[int]]:
     """The eight substitution rows of a GOST parameter set, built in or
     registered - so a new one can start from one that exists."""
 
+class HssKey:
+    """An HSS private key (RFC 8554, RFC 9858): one to eight LMS trees of
+    hash-based one-time keys, each tree signing the next.
+
+    **Stateful.** Every signature spends a one-time key, and ``sign``
+    moves the count on; store ``to_bytes()`` after each signature and
+    before the signature leaves. A copy of the key - a restored backup,
+    two processes with one file - signs with the same leaves twice, which
+    gives away enough to forge. Keys are made from a SEED and I by RFC 8554
+    Appendix A, and lower trees derived as Cisco's hash-sigs derives them.
+    """
+
+    @staticmethod
+    def generate(levels: Sequence[Tuple[str, str]]) -> "HssKey":
+        """A key over ``levels``, (LMS, LM-OTS) parameter set names from the
+        top, from a SEED and I drawn from the OS random source. Every tree's
+        root is computed from all its leaves: a height-20 tree is slow."""
+    @staticmethod
+    def from_seed(levels: Sequence[Tuple[str, str]], seed: BytesLike, i: BytesLike,
+                  count: int = 0) -> "HssKey":
+        """A key from its top tree's SEED and I, after ``count`` signatures."""
+    @staticmethod
+    def from_bytes(data: BytesLike) -> "HssKey":
+        """Reads ``to_bytes()`` back."""
+    def to_bytes(self) -> bytes:
+        """This library's form of the key: the levels' types, the count,
+        SEED and I."""
+    def public_bytes(self) -> bytes:
+        """``u32str(L)`` and the top tree's public key."""
+    def sign(self, message: BytesLike) -> bytes:
+        """Signs with the next leaf and moves the count on; raises
+        ``ValueError`` once every leaf is spent."""
+    @property
+    def count(self) -> int:
+        """Signatures made so far."""
+    @property
+    def remaining(self) -> int:
+        """Signatures left."""
+    @property
+    def levels(self) -> List[Tuple[str, str]]:
+        """The (LMS, LM-OTS) parameter set names, from the top."""
+
+class XmssKey:
+    """An XMSS or XMSS^MT private key (RFC 8391, with SP 800-208's
+    parameter sets): WOTS+ one-time keys in a Merkle tree, or in ``d``
+    layers of trees.
+
+    **Stateful**, as ``HssKey`` is: ``sign`` spends a one-time key and
+    moves ``index`` on; store ``to_bytes()`` after each signature and before
+    the signature leaves. WOTS+ keys are derived from ``sk_seed`` as SP
+    800-208 requires, as the XMSS reference implementation and Botan 3 do.
+    """
+
+    @staticmethod
+    def generate(parameter_set: str) -> "XmssKey":
+        """A key from seeds drawn from the OS random source; slow for tall
+        trees."""
+    @staticmethod
+    def from_seeds(parameter_set: str, sk_seed: BytesLike, sk_prf: BytesLike,
+                   seed: BytesLike, index: int = 0) -> "XmssKey":
+        """A key from its three seeds, whose next leaf is ``index``."""
+    @staticmethod
+    def from_bytes(data: BytesLike, multi_tree: bool = False) -> "XmssKey":
+        """Reads ``to_bytes()`` back; ``multi_tree`` says which registry
+        its OID is from."""
+    def to_bytes(self) -> bytes:
+        """``OID || idx || SK_SEED || SK_PRF || root || SEED``, the
+        reference implementation's form."""
+    def public_bytes(self) -> bytes:
+        """``OID || root || SEED``."""
+    def sign(self, message: BytesLike) -> bytes:
+        """Signs with the next leaf and moves the index on."""
+    @property
+    def index(self) -> int:
+        """The next leaf."""
+    @property
+    def remaining(self) -> int:
+        """Signatures left."""
+    @property
+    def parameter_set(self) -> str: ...
+    @property
+    def multi_tree(self) -> bool:
+        """Whether this is an XMSS^MT key."""
+
+def xmss_verify(public_key: BytesLike, message: BytesLike, signature: BytesLike) -> bool:
+    """Whether ``signature`` is an XMSS signature of ``message``."""
+
+def xmssmt_verify(public_key: BytesLike, message: BytesLike, signature: BytesLike) -> bool:
+    """Whether ``signature`` is an XMSS^MT signature of ``message``."""
+
+def xmss_parameter_sets() -> List[str]:
+    """The 77 XMSS and XMSS^MT parameter sets of RFC 8391 and SP 800-208."""
+
+def hss_verify(public_key: BytesLike, message: BytesLike, signature: BytesLike) -> bool:
+    """Whether ``signature`` is an HSS signature of ``message``."""
+
+def lms_verify(public_key: BytesLike, message: BytesLike, signature: BytesLike) -> bool:
+    """Whether ``signature`` is a bare LMS signature of ``message`` under an
+    LMS public key."""
+
+def lms_parameter_sets() -> List[str]:
+    """The twenty LMS parameter sets of RFC 8554 and RFC 9858."""
+
+def lmots_parameter_sets() -> List[str]:
+    """The sixteen LM-OTS parameter sets of RFC 8554 and RFC 9858."""
+
 class SlhDsaKey:
     """An SLH-DSA key pair (FIPS 205), the hash-based signature scheme.
 
@@ -2841,6 +3061,28 @@ class SlhDsaKey:
         ``verify_internal``. ``opt_rand`` is drawn when left out."""
 
     def verify_internal(self, message: BytesLike, signature: BytesLike) -> bool: ...
+
+class HashSigPublicKey:
+    """An HSS, XMSS or XMSS^MT public key as a certificate carries it (RFC
+    9802): the scheme and the raw key, whose parameter set is checked.
+    Verifying only; ``HssKey`` and ``XmssKey`` sign."""
+    @staticmethod
+    def from_public(scheme: str, public: BytesLike) -> "HashSigPublicKey":
+        """``scheme`` is "HSS", "XMSS" or "XMSS^MT"."""
+    @staticmethod
+    def from_spki(data: BytesLike) -> "HashSigPublicKey":
+        """A SubjectPublicKeyInfo, DER or PEM ``PUBLIC KEY``."""
+    @staticmethod
+    def from_certificate(data: BytesLike) -> "HashSigPublicKey":
+        """A certificate's subject key, DER or PEM; read, not verified."""
+    @property
+    def scheme(self) -> str: ...
+    @property
+    def parameter_set(self) -> str:
+        """The XMSS or XMSS^MT set, or HSS's levels and top tree."""
+    def public_bytes(self) -> bytes: ...
+    def to_spki(self) -> bytes: ...
+    def verify(self, message: BytesLike, signature: BytesLike) -> bool: ...
 
 class SlhDsaPublicKey:
     """The verifying half of an SLH-DSA key: ``PK.seed || PK.root``."""
@@ -2981,6 +3223,69 @@ def sntrup761_decapsulate(secret: BytesLike, ciphertext: BytesLike) -> bytes:
 
 def ml_kem_parameter_sets() -> List[str]:
     """``ML-KEM-512``, ``ML-KEM-768`` and ``ML-KEM-1024``."""
+
+
+class HpkeContext:
+    """An HPKE context: messages in order, and exported secrets."""
+
+    sequence: int
+
+    def seal(self, plaintext: BytesLike, aad: Optional[BytesLike] = None) -> bytes:
+        """Seal the next message: ciphertext and tag."""
+
+    def open(self, ciphertext: BytesLike, aad: Optional[BytesLike] = None) -> bytes:
+        """Open the next message. A failure does not move the sequence on."""
+
+    def export(self, exporter_context: BytesLike, length: int) -> bytes: ...
+
+
+class HpkeSuite:
+    """An HPKE ciphersuite (RFC 9180, with draft-ietf-hpke-pq's KEMs and
+    one-stage KDFs): ``HpkeSuite("X25519", "HKDF-SHA256",
+    "ChaCha20Poly1305")``. The mode follows from the arguments:
+    ``psk=(key, id)`` for PSK mode, a sender key for auth mode."""
+
+    def __init__(self, kem: str, kdf: str, aead: str) -> None: ...
+
+    @staticmethod
+    def from_ids(kem: int, kdf: int, aead: int) -> "HpkeSuite": ...
+
+    ids: Tuple[int, int, int]
+    names: Tuple[str, str, str]
+    encap_randomness_len: int
+
+    def derive_key_pair(self, ikm: BytesLike) -> Tuple[bytes, bytes]:
+        """``DeriveKeyPair(ikm)``: ``(private, public)``."""
+
+    def generate_key_pair(self) -> Tuple[bytes, bytes]: ...
+    def public_key(self, private: BytesLike) -> bytes: ...
+
+    def setup_sender(self, public: BytesLike, info: Optional[BytesLike] = None,
+                     psk: Optional[Tuple[BytesLike, BytesLike]] = None,
+                     sender_private: Optional[BytesLike] = None,
+                     randomness: Optional[BytesLike] = None) -> Tuple[bytes, HpkeContext]:
+        """``(enc, context)``. ``randomness`` makes it deterministic, and
+        anyone who knows it can open what the context seals."""
+
+    def setup_receiver(self, enc: BytesLike, private: BytesLike,
+                       info: Optional[BytesLike] = None,
+                       psk: Optional[Tuple[BytesLike, BytesLike]] = None,
+                       sender_public: Optional[BytesLike] = None) -> HpkeContext: ...
+
+    def seal(self, public: BytesLike, plaintext: BytesLike, info: Optional[BytesLike] = None,
+             aad: Optional[BytesLike] = None,
+             psk: Optional[Tuple[BytesLike, BytesLike]] = None,
+             sender_private: Optional[BytesLike] = None) -> Tuple[bytes, bytes]:
+        """Single-shot: ``(enc, ciphertext)``."""
+
+    def open(self, enc: BytesLike, private: BytesLike, ciphertext: BytesLike,
+             info: Optional[BytesLike] = None, aad: Optional[BytesLike] = None,
+             psk: Optional[Tuple[BytesLike, BytesLike]] = None,
+             sender_public: Optional[BytesLike] = None) -> bytes: ...
+
+
+def hpke_names() -> Tuple[List[str], List[str], List[str]]:
+    """``(kems, kdfs, aeads)``: the names ``HpkeSuite`` takes."""
 
 class DsaKey:
     """A DSA key pair (FIPS 186-4), signing with RFC 6979 nonces.

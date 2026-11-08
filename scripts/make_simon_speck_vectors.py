@@ -2,7 +2,8 @@
 """Write vectors/simon_speck.vec: Speck and Simon at every block size,
 32, 48, 64, 96 and 128 bits, as Crypto++ 8.9.0 (64 and 128), the Linux
 kernel (v4.19, Speck at 64 and 128), jedisct1/rust-lwbc (32 to 96, one
-key length each) and inmcm's Python reference (all) compute them.
+key length each), inmcm's Python reference, cryptography-rs 0.8.0 (all)
+and RustCrypto's speck-cipher 0.1.0 (Speck, all) compute them.
 
     scripts/witness/oldciphers/build.sh /opt/oldciphers
     python3 scripts/make_simon_speck_vectors.py
@@ -24,10 +25,10 @@ every byte with the shortest key, and a seeded generator's keys and
 blocks at each length; then blocks encrypted and decrypted 100 and
 1,000 times over. Every witness that takes a row's key length answers
 it, decryption included, and a row is written only where all of them
-agree and decryption gives the block back. lwbc has one key length at
-each of the 32, 48 and 96 bit sizes, so at Speck48/72, Speck96/96,
-Simon48/72 and Simon96/96 inmcm is the only witness, and those rows end
-`witnesses=1`.
+agree and decryption gives the block back. Every size and key length
+has two witnesses at least: lwbc has one key length at each of the 32,
+48 and 96 bit sizes, and Speck48/72, Speck96/96, Simon48/72 and
+Simon96/96 rest on inmcm and cryptography-rs, with RustCrypto for Speck.
 
     <cipher> key=<hex> pt=<hex> ct=<hex>             one block
     <cipher>-iter key=<hex> pt=<hex> ct=<hex> n=<n>  pt encrypted n times
@@ -51,16 +52,22 @@ import selftest  # noqa: E402  (the build's own reader of the published tests)
 # The 64 and 128 bit sizes come first, as they did before the others
 # were added, so their rows are the same.
 CIPHERS = {
-    "speck64": (8, (12, 16), {"cryptopp": None, "kernel": None, "inmcm": None, "lwbc": (16,)}),
-    "speck128": (16, (16, 24, 32), {"cryptopp": None, "kernel": None, "inmcm": None}),
-    "simon64": (8, (12, 16), {"cryptopp": None, "inmcm": None, "lwbc": (16,)}),
-    "simon128": (16, (16, 24, 32), {"cryptopp": None, "inmcm": None}),
-    "speck32": (4, (8,), {"inmcm": None, "lwbc": None}),
-    "speck48": (6, (9, 12), {"inmcm": None, "lwbc": (12,)}),
-    "speck96": (12, (12, 18), {"inmcm": None, "lwbc": (18,)}),
-    "simon32": (4, (8,), {"inmcm": None, "lwbc": None}),
-    "simon48": (6, (9, 12), {"inmcm": None, "lwbc": (12,)}),
-    "simon96": (12, (12, 18), {"inmcm": None, "lwbc": (18,)}),
+    "speck64": (8, (12, 16), {"cryptopp": None, "kernel": None, "inmcm": None, "lwbc": (16,),
+                              "rustcrypto": None, "cryptographyrs": None}),
+    "speck128": (16, (16, 24, 32), {"cryptopp": None, "kernel": None, "inmcm": None,
+                                    "rustcrypto": None, "cryptographyrs": None}),
+    "simon64": (8, (12, 16), {"cryptopp": None, "inmcm": None, "lwbc": (16,),
+                              "cryptographyrs": None}),
+    "simon128": (16, (16, 24, 32), {"cryptopp": None, "inmcm": None, "cryptographyrs": None}),
+    "speck32": (4, (8,), {"inmcm": None, "lwbc": None, "rustcrypto": None,
+                          "cryptographyrs": None}),
+    "speck48": (6, (9, 12), {"inmcm": None, "lwbc": (12,), "rustcrypto": None,
+                             "cryptographyrs": None}),
+    "speck96": (12, (12, 18), {"inmcm": None, "lwbc": (18,), "rustcrypto": None,
+                               "cryptographyrs": None}),
+    "simon32": (4, (8,), {"inmcm": None, "lwbc": None, "cryptographyrs": None}),
+    "simon48": (6, (9, 12), {"inmcm": None, "lwbc": (12,), "cryptographyrs": None}),
+    "simon96": (12, (12, 18), {"inmcm": None, "lwbc": (18,), "cryptographyrs": None}),
 }
 
 
@@ -132,10 +139,12 @@ def rows_for(cipher, rng):
         if again != pt.hex():
             sys.exit(f"{cipher}: {n} decryptions do not give the block back: {key.hex()}")
 
-    alone = lambda key: " witnesses=1" if len(witnesses(cipher, len(key))) == 1 else ""  # noqa: E731
+    for keylen in lengths:
+        if len(witnesses(cipher, keylen)) < 2:
+            sys.exit(f"{cipher} at {keylen} bytes has fewer than two witnesses")
     rows = [f"{cipher} key={k.hex()} pt={p.hex()} ct={c}" + (" src=published" if src else "")
-            + alone(k) for (k, p, src), c in zip(single, cts)]
-    rows += [f"{cipher}-iter key={k.hex()} pt={p.hex()} ct={c} n={n}" + alone(k)
+            for (k, p, src), c in zip(single, cts)]
+    rows += [f"{cipher}-iter key={k.hex()} pt={p.hex()} ct={c} n={n}"
              for (k, p, n), c in zip(iterated, ict)]
     return rows
 
@@ -147,11 +156,11 @@ def main():
         rows += rows_for(cipher, rng)
     with open(OUTPUT, "w") as out:
         out.write("# Speck and Simon at every block size. Every witness that takes a row's\n"
-                  "# key length agrees on it, both directions: Crypto++ 8.9.0 and inmcm's\n"
-                  "# Python at 64 and 128 bits, with the Linux kernel (v4.19) for Speck and\n"
-                  "# lwbc at 64 bits with a 16 byte key; inmcm and lwbc at 32, 48 and 96\n"
-                  "# bits, lwbc at one key length each. witnesses=1 marks the rows inmcm\n"
-                  "# alone computes. Keys and blocks are the little-endian encoding of the\n"
+                  "# key length agrees on it, both directions, two at least: Crypto++ 8.9.0\n"
+                  "# at 64 and 128 bits, the Linux kernel (v4.19) for Speck at those, lwbc\n"
+                  "# at one key length of each size to 96 bits, and inmcm's Python and\n"
+                  "# cryptography-rs 0.8.0 at all, with RustCrypto's speck-cipher 0.1.0\n"
+                  "# for Speck. Keys and blocks are the little-endian encoding of the\n"
                   "# paper's numbers. src=published marks Crypto++'s tests and the paper's.\n"
                   "# Written by scripts/make_simon_speck_vectors.py. Do not edit.\n"
                   f"# rows: {len(rows)}\n")

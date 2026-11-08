@@ -13,3 +13,10 @@ another project against its git blob ID. None was edited.
   `X509`.
 - `ours-*`: converted from those two by the key store example, under the
   password `пароль`: PKCS#12 with the GOST schemes, and JKS.
+- `cryptonite-iit.pfx` (password `123456`): a PKCS#12 holding two keys,
+  written by the IIT software, from PrivatBank's cryptonite's
+  `src/storageUtest/resources/pkcs12_by_iit(123456).pfx`
+  (github.com/privat-it/cryptonite, BSD 2-clause licence). Copied by
+  `scripts/make_ua_keys_cryptonite_vectors.py`, which checks its git blob
+  ID; what cryptonite found in it is in `vectors/ua_keys_cryptonite.vec`.
+  Not edited.

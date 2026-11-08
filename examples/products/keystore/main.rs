@@ -551,4 +551,49 @@ mod tests {
             assert!(views(&back) == views(&bags), "{name}");
         }
     }
+
+    /// PrivatBank's cryptonite, a second reader beside keylib, finds the
+    /// same keys in every PKCS#12 store here - dstu-engine's, ours, and
+    /// `cryptonite-iit.pfx`, which the IIT software wrote and which only
+    /// cryptonite's tests had - as `vectors/ua_keys_cryptonite.vec` records:
+    /// each key entry's signing key whole, and the key-agreement key's `d`
+    /// when the entry carries one.
+    #[test]
+    fn test_cryptonite_finds_the_same_keys_in_the_stores() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("vectors").join("ua_keys_cryptonite.vec");
+        let text = std::fs::read_to_string(path).unwrap();
+        let rows: Vec<std::collections::HashMap<&str, &str>> = text.lines()
+            .filter(|l| l.starts_with("p12 "))
+            .map(|l| l.split(' ').skip(1).map(|w| w.split_once('=').unwrap()).collect())
+            .collect();
+        assert_eq!(rows.len(), 4);
+        let mut iit = false;
+        for row in &rows {
+            let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(row["file"]);
+            let data = std::fs::read(&file).unwrap();
+            let store = open(&data, &unhex(row["password"]), &unhex(row["key-password"]))
+                .unwrap_or_else(|e| panic!("{}: {e}", row["file"]));
+            let entries: Vec<Vec<allcrypt::api::Dstu4145Key>> = canonical(&store).iter()
+                .filter(|line| line.starts_with("key "))
+                .map(|line| allcrypt::api::dstu4145_keys_open(
+                    &unhex(line.rsplit(' ').next().unwrap()), b"").unwrap())
+                .collect();
+            let keys: Vec<&str> = row["keys"].split(',').collect();
+            let keps: Vec<&str> = row["kep"].split(',').collect();
+            assert_eq!(entries.len(), keys.len(), "{}", row["file"]);
+            for ((ours, key), kep) in entries.iter().zip(&keys).zip(&keps) {
+                assert_eq!(dstu_numbers(&ours[0]), *key, "{}", row["file"]);
+                if *kep == "-" {
+                    assert_eq!(ours.len(), 1, "{}", row["file"]);
+                } else {
+                    let d = hex(&ours[1].private_bytes().unwrap());
+                    assert_eq!(d.trim_start_matches('0'), kep.trim_start_matches('0'),
+                               "{}", row["file"]);
+                }
+            }
+            iit |= row["file"].ends_with("cryptonite-iit.pfx");
+        }
+        assert!(iit);
+    }
 }

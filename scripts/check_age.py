@@ -2,7 +2,8 @@
 """The age example (`examples/products/age`) against the age tool.
 
 Both directions, with each age given (`--age`, repeatable; default the
-system's 1.1 and a current build at /opt/age-main):
+system's 1.1 and a current build at /opt/age132, from
+scripts/witness/agetag/build.sh, or /opt/age-main):
 
   * **age encrypts, ours decrypts**: X25519 recipients (and the
     post-quantum `age1pq` ones, where that age has them), several sizes
@@ -10,12 +11,18 @@ system's 1.1 and a current build at /opt/age-main):
   * **ours encrypts, age decrypts**: to recipients age generated, to
     recipients and identities ours generated (so age reads our Bech32),
     to both at once, and with passphrases.
+  * **SSH keys**, both ways, with each age and with rage (`--rage`,
+    default `/opt/rage/bin/rage`), the Rust implementation of the same
+    `agessh` recipients: Ed25519 and RSA keys `ssh-keygen` makes, and an
+    encrypted Ed25519 key that ours opens with `--key-passphrase`.
+    `scripts/make_age_ssh_fixtures.py` keeps such files for the offline
+    tests.
 
 age reads passphrases from a terminal only, so those rows run it under a
 pseudo-terminal.
 
     python3 scripts/check_age.py
-    python3 scripts/check_age.py --age /usr/bin/age --age /opt/age-main/bin/age
+    python3 scripts/check_age.py --age /usr/bin/age --age /opt/age132/bin/age
 
 The format's own test vectors (C2SP CCTV, 147 files) are in
 `examples/products/fixtures/age/testkit/` and run in `cargo test`; this
@@ -162,12 +169,48 @@ def check_one(age, ours, d, report):
            "ours encrypts with a passphrase, age decrypts", output[-200:])
 
 
+def check_ssh(tool, ours, d, report):
+    """SSH recipients and identities, both ways, with `tool` (age or rage)."""
+    print(f"\nSSH keys: {tool} {run(tool, '--version').stdout.decode().strip()}")
+    data = os.path.join(d, "plain-ssh")
+    with open(data, "wb") as out:
+        out.write(plaintext(70_000))
+    for kind, passphrase in (("ed25519", ""), ("rsa", ""), ("ed25519", "kp")):
+        key = os.path.join(d, f"ssh-{kind}{'-enc' if passphrase else ''}")
+        for path in (key, key + ".pub"):
+            os.path.exists(path) and os.remove(path)
+        run("ssh-keygen", "-q", "-t", kind, "-N", passphrase, "-f", key)
+        label = f"{kind}{' (encrypted key)' if passphrase else ''}"
+        enc, dec = os.path.join(d, "enc-ssh"), os.path.join(d, "dec-ssh")
+        extra = ["--key-passphrase", passphrase] if passphrase else []
+        try:
+            run(tool, "-R", key + ".pub", "-o", enc, data)
+            os.path.exists(dec) and os.remove(dec)
+            run(ours, "decrypt", enc, dec, "--identity-file", key, *extra)
+            report(contents(dec) == plaintext(70_000), f"{os.path.basename(tool)} encrypts to "
+                   f"ssh {label}, ours decrypts")
+        except RuntimeError as error:
+            report(False, f"{os.path.basename(tool)} encrypts to ssh {label}", str(error))
+        if passphrase:
+            continue  # age and rage ask for a key passphrase at a terminal
+        try:
+            run(ours, "encrypt", data, enc, "-R", key + ".pub")
+            os.path.exists(dec) and os.remove(dec)
+            run(tool, "-d", "-i", key, "-o", dec, enc)
+            report(contents(dec) == plaintext(70_000),
+                   f"ours encrypts to ssh {label}, {os.path.basename(tool)} decrypts")
+        except RuntimeError as error:
+            report(False, f"ours encrypts to ssh {label}", str(error))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--age", action="append",
                         help="an age binary, with age-keygen beside it (repeatable)")
+    parser.add_argument("--rage", default="/opt/rage/bin/rage",
+                        help="a rage binary, for the SSH rows")
     args = parser.parse_args()
-    ages = args.age or [a for a in ("/usr/bin/age", "/opt/age-main/bin/age")
+    ages = args.age or [a for a in ("/usr/bin/age", "/opt/age132/bin/age", "/opt/age-main/bin/age")
                         if os.path.exists(a)]
     subprocess.run(["cargo", "build", "--quiet", "--release", "--example", "age"],
                    cwd=ROOT, check=True)
@@ -183,6 +226,8 @@ def main():
     with tempfile.TemporaryDirectory() as d:
         for age in ages:
             check_one(age, ours, d, report)
+        for tool in ages + ([args.rage] if os.path.exists(args.rage) else []):
+            check_ssh(tool, ours, d, report)
     print(f"{rows - failures} of {rows} passed.")
     return 1 if failures else 0
 

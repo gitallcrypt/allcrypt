@@ -1,0 +1,125 @@
+# Wi-Fi captures from Wireshark's decryption tests, for
+# examples/products/wifi's tests. Written by
+# scripts/check_wifi_wireshark.py --record; do not edit. frames are the
+# frame numbers (from 1) both decrypted; plaintext_sha256 is the SHA-256 of
+# their plaintexts in that order, which equalled tshark's.
+#
+# TShark (Wireshark) 4.6.9 (v4.6.9-0-g2d548b197c75).
+
+[captures]
+name = wpa-test-decode-mgmt.pcap
+capture = wifi/wireshark/wpa-test-decode-mgmt.pcap
+shows = management frame protection: action and deauthentication frames
+essid = Valium_dongle
+password = 12345678
+pmk = -
+frames = 9,10,11
+plaintext_sha256 = 0c5a565045a7f4e49bb84c2976442e148d1ce57c73c276f15bed478358bf9244
+
+name = wpa2-psk-mfp.pcapng
+capture = wifi/wireshark/wpa2-psk-mfp.pcapng
+shows = PSK-SHA256, management frame protection, a GTK
+essid = Wireshark-pmf
+password = 12345678
+pmk = -
+frames = 10,11,12,13,14,15,16,17,18
+plaintext_sha256 = 8bc69c5727196f7c0b103118b9e68d14240edf7221456ef2a904d8fbae47a2b8
+
+name = wpa2-psk-ccmp-tkip.pcapng
+capture = wifi/wireshark/wpa2-psk-ccmp-tkip.pcapng
+shows = CCMP pairwise, TKIP group
+essid = testap-wpa2-tkip
+password = 12345678
+pmk = -
+frames = 11,12,13,14,15,16,17,18,19,20,21,22
+plaintext_sha256 = b0004badaae01b23a8213a2ade7c2baaef2201e43751d2c7c40d815747464d3c
+
+name = wpa1-gtk-rekey.pcapng
+capture = wifi/wireshark/wpa1-gtk-rekey.pcapng
+shows = WPA, TKIP, the group key rekeyed
+essid = wireshark-wpa1
+password = 12345678
+pmk = -
+frames = 22,23,24,26,27,28,29,31,33,34,39,40,48,50,59,60,70,80,82,84,85,95
+plaintext_sha256 = a503f93ff9b1e13ffa2922451dd274e439672227b0a0b77f209c916092835650
+
+name = wpa-gcmp.pcapng
+capture = wifi/wireshark/wpa-gcmp.pcapng
+shows = GCMP-128
+essid = Wireshark-gcmp
+password = 12345678
+pmk = -
+frames = 23,24,25,26,27,29,30,31,32,35,36,38,39,40,41
+plaintext_sha256 = 4399e0b68436d17be2f9ea3e21128dda782ba4afed41ae662495d6eb2310c7d3
+
+name = wpa-gcmp-256.pcapng
+capture = wifi/wireshark/wpa-gcmp-256.pcapng
+shows = GCMP-256
+essid = Wireshark-gcmp-256
+password = 12345678
+pmk = -
+frames = 19,20,21,32,33,34,35,38,39,50,51,52,53
+plaintext_sha256 = 188587c87befa2131fee574695c79987b964488b4f8adee51d05606800cd49b3
+
+name = wpa-ccmp-256.pcapng
+capture = wifi/wireshark/wpa-ccmp-256.pcapng
+shows = CCMP-256
+essid = Wireshark-ccmp-256
+password = 12345678
+pmk = -
+frames = 22,23,24,34,35,36,40,41,42,52,54,55,56,57
+plaintext_sha256 = cebced6b5fbbf9c24d9ce5e06997a3b8326a7455158cabe38131fdd6f61e7475
+
+name = wpa3-sae.pcapng
+capture = wifi/wireshark/wpa3-sae.pcapng
+shows = WPA3-SAE, from its PMK
+essid = Wireshark-SAE
+password = -
+pmk = ecbfe709d6151eaba6a4fd9cba94fbb570c1fc4c15506fad3185b4a0a0cfda9a
+frames = 114,115,116,117,128,132,133,134,137,138
+plaintext_sha256 = 11d1a949c61a623512fad73f50a5d72594850fbc9f81ff57325b800ac6dd571b
+
+name = owe.pcapng
+capture = wifi/wireshark/owe.pcapng
+shows = OWE, from its PMK
+essid = owe
+password = -
+pmk = a4b0b2efa7f77d1006eccf1a814b62125c15fac5c137d9cdff8c75c43194268f
+frames = 72,73,74,85,94,95,96,98,99,101
+plaintext_sha256 = 6e48b67fdac542dbf57e7516e1b4e8544055d487f3b00134f36f1442a4de95a9
+
+name = wpa2-psk-ccmp-tkip+synthetic.pcap
+capture = wifi/wireshark/wpa2-psk-ccmp-tkip+synthetic.pcap
+shows = QoS priorities, retry and power management bits, fragments, an HT Control field: CCMP pairwise, TKIP group
+essid = testap-wpa2-tkip
+password = 12345678
+pmk = -
+frames = 11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28
+plaintext_sha256 = 8e249e93e68a35529bff37070e16c578893a912e250510c159b8b5555aece06b
+
+name = wpa-gcmp+synthetic.pcap
+capture = wifi/wireshark/wpa-gcmp+synthetic.pcap
+shows = QoS priorities, an HT Control field: GCMP
+essid = Wireshark-gcmp
+password = 12345678
+pmk = -
+frames = 23,24,25,26,27,29,30,31,32,35,36,38,39,40,41,43,44,45
+plaintext_sha256 = 6a9fe1b262c32f7c2432e3dfd8230d49ccee2c23f9310b849cdb69903343f358
+
+name = wpa2-psk-mfp+synthetic.pcap
+capture = wifi/wireshark/wpa2-psk-mfp+synthetic.pcap
+shows = protected action frames, one with an HT Control field and one with the retry bit
+essid = Wireshark-pmf
+password = 12345678
+pmk = -
+frames = 10,11,12,13,14,15,16,17,18,19,20,21
+plaintext_sha256 = e18830126f83b73dcd95d649b42294baca58497897e196850fb3f183c503f964
+
+name = wpa2-psk-4addr.pcap
+capture = wifi/wireshark/wpa2-psk-4addr.pcap
+shows = a WPA2-PSK handshake made here, the access point at the larger address; CCMP with four addresses each way
+essid = allcrypt-wds
+password = four addresses
+pmk = -
+frames = 6,7,8
+plaintext_sha256 = f46b98e45c4c2802b6955f96122aef59704f2363da48865cc8fb1c14d0bad5c0

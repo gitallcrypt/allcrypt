@@ -63,6 +63,8 @@ mod rfc9881_tests;
 mod rfc9935_tests;
 #[cfg(test)]
 mod rfc9909_tests;
+#[cfg(test)]
+mod rfc9802_tests;
 
 use crate::asn1::{self, Oid, Reader, Tag};
 use crate::bignum::BigUint;
@@ -119,6 +121,12 @@ pub enum SignatureAlgorithm {
     /// an empty context string, and the hash is inside the scheme, so
     /// there is no `hash_name()`.
     SlhDsa(&'static str, Option<&'static str>),
+    /// A stateful hash-based signature, RFC 9802: HSS, XMSS or XMSS^MT.
+    /// One OID per scheme, serving as key and signature algorithm both;
+    /// the parameter set is inside the key and the signature, so the
+    /// variant names the scheme alone. The message is signed whole, with
+    /// no hash name.
+    HashSig(HashSig),
     /// DSTU 4145-2002, over the named hash: `gost34311` (GOST
     /// 34.311-95 under the signer's DKE, the S-box its key's parameters
     /// carry) or `kupyna256`, `kupyna384`, `kupyna512`.
@@ -187,6 +195,7 @@ impl SignatureAlgorithm {
         else if let Some(name) = ml_dsa_parameter_set(bytes) { SignatureAlgorithm::MlDsa(name) }
         else if let Some((set, pre_hash)) = slh_dsa_parameter_set(bytes) {
             SignatureAlgorithm::SlhDsa(set, pre_hash) }
+        else if let Some(scheme) = HashSig::from_oid(bytes) { SignatureAlgorithm::HashSig(scheme) }
         else if bytes == oids::RSASSA_PSS { SignatureAlgorithm::Unsupported("RSASSA-PSS") }
         else if bytes == oids::MD2_WITH_RSA { SignatureAlgorithm::Unsupported("MD2-with-RSA") }
         else { SignatureAlgorithm::Unknown }
@@ -206,7 +215,7 @@ impl SignatureAlgorithm {
             // EdDSA and ML-DSA hash the message themselves. See the
             // variants' notes.
             SignatureAlgorithm::Eddsa(_) | SignatureAlgorithm::MlDsa(_)
-                | SignatureAlgorithm::SlhDsa(..) => None,
+                | SignatureAlgorithm::SlhDsa(..) | SignatureAlgorithm::HashSig(_) => None,
             _ => None,
         }
     }
@@ -223,6 +232,7 @@ impl SignatureAlgorithm {
             SignatureAlgorithm::Eddsa(name) => format!("EdDSA ({})", name),
             SignatureAlgorithm::MlDsa(name) => name.to_string(),
             SignatureAlgorithm::SlhDsa(set, pre_hash) => slh_dsa_name(set, *pre_hash),
+            SignatureAlgorithm::HashSig(scheme) => scheme.name().to_string(),
             SignatureAlgorithm::Dstu4145(hash) => format!("DSTU 4145-2002 with {}", match *hash {
                 "gost34311" => "GOST 34.311-95",
                 "kupyna256" => "Kupyna-256",
@@ -351,6 +361,13 @@ pub enum PublicKey<'a> {
     /// `PK.seed || PK.root`. A key under one form's OID verifies only
     /// that form's signatures (section 8).
     SlhDsa { parameter_set: &'static str, pre_hash: Option<&'static str>, key: &'a [u8] },
+    /// A stateful hash-based signature key, RFC 9802: the scheme its OID
+    /// names, and the raw public key - RFC 8554's for HSS, RFC 8391's for
+    /// XMSS and XMSS^MT - straight in the BIT STRING. The parameter set
+    /// is inside the key: its type codes for HSS, its OID for XMSS, which
+    /// were checked against the parameter sets this library has and the
+    /// length they give. [`hash_sig_key_name`] describes it.
+    HashSig { scheme: HashSig, key: &'a [u8] },
     /// A DSA key, RFC 3279 section 2.3.2: the group from the
     /// AlgorithmIdentifier's Dss-Parms and `y` from the BIT STRING.
     ///
@@ -1392,8 +1409,119 @@ pub(crate) fn read_public_key<'a>(reader: &mut Reader<'a>) -> Result<PublicKey<'
                                key_bits.len()));
         }
         Ok(PublicKey::SlhDsa { parameter_set, pre_hash, key: key_bits })
+    } else if let Some(scheme) = HashSig::from_oid(bytes) {
+        // RFC 9802 sections 4 and 9: "PARAMS ARE absent".
+        if parameters.is_some() {
+            return Err(format!(
+                "An {} key must have absent AlgorithmIdentifier parameters (RFC 9802); \
+                 this one has them present.", scheme.name()));
+        }
+        hash_sig_key_name(scheme, key_bits)?;
+        Ok(PublicKey::HashSig { scheme, key: key_bits })
     } else {
         Ok(PublicKey::Unsupported { algorithm: bytes })
+    }
+}
+
+/// The three stateful hash-based signature schemes RFC 9802 puts in
+/// certificates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HashSig {
+    /// HSS, RFC 8554, with its LMS and LM-OTS parameter sets from there,
+    /// SP 800-208 and RFC 9858.
+    Hss,
+    /// XMSS, RFC 8391 and SP 800-208.
+    Xmss,
+    /// XMSS^MT, the same.
+    XmssMt,
+}
+
+impl HashSig {
+    pub fn name(self) -> &'static str {
+        match self {
+            HashSig::Hss => "HSS",
+            HashSig::Xmss => "XMSS",
+            HashSig::XmssMt => "XMSS^MT",
+        }
+    }
+
+    /// The OID, key and signature algorithm both: RFC 9708's
+    /// `id-alg-hss-lms-hashsig`, RFC 9802's `id-alg-xmss-hashsig` and
+    /// `id-alg-xmssmt-hashsig`.
+    pub fn oid(self) -> &'static [u8] {
+        match self {
+            HashSig::Hss => oids::ID_ALG_HSS_LMS_HASHSIG,
+            HashSig::Xmss => oids::ID_ALG_XMSS_HASHSIG,
+            HashSig::XmssMt => oids::ID_ALG_XMSSMT_HASHSIG,
+        }
+    }
+
+    pub fn from_oid(oid: &[u8]) -> Option<HashSig> {
+        [HashSig::Hss, HashSig::Xmss, HashSig::XmssMt].into_iter().find(|s| s.oid() == oid)
+    }
+
+    /// The scheme an XMSS parameter set signs under: XMSS^MT for a
+    /// multi-tree set, XMSS otherwise. The one place that decides, for the
+    /// certificate builder and for anything else that signs with an
+    /// `XmssPrivateKey` - the two registries share their OIDs, so the key's
+    /// own bytes cannot say.
+    pub fn of_xmss(params: &crate::pq::xmss::XmssParams) -> HashSig {
+        if params.multi_tree { HashSig::XmssMt } else { HashSig::Xmss }
+    }
+
+    /// Verify a signature over `message` under the raw public key.
+    pub fn verify(self, public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
+        match self {
+            HashSig::Hss => crate::pq::lms::hss_verify(public_key, message, signature),
+            HashSig::Xmss => crate::pq::xmss::verify(public_key, message, signature, false),
+            HashSig::XmssMt => crate::pq::xmss::verify(public_key, message, signature, true),
+        }
+    }
+}
+
+/// The parameter set a stateful hash-based key names, after checking it
+/// is one this library has and the key is exactly as long as it says:
+/// `HSS with 2 levels, LMS_SHA256_M32_H5/LMOTS_SHA256_N32_W8 on top` for
+/// HSS, which names its top tree only (the lower ones are in the
+/// signature), and the parameter set's name for XMSS and XMSS^MT, whose
+/// OID registries overlap and are told apart by the scheme.
+pub fn hash_sig_key_name(scheme: HashSig, key: &[u8]) -> Result<String, String> {
+    let word = |at: usize| key.get(at..at + 4)
+        .map(|b| u32::from_be_bytes(b.try_into().expect("four bytes")));
+    match scheme {
+        HashSig::Hss => {
+            let (levels, lms, ots) = match (word(0), word(4), word(8)) {
+                (Some(l), Some(lms), Some(ots)) => (l, lms, ots),
+                _ => return Err(format!("An HSS public key is at least 12 bytes; got {}.",
+                                        key.len())),
+            };
+            if !(1..=crate::pq::lms::HSS_MAX_LEVELS as u32).contains(&levels) {
+                return Err(format!("An HSS public key has 1 to 8 levels; this one says {}.",
+                                   levels));
+            }
+            let lms = crate::pq::lms::LmsParams::by_id(lms)
+                .ok_or_else(|| format!("Unknown LMS type {lms:#010x} in an HSS public key."))?;
+            let ots = crate::pq::lms::LmotsParams::by_id(ots)
+                .ok_or_else(|| format!("Unknown LM-OTS type {ots:#010x} in an HSS public key."))?;
+            if key.len() != 4 + lms.public_key_len() {
+                return Err(format!("An HSS public key with {} on top is {} bytes; got {}.",
+                                   lms.name, 4 + lms.public_key_len(), key.len()));
+            }
+            let plural = if levels == 1 { "" } else { "s" };
+            Ok(format!("HSS with {levels} level{plural}, {}/{} on top", lms.name, ots.name))
+        }
+        HashSig::Xmss | HashSig::XmssMt => {
+            let multi = scheme == HashSig::XmssMt;
+            let oid = word(0).ok_or_else(|| format!(
+                "An {} public key is at least 4 bytes; got {}.", scheme.name(), key.len()))?;
+            let p = crate::pq::xmss::XmssParams::by_oid(oid, multi).ok_or_else(|| format!(
+                "Unknown {} parameter set {oid:#010x}.", scheme.name()))?;
+            if key.len() != p.public_key_len() {
+                return Err(format!("An {} public key is {} bytes; got {}.", p.name,
+                                   p.public_key_len(), key.len()));
+            }
+            Ok(p.name.to_string())
+        }
     }
 }
 

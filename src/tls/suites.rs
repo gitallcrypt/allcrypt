@@ -860,33 +860,50 @@ pub fn by_code(code: u16) -> Option<&'static CipherSuite> {
 }
 
 /// Look a suite up by either of its names, case insensitively.
+///
+/// One suite per name. A spelling that selects several in a cipher list
+/// ([`selected_by`]) gives the one with the IANA code point here:
+/// `GOST2012-GOST8912-GOST8912` is 0xC102.
 pub fn by_name(name: &str) -> Option<&'static CipherSuite> {
-    if let Some(code) = alias(name) {
-        return by_code(code);
+    if let Some(codes) = alias(name) {
+        // 0xFF00 to 0xFFFF are private use (RFC 8446 B.4); IANA's is the
+        // other one.
+        return codes.iter().filter(|&&code| code < 0xff00).find_map(|&code| by_code(code));
     }
     ALL.iter().find(|suite| suite.name.eq_ignore_ascii_case(name)
                          || (!suite.openssl_name.is_empty()
                              && suite.openssl_name.eq_ignore_ascii_case(name)))
 }
 
-/// Spellings that are somebody's name for a suite but not its own.
+/// Every suite a name selects in a cipher list, in the order OpenSSL
+/// offers them: one for a suite's own name, several for an alias, none
+/// for a name nobody uses.
+pub fn selected_by(name: &str) -> Vec<&'static CipherSuite> {
+    match alias(name) {
+        Some(codes) => codes.iter().filter_map(|&code| by_code(code)).collect(),
+        None => by_name(name).into_iter().collect(),
+    }
+}
+
+/// Spellings that are somebody's name for suites but no suite's own.
 ///
 /// OpenSSL renamed the CNT_IMIT suite when IANA assigned it a code
-/// point: 0xC102 is now `IANA-GOST2012-GOST8912-GOST8912`, and the old
-/// spelling `GOST2012-GOST8912-GOST8912` became a cipher-string alias
-/// that selects **both** CNT_IMIT code points, 0xFF85 first - OpenSSL
-/// 3.0's `openssl ciphers -V` lists the two. This function returns one
-/// suite, and resolves it to 0xC102. A configuration file written against
-/// the older OpenSSL names the suite the old way, and that has to keep
-/// working - this is a library for reaching things nobody will update,
-/// and a cipher list somebody wrote in 2019 is one of them.
-fn alias(name: &str) -> Option<u16> {
-    const ALIASES: &[(&str, u16)] = &[
-        ("GOST2012-GOST8912-GOST8912", 0xc102),
+/// point: 0xC102 is now `IANA-GOST2012-GOST8912-GOST8912`, 0xFF85
+/// `LEGACY-GOST2012-GOST8912-GOST8912`, and the old spelling
+/// `GOST2012-GOST8912-GOST8912` became a cipher-string alias that selects
+/// **both**, 0xFF85 first - what OpenSSL 3.0.13 with gost-engine 3.0.3
+/// lists for it under `openssl ciphers -V`. A configuration file written
+/// against the older OpenSSL names the suite the old way, and that has to
+/// keep offering what it offered - this is a library for reaching things
+/// nobody will update, and a cipher list somebody wrote in 2019 is one of
+/// them.
+fn alias(name: &str) -> Option<&'static [u16]> {
+    const ALIASES: &[(&str, &[u16])] = &[
+        ("GOST2012-GOST8912-GOST8912", &[0xff85, 0xc102]),
     ];
     ALIASES.iter()
         .find(|(spelling, _)| spelling.eq_ignore_ascii_case(name))
-        .map(|(_, code)| *code)
+        .map(|(_, codes)| *codes)
 }
 
 /// A name for a code, even one we do not know.
@@ -975,18 +992,27 @@ impl Selection {
     }
 
     /// Exactly these, by name, in this order. Anything at all can be named,
-    /// including the insecure ones - naming it is the point.
+    /// including the insecure ones - naming it is the point. An alias
+    /// stands for every suite it selects ([`selected_by`]), and a suite
+    /// named twice is offered once, where it was first named - both as
+    /// OpenSSL reads a cipher list.
     pub fn named(names: &[&str]) -> Result<Selection, String> {
         let mut codes = Vec::new();
         for name in names {
-            let suite = by_name(name).ok_or_else(|| format!(
-                "Unknown cipher suite {:?}.", name))?;
-            if !suite.is_implemented() {
-                return Err(format!(
-                    "{} is in the registry but not implemented yet ({} with {}).",
-                    suite.name, suite.cipher.name(), suite.mac.name()));
+            let suites = selected_by(name);
+            if suites.is_empty() {
+                return Err(format!("Unknown cipher suite {:?}.", name));
             }
-            codes.push(suite.code);
+            for suite in suites {
+                if !suite.is_implemented() {
+                    return Err(format!(
+                        "{} is in the registry but not implemented yet ({} with {}).",
+                        suite.name, suite.cipher.name(), suite.mac.name()));
+                }
+                if !codes.contains(&suite.code) {
+                    codes.push(suite.code);
+                }
+            }
         }
         if codes.is_empty() {
             return Err("A selection needs at least one cipher suite.".to_string());
@@ -1504,6 +1530,34 @@ mod tests {
                                suite".split_whitespace().collect::<Vec<_>>()
                               .join(" ").as_str()),
                 "RFC 9189 no longer says what this row is for");
+    }
+
+    /// OpenSSL's old spelling of the CNT_IMIT suite offers what OpenSSL
+    /// offers for it: both code points, 0xFF85 first, as OpenSSL 3.0.13
+    /// with gost-engine 3.0.3 lists them (`openssl ciphers -V`). It used to
+    /// resolve to 0xC102 alone, so a cipher list written for an OpenSSL
+    /// that knew only that spelling lost the code point older servers
+    /// answer with. A suite named twice is offered once, at its first
+    /// place, which is also OpenSSL's reading.
+    #[test]
+    fn test_the_superseded_openssl_name_selects_both_code_points() {
+        let codes = |names: &[&str]| Selection::named(names).unwrap().codes;
+        assert_eq!(codes(&["GOST2012-GOST8912-GOST8912"]), [0xff85, 0xc102]);
+        assert_eq!(codes(&["gost2012-gost8912-gost8912"]), [0xff85, 0xc102]);
+        assert_eq!(codes(&["IANA-GOST2012-GOST8912-GOST8912"]), [0xc102]);
+        assert_eq!(codes(&["LEGACY-GOST2012-GOST8912-GOST8912"]), [0xff85]);
+        assert_eq!(codes(&["GOST2012-GOST8912-GOST8912", "IANA-GOST2012-GOST8912-GOST8912"]),
+                   [0xff85, 0xc102]);
+        assert_eq!(codes(&["IANA-GOST2012-GOST8912-GOST8912", "GOST2012-GOST8912-GOST8912"]),
+                   [0xc102, 0xff85]);
+        assert_eq!(codes(&["AES128-SHA", "RC4-SHA", "AES128-SHA"]), [0x002f, 0x0005]);
+        assert_eq!(selected_by("NOT-A-SUITE").len(), 0);
+        assert_eq!(selected_by("AES128-SHA").iter().map(|s| s.code).collect::<Vec<_>>(),
+                   [0x002f]);
+        // What a caller sees through the API: the names, in that order.
+        assert_eq!(crate::api::tls_suite_names("GOST2012-GOST8912-GOST8912").unwrap(),
+                   ["TLS_GOSTR341112_256_WITH_28147_CNT_IMIT_LEGACY",
+                    "TLS_GOSTR341112_256_WITH_28147_CNT_IMIT"]);
     }
 
     /// OpenSSL's old spelling of the CNT_IMIT suite still finds it.

@@ -32,6 +32,11 @@
 #                 built with cargo, offline - it has no dependencies -
 #                 under lwbc_driver.rs, which gives it the designers' byte
 #                 order
+#   rust_simon_speck/  RustCrypto's speck-cipher 0.1.0 (Speck) and
+#                 cryptography-rs 0.8.0 (Simon and Speck), every size, from
+#                 crates.io pinned by rust_simon_speck/Cargo.lock, under
+#                 rust_simon_speck/src/main.rs, which gives each the
+#                 designers' byte order
 #   skein3fish/   wernerd/Skein3Fish's C Threefish, at a pinned commit: the
 #                 Skein team's Threefish, unrolled, with a block cipher
 #                 interface and decryption, by skein3fish_driver.c
@@ -100,13 +105,14 @@
 #                      zero-padded to 32 bytes
 #   lea                Crypto++, go-krypto
 #   hight              Crypto++, go-krypto
-#   speck64, speck128  Crypto++, the Linux kernel, inmcm, and lwbc at 64
+#   speck64, speck128  Crypto++, the Linux kernel, inmcm, RustCrypto,
+#                      cryptography-rs, and lwbc at 64 bits with a 16 byte
+#                      key
+#   simon64, simon128  Crypto++, inmcm, cryptography-rs, and lwbc at 64
 #                      bits with a 16 byte key
-#   simon64, simon128  Crypto++, inmcm, and lwbc at 64 bits with a 16
-#                      byte key
 #   speck32, speck48, speck96, simon32, simon48, simon96
-#                      inmcm, lwbc - which has one key length at each, 8,
-#                      12 and 18 bytes
+#                      inmcm, cryptography-rs, RustCrypto for Speck, lwbc -
+#                      which has one key length at each, 8, 12 and 18 bytes
 #   present            PRESENT.go, kurtfu/present, OpenTitan: the key of 10
 #                      or 16 bytes, and kurtfu's read with every byte string
 #                      reversed, which its driver undoes
@@ -272,6 +278,21 @@ cp "$OUT/obj/lwbc-target/release/lwbc-driver" "$OUT/lwbc-driver"
 for cipher in speck32 speck48 speck64 speck96 simon32 simon48 simon64 simon96; do
     printf '#!/bin/sh\nexec "%s/lwbc-driver" %s\n' "$OUT" "$cipher" > "$OUT/$cipher-lwbc"
     chmod +x "$OUT/$cipher-lwbc"
+done
+# RustCrypto's Speck and cryptography-rs's Simon and Speck, from crates.io.
+rm -rf "$OUT/obj/rust_simon_speck"
+cp -r "$HERE/rust_simon_speck" "$OUT/obj/rust_simon_speck"
+(cd "$OUT/obj/rust_simon_speck" && cargo build -q --release --locked)
+cp "$OUT/obj/rust_simon_speck/target/release/simon-speck-witness" "$OUT/simon-speck-witness"
+for cipher in speck32 speck48 speck64 speck96 speck128 simon32 simon48 simon64 simon96 simon128; do
+    printf '#!/bin/sh\nexec "%s/simon-speck-witness" %s cryptographyrs\n' "$OUT" "$cipher" \
+        > "$OUT/$cipher-cryptographyrs"
+    chmod +x "$OUT/$cipher-cryptographyrs"
+    case $cipher in speck*)
+        printf '#!/bin/sh\nexec "%s/simon-speck-witness" %s rustcrypto\n' "$OUT" "$cipher" \
+            > "$OUT/$cipher-rustcrypto"
+        chmod +x "$OUT/$cipher-rustcrypto" ;;
+    esac
 done
 # The one change to the LOKI97 reference, made on a copy and required to
 # have happened exactly once.

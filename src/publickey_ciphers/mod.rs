@@ -5,12 +5,14 @@ RSA lives in `rsa`, DSA in `dsa`, finite-field Diffie-Hellman in `dh`, and ElGam
 `elgamal` - which is built on `dh`'s group type, because ElGamal is
 Diffie-Hellman turned into an encryption scheme and needs exactly the
 same validation. Elliptic curve work is in the top level `ec` module,
-since curves are a great deal more than a cipher.
+since curves are a great deal more than a cipher. `hpke` is RFC 9180's
+hybrid public key encryption, over the curves, ML-KEM and the AEADs.
 */
 
 pub mod dh;
 pub mod dsa;
 pub mod elgamal;
+pub mod hpke;
 pub mod rsa;
 
 /// The shape every public key cipher here shares.

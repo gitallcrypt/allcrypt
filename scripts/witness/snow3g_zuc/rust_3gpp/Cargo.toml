@@ -1,0 +1,10 @@
+[package]
+name = "gpp-witness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zuc = "=0.4.1"
+oxirush-security = { version = "=0.3.0", default-features = false }
+
+[workspace]

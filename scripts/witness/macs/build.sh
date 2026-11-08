@@ -39,14 +39,15 @@
 #               same permutations. Its two dependencies, byteorder 0.5.3 and
 #               rustc-serialize 0.3.25, come from crates.sha256.
 #   volexity-chaskey  volexity/chaskey-lts (64a22f7), pure Python, under
-#               volexity_chaskey.py: its Chaskey-LTS block cipher, a reading
-#               of the 16 round permutation that goes through no MAC.
+#               volexity_chaskey.py: its Chaskey-LTS block cipher both ways,
+#               a reading of the 16 round permutation that goes through no
+#               MAC.
 #
 # Each git source is pinned by its commit. Requests, one per line, are
 # `pmac <cipher> <key hex> <message hex>`, `vmac <cipher> <key hex>
 # <nonce hex> <message hex> <tag bytes>`, `chaskey <rounds> <key hex>
-# <message hex>` and `cipher <rounds> <key hex> <block hex>`, "-" for
-# empty; the answer is the tag or block in hex or "error ...". selftest.py
+# <message hex>`, and `cipher` and `decipher <rounds> <key hex> <block
+# hex>`, "-" for empty; the answer is the tag or block in hex or "error ...". selftest.py
 # then requires every witness to reproduce the published vectors and the
 # witnesses to agree.
 set -e

@@ -221,3 +221,64 @@ fn test_written_containers_read_back() {
         }
     }
 }
+
+/// `vectors/ua_keys_cryptonite.vec`'s rows of one kind, as field maps.
+fn cryptonite_rows(kind: &str) -> Vec<HashMap<&'static str, &'static str>> {
+    let text = include_str!("../vectors/ua_keys_cryptonite.vec");
+    let declared: usize = text.lines().find_map(|l| l.strip_prefix("# rows: ")).unwrap()
+        .parse().unwrap();
+    assert_eq!(text.lines().filter(|l| !l.starts_with('#')).count(), declared);
+    text.lines().filter(|l| l.split(' ').next() == Some(kind))
+        .map(|l| l.split(' ').skip(1).map(|w| w.split_once('=').unwrap()).collect())
+        .collect()
+}
+
+fn cryptonite_file(path: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The key-agreement key's `d`, against the second key this library
+/// found: cryptonite reads no curve for it, so `d` is all it says.
+fn same_d(ours: &Dstu4145Key, theirs: &str) -> bool {
+    let d = hex(&ours.private_bytes().unwrap());
+    d.trim_start_matches('0') == theirs.trim_start_matches('0')
+}
+
+/// PrivatBank's cryptonite, a second reader beside keylib, finds the same
+/// keys in every plain and encrypted PKCS#8 it reads - the signing key's
+/// numbers whole, the key-agreement key's `d` through cryptonite's own
+/// reading of its bit-reversed attribute. It refuses two that this
+/// library and keylib read, for reasons its own: a `d` above the order,
+/// which both reduce, and a 48 byte password, which its HMAC cuts to 32
+/// bytes.
+#[test]
+fn test_cryptonite_finds_the_same_keys() {
+    let mut rows = cryptonite_rows("pkcs8");
+    rows.extend(cryptonite_rows("pbes2"));
+    assert_eq!(rows.len(), 18);
+    let mut second_keys = 0;
+    for row in &rows {
+        let password = if row["password"] == "-" { Vec::new() } else { unhex(row["password"]) };
+        let ours = api::dstu4145_keys_open(&cryptonite_file(row["file"]), &password)
+            .unwrap_or_else(|e| panic!("{}: {e}", row["file"]));
+        assert_eq!(numbers(&ours[0]), row["keys"], "{}", row["file"]);
+        if row["kep"] == "-" {
+            assert_eq!(ours.len(), 1, "{}", row["file"]);
+        } else {
+            assert_eq!(ours.len(), 2, "{}", row["file"]);
+            assert!(same_d(&ours[1], row["kep"]), "{}", row["file"]);
+            second_keys += 1;
+        }
+        assert!(row["witnesses"].contains("cryptonite"));
+    }
+    assert!(second_keys >= 5, "{second_keys}");
+    let refused = cryptonite_rows("refused");
+    let names: Vec<&str> = refused.iter().map(|r| r["file"]).collect();
+    assert_eq!(names, ["tests/keys/ua/KeyE54B.cer", "tests/keys/ua/ours-m431-pbes2-long.der"]);
+    for row in &refused {
+        let password = if row["password"] == "-" { Vec::new() } else { unhex(row["password"]) };
+        assert!(api::dstu4145_keys_open(&cryptonite_file(row["file"]), &password).is_ok(),
+                "{}", row["file"]);
+    }
+}

@@ -290,6 +290,11 @@ oids! {
     ID_HASH_SLH_DSA_SHAKE_192F_WITH_SHAKE256 = "2.16.840.1.101.3.4.3.44";
     ID_HASH_SLH_DSA_SHAKE_256S_WITH_SHAKE256 = "2.16.840.1.101.3.4.3.45";
     ID_HASH_SLH_DSA_SHAKE_256F_WITH_SHAKE256 = "2.16.840.1.101.3.4.3.46";
+    // The stateful hash-based signatures, one OID each for key and
+    // signature, the parameter set inside the key (RFC 9708, RFC 9802).
+    ID_ALG_HSS_LMS_HASHSIG            = "1.2.840.113549.1.9.16.3.17";
+    ID_ALG_XMSS_HASHSIG               = "1.3.6.1.5.5.7.6.34";
+    ID_ALG_XMSSMT_HASHSIG             = "1.3.6.1.5.5.7.6.35";
 
     // Named curves
     PRIME256V1            = "1.2.840.10045.3.1.7";

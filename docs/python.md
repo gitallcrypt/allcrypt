@@ -306,6 +306,14 @@ checksum they like. Their digests are the value big endian, as PHP's
 `allcrypt.crc32c(data, value=0)` is CRC-32C as a number, continuing from
 an earlier value, the way `zlib.crc32` gives CRC-32.
 
+The CRC catalogue's entries are checksums too, by their names in any
+case - `"crc-16/arc"` to `"crc-82/darc"` - and `crc_parameters` gives
+an entry's parameters and check value. `crc(width, poly, init=0,
+refin=False, refout=False, xorout=0, data=None)` is any CRC from the six
+parameters of Williams's model, at any width from 1 to 128, `poly` and
+`init` unreflected as the catalogue writes them; its name is the model
+line, which `new` reads back.
+
 ```python
 import zlib
 
@@ -321,6 +329,12 @@ assert allcrypt.new("adler32", data).digest() == zlib.adler32(data).to_bytes(4, 
 assert allcrypt.new("fletcher64", data).digest_size == 8
 assert allcrypt.new("fnv1a64", data).digest() == allcrypt.new("FNV-1a-64", data).digest()
 assert allcrypt.new("fnv1a_1024", data).digest_size == 128
+
+arc = allcrypt.crc(16, 0x8005, refin=True, refout=True, data=b"123456789")
+assert int(arc.hexdigest(), 16) == allcrypt.crc_parameters("CRC-16/ARC")["check"]
+by_name = allcrypt.new("crc-16/arc", b"123456789")
+assert allcrypt.new(arc.name, b"123456789").digest() == by_name.digest()
+assert allcrypt.new("crc-82/darc").digest_size == 11
 ```
 
 xxHash is there too, as `"xxh32"`, `"xxh64"`, `"xxh3"` and `"xxh128"`
@@ -686,6 +700,20 @@ assert allcrypt.Cipher("noekeon", bytes(16)).encrypt("ecb", bytes(16)).hex() \
     == "b1656851699e29fa24b70148503d2dfc"
 assert allcrypt.Cipher("noekeon-indirect", bytes(16)).encrypt("ecb", bytes(16)).hex() \
     == "ba6933819299c71699a99f08f678178b"
+```
+
+`chaskey-lts` is the block cipher FELIX and volexity's chaskey-lts use:
+Chaskey-LTS's 16 round permutation with the 16 byte key XORed in before
+and after, a single-key Even-Mansour cipher with a 128 bit block. It
+takes every 128 bit mode, `chaskey-lts-eax`, `chaskey-lts-mgm` and
+`chaskey-lts-ocb`, and is constant time:
+
+```python
+import allcrypt
+
+cipher = allcrypt.Cipher("chaskey-lts", bytes(range(16)))
+block = cipher.encrypt("ecb", bytes(16))
+assert cipher.decrypt("ecb", block) == bytes(16)
 ```
 
 PRESENT, ISO/IEC 29192-2's lightweight cipher, is `present`, with a 10
@@ -1060,7 +1088,11 @@ needs either lookup tables, which leak through the cache, or bitslicing,
 which is slower (`docs/pitfalls.md` section 1). It takes a 256 bit key and a 96 bit nonce,
 and only those. `xchacha20-poly1305` is the same AEAD under a subkey
 HChaCha20 derives from the first 16 bytes of a 192 bit nonce, which is
-long enough to draw at random for every message:
+long enough to draw at random for every message. `grain128aeadv2`,
+Grain-128AEADv2, takes a 16 byte key and a 12 byte nonce and gives an
+8 byte tag, and so does `grain128aeadv1`, the version before NIST's
+round 3 tweak, with unrelated outputs; the bare `grain128aead` is
+refused:
 
 ```python
 import os
@@ -1070,6 +1102,16 @@ import allcrypt
 key, nonce = bytes(range(32)), os.urandom(24)
 sealed = allcrypt.Aead(key, "xchacha20-poly1305").encrypt(nonce, b"payload")
 assert allcrypt.Aead(key, "xchacha20-poly1305").decrypt(nonce, sealed) == b"payload"
+
+v1 = allcrypt.Aead(key[:16], "grain128aeadv1").encrypt(nonce[:12], b"payload")
+v2 = allcrypt.Aead(key[:16], "grain128aeadv2").encrypt(nonce[:12], b"payload")
+assert len(v1) == len(v2) == 7 + 8 and v1 != v2
+try:
+    allcrypt.Aead(key[:16], "grain128aead")
+except allcrypt.CryptoError:
+    pass
+else:
+    raise AssertionError("the bare name is refused")
 ```
 
 The default is AES-GCM:
@@ -1445,10 +1487,11 @@ assert rc4.update(bytes(16)).hex() == "b2396305f03dc027ccc3524a0a1118a8"
 
 Names are `chacha20`, `chacha12`, `chacha8`, `xchacha20`, `salsa20`,
 `salsa12`, `salsa8`, `xsalsa20`, `strumok`, `rabbit`, `hc128`, `hc256`,
-`sosemanuk`, `trivium`, `grainv1`, `grain128`, `rc4` and `zipcrypto`
-(`allcrypt.stream_ciphers_available`).
+`sosemanuk`, `trivium`, `grainv1`, `grain128`, `snow3g`, `zuc128`,
+`zuc256`, `zuc256-3gpp`, `isaac`, `isaac64`, `isaac-bouncycastle`, `rc4` and
+`zipcrypto` (`allcrypt.stream_ciphers_available`).
 ChaCha takes an 8 or 12 byte nonce, XChaCha20 and XSalsa20 a 24 byte one,
-Salsa20 an 8 byte one; RC4 and ZipCrypto take none. Strumok (DSTU
+Salsa20 an 8 byte one; RC4, ZipCrypto and ISAAC take none. Strumok (DSTU
 8845:2019) takes a 32 or 64 byte key and its 32 byte IV as the nonce,
 each 64-bit word of key, IV and keystream little endian. The eSTREAM
 ciphers take their IV as the nonce: Rabbit a 16 byte key and an 8 byte
@@ -1458,7 +1501,14 @@ RFC 4503's Rabbit vectors, printed as numbers, read here reversed.
 Trivium takes a 10 byte key and a 4, 6, 8 or 10 byte IV, Grain v1 a 10
 byte key and an 8 byte IV, Grain-128 a 16 byte key and a 12 byte IV,
 bits taken from each byte least significant first, as the eSTREAM test
-vectors have them.
+vectors have them. SNOW 3G and ZUC-128 take a 16 byte key and IV, ZUC-256
+a 32 byte key and a 25 byte IV (eight six bit values in its last eight
+bytes) or 23 packed, 3GPP's ZUC-256 (`zuc256-3gpp`) a 32 byte key and a
+16 byte IV, the keystream's 32 bit words big endian; the 3GPP
+modes over them are below. ISAAC takes a key of up to 1024 bytes and
+ISAAC-64 up to 2048, the empty key included, as little-endian seed words;
+both give the reference's `rand()` order, little endian, and
+`isaac-bouncycastle` is ISAAC as Bouncy Castle's `ISAACEngine` reads it.
 Keystream position carries across calls.
 
 `update` XORs the keystream onto the data, which encrypts and decrypts
@@ -1500,6 +1550,53 @@ With a 12 byte nonce ChaCha's counter is 32 bits, and the stream ends
 after block 2^32 - 1 rather than wrapping onto block 0. With an 8 byte
 nonce, and for Salsa20, it is 64 bits. RC4, Strumok, the eSTREAM
 ciphers and ZipCrypto have no counter, so they refuse both.
+
+### UMTS, LTE and 5G
+
+The 3GPP confidentiality and integrity algorithms: `mobile_cipher` for
+UEA1 (KASUMI's f8), UEA2 (also 128-EEA1 and 5G's NEA1) and 128-EEA3
+(NEA3), `mobile_mac` for 128-EIA1 and 128-EIA3 (NIA1, NIA3), `uia1` and
+`uia2` for UMTS's UIA1 (KASUMI's f9) and UIA2, which take a 32 bit FRESH
+where the others take a 5 bit BEARER, and `zuc_mac` for
+ZUC's MAC over a raw IV - ZUC-128's, whose use 128-EIA3 is, and
+ZUC-256's at 32, 64 or 128 bits (`tag_bits`). Each takes a 16 byte key,
+a 32 bit COUNT and a DIRECTION bit, and a message of `bits` bits in
+`ceil(bits / 8)` bytes, the first bit the top bit of the first byte - all
+of the data by default. A ciphertext comes back with the bits past
+`bits` cleared; a MAC ignores them.
+
+```python
+import allcrypt
+
+# 128-EIA3 test set 1 of the implementors' test data: one zero bit.
+assert allcrypt.mobile_mac("eia3", bytes(16), 0, 0, 0, b"\x00", 1).hex() == "c8a9595e"
+
+key, data = bytes(range(16)), bytes(range(37))      # 290 bits of it
+ct = allcrypt.mobile_cipher("eea1", key, 0x1234, 5, 1, data, 290)
+back = allcrypt.mobile_cipher("uea2", key, 0x1234, 5, 1, ct, 290)   # the same function
+assert back == data[:36] + bytes([data[36] & 0xc0])  # the last six bits cleared
+assert len(allcrypt.zuc_mac(bytes(32), bytes(25), data, tag_bits=128)) == 16
+```
+
+5G's 256 bit algorithms over 3GPP's ZUC-256 (TS 35.246): `nea6`,
+`nia6`, `nca6_encrypt` and `nca6_decrypt`, each under a 32 byte key (or
+16, zero-extended), COUNT, BEARER and DIRECTION, with `extra_iv` (six
+bytes, zeros by default) and `bits` as keywords. NIA6 and NCA6 take
+`mac_bytes`, 4 to 16, and NCA6 `aad` and `aad_bits`; `nca6_encrypt`
+returns `(ciphertext, mac)` and `nca6_decrypt` raises `ValueError` when
+the MAC does not match. The keystream is the stream cipher
+`zuc256-3gpp`, with a 16 byte IV.
+
+```python
+import allcrypt
+
+# TS 35.248, NEA6 set 2: one zero byte, BEARER 31, DIRECTION 1.
+assert allcrypt.nea6(bytes(32), 0, 31, 1, b"\x00").hex() == "4b"
+
+key = bytes(range(32))
+ct, mac = allcrypt.nca6_encrypt(key, 5, 3, 1, b"a 5G message", mac_bytes=8, aad=b"header")
+assert allcrypt.nca6_decrypt(key, 5, 3, 1, ct, mac, aad=b"header") == b"a 5G message"
+```
 
 ### The pieces underneath
 
@@ -1701,6 +1798,23 @@ import allcrypt
 assert allcrypt.kerberos_nfold(b"012345", 8).hex() == "be072631276b1955"
 key = allcrypt.kerberos_des_string_to_key(b"password", b"ATHENA.MIT.EDUraeburn")
 assert key.hex() == "cbc22fae235298e3"
+```
+
+RC4-HMAC (RFC 4757) is there whole, since it is Windows's Kerberos
+type too: `kerberos_rc4_hmac_encrypt` and `kerberos_rc4_hmac_decrypt`
+for type 23, or 24 with `export=True`, `kerberos_rc4_hmac_checksum`
+(`hmac-md5-arcfour`), `kerberos_rc4_hmac_prf`, and
+`kerberos_rc4_hmac_string_to_key`, which is the NT hash. The confounder
+is random unless one is given:
+
+```python
+import allcrypt
+
+key = allcrypt.kerberos_rc4_hmac_string_to_key("password")
+assert key == allcrypt.nt_hash("password")
+sealed = allcrypt.kerberos_rc4_hmac_encrypt(key, 2, b"ticket")
+assert allcrypt.kerberos_rc4_hmac_decrypt(key, 2, sealed) == b"ticket"
+assert len(allcrypt.kerberos_rc4_hmac_checksum(key, 17, b"data")) == 16
 ```
 
 ### From a password
@@ -1968,6 +2082,22 @@ assert allcrypt.new("sha3_256", b"abc").digest() == hashlib.sha3_256(b"abc").dig
 # SHAKE gives any length you ask for, and a longer ask extends a shorter
 assert allcrypt.shake("shake_128", b"abc", 64) == hashlib.shake_128(b"abc").digest(64)
 assert allcrypt.shake("shake_128", b"abc", 1000)[:64] == allcrypt.shake("shake_128", b"abc", 64)
+```
+
+TurboSHAKE and KangarooTwelve (RFC 9861) are Keccak at twelve rounds:
+`turboshake` takes `"turboshake128"` or `"turboshake256"` and a
+`domain` byte from 0x01 to 0x7F (0x1F by default); `kangarootwelve`
+takes `"kt128"` or `"kt256"` and a `customization` string. Both give any
+length. `allcrypt.new` knows `turboshake_128`, `turboshake_256`, `kt128`
+and `kt256` at their defaults.
+
+```python
+import allcrypt
+
+assert allcrypt.new("kt128", b"abc").digest() == allcrypt.kangarootwelve("kt128", b"abc", 32)
+custom = allcrypt.kangarootwelve("kt256", b"abc", 64, customization=b"example.com")
+assert custom != allcrypt.kangarootwelve("kt256", b"abc", 64)
+assert len(allcrypt.turboshake("turboshake128", b"abc", 1000, domain=0x0B)) == 1000
 ```
 
 **`keccak_256` is not `sha3_256`.** They differ in one byte of padding —
@@ -4034,7 +4164,7 @@ round:
 | `HAS_SSLv3` | `False` | `True` | this Python's OpenSSL has no SSLv3; our record layer does |
 | `HAS_SSLv2` | `False` | `False` | not implemented, and not coming |
 | `HAS_NPN` | varies | `False` | replaced by ALPN and removed |
-| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.8.0"` | see below |
+| `OPENSSL_VERSION` | `"OpenSSL 3.0.13 …"` | `"allcrypt 0.8.1"` | see below |
 | `CHANNEL_BINDING_TYPES` | `["tls-unique"]` | `+ "tls-exporter"` | RFC 9266, which 1.3 needs |
 
 `OPENSSL_VERSION` not looking like an OpenSSL version is deliberate and
@@ -4266,7 +4396,7 @@ one place where the shim reaches something the fallback cannot.
 | `"modern"` | nothing broken. The default. |
 | `"legacy"` | everything implemented down to `Broken` — RC4, 3DES, single DES, the export grades. |
 | `"all"` | that, plus the NULL ciphers. Every suite this library can complete. |
-| a comma-separated list | exactly those, in that order, including ones no set offers. |
+| a comma-separated list | exactly those, in that order, including ones no set offers. OpenSSL's names work too, and an OpenSSL alias stands for every suite it selects: `GOST2012-GOST8912-GOST8912` is both CNT_IMIT code points, 0xFF85 first. A suite named twice is offered once. |
 
 `"all"` is the widest and is only reachable by asking for it. It used to
 be an alias for `"legacy"`, which meant a caller asking for everything
@@ -4423,9 +4553,12 @@ WEP, TKIP and the WPA key hierarchy are here too. `wep_encrypt` /
 mixes TKIP's per-frame RC4 key, and `tkip_encrypt` / `tkip_decrypt`
 seal and open a frame's payload under it; `michael` is TKIP's MIC and
 `tkip_msdu_mic` the MIC over a whole MSDU's addresses and priority;
-`wpa_psk`, `wpa_ptk` and `wpa_pmkid` are the key derivations, and
-`ieee80211_prf` and `ieee80211_kdf_sha256` the two functions they are
-built from.
+`wpa_psk`, `wpa_ptk` (its `akm` "sha1", "sha256" or "sha384", the
+last Suite B 192-bit's) and `wpa_pmkid` are the key derivations,
+`wpa_ft_pmk_r0`, `wpa_ft_pmk_r1` and `wpa_ft_ptk` fast BSS transition's
+(each of the first two returns the key and its name), and
+`ieee80211_prf`, `ieee80211_kdf_sha256` and `ieee80211_kdf` (over
+"sha256", "sha384" or "sha512") the functions they are built from.
 
 ```python
 import allcrypt
@@ -4434,6 +4567,11 @@ pmk = allcrypt.wpa_psk(b"password", b"IEEE")
 assert pmk.hex().startswith("f42c6fc52df0ebef")      # IEEE 802.11i H.4.2
 ptk = allcrypt.wpa_ptk("sha1", pmk, bytes(6), bytes([1] * 6), bytes(32), bytes(32), 384)
 assert len(ptk) == 48
+
+sta, ap = bytes([2, 0, 0, 0, 2, 0]), bytes([2, 0, 0, 0, 1, 0])
+pmk_r0, r0_name = allcrypt.wpa_ft_pmk_r0(pmk, b"IEEE", b"\x01\x02", b"r0kh", sta)
+pmk_r1, r1_name = allcrypt.wpa_ft_pmk_r1(pmk_r0, r0_name, ap, sta)
+assert len(allcrypt.wpa_ft_ptk(pmk_r1, bytes(32), bytes([1] * 32), ap, sta, 384)) == 48
 
 sealed = allcrypt.wep_encrypt(b"ABCDE", bytes([1, 2, 3]), b"hi")
 assert allcrypt.wep_decrypt(b"ABCDE", bytes([1, 2, 3]), sealed) == b"hi"
@@ -5013,6 +5151,66 @@ and the IETF hackathon's certificates from OpenSSL 3.5, Bouncy Castle,
 Botan and Redhound check it and the encodings together
 (`pytests/test_slh_dsa_keys.py`): see [status.md](status.md#post-quantum).
 
+## Hash-based: LMS and HSS
+
+`HssKey` is an HSS private key (RFC 8554, with RFC 9858's SHA-256/192
+and SHAKE256 parameter sets): a list of (LMS, LM-OTS) parameter set
+names from the top, `lms_parameter_sets()` and `lmots_parameter_sets()`
+listing them. **It is stateful**: `sign` spends a one-time key and moves
+`count` on, so store `to_bytes()` after every signature and before the
+signature leaves. `HssKey.from_seed(levels, seed, i, count=0)` makes the
+key RFC 8554 Appendix A derives from a top SEED and I; `hss_verify` and
+`lms_verify` check anyone's signatures.
+
+```python
+import allcrypt
+
+key = allcrypt.HssKey.generate([("LMS_SHAKE_M24_H5", "LMOTS_SHAKE_N24_W8")] * 2)
+public = key.public_bytes()
+signature = key.sign(b"firmware image")
+saved = key.to_bytes()               # store before releasing the signature
+assert allcrypt.hss_verify(public, b"firmware image", signature)
+assert (key.count, key.remaining) == (1, 1023)
+assert allcrypt.HssKey.from_bytes(saved).count == 1
+```
+
+## Hash-based: XMSS and XMSS^MT
+
+`XmssKey` is an XMSS or XMSS^MT private key (RFC 8391, with SP 800-208's
+parameter sets; `xmss_parameter_sets()` lists all 77), stateful as
+`HssKey` is: store `to_bytes()` after every `sign`. `from_seeds` takes
+`SK_SEED`, `SK_PRF` and `SEED` and derives WOTS+ keys as SP 800-208
+requires; `xmss_verify` and `xmssmt_verify` check anyone's signatures,
+and `from_bytes(data, multi_tree=...)` is told which registry the OID
+is from, since the two overlap.
+
+```python
+import allcrypt
+
+key = allcrypt.XmssKey.from_seeds("XMSSMT-SHAKE_20/4_256", bytes(32), bytes(32), bytes(32))
+signature = key.sign(b"firmware image")
+assert allcrypt.xmssmt_verify(key.public_bytes(), b"firmware image", signature)
+assert (key.index, key.multi_tree) == (1, True)
+```
+
+`HashSigPublicKey` is an HSS, XMSS or XMSS^MT public key as a
+certificate carries it (RFC 9802): `from_certificate`, `from_spki` and
+`from_public(scheme, key)` read one and check its parameter set, and
+`to_spki` writes one. The scheme travels with the key, because XMSS's
+and XMSS^MT's OID registries overlap and the same bytes are a key in
+both:
+
+```python
+import allcrypt
+
+key = allcrypt.XmssKey.from_seeds("XMSSMT-SHA2_20/4_256", bytes(32), bytes(32), bytes(32))
+public = allcrypt.HashSigPublicKey.from_public("XMSS^MT", key.public_bytes())
+spki = public.to_spki()
+again = allcrypt.HashSigPublicKey.from_spki(spki)
+assert (again.scheme, again.parameter_set) == ("XMSS^MT", "XMSSMT-SHA2_20/4_256")
+assert again.verify(b"m", key.sign(b"m"))
+```
+
 ## Post-quantum: ML-KEM
 
 FIPS 203's key encapsulation mechanism: the lattice scheme in
@@ -5118,6 +5316,50 @@ must be refused — and `pytests/test_ml_kem.py` reads those itself rather
 than trusting the Rust tests' parse. RFC 9935's examples and OpenSSL
 3.5's keys, encapsulations and certificates check the encodings
 (`pytests/test_ml_kem_keys.py`).
+
+## HPKE
+
+RFC 9180's hybrid public key encryption, with draft-ietf-hpke-pq's
+ML-KEM and hybrid KEMs: a suite is a KEM, a KDF and an AEAD, named as
+the documents print them (`allcrypt.hpke_names()` lists them) or by id.
+
+```python
+import allcrypt
+
+suite = allcrypt.HpkeSuite("X25519", "HKDF-SHA256", "ChaCha20Poly1305")
+private, public = suite.generate_key_pair()
+
+enc, ciphertext = suite.seal(public, b"the message", info=b"app v1", aad=b"header")
+assert suite.open(enc, private, ciphertext, info=b"app v1", aad=b"header") == b"the message"
+
+# A context for several messages, in order, and exported secrets.
+enc, sender = suite.setup_sender(public, b"app v1")
+recipient = suite.setup_receiver(enc, private, b"app v1")
+first, second = sender.seal(b"one"), sender.seal(b"two")
+assert recipient.open(first) == b"one" and recipient.open(second) == b"two"
+assert sender.export(b"a label", 32) == recipient.export(b"a label", 32)
+```
+
+The mode follows from the arguments rather than being named: `psk=(key,
+id)` makes PSK mode, a sender key - `sender_private` to seal,
+`sender_public` to open - makes auth mode, and both make auth-PSK. The
+auth modes need a DHKEM and a two-stage KDF; with ML-KEM or SHAKE they
+raise.
+
+```python
+import allcrypt
+
+suite = allcrypt.HpkeSuite("MLKEM768-P256", "SHAKE256", "AES-256-GCM")
+private, public = suite.derive_key_pair(b"input keying material")
+enc, ct = suite.seal(public, b"post-quantum", psk=(b"a pre-shared key", b"its id"))
+assert suite.open(enc, private, ct, psk=(b"a pre-shared key", b"its id")) == b"post-quantum"
+```
+
+`setup_sender(..., randomness=...)` takes the encapsulation's randomness
+(`suite.encap_randomness_len` bytes) instead of drawing it, which is how
+the published vectors are reachable; anyone who knows it can open what
+that context seals. `pytests/test_hpke.py` runs all 141 vectors in
+`vectors/hpke.vec` through Python.
 
 ## Post-quantum: sntrup761
 

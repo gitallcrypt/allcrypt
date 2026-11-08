@@ -5,7 +5,8 @@
 //!     cargo run --release --example luks -- open IMAGE PASSPHRASE [--volume-key] [--decrypt OUT]
 //!     cargo run --release --example luks -- open IMAGE --passphrase-stdin [...]
 //!     cargo run --release --example luks -- open IMAGE --key-file FILE [...]
-//!     cargo run --release --example luks -- open IMAGE --key-file FILE ...
+//!     cargo run --release --example luks -- open IMAGE --volume-key-file FILE
+//!         [--new-volume-key-file FILE] [...]
 //!     cargo run --release --example luks -- format IMAGE PASSPHRASE [--type luks1|luks2]
 //!         [--cipher aes-xts-plain64] [--key-size BITS] [--hash sha256]
 //!         [--pbkdf pbkdf2|argon2i|argon2id] [--iterations N] [--memory KIB]
@@ -13,7 +14,12 @@
 //!
 //! `open` finds the keyslot the passphrase unlocks, recovers the volume
 //! key, checks it against the header's digest, and with `--decrypt`
-//! writes the decrypted data area. `format` writes a new image holding
+//! writes the decrypted data area; given the volume key in a file
+//! instead, it checks that. A LUKS2 volume stopped in the middle of
+//! `cryptsetup reencrypt` is read as cryptsetup's recovery would leave
+//! it, without writing to it - with both keys, which the passphrase
+//! unlocks or `--volume-key-file` and `--new-volume-key-file` give (see
+//! `Reencryption`). `format` writes a new image holding
 //! `--data` (zeros if absent), encrypted. Both work on image files; a
 //! block device is a file too, given the permissions.
 //!
@@ -396,31 +402,276 @@ fn unlock_area(image: &[u8], offset: usize, spec: &CipherSpec, area_key: &[u8], 
 /// What `open` found.
 struct Unlocked {
     version: u16,
-    keyslot: usize,
+    /// The keyslot that gave the volume key; `None` when the key was
+    /// given rather than unlocked.
+    keyslot: Option<usize>,
     volume_key: Vec<u8>,
     spec: CipherSpec,
     data_offset: usize,
     data_length: Option<usize>,
     sector_size: usize,
     iv_tweak: u64,
+    /// A LUKS2 volume stopped in the middle of `cryptsetup reencrypt`:
+    /// its data is under two keys, and the fields above are the new
+    /// key's.
+    reencryption: Option<Reencryption>,
+}
+
+/// The bytes of a segment: `length` from `offset`, or with `None`
+/// ("dynamic") whole sectors to the end of the image.
+fn segment_bytes(image: &[u8], offset: usize, length: Option<usize>, sector_size: usize)
+                 -> Result<&[u8], String> {
+    check_sector_size(sector_size)?;
+    if offset > image.len() {
+        return Err(format!("LUKS: the data starts at byte {offset}, past the end of the {} \
+                            byte image.", image.len()));
+    }
+    let length = match length {
+        Some(length) => {
+            offset.checked_add(length).ok_or("LUKS: the segment's offset and size add past \
+                                              memory.")?;
+            length
+        }
+        None => (image.len() - offset) / sector_size * sector_size,
+    };
+    read_at(image, offset, length)
 }
 
 impl Unlocked {
     fn decrypt_data(&self, image: &[u8]) -> Result<Vec<u8>, String> {
-        check_sector_size(self.sector_size)?;
-        if self.data_offset > image.len() {
-            return Err(format!("LUKS: the data starts at byte {}, past the end of the {} byte \
-                                image.", self.data_offset, image.len()));
+        if let Some(reencryption) = &self.reencryption {
+            return reencryption.decrypt_data(image);
         }
-        let end = match self.data_length {
-            Some(length) => self.data_offset.checked_add(length)
-                .ok_or("LUKS: the segment's offset and size add past memory.")?,
-            None => image.len() - (image.len() - self.data_offset) % self.sector_size,
-        };
-        let mut data = read_at(image, self.data_offset, end - self.data_offset)?.to_vec();
+        let mut data = segment_bytes(image, self.data_offset, self.data_length,
+                                     self.sector_size)?.to_vec();
         SectorCipher::new(&self.spec, &self.volume_key)?
             .crypt_area(self.iv_tweak, &mut data, self.sector_size, false)?;
         Ok(data)
+    }
+}
+
+// ------------------------------------------------- LUKS2 reencryption ---
+
+/// `cryptsetup reencrypt` moves a LUKS2 volume to a new volume key (and
+/// cipher, and sector size) a *hotzone* at a time, in place, while the
+/// header records how far it has got: the data segments are the part
+/// already under the new key, the hotzone, and the part still under the
+/// old one, each bound to the digest of its key. Stopped cleanly, it
+/// leaves no hotzone. Stopped by a crash, the hotzone may be partly
+/// rewritten, and the reencrypt keyslot's area says how to tell: under
+/// `checksum` resilience it holds a hash of each old block, taken before
+/// the hotzone was rewritten, so a block that still hashes to it is old;
+/// under `journal` it holds a copy of the hotzone's old ciphertext; under
+/// `none`, nothing.
+///
+/// This reads such a volume as cryptsetup's recovery would leave it,
+/// without writing: `reencrypt_recover_segment` in cryptsetup's
+/// `lib/luks2/luks2_reencrypt.c` is what it follows.
+struct Reencryption {
+    direction: String,
+    protection: Protection,
+    /// The keys, with the cipher and sector size of the segments cryptsetup
+    /// keeps as `backup-previous` and `backup-final`: what the volume was
+    /// and what it is becoming.
+    old: Layer,
+    new: Layer,
+    /// The data segments in order.
+    pieces: Vec<Piece>,
+}
+
+struct Layer {
+    spec: CipherSpec,
+    key: Vec<u8>,
+    sector_size: usize,
+}
+
+enum Protection {
+    None,
+    Checksum { area: usize, area_size: usize, hash: String, block: usize },
+    Journal { area: usize, area_size: usize },
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Part {
+    Old,
+    New,
+    Hotzone,
+}
+
+struct Piece {
+    part: Part,
+    offset: usize,
+    length: Option<usize>,
+    iv_tweak: u64,
+    spec: CipherSpec,
+    sector_size: usize,
+}
+
+impl Reencryption {
+    fn decrypt_data(&self, image: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        for piece in &self.pieces {
+            let mut data = segment_bytes(image, piece.offset, piece.length, piece.sector_size)?
+                .to_vec();
+            match piece.part {
+                Part::Old | Part::New => {
+                    let key = if piece.part == Part::Old { &self.old.key } else { &self.new.key };
+                    SectorCipher::new(&piece.spec, key)?
+                        .crypt_area(piece.iv_tweak, &mut data, piece.sector_size, false)?;
+                }
+                Part::Hotzone => self.recover(image, piece.iv_tweak, &mut data)?,
+            }
+            out.extend_from_slice(&data);
+        }
+        Ok(out)
+    }
+
+    /// The hotzone's plaintext. Both keys' IVs count from the hotzone's
+    /// `iv_tweak`, as cryptsetup's recovery has them.
+    fn recover(&self, image: &[u8], iv: u64, data: &mut [u8]) -> Result<(), String> {
+        for layer in [&self.old, &self.new] {
+            if !data.len().is_multiple_of(layer.sector_size) {
+                return Err(format!("LUKS2: a hotzone of {} bytes is not whole {} byte \
+                                    sectors.", data.len(), layer.sector_size));
+            }
+        }
+        match &self.protection {
+            Protection::None => Err("LUKS2: the reencryption stopped inside a hotzone, with \
+                                     resilience \"none\": nothing records which of its blocks \
+                                     were rewritten, and cryptsetup cannot recover it either."
+                .to_string()),
+            Protection::Checksum { area, area_size, hash: hash_name, block } => {
+                let block = *block;
+                if block == 0 || !data.len().is_multiple_of(block)
+                    || !block.is_multiple_of(self.old.sector_size)
+                    || !block.is_multiple_of(self.new.sector_size) {
+                    return Err(format!("LUKS2: a checksum block of {block} bytes does not \
+                                        divide the {} byte hotzone into whole sectors.",
+                                       data.len()));
+                }
+                let width = hash(hash_name, &[])?.len();
+                let length = data.len() / block * width;
+                if length > *area_size {
+                    return Err(format!("LUKS2: the hotzone's checksums take {length} bytes, \
+                                        more than the {area_size} byte area holds."));
+                }
+                let sums = read_at(image, *area, length)?;
+                let mut old = SectorCipher::new(&self.old.spec, &self.old.key)?;
+                let mut new = SectorCipher::new(&self.new.spec, &self.new.key)?;
+                for (index, chunk) in data.chunks_mut(block).enumerate() {
+                    let first_iv = iv + (index * block / SECTOR) as u64;
+                    // A block that hashes to what was recorded before the
+                    // hotzone was rewritten is the old ciphertext still.
+                    if hash(hash_name, &[chunk])? == sums[index * width..(index + 1) * width] {
+                        old.crypt_area(first_iv, chunk, self.old.sector_size, false)?;
+                    } else {
+                        new.crypt_area(first_iv, chunk, self.new.sector_size, false)?;
+                    }
+                }
+                Ok(())
+            }
+            Protection::Journal { area, area_size } => {
+                if data.len() > *area_size {
+                    return Err(format!("LUKS2: a hotzone of {} bytes does not fit the {} byte \
+                                        journal.", data.len(), area_size));
+                }
+                // The journal is the hotzone's old ciphertext; the hotzone
+                // itself may be old, new or torn, and is not looked at.
+                data.copy_from_slice(read_at(image, *area, data.len())?);
+                SectorCipher::new(&self.old.spec, &self.old.key)?
+                    .crypt_area(iv, data, self.old.sector_size, false)
+            }
+        }
+    }
+
+    fn summary(&self) -> String {
+        let protection = match self.protection {
+            Protection::None => "none",
+            Protection::Checksum { .. } => "checksum",
+            Protection::Journal { .. } => "journal",
+        };
+        let pieces: Vec<String> = self.pieces.iter().map(|piece| {
+            let length = match piece.length {
+                Some(length) => format!("{length} bytes"),
+                None => "the rest".to_string(),
+            };
+            match piece.part {
+                Part::Old => format!("{length} under the old key"),
+                Part::New => format!("{length} under the new key"),
+                Part::Hotzone => format!("a hotzone of {length}"),
+            }
+        }).collect();
+        format!("reencryption in progress, {}, resilience {protection}: {}", self.direction,
+                pieces.join(", "))
+    }
+}
+
+/// The reencryption metadata as cryptsetup serializes it for the digest
+/// that binds it to both volume keys (`luks2_reencrypt_digest.c`): JSON
+/// strings as their bytes (64 at most), 64 bit quantities - which LUKS2
+/// writes as decimal strings - as 8 bytes big endian, a segment size of
+/// "dynamic" as that word, 32 bit JSON integers as 4 bytes big endian.
+/// Anything missing or of another kind and cryptsetup's serialization
+/// fails, and so the digest does; here it is an error.
+struct DigestInput(Vec<u8>);
+
+impl DigestInput {
+    fn missing(object: &Value, key: &str, kind: &str) -> String {
+        format!("LUKS2: the reencryption metadata's {key:?} is not {kind}: {:?}.",
+                object.get(key))
+    }
+
+    fn text(&mut self, object: &Value, key: &str) -> Result<(), String> {
+        match object.get(key) {
+            Some(Value::String(text)) if text.len() <= 64 => {
+                self.0.extend_from_slice(text.as_bytes());
+                Ok(())
+            }
+            _ => Err(DigestInput::missing(object, key, "a string of at most 64 bytes")),
+        }
+    }
+
+    fn u64(&mut self, object: &Value, key: &str) -> Result<(), String> {
+        match object.get(key) {
+            Some(Value::String(text)) if text.parse::<u64>().is_ok() => {
+                self.0.extend_from_slice(&text.parse::<u64>().unwrap_or(0).to_be_bytes());
+                Ok(())
+            }
+            _ => Err(DigestInput::missing(object, key, "a 64 bit number in a string")),
+        }
+    }
+
+    fn size(&mut self, object: &Value, key: &str) -> Result<(), String> {
+        if object.get(key).and_then(Value::as_str) == Some("dynamic") {
+            self.0.extend_from_slice(b"dynamic");
+            return Ok(());
+        }
+        self.u64(object, key)
+    }
+
+    fn u32(&mut self, object: &Value, key: &str) -> Result<(), String> {
+        match object.get(key) {
+            Some(Value::Number(text)) if text.parse::<u32>().is_ok() => {
+                self.0.extend_from_slice(&text.parse::<u32>().unwrap_or(0).to_be_bytes());
+                Ok(())
+            }
+            _ => Err(DigestInput::missing(object, key, "a 32 bit JSON integer")),
+        }
+    }
+
+    fn segment(&mut self, segment: &Value) -> Result<(), String> {
+        self.text(segment, "type")?;
+        self.u64(segment, "offset")?;
+        self.size(segment, "size")?;
+        match segment.field("type")?.string()? {
+            "crypt" => {
+                self.u64(segment, "iv_tweak")?;
+                self.text(segment, "encryption")?;
+                self.u32(segment, "sector_size")
+            }
+            "linear" => Ok(()),
+            other => Err(format!("LUKS2: a backup segment of type {other:?}.")),
+        }
     }
 }
 
@@ -492,14 +743,28 @@ impl Luks1 {
                                         &area_key, key_len, slot.stripes as usize, &self.hash)?;
             let digest = pbkdf2_any(&self.hash, &candidate, &self.mk_salt, self.mk_iterations, 20)?;
             if digest == self.mk_digest {
-                return Ok(Unlocked {
-                    version: 1, keyslot: index, volume_key: candidate, spec: self.spec.clone(),
-                    data_offset: self.payload_offset as usize * SECTOR, data_length: None,
-                    sector_size: SECTOR, iv_tweak: 0,
-                });
+                return Ok(self.unlocked(Some(index), candidate));
             }
         }
         Err("LUKS1: no keyslot opens with this passphrase.".to_string())
+    }
+
+    /// The volume key given rather than unlocked: it must match the
+    /// header's digest.
+    fn open_with_key(&self, key: &[u8]) -> Result<Unlocked, String> {
+        let digest = pbkdf2_any(&self.hash, key, &self.mk_salt, self.mk_iterations, 20)?;
+        if key.len() != self.key_bytes as usize || digest != self.mk_digest {
+            return Err("LUKS1: the volume key does not match the header's digest.".to_string());
+        }
+        Ok(self.unlocked(None, key.to_vec()))
+    }
+
+    fn unlocked(&self, keyslot: Option<usize>, volume_key: Vec<u8>) -> Unlocked {
+        Unlocked {
+            version: 1, keyslot, volume_key, spec: self.spec.clone(),
+            data_offset: self.payload_offset as usize * SECTOR, data_length: None,
+            sector_size: SECTOR, iv_tweak: 0, reencryption: None,
+        }
     }
 
     fn dump(&self) -> String {
@@ -584,9 +849,103 @@ impl Luks2 {
         Ok(Luks2 { json: json::parse(&json_text)?, hdr_size })
     }
 
+    /// `config.requirements.mandatory`: features a reader must implement
+    /// before it may use the volume, cryptsetup's own rule. Empty when
+    /// the header has none.
+    fn mandatory_requirements(&self) -> Result<Vec<String>, String> {
+        let Some(requirements) = self.json.field("config")?.get("requirements") else {
+            return Ok(Vec::new());
+        };
+        match requirements.get("mandatory") {
+            None => Ok(Vec::new()),
+            Some(list) => list.items()?.iter().map(|r| r.string().map(str::to_string))
+                .collect(),
+        }
+    }
+
+    /// Whether the header is mid-reencryption, from its requirements;
+    /// an error for any requirement this does not implement.
+    fn reencrypting(&self) -> Result<bool, String> {
+        let mut reencrypting = false;
+        for required in self.mandatory_requirements()? {
+            match required.as_str() {
+                "online-reencrypt-v2" => reencrypting = true,
+                "online-reencrypt" => return Err(
+                    "LUKS2: the header requires \"online-reencrypt\": reencryption as \
+                     cryptsetup 2.2 and 2.3 recorded it, without the digest that binds its \
+                     metadata to the keys. This does not read it; cryptsetup 2.4 and later \
+                     upgrade it when given the passphrase.".to_string()),
+                "online-reencrypt-v3" => return Err(
+                    "LUKS2: the header requires \"online-reencrypt-v3\": a decryption that \
+                     moves the data as it goes, which this does not read.".to_string()),
+                other => return Err(format!(
+                    "LUKS2: the header requires {other:?}, which this does not implement - its \
+                     data cannot be read correctly without it.")),
+            }
+        }
+        Ok(reencrypting)
+    }
+
+    /// The digests bound to `field`'s entry `id` (a keyslot or segment).
+    fn digests_binding(&self, field: &str, id: &str) -> Result<Vec<(&str, &Value)>, String> {
+        let mut bound = Vec::new();
+        for (digest_id, digest) in self.json.field("digests")?.entries()? {
+            if digest.field(field)?.items()?.iter().any(|k| k.as_str() == Some(id)) {
+                bound.push((digest_id.as_str(), digest));
+            }
+        }
+        Ok(bound)
+    }
+
+    /// Whether PBKDF2 of `key` is the digest.
+    fn digest_matches(digest: &Value, key: &[u8]) -> Result<bool, String> {
+        if digest.field("type")?.string()? != "pbkdf2" {
+            return Ok(false);
+        }
+        let expected = allcrypt::pem::decode(digest.field("digest")?.string()?)?;
+        let got = pbkdf2_any(digest.field("hash")?.string()?, key,
+                             &allcrypt::pem::decode(digest.field("salt")?.string()?)?,
+                             digest.field("iterations")?.uint()? as u32, expected.len())?;
+        Ok(got == expected)
+    }
+
+    fn first_segment(digest: &Value) -> Result<&str, String> {
+        digest.field("segments")?.items()?.first()
+            .ok_or("LUKS2: the digest is bound to no segment.")?.string()
+    }
+
+    /// The volume keys given rather than unlocked - one, or a volume
+    /// mid-reencryption's old and new - each matched to its digest.
+    fn open_with_keys(&self, keys: &[Vec<u8>]) -> Result<Unlocked, String> {
+        let reencrypting = self.reencrypting()?;
+        let mut found = Vec::new();
+        for key in keys {
+            let mut matched = None;
+            for (id, digest) in self.json.field("digests")?.entries()? {
+                if !digest.field("segments")?.items()?.is_empty()
+                    && Luks2::digest_matches(digest, key)? {
+                    matched = Some(id.clone());
+                    break;
+                }
+            }
+            let id = matched.ok_or("LUKS2: a volume key matches none of the header's \
+                                    digests.")?;
+            if !reencrypting {
+                let digest = self.json.field("digests")?.field(&id)?;
+                return self.unlocked(None, Luks2::first_segment(digest)?, key.clone());
+            }
+            found.push((id, None, key.clone()));
+        }
+        self.reencryption(found)
+    }
+
     fn open(&self, image: &[u8], passphrase: &[u8]) -> Result<Unlocked, String> {
+        let reencrypting = self.reencrypting()?;
         let keyslots = self.json.field("keyslots")?.entries()?;
-        let digests = self.json.field("digests")?.entries()?;
+        // Mid-reencryption the passphrase must give both keys - the old
+        // keyslots' and the new ones cryptsetup added beside them - so
+        // every keyslot is tried; otherwise the first that opens decides.
+        let mut found: Vec<(String, Option<usize>, Vec<u8>)> = Vec::new();
         for (id, slot) in keyslots {
             if slot.field("type")?.string()? != "luks2" {
                 continue;
@@ -616,46 +975,246 @@ impl Luks2 {
                                         af.field("stripes")?.uint()? as usize,
                                         af.field("hash")?.string()?)?;
             // The digest bound to this keyslot decides.
-            for (_, digest) in digests {
-                let bound = digest.field("keyslots")?.items()?.iter()
-                    .any(|k| k.as_str() == Some(id.as_str()));
-                if !bound || digest.field("type")?.string()? != "pbkdf2" {
+            for (digest_id, digest) in self.digests_binding("keyslots", id)? {
+                if !Luks2::digest_matches(digest, &candidate)? {
                     continue;
                 }
-                let expected = allcrypt::pem::decode(digest.field("digest")?.string()?)?;
-                let got = pbkdf2_any(digest.field("hash")?.string()?, &candidate,
-                                     &allcrypt::pem::decode(digest.field("salt")?.string()?)?,
-                                     digest.field("iterations")?.uint()? as u32,
-                                     expected.len())?;
-                if got == expected {
-                    let segment_id = digest.field("segments")?.items()?.first()
-                        .ok_or("LUKS2: the digest is bound to no segment.")?.string()?;
-                    return self.unlocked(id, segment_id, candidate);
+                if !reencrypting {
+                    return self.unlocked(id.parse().ok(), Luks2::first_segment(digest)?,
+                                         candidate);
                 }
+                if !found.iter().any(|(d, _, _)| d == digest_id) {
+                    found.push((digest_id.to_string(), id.parse().ok(), candidate));
+                }
+                break;
             }
         }
-        Err("LUKS2: no keyslot opens with this passphrase.".to_string())
+        if found.is_empty() {
+            return Err("LUKS2: no keyslot opens with this passphrase.".to_string());
+        }
+        self.reencryption(found)
     }
 
-    fn unlocked(&self, keyslot: &str, segment_id: &str, volume_key: Vec<u8>)
+    fn unlocked(&self, keyslot: Option<usize>, segment_id: &str, volume_key: Vec<u8>)
                 -> Result<Unlocked, String> {
         let segment = self.json.field("segments")?.field(segment_id)?;
         if segment.field("type")?.string()? != "crypt" {
             return Err("LUKS2: the segment is not a crypt segment.".to_string());
         }
-        let size = segment.field("size")?;
-        let sector_size = segment.field("sector_size")?.uint()?;
-        check_sector_size(usize::try_from(sector_size).unwrap_or(0))?;
+        let (length, sector_size) = Luks2::extent(segment)?;
         Ok(Unlocked {
             version: 2,
-            keyslot: keyslot.parse().unwrap_or(0),
+            keyslot,
             volume_key,
             spec: CipherSpec::parse_joined(segment.field("encryption")?.string()?)?,
             data_offset: segment.field("offset")?.uint()? as usize,
-            data_length: if size.as_str() == Some("dynamic") { None }
-                         else { Some(size.uint()? as usize) },
-            sector_size: sector_size as usize,
+            data_length: length,
+            sector_size,
             iv_tweak: segment.field("iv_tweak")?.uint()?,
+            reencryption: None,
+        })
+    }
+
+    /// A crypt segment's size (`None`: "dynamic") and sector size, the
+    /// sector size checked.
+    fn extent(segment: &Value) -> Result<(Option<usize>, usize), String> {
+        let size = segment.field("size")?;
+        let sector_size = usize::try_from(segment.field("sector_size")?.uint()?).unwrap_or(0);
+        check_sector_size(sector_size)?;
+        let length = if size.as_str() == Some("dynamic") { None }
+                     else { Some(usize::try_from(size.uint()?)
+                                 .map_err(|_| "LUKS2: a segment size past memory.")?) };
+        Ok((length, sector_size))
+    }
+
+    fn has_flag(segment: &Value, flag: &str) -> bool {
+        segment.get("flags").and_then(|f| f.items().ok())
+            .is_some_and(|flags| flags.iter().any(|f| f.as_str() == Some(flag)))
+    }
+
+    /// What the reencryption digest is taken over, version 2 (the
+    /// requirement "online-reencrypt-v2"): the two bytes 0x76 0x32, the
+    /// old volume key, the new one unless it is the same key, the
+    /// reencrypt keyslot's mode, direction and area (with a checksum
+    /// area's hash and block size), then the backup-previous and
+    /// backup-final segments. See `DigestInput`.
+    fn reencryption_digest_input(keyslot: &Value, previous: &Value, last: &Value,
+                                 old_key: &[u8], new_key: Option<&[u8]>)
+                                 -> Result<Vec<u8>, String> {
+        let mut input = DigestInput(vec![0x76, 0x30 + 2]);
+        input.0.extend_from_slice(old_key);
+        if let Some(new_key) = new_key {
+            input.0.extend_from_slice(new_key);
+        }
+        let area = keyslot.field("area")?;
+        input.text(keyslot, "mode")?;
+        input.text(keyslot, "direction")?;
+        input.text(area, "type")?;
+        input.u64(area, "offset")?;
+        input.u64(area, "size")?;
+        if area.field("type")?.string()? == "checksum" {
+            input.text(area, "hash")?;
+            input.u32(area, "sector_size")?;
+        }
+        input.segment(previous)?;
+        input.segment(last)?;
+        Ok(input.0)
+    }
+
+    /// A volume stopped mid-reencryption, from the keys the passphrase
+    /// (or the caller) gave, each as (digest, keyslot, key): see
+    /// `Reencryption`. What cryptsetup checks before it touches such a
+    /// volume is checked here before anything is read: a change of key
+    /// rather than an encryption or decryption in place, both keys, and
+    /// the digest over the reencryption metadata.
+    fn reencryption(&self, found: Vec<(String, Option<usize>, Vec<u8>)>)
+                    -> Result<Unlocked, String> {
+        let no_keyslot = "LUKS2: the header requires \"online-reencrypt-v2\" but has no \
+                          reencrypt keyslot.";
+        let (keyslot_id, keyslot) = self.json.field("keyslots")?.entries()?.iter()
+            .find(|(_, k)| k.get("type").and_then(Value::as_str) == Some("reencrypt"))
+            .ok_or(no_keyslot)?;
+        match keyslot.field("mode")?.string()? {
+            "reencrypt" => {}
+            "encrypt" => return Err("LUKS2: the volume is in the middle of being encrypted in \
+                                     place, which this does not read; a change of key is."
+                .to_string()),
+            "decrypt" => return Err("LUKS2: the volume is in the middle of being decrypted in \
+                                     place, which this does not read; a change of key is."
+                .to_string()),
+            other => return Err(format!("LUKS2: a reencryption of mode {other:?}.")),
+        }
+        let direction = keyslot.field("direction")?.string()?;
+        if direction != "forward" && direction != "backward" {
+            return Err(format!("LUKS2: a reencryption of direction {direction:?}."));
+        }
+        let area = keyslot.field("area")?;
+        let area_offset = usize::try_from(area.field("offset")?.uint()?).unwrap_or(usize::MAX);
+        let area_size = usize::try_from(area.field("size")?.uint()?).unwrap_or(usize::MAX);
+        let protection = match area.field("type")?.string()? {
+            "none" => Protection::None,
+            "journal" => Protection::Journal { area: area_offset, area_size },
+            "checksum" => Protection::Checksum {
+                area: area_offset, area_size,
+                hash: area.field("hash")?.string()?.to_string(),
+                block: usize::try_from(area.field("sector_size")?.uint()?).unwrap_or(0),
+            },
+            other => return Err(format!("LUKS2: reencryption with resilience {other:?}, which \
+                                         moves the data, is not read here.")),
+        };
+
+        let segments = self.json.field("segments")?.entries()?;
+        let flagged = |flag: &str| segments.iter().find(|(_, s)| Luks2::has_flag(s, flag));
+        if flagged("backup-moved-segment").is_some() {
+            return Err("LUKS2: the reencryption moves a segment, which this does not read."
+                .to_string());
+        }
+        let mut layers = Vec::new();
+        for (flag, which) in [("backup-previous", "old"), ("backup-final", "new")] {
+            let (id, segment) = flagged(flag).ok_or_else(|| format!(
+                "LUKS2: the volume is mid-reencryption but has no {flag} segment."))?;
+            if segment.field("type")?.string()? != "crypt" {
+                return Err(format!("LUKS2: the {flag} segment is not a crypt segment."));
+            }
+            let digest = match self.digests_binding("segments", id)?.as_slice() {
+                [(digest, _)] => digest.to_string(),
+                other => return Err(format!("LUKS2: the {flag} segment is bound to {} \
+                                             digests, not one.", other.len())),
+            };
+            let key = found.iter().find(|(d, _, _)| *d == digest).map(|(_, _, k)| k.clone())
+                .ok_or_else(|| format!(
+                    "LUKS2: the volume is mid-reencryption, and the {which} volume key (digest \
+                     {digest}) is not unlocked; reading it takes both keys."))?;
+            let (_, sector_size) = Luks2::extent(segment)?;
+            layers.push((digest, Layer {
+                spec: CipherSpec::parse_joined(segment.field("encryption")?.string()?)?,
+                key, sector_size,
+            }));
+        }
+        let (new_digest, new) = layers.pop().ok_or("layers")?;
+        let (old_digest, old) = layers.pop().ok_or("layers")?;
+
+        // The digest over both keys and the metadata that says how the
+        // data is laid out: without it, anyone could rewrite the header
+        // to make the data read differently.
+        let input = Luks2::reencryption_digest_input(
+            keyslot, &flagged("backup-previous").ok_or("flagged")?.1,
+            &flagged("backup-final").ok_or("flagged")?.1, &old.key,
+            (new_digest != old_digest).then_some(&new.key[..]))?;
+        let verified = match self.digests_binding("keyslots", keyslot_id)?.as_slice() {
+            [(_, digest)] => Luks2::digest_matches(digest, &input)?,
+            _ => false,
+        };
+        if !verified {
+            return Err("LUKS2: the reencryption metadata does not match its digest: the header \
+                        was changed by something without the volume keys, or is damaged."
+                .to_string());
+        }
+
+        // The data segments, in the order of their numbers, which is
+        // their order on the volume.
+        let mut data: Vec<(u64, &str, &Value)> = Vec::new();
+        for (id, segment) in segments {
+            if segment.get("flags").and_then(|f| f.items().ok()).is_some_and(|flags| flags.iter()
+                .any(|f| f.as_str().is_some_and(|f| f.starts_with("backup-")))) {
+                continue;
+            }
+            let number = id.parse().map_err(|_| format!("LUKS2: a segment numbered {id:?}."))?;
+            data.push((number, id, segment));
+        }
+        data.sort_by_key(|(number, _, _)| *number);
+        let mut pieces = Vec::new();
+        for (index, (number, id, segment)) in data.iter().enumerate() {
+            if *number != index as u64 {
+                return Err(format!("LUKS2: segment {index} is missing."));
+            }
+            if segment.field("type")?.string()? != "crypt" {
+                return Err(format!("LUKS2: segment {id} is not a crypt segment."));
+            }
+            let bound: Vec<String> = self.digests_binding("segments", id)?.iter()
+                .map(|(d, _)| d.to_string()).collect();
+            let part = if Luks2::has_flag(segment, "in-reencryption") {
+                if pieces.iter().any(|p: &Piece| p.part == Part::Hotzone) {
+                    return Err("LUKS2: two segments are in reencryption.".to_string());
+                }
+                Part::Hotzone
+            } else if bound == [old_digest.clone()]
+                || (old_digest == new_digest && bound.contains(&old_digest)) {
+                Part::Old
+            } else if bound == [new_digest.clone()] {
+                Part::New
+            } else {
+                return Err(format!("LUKS2: segment {id} is bound to the digests {bound:?}, \
+                                    not the old key's or the new key's alone."));
+            };
+            let (length, sector_size) = Luks2::extent(segment)?;
+            if length.is_none() && index + 1 != data.len() {
+                return Err(format!("LUKS2: segment {id} runs to the end of the volume, but \
+                                    another follows it."));
+            }
+            pieces.push(Piece {
+                part,
+                offset: usize::try_from(segment.field("offset")?.uint()?).unwrap_or(usize::MAX),
+                length,
+                iv_tweak: segment.field("iv_tweak")?.uint()?,
+                spec: CipherSpec::parse_joined(segment.field("encryption")?.string()?)?,
+                sector_size,
+            });
+        }
+        let keyslot = found.iter().find(|(d, _, _)| *d == new_digest).and_then(|(_, k, _)| *k);
+        let backup_final = &flagged("backup-final").ok_or("flagged")?.1;
+        Ok(Unlocked {
+            version: 2,
+            keyslot,
+            volume_key: new.key.clone(),
+            spec: new.spec.clone(),
+            data_offset: usize::try_from(backup_final.field("offset")?.uint()?)
+                .unwrap_or(usize::MAX),
+            data_length: None,
+            sector_size: new.sector_size,
+            iv_tweak: 0,
+            reencryption: Some(Reencryption { direction: direction.to_string(), protection,
+                                              old, new, pieces }),
         })
     }
 
@@ -876,6 +1435,22 @@ fn open(image: &[u8], passphrase: &[u8]) -> Result<Unlocked, String> {
     }
 }
 
+/// `open` with the volume keys given rather than a passphrase: one key,
+/// or for a LUKS2 volume mid-reencryption its old and new keys.
+fn open_with_keys(image: &[u8], keys: &[Vec<u8>]) -> Result<Unlocked, String> {
+    if image.len() < 8 || &image[..6] != LUKS_MAGIC {
+        return Err("LUKS: no LUKS header at the start of the image.".to_string());
+    }
+    match u16::from_be_bytes([image[6], image[7]]) {
+        1 => match keys {
+            [key] => Luks1::parse(image)?.open_with_key(key),
+            _ => Err("LUKS1: one volume key.".to_string()),
+        },
+        2 => Luks2::parse(image)?.open_with_keys(keys),
+        v => Err(format!("LUKS: version {v} is not 1 or 2.")),
+    }
+}
+
 fn dump(image: &[u8]) -> Result<String, String> {
     match image.get(6..8) {
         Some([0, 1]) => Ok(Luks1::parse(image)?.dump()),
@@ -923,7 +1498,8 @@ fn passphrase(args: &[String], options: &std::collections::HashMap<String, Strin
 fn run(args: &[String]) -> Result<(), String> {
     let usage = "usage: luks dump IMAGE | open IMAGE PASSPHRASE [--volume-key] [--decrypt OUT] \
                  | format IMAGE PASSPHRASE [options]; --passphrase-stdin or --key-file FILE \
-                 in place of PASSPHRASE";
+                 in place of PASSPHRASE, or for open --volume-key-file FILE \
+                 [--new-volume-key-file FILE]";
     let command = args.first().ok_or(usage)?;
     let path = args.get(1).ok_or(usage)?;
     let mut options = std::collections::HashMap::new();
@@ -950,12 +1526,33 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "open" => {
             let image = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-            let passphrase = passphrase(args, &options, &flags)?;
-            let unlocked = open(&image, &passphrase)?;
-            println!("LUKS{} keyslot {} opened: {} sectors of {} bytes from byte {}",
-                     unlocked.version, unlocked.keyslot, unlocked.spec.joined(),
-                     unlocked.sector_size, unlocked.data_offset);
+            // cryptsetup's names: the volume key, and mid-reencryption
+            // the new one too, as files of the key's bytes.
+            let mut keys = Vec::new();
+            for name in ["volume-key-file", "new-volume-key-file"] {
+                if let Some(file) = options.get(name) {
+                    keys.push(std::fs::read(file).map_err(|e| format!("{file}: {e}"))?);
+                }
+            }
+            let unlocked = if keys.is_empty() {
+                open(&image, &passphrase(args, &options, &flags)?)?
+            } else {
+                open_with_keys(&image, &keys)?
+            };
+            let by = match unlocked.keyslot {
+                Some(keyslot) => format!("keyslot {keyslot}"),
+                None => "volume key".to_string(),
+            };
+            println!("LUKS{} {by} opened: {} sectors of {} bytes from byte {}",
+                     unlocked.version, unlocked.spec.joined(), unlocked.sector_size,
+                     unlocked.data_offset);
+            if let Some(reencryption) = &unlocked.reencryption {
+                println!("{}", reencryption.summary());
+            }
             if flags.iter().any(|f| f == "volume-key") {
+                if let Some(reencryption) = &unlocked.reencryption {
+                    println!("old volume key: {}", hex(&reencryption.old.key));
+                }
                 println!("volume key: {}", hex(&unlocked.volume_key));
             }
             if let Some(out) = options.get("decrypt") {
@@ -1229,5 +1826,175 @@ mod tests {
         image[208 + 44..208 + 48].copy_from_slice(&u32::MAX.to_be_bytes());
         let error = open(&image, b"pw").err().unwrap();
         assert!(error.contains("the image ends before"), "{error}");
+    }
+
+    /// A mandatory requirement (`config.requirements.mandatory`) is a
+    /// feature cryptsetup refuses to open a volume without, and this
+    /// example read past it: on a volume in the middle of reencryption it
+    /// unlocked one key and decrypted the segment that key's digest names
+    /// first - the hotzone, 1 MiB - as if it were the whole volume. No
+    /// image here had a requirement, so nothing showed it. Reencryption
+    /// ("online-reencrypt-v2") is read now, but a header that requires it
+    /// must also have its reencrypt keyslot.
+    #[test]
+    fn test_a_mandatory_requirement_is_refused() {
+        let params = small(2, "aes-xts-plain64", "pbkdf2", 512);
+        let (image, _) = format(&params, b"pw", &[1u8; 4096], &mut counter_stream(3)).unwrap();
+        let config = "\"config\":{";
+        for (requirement, list) in [("online-reencrypt-v2", "[\"online-reencrypt-v2\"]"),
+                                    ("something-new", "[\"something-new\"]")] {
+            let changed = with_json(&image, config, &format!(
+                "\"config\":{{\"requirements\":{{\"mandatory\":{list}}},"));
+            let error = open(&changed, b"pw").err().unwrap();
+            assert!(error.contains(requirement), "{error}");
+        }
+        // Present and empty, or without a mandatory list: nothing required.
+        for empty in ["{\"mandatory\":[]}", "{}"] {
+            let changed = with_json(&image, config, &format!(
+                "\"config\":{{\"requirements\":{empty},"));
+            assert!(open(&changed, b"pw").is_ok(), "{empty}");
+        }
+    }
+
+    /// The volumes in `fixtures/luks-reencrypt.vec`: cryptsetup stopped
+    /// in the middle of reencrypting them - cleanly, and by a crash
+    /// before, during and after a hotzone's write, under checksum and
+    /// journal resilience - and then repaired, finished and decrypted
+    /// each to the recorded plaintext. Read as they were left, they must
+    /// give that plaintext, with the old and new keys cryptsetup was given.
+    #[test]
+    fn test_cryptsetups_volumes_stopped_mid_reencryption() {
+        let records = fixtures::records("luks-reencrypt.vec", "cryptsetup");
+        assert_eq!(records.len(), 7);
+        for record in &records {
+            let name = fixtures::field(record, "name");
+            let image = fixtures::expand(fixtures::field(record, "image"));
+            let keys = [fixtures::unhex(fixtures::field(record, "old_key")),
+                        fixtures::unhex(fixtures::field(record, "new_key"))];
+            let mut ways = vec![open_with_keys(&image, &keys)];
+            let passphrase = fixtures::field(record, "passphrase");
+            if passphrase != "-" {
+                ways.push(open(&image, passphrase.as_bytes()));
+                assert!(open(&image, b"not the passphrase").is_err(), "{name}");
+            }
+            for unlocked in ways {
+                let unlocked = unlocked.unwrap_or_else(|e| panic!("{name}: {e}"));
+                let reencryption = unlocked.reencryption.as_ref().unwrap();
+                assert_eq!((&reencryption.old.key, &unlocked.volume_key), (&keys[0], &keys[1]),
+                           "{name}");
+                let hotzone = reencryption.pieces.iter().any(|p| p.part == Part::Hotzone);
+                assert_eq!(hotzone, fixtures::field(record, "state") != "no hotzone", "{name}");
+                let data = unlocked.decrypt_data(&image).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let length: usize = fixtures::field(record, "data_length").parse().unwrap();
+                assert_eq!(data.len(), length, "{name}");
+                assert_eq!(hex(&hash("sha256", &[&data]).unwrap()),
+                           fixtures::field(record, "data_sha256"), "{name}");
+            }
+        }
+    }
+
+    fn reencrypt_fixture(name: &str) -> (Vec<u8>, [Vec<u8>; 2]) {
+        let record = fixtures::records("luks-reencrypt.vec", "cryptsetup").into_iter()
+            .find(|r| fixtures::field(r, "name") == name).unwrap();
+        (fixtures::expand(fixtures::field(&record, "image")),
+         [fixtures::unhex(fixtures::field(&record, "old_key")),
+          fixtures::unhex(fixtures::field(&record, "new_key"))])
+    }
+
+    /// The reencryption digest made again over the header as it now
+    /// stands, with the keys: what someone holding them could write.
+    fn redigest(image: &[u8], keys: &[Vec<u8>; 2]) -> Vec<u8> {
+        let header = Luks2::parse(image).unwrap();
+        let keyslots = header.json.field("keyslots").unwrap().entries().unwrap();
+        let (id, keyslot) = keyslots.iter()
+            .find(|(_, k)| k.field("type").unwrap().string().unwrap() == "reencrypt").unwrap();
+        let segments = header.json.field("segments").unwrap().entries().unwrap();
+        let flagged = |flag| &segments.iter().find(|(_, s)| Luks2::has_flag(s, flag)).unwrap().1;
+        let input = Luks2::reencryption_digest_input(keyslot, flagged("backup-previous"),
+                                                     flagged("backup-final"), &keys[0],
+                                                     Some(&keys[1])).unwrap();
+        let (_, digest) = header.digests_binding("keyslots", id).unwrap()[0];
+        let old = digest.field("digest").unwrap().string().unwrap().to_string();
+        let new = pbkdf2_any(digest.field("hash").unwrap().string().unwrap(), &input,
+                             &allcrypt::pem::decode(digest.field("salt").unwrap().string()
+                                 .unwrap()).unwrap(),
+                             digest.field("iterations").unwrap().uint().unwrap() as u32,
+                             32).unwrap();
+        with_json(image, &format!("\"digest\":\"{old}\""),
+                  &format!("\"digest\":\"{}\"", allcrypt::pem::encode(&new)))
+    }
+
+    /// The metadata the digest covers cannot be changed without the
+    /// keys - the reencrypt keyslot's mode, direction and area, the backup
+    /// segments - and the check is the digest, not the change: the same
+    /// header with the digest made again over it opens.
+    #[test]
+    fn test_reencryption_metadata_is_bound_by_its_digest() {
+        let (image, keys) = reencrypt_fixture("checksum-torn");
+        assert!(open_with_keys(&image, &keys).is_ok());
+        assert_eq!(open_with_keys(&redigest(&image, &keys), &keys).unwrap()
+                       .decrypt_data(&image).unwrap(),
+                   open_with_keys(&image, &keys).unwrap().decrypt_data(&image).unwrap());
+        for (from, to) in [("\"direction\":\"forward\"", "\"direction\":\"backward\""),
+                           ("\"hash\":\"sha512\"", "\"hash\":\"sha256\""),
+                           ("\"type\":\"checksum\",\"hash\"", "\"type\":\"journal\",\"hash\""),
+                           ("\"sector_size\":4096,\"flags\":[\"backup-final\"]",
+                            "\"sector_size\":512,\"flags\":[\"backup-final\"]"),
+                           ("\"iv_tweak\":\"0\",\"encryption\":\"aes-cbc-essiv:sha256\"",
+                            "\"iv_tweak\":\"8\",\"encryption\":\"aes-cbc-essiv:sha256\"")] {
+            let changed = with_json(&image, from, to);
+            let error = open_with_keys(&changed, &keys).err().unwrap_or_else(|| panic!("{to}"));
+            assert!(error.contains("does not match its digest"), "{to}: {error}");
+            assert!(open_with_keys(&redigest(&changed, &keys), &keys).is_ok(), "{to}");
+        }
+        // A field the digest does not cover changes nothing.
+        let extra = with_json(&image, "\"flags\":[\"backup-final\"]",
+                              "\"flags\":[\"backup-final\"],\"x\":1");
+        assert!(open_with_keys(&extra, &keys).is_ok());
+    }
+
+    /// What this does not read is refused by name, before any data is: an
+    /// encryption or decryption in place, a reencryption that moves the
+    /// data, the earlier and later requirement versions; and a volume
+    /// stopped inside a hotzone with nothing to say which blocks were
+    /// rewritten.
+    #[test]
+    fn test_reencryption_it_cannot_read_is_refused() {
+        let (image, keys) = reencrypt_fixture("checksum-torn");
+        for (from, to, expected) in [
+                ("\"mode\":\"reencrypt\"", "\"mode\":\"encrypt\"", "being encrypted"),
+                ("\"mode\":\"reencrypt\"", "\"mode\":\"decrypt\"", "being decrypted"),
+                ("\"type\":\"checksum\"", "\"type\":\"datashift\"", "moves the data"),
+                ("\"online-reencrypt-v2\"", "\"online-reencrypt\"", "cryptsetup 2.2"),
+                ("\"online-reencrypt-v2\"", "\"online-reencrypt-v3\"", "moves the data"),
+                ("\"online-reencrypt-v2\"", "\"online-reencrypt-v2\",\"x\"", "\"x\"")] {
+            let error = open_with_keys(&with_json(&image, from, to), &keys).err()
+                .unwrap_or_else(|| panic!("{to}"));
+            assert!(error.contains(expected), "{to}: {error}");
+        }
+        // Resilience "none" with a hotzone, the digest made again so that
+        // it is the hotzone that is refused.
+        let none = with_json(&image, "\"type\":\"checksum\",\"hash\":\"sha512\",\"sector_size\":4096",
+                             "\"type\":\"none\"");
+        let unlocked = open_with_keys(&redigest(&none, &keys), &keys).unwrap();
+        let error = unlocked.decrypt_data(&image).err().unwrap();
+        assert!(error.contains("resilience \"none\""), "{error}");
+    }
+
+    /// Both keys are needed, each must match a digest, and the hotzone's
+    /// protection data must fit its area.
+    #[test]
+    fn test_reencryption_needs_both_keys_and_its_area() {
+        let (image, keys) = reencrypt_fixture("journal-torn");
+        let error = open_with_keys(&image, &keys[..1]).err().unwrap();
+        assert!(error.contains("new volume key") && error.contains("both keys"), "{error}");
+        let error = open_with_keys(&image, &keys[1..]).err().unwrap();
+        assert!(error.contains("old volume key"), "{error}");
+        let error = open_with_keys(&image, &[keys[0].clone(), vec![7u8; 32]]).err().unwrap();
+        assert!(error.contains("matches none"), "{error}");
+        let small = redigest(&with_json(&image, "\"size\":\"294912\",\"type\":\"journal\"",
+                                        "\"size\":\"4096\",\"type\":\"journal\""), &keys);
+        let error = open_with_keys(&small, &keys).unwrap().decrypt_data(&image).err().unwrap();
+        assert!(error.contains("does not fit"), "{error}");
     }
 }

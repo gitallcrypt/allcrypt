@@ -56,7 +56,7 @@ use crate::Mac;
 pub const ROUNDS: [usize; 3] = [8, 12, 16];
 
 /// One round of the permutation.
-fn round(v: &mut [u32; 4]) {
+pub(crate) fn round(v: &mut [u32; 4]) {
     v[0] = v[0].wrapping_add(v[1]);
     v[1] = v[1].rotate_left(5) ^ v[0];
     v[0] = v[0].rotate_left(16);
@@ -69,7 +69,7 @@ fn round(v: &mut [u32; 4]) {
     v[2] = v[2].rotate_left(16);
 }
 
-fn permute(v: &mut [u32; 4], rounds: usize) {
+pub(crate) fn permute(v: &mut [u32; 4], rounds: usize) {
     for _ in 0..rounds {
         round(v);
     }

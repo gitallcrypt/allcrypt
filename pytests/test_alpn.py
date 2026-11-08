@@ -207,11 +207,25 @@ def test_the_answer_is_encrypted_at_tls13():
     plain.server.process()
     flight = plain.server.take_outgoing()
     # The ServerHello is the first record and is not protected; anything
-    # after the handshake keys go in is. Finding "h2" anywhere in the
-    # first record would mean it was written in the clear.
-    first_record_length = int.from_bytes(flight[3:5], "big")
-    assert b"h2" not in flight[:5 + first_record_length], \
-        "the ALPN answer is in the plaintext ServerHello"
+    # after the handshake keys go in is. Its extensions are read rather
+    # than its bytes searched: "h2" is two bytes, and a hybrid key share
+    # puts over a thousand random ones in the ServerHello, so a search
+    # found them there in about one run in sixty.
+    assert flight[0] == 22 and flight[5] == 2, "the first record is a ServerHello"
+    hello = flight[9:5 + int.from_bytes(flight[3:5], "big")]
+    at = 2 + 32                                    # legacy_version, random
+    at += 1 + hello[at]                            # legacy_session_id_echo
+    at += 2 + 1                                    # cipher_suite, compression
+    end = at + 2 + int.from_bytes(hello[at:at + 2], "big")
+    at += 2
+    types = []
+    while at < end:
+        types.append(int.from_bytes(hello[at:at + 2], "big"))
+        at += 4 + int.from_bytes(hello[at + 2:at + 4], "big")
+    assert at == end == len(hello)
+    # supported_versions and key_share, so the reading found something.
+    assert {43, 51} <= set(types), types
+    assert 16 not in types, "the ALPN answer is in the plaintext ServerHello"
 
 
 def test_a_protocol_the_client_did_not_offer_is_refused():

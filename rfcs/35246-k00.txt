@@ -1,0 +1,2521 @@
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| 3GPP TS 35.246 V20.0.0 (2026-03)                                                                                                                                |                                     |
++=================================================================================================================================================================+=====================================+
+| Technical Specification                                                                                                                                         |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| 3rd Generation Partnership Project;                                                                                                                             |                                     |
+|                                                                                                                                                                 |                                     |
+| Technical Specification Group Services and System Aspects;                                                                                                      |                                     |
+|                                                                                                                                                                 |                                     |
+| Specification of the ZUC based 256-bits algorithm set:                                                                                                          |                                     |
+|                                                                                                                                                                 |                                     |
+| Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;                                   |                                     |
+|                                                                                                                                                                 |                                     |
+| Document 1: algorithm specification                                                                                                                             |                                     |
+|                                                                                                                                                                 |                                     |
+| (Release 20)                                                                                                                                                    |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+|                                                                                                                                                                 |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| []                                                                                                                                                              | []                                  |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+|                                                                                                                                                                 |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+| The present document has been developed within the 3rd Generation Partnership Project (3GPP ^(TM)) and may be further elaborated for the purposes of 3GPP.      |                                     |
+| The present document has not been subject to any approval process by the 3GPP Organizational Partners and shall not be implemented.                             |                                     |
+| This Specification is provided for future development work within 3GPP only. The Organizational Partners accept no liability for any use of this Specification. |                                     |
+| Specifications and Reports for implementation of the 3GPP ^(TM) system should be obtained via the 3GPP Organizational Partners' Publications Offices.           |                                     |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------+
+
++-----------------------------------------------------------------------------------------------------------------+
+|                                                                                                                 |
++=================================================================================================================+
+|   3GPP                                                                                                          |
+|                                                                                                                 |
+|   Postal address                                                                                                |
+|                                                                                                                 |
+|   3GPP support office address                                                                                   |
+|                                                                                                                 |
+|   650 Route des Lucioles - Sophia Antipolis                                                                     |
+|                                                                                                                 |
+|   Valbonne - FRANCE                                                                                             |
+|                                                                                                                 |
+|   Tel.: +33 4 92 94 42 00 Fax: +33 4 93 65 47 16                                                                |
+|                                                                                                                 |
+|   Internet                                                                                                      |
+|                                                                                                                 |
+|   http://www.3gpp.org                                                                                           |
++-----------------------------------------------------------------------------------------------------------------+
+| Copyright Notification                                                                                          |
+|                                                                                                                 |
+| No part may be reproduced except as authorized by written permission.                                           |
+| The copyright and the foregoing restriction extend to reproduction in all media.                                |
+|                                                                                                                 |
+| © 2026, 3GPP Organizational Partners (ARIB, ATIS, CCSA, ETSI, TSDSI, TTA, TTC).                                 |
+|                                                                                                                 |
+| All rights reserved.                                                                                            |
+|                                                                                                                 |
+| UMTS™ is a Trade Mark of ETSI registered for the benefit of its members                                         |
+|                                                                                                                 |
+| 3GPP™ is a Trade Mark of ETSI registered for the benefit of its Members and of the 3GPP Organizational Partners |
+| LTE™ is a Trade Mark of ETSI registered for the benefit of its Members and of the 3GPP Organizational Partners  |
+|                                                                                                                 |
+| GSM® and the GSM logo are registered and owned by the GSM Association                                           |
++-----------------------------------------------------------------------------------------------------------------+
+
+ Contents
+
+Foreword 5
+
+Introduction 6
+
+1 Scope 7
+
+2 References 7
+
+3 Definitions of terms, symbols and abbreviations 8
+
+3.1 Terms 8
+
+3.2 Symbols 9
+
+3.3 Abbreviations 9
+
+4 Overview of the Specification 10
+
+4.1 Introduction 10
+
+4.2 Notation 11
+
+4.2.1 General 11
+
+4.2.2 Void 11
+
+4.2.3 Radix 11
+
+4.2.4 Bit ordering and concatenations 11
+
+4.2.5 Assignment operations 12
+
+4.3 Initial Value (IV) Specification 13
+
+4.3.1 General 13
+
+4.3.2 The Make_5GIV mapping 14
+
+4.4 The KeyStream Generator (KSG) Interface 14
+
+4.4.1 General 14
+
+4.4.2 KSG.Initialise 14
+
+4.4.3 KSG.GenerateHQP 14
+
+4.4.4 KSG.Keystream 15
+
+4.5 128-bit key usage 15
+
+5 Authenticated Encryption 256-AEAD1 15
+
+5.1 Introductory Information 15
+
+5.1.1 Introduction 15
+
+5.1.2 Notation 16
+
+5.2 Authenticated Encryption Construction 256-AEAD1 16
+
+5.2.1 Inputs and Outputs 16
+
+5.2.2 Algorithmic description 17
+
+5.2.3 Functions used in 256-AEAD1 18
+
+5.2.3.1 General 18
+
+5.2.3.2 ClearBits 18
+
+5.2.3.3 pdot 19
+
+5.2.3.4 Mac5G.Update 20
+
+5.2.3.5 Mac5G.Final 21
+
+6 Specification of the ZUC-256 Algorithm 21
+
+6.1 Introductory Information 21
+
+6.1.1 Introduction 21
+
+6.1.2 Notation 21
+
+6.2 Algorithmic description of ZUC-256 22
+
+6.2.1 General 22
+
+6.2.2 The linear feedback shift register (LFSR) 22
+
+6.2.3 The bit-reorganisation 23
+
+6.2.4 The nonlinear function F 24
+
+6.2.5 The SBox 24
+
+6.2.6 The linear transforms L₁ and L₂ 25
+
+6.2.7 The Key/IV-loading 26
+
+6.2.8 The operation of ZUC-256 27
+
+6.3 KeyStream Generator (KSG) Interface 28
+
+6.3.0 General 28
+
+6.3.1 ZUC256.Initialise 28
+
+6.3.2 ZUC256.GenerateHQP 28
+
+6.3.3 ZUC256.Keystream 29
+
+7 Specification of the 256-NxA4/5/6 Algorithms 29
+
+7.1 Confidentiality Algorithms 256-NEA4/5/6 29
+
+7.1.1 Inputs and Outputs 29
+
+7.1.2 Components and Architecture 30
+
+7.1.3 Input Variable Mapping 30
+
+7.1.4 Output Variable Mapping 30
+
+7.1.5 The IV Construction for the 256-NEA4/5/6 31
+
+7.2 Integrity Algorithms 256-NIA4/5/6 31
+
+7.2.0 General 31
+
+7.2.1 Inputs and Outputs 31
+
+7.2.2 Components and Architecture 32
+
+7.2.3 Input Variable Mapping 32
+
+7.2.4 Output Variable Mapping 32
+
+7.2.5 The IV Construction for the 256-NIA4/5/6 32
+
+7.3 Combined Algorithms 256-NCA4/5/6 33
+
+7.3.0 General 33
+
+7.3.1 Inputs and Outputs 33
+
+7.3.2 Components and Architecture 34
+
+7.3.3 Input Variable Mapping 34
+
+7.3.4 Output Variable Mapping 34
+
+7.3.5 The IV Construction for the 256-NCA3 34
+
+Annex A (informative): Reference Code in C/C++ 35
+
+Annex B (informative): Change history 41
+
+Foreword
+
+This Technical Specification has been produced by the 3rd Generation Partnership Project (3GPP).
+
+The contents of the present document are subject to continuing work within the TSG and may change following formal TSG approval. Should the TSG modify the contents of the present document, it will be re-released by the TSG with an identifying change of release date and an increase in version number as follows:
+
+Version x.y.z
+
+where:
+
+x the first digit:
+
+1 presented to TSG for information;
+
+2 presented to TSG for approval;
+
+3 or greater indicates TSG approved document under change control.
+
+y the second digit is incremented for all changes of substance, i.e. technical enhancements, corrections, updates, etc.
+
+z the third digit is incremented when editorial only changes have been incorporated in the document.
+
+In the present document, modal verbs have the following meanings:
+
+shall indicates a mandatory requirement to do something
+
+shall not indicates an interdiction (prohibition) to do something
+
+The constructions "shall" and "shall not" are confined to the context of normative provisions, and do not appear in Technical Reports.
+
+The constructions "must" and "must not" are not used as substitutes for "shall" and "shall not". Their use is avoided insofar as possible, and they are not used in a normative context except in a direct citation from an external, referenced, non-3GPP document, or so as to maintain continuity of style when extending or modifying the provisions of such a referenced document.
+
+should indicates a recommendation to do something
+
+should not indicates a recommendation not to do something
+
+may indicates permission to do something
+
+need not indicates permission not to do something
+
+The construction "may not" is ambiguous and is not used in normative elements. The unambiguous constructions "might not" or "shall not" are used instead, depending upon the meaning intended.
+
+can indicates that something is possible
+
+cannot indicates that something is impossible
+
+The constructions "can" and "cannot" are not substitutes for "may" and "need not".
+
+will indicates that something is certain or expected to happen as a result of action taken by an agency the behaviour of which is outside the scope of the present document
+
+will not indicates that something is certain or expected not to happen as a result of action taken by an agency the behaviour of which is outside the scope of the present document
+
+might indicates a likelihood that something will happen as a result of action taken by some agency the behaviour of which is outside the scope of the present document
+
+might not indicates a likelihood that something will not happen as a result of action taken by some agency the behaviour of which is outside the scope of the present document
+
+In addition:
+
+is (or any other verb in the indicative mood) indicates a statement of fact
+
+is not (or any other negative verb in the indicative mood) indicates a statement of fact
+
+The constructions "is" and "is not" do not indicate requirements.
+
+Introduction
+
+The present document is one of three, which between them form the entire specification set of the ZUC based 256-bit encryption and integrity protection algorithms, entitled:
+
+- 3GPP TS 35.246: "Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;
+Document 1: Algorithm Specification ".
+
+- 3GPP TS 35.247: "Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;
+Document 2: Implementation Test Data".
+
+  - 3GPP TS 35.248: "Specification of the ZUC based 256-bits algorithm set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity, and the 256-NCA6 authenticated encryption algorithm for 5G;
+  Document 3: Design Conformance Test Data".
+
+ 1 Scope
+
+The present document contains the algorithm specification which could be used as the encryption and integrity protection function 256-NEA6, 256-NIA6 and the combined authenticated encryption 256-NCA6 protection function for 3GPP systems.
+
+2 References
+
+The following documents contain provisions which, through reference in this text, constitute provisions of the present document.
+
+- References are either specific (identified by date of publication, edition number, version number, etc.) or non‑specific.
+
+- For a specific reference, subsequent revisions do not apply.
+
+- For a non-specific reference, the latest version applies. In the case of a reference to a 3GPP document (including a GSM document), a non-specific reference implicitly refers to the latest version of that document in the same Release as the present document.
+
+[1] 3GPP TR 21.905: "Vocabulary for 3GPP Specifications".
+
+[2] void
+
+[3] 3GPP TS 35.247: "3G Security; Specification of the ZUC based 256-bits Algorithm Set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity algorithm, and the authenticated encryption 256-NCA6 for 5G; Document 2: implementation test data".
+
+[4] 3GPP TS 35.248: "3G Security; Specification of the ZUC based 256-bits Algorithm Set: Specification of the 256-NEA6 encryption, the 256-NIA6 integrity algorithm, and the authenticated encryption 256-NCA6 for 5G; Document 3: design conformance test data".
+
+[5] 3GPP TS 35.243: "3G Security; Specification of the AES based 256-bits Algorithm Set: Specification of the 256-NEA5 encryption, the 256-NIA5 integrity algorithm, and the authenticated encryption 256-NCA5 for 5G; Document 1: algorithm specification".
+
+[6] 3GPP TS 35.240: "3G Security; Specification of the Snow 5G based 256-bits Algorithm Set: Specification of the 256-NEA4 encryption, the 256-NIA4 integrity algorithm, and the authenticated encryption 256-NCA4 for 5G; Document 1: algorithm specification".
+
+[7] 3GPP TS 38.323: "NR; Packet Data Conversion Protocol (PDCP)".
+
+[8] "Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC", Editor: M. Dworkin, NIST Special Publication 800-38D
+https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf
+(Accessed 2022-05-03)
+
+[9] "AES-GCM-SIV: Nonce Misuse-Resistant Authenticated Encryption", S. Gueron, A. Langley, and Y. Lindell, RFC 8452, https://www.rfc-editor.org/info/rfc8452 (Accessed 2022-05-03).
+
+[10] void
+
+[11] "A new SNOW stream cipher called SNOW-V", Ekdahl, P., Johansson, T., Maximov, A., & Yang, J. (2019). A new SNOW stream cipher called SNOW-V. IACR Transactions on Symmetric Cryptology, 2019(3), 1–42, https://doi.org/10.13154/tosc.v2019.i3.1-42 (Accessed April 22, 2022).
+
+[12] "SNOW-Vi: an extreme performance variant of SNOW-V for lower grade CPUs", P.Ekdahl, A. Maximov, T. Johansson, J. Yang. WiSec '21: Proceedings of the 14th ACM Conference on Security and Privacy in Wireless and Mobile Networks, June 2021 Pages 261–272, https://doi.org/10.1145/3448300.3467829 (Accessed April 22, 2022).
+
+[13] "Advanced Encryption Standard (AES)", Federal Inf. Process. Stds. (NIST FIPS), National Institute of Standards and Technology, Gaithersburg, MD, https://doi.org/10.6028/NIST.FIPS.197 (Accessed April 22, 2022).
+
+[14] "A Correlation Attack on Full SNOW-V and SNOW-Vi", Shi, Z., Jin, C., Zhang, J., Cui, T., Ding, L., Jin, Y. (2022). In: Dunkelman, O., Dziembowski, S. (eds) Advances in Cryptology – EUROCRYPT 2022. EUROCRYPT 2022. Lecture Notes in Computer Science, vol 13277. Springer, Cham. https://doi.org/10.1007/978-3-031-07082-2_2.
+
+[15] "Authentication Weaknesses in GCM", N. Ferguson, 2005, https://csrc.nist.gov/csrc/media/projects/block-ciphertechniques/documents/bcm/comments/cwc-gcm/ferguson2.pdf. (Accessed 2022-05-03).
+
+[16] "New hash functions and their use in authentication and set equality", M. Wegman and L. Carter. Journal of Computer and System Sciences, 22:265279, 1981.
+
+[17] "Galois MAC with forgery probability close to ideal", K Nyberg, H. Gilbert, and M Robshaw, https://csrc.nist.gov/CSRC/media/Projects/Block-Cipher-Techniques/documents/BCM/Comments/generalcomments/papers/Nyberg_Gilbert_and_Robshaw.pdf. (Accessed 2022-06-16).
+
+[18] 3GPP TS 35.221: "Specification of the 3GPP Confidentiality and Integrity Algorithms EEA3 & EIA3; Document 1: EEA3 and EIA3 specifications".
+
+[19] "Specification of the 3GPP Confidentiality and Integrity Algorithms 128-EEA3 & 128-EIA3". Document 2: ZUC Specification, ETSI SAGE. (version 1.6).
+
+[20] "The ZUC-256 Stream Cipher", The ZUC design team, 2018, http://www.is.cas.cn/ztzl2016/zouchongzhi/201801/W020180126529970733243.pdf (accessed 2022-06-08).
+
+[21] "An Addendum to the ZUC-256 Stream Cipher", The ZUC design team, 2021, https://eprint.iacr.org/2021/1439.pdf (accessed 2022-06-08).
+
+[22] "New Cryptanalysis of ZUC-256 Initialization Using Modular Differences", F. Liu, W. Meier, S. Sarkar, G. Wang, and R. Ito, T. Isobe, 2021, https://eprint.iacr.org/2021/1104.
+
+[23] "Differential analysis of the ZUC-256 Initialisation", S. Babbage and A. Maximov, 2020, https://eprint.iacr.org/2020/1215 (accessed 2022-06-08).
+
+3 Definitions of terms, symbols and abbreviations
+
+3.1 Terms
+
+For the purposes of the present document, the terms given in TR 21.905 ([1]) and the following apply. A term defined in the present document takes precedence over the definition of the same term, if any, in TR 21.905 ([1]).
+
+3.2 Symbols
+
+= The assignment operator.
+
+== The equality operator returns True or False.
+
+:= The definition operator.
+
+⊕ The bitwise exclusive-OR operation.
+
+⊞_(n) Integer addition modulo 2^(n) of two vectors 𝑎, 𝑏 ∈ ℕ_(k∗n). This is a parallel application of 𝑘 addition modulo 2^(n) over corresponding n-bit sub-words of 𝑎 and 𝑏. As an example, take (𝑎 ⊞₁₆ 𝑏) with 𝑎, 𝑏 ∈ ℕ₁₂₈. For this case 𝑘 = 8. The 16-bit parts of the 128-bit words are added with carry, but the carry does not propagate from a lower 16-bit word to a higher. 𝑐 = 𝑎⊞₁₆ 𝑏 where
+
+𝑐_(i) = 𝑎_(i) + 𝑏_(i) for 𝑖 ∈ 0…7 and 𝑎_(i), 𝑏_(i), 𝑐_(i) ∈ ℕ₁₆.
+
+° Composition of operations. A ° B means A after B, or A(B(*)).
+
+|| The concatenation of the two operands.
+
+& Bitwise AND
+
+| Bitwise OR
+
+<<_(n) t The t-bit left shift of an n-bit value. The t most significant bits are dropped.
+
+>>_(n) t The t-bit right shift of an n-bit value. The t least significant bits are dropped.
+
+<<<_(n) t The t-bit left cyclic shift of an n-bit value. The most significant bits become the least significant bits.
+
+ℕ_(n) The set of natural numbers representable by n bits.
+
+{ ℕ_(n) }^(k) Array of size k containing natural numbers.
+
+⌊𝑟⌋ The floor function. Returns the largest integer, smaller than or equal to 𝑟 ∈ ℝ.
+
+⌈𝑟⌉ The ceiling function. Returns the smallest integer, larger than or equal to 𝑟 ∈ ℝ.
+
+3.3 Abbreviations
+
+For the purposes of the present document, the abbreviations given in TR 21.905 [1] and the following apply. An abbreviation defined in the present document takes precedence over the definition of the same abbreviation, if any, in TR 21.905 [1].
+
+AAD Additional Authentication Data
+
+AEAD1 Authenticated Encryption with Additional Data
+
+AI Algorithmic Instance
+
+CF Combined Flag
+
+CK Cipher Key (Confidentiality Key)
+
+EtM Encrypt-then-MAC
+
+IBS Input Bit Stream
+
+IK Integrity Key
+
+IV Initial Value
+
+KSG Key Stream Generator
+
+LK Legacy Key
+
+MAC Message Authentication Code
+
+MtE MAC-then-Encrypt
+
+NCA Network Combined Algorithm
+
+NEA Network Encryption Algorithm
+
+NIA Network Integrity Algorithm
+
+OBS Output Bit Stream
+
+PDCP Packet Data Convergence Protocol
+
+4 Overview of the Specification
+
+4.1 Introduction
+
+The specification of the 3GPP 256-bit Confidentiality and Integrity algorithms for the Air Interface is divided into three separate documents. Each document either specifies elements of the algorithm or provides reference code and test data of the algorithm. The present document consists of a keystream generator, which is acting as a core function for three dedicated modes. The three keystream generators utilized in the present document are the Snow 5G, AES-256, and ZUC-256. The key size in each case is 256-bits and the initial value (IV) is 128-bits. On top of these core algorithms, there are three modes 256-NEAx, 256-NIAx, and 256-NCAx where the "x" is either 4, 5 or 6 depending on the underlying core algorithm.
+
+The x = 4 uses Snow 5G, and x = 5 uses AES-256, and x = 6 uses ZUC-256.
+
+The different combinations are given in Table 4.1-1.
+
+Table 4.1-1: Overview of the different core algorithms and modes defined in the present document
+
+  ------------------------------------------------------------------------------------------------------------
+                                                         Snow 5G           AES-256           ZUC-256
+  ------------------------------------------------------ ----------------- ----------------- -----------------
+  Confidentiality                                        256-NEA4          256-NEA5          256-NEA6
+
+  Integrity                                              256-NIA4          256-NIA5          256-NIA6
+
+  Authenticated Encryption with Additional Data (AEAD)   256-NCA4          256-NCA5          256-NCA6
+  ------------------------------------------------------------------------------------------------------------
+
+Readers familiar with the previous algorithms for the air interface will notice the introduction of an Authenticated Encryption with Additional Data (AEAD) mode. This combined algorithm is introduced because 3GPP anticipates that data transfer rates of the air interface will increase in the future, and thus it may become inefficient to treat confidentiality and integrity in two different algorithms. The 256-NCAx mode does the encryption and integrity protection in one pass, first encrypting the plain text and then integrity protecting the cipher text, so called Encrypt-then-MAC.
+
+Note: The use of 256-NCAx as a separate mode will require changes to the order in which encryption and integrity protection is applied in the PDCP protocol ([7]), as the current version of PDCP does MAC-then-Encrypt.
+
+All confidentiality algorithms 256-NEAx operate as pure stream ciphers, XORing the generated keystream from the core algorithm onto the plain text to produce the cipher text.
+
+An overview of the 256-NEAx algorithm operation is shown in Figure 4.1-1.
+
+[A diagram of a diagram Description automatically generated]
+
+Figure 4.1-1: Overview of the 256-NEAx algorithm encryption and decryption
+
+The basis of the 256-NIAx integrity algorithms is the GMAC construction ([8]), where the message words are treated as coefficients in a polynomial which is evaluated at a secret point.
+
+However, the field and the multiplication operation are taken from the POLYVAL function in the AES-GCM-SIV construction ([9]). This has the advantage that it can be faster in software implementations and at the same time it can optionally reuse existing hardware implementations of GHASH from AESGCM ([8]) (with some byte reversals and a simple multiplication).
+
+Each of these three integrity protection algorithms can be used to produce MAC tags of length 4-16 bytes (32 – 128 bits).
+
+An overview of the 256-NIAx algorithm operation is shown in Figure 4.1-2.
+
+[A diagram of a diagram Description automatically generated]
+
+Figure 4.1-2: Overview of the 256-NIAx algorithm MAC generation
+
+In Clause 5 of the present document, a generic Authenticated Encryption with Additional Data algorithm, called 256-AEAD1 will be described, and in Clause 6 the core algorithm ZUC-256.
+
+Based on the 256-AEAD1 algorithm, the description will be provided of the 256-NEA4/5/6, 256-NIA4/5/6, and NCA4/5/6 algorithms. The second core algorithm AES-256 is specified in ([5]), while the third core algorithm Snow 5G is specified in ([6]).
+
+4.2 Notation
+
+4.2.1 General
+
+Previous air interface security algorithms were reused between generations of cellular systems (3G, 4G, and 5G) and were specified at different times, spanning several years. This resulted in slightly inconsistent notation and conventions between specifications. This clause tries to unify the notation and conventions used in the present document.
+
+4.2.2 Void
+
+4.2.3 Radix
+
+The prefix 0x is used to indicate hexadecimal numbers.
+
+4.2.4 Bit ordering and concatenations
+
+The present document utilizes different sets of integers, e.g., ℕ₈, ℕ₁₆ and ℕ₁₂₈ (the set of natural numbers representable with 8, 16 and 128 bits respectively). For a number n ∈ ℕ_(d), the most significant bit is denoted n_(msb). A bit is an element of ℕ₁.
+
+Often there is a need to interpret a word 𝑏 ∈ ℕ_(m) as a collection of words in a smaller domain ℕ_(n), 𝑚 = 𝑘𝑛 and vice versa. The concatenation of 𝑎_(i) ∈ ℕ_(n), 𝑖 = 0 … (𝑘 − 1) can be denoted into 𝑏 ∈ ℕ_(m) by:
+
+𝑏 = 𝑎_(k-1) ∥ 𝑎_(k-2) ∥ ⋯ ∥ 𝑎₁ ∥ 𝑎₀ ,
+
+where 𝑎₀ becomes the least significant part of 𝑏. Similarly, the decomposition of 𝑏 ∈ ℕ_(m) into 𝑎_(i) ∈:
+
+ℕ_(n) is written as
+
+(𝑎_(k-1), 𝑎_(k-2), … , 𝑎₁, 𝑎₀) = 𝑏,
+
+where 𝑎₀ takes the value of the least significant part of 𝑏.
+
+The following Figure 4.2.4-1 clarifies the bit ordering for an example of 𝑚 = 128, 𝑛 = 16:
+
+Figure 4.2.4-1: Bit and byte ordering when concatenating eight 16-bit words into a larger 128-bit word
+
+Arrays of integers are denoted {ℕ_(n)}^(s), where 𝑠 is the size of the array. An array 𝐴 = {𝑁_(n)}, is indexed 𝐴[0], 𝐴[1],… , 𝐴[𝑠 − 2], 𝐴[𝑠 − 1], where 𝐴[0] is the first element of the array. Every array is written from left to right, with the first element A[0] to the left.
+
+Example: A = {0,1,2,3} is an array with A[0] = 0, A[1] = 1, and so forth.
+
+{ℕ_(d)}^(*) denotes an array of variable length; for example, {ℕ₈}^(*) denotes an array of bytes that could have different possible lengths, such as an array of message bytes. Conversions from arrays of smaller domains into arrays of larger domains (and vice versa) are not done in a consistent way. Both Little Endianness and Big Endianness are used throughout the present document. This is due to being backwards compatible with the existing 3GPP protocols, as well as keeping the order for externally defined algorithms. The specification aims to be very explicit about the bits and bytes ordering.
+
+4.2.5 Assignment operations
+
+The assignment operator '='is used in many programming languages. Thus:
+
+<variable> = <expression>
+
+It means that <variable> assumes the value that <expression> had before the assignment took place. For instance, :
+
+x = x + y + 3
+
+means:
+
+(new value of x) becomes (old value of x) + (old value of y) + 3.
+
+Also
+
+<variables> = <expressions>
+
+for lists of variables and expressions, then the left-most variable assumes the value the left-most expression had before the assignment took place, the next left-most variable assumes the value the next left-most expression had before the assignment took place, and so on.
+
+For instance,
+
+x[0]..x[2] = 3, 4, 5  
+
+means
+
+(new value of x[0]) becomes 3,
+
+(new value of x[1]) becomes 4,
+
+(new value of x[2]) becomes 5.
+
+Whereas:
+
+x[0]..x[2] = y[2]..y[0]
+
+means:
+
+(new value of x[0]) becomes (old value of y[2]),
+
+(new value of x[1]) becomes (old value of y[1]),
+
+(new value of x[2]) becomes (old value of y[0]).
+
+4.3 Initial Value (IV) Specification 
+
+4.3.1 General
+
+All three core algorithms take a 256-bit key and a 128-bit IV. The IV is regarded as a byte array of length 16. The value of the IV is generated from various inputs, some coming from higher layers in the communication stack, and some inputs are dependent on the mode and core algorithm.
+
+The following inputs are currently given by the 3GPP communication stack.
+
+Table 4.3.1-1: IV partial values (Part 1)
+
+  -----------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type       Size [bits]   Comment
+  ----------- ---------- ------------- ----------------------------------------------------------------------------------------------------
+  COUNT       ℕ₃₂        32            Frame dependent counter, split into bytes (C₃, C₂, C₁, C₀) where C₀ in the least significant byte.
+
+  BEARER      ℕ₅         5             Bearer Identifier
+
+  DIRECTION   ℕ₁         1             Direction. A single bit denoted D.
+  -----------------------------------------------------------------------------------------------------------------------------------------
+
+Table 4.3.1-2: IV partial values (Part 2)
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type       Size [bits]   Comment
+  ----------- ---------- ------------- ---------------------------------------------------------------------------------------------------------------------------------------
+  MAC_BYTES   ℕ₅         5             Size of MAC tag in bytes. Allowed values are 0 and 4…16 inclusive.
+
+  CF          ℕ₁         1             Combined mode Flag, used to separate the NEA and NIA algorithms from NCA. CF = 0 means NEA or NIA. CF = 1 means NCA.
+
+  LK          ℕ₁         1             Legacy key size support. For 128-bit key usage, set LK = 1. For 256-bit key usage, set LK = 0. The current specification uses LK = 0.
+
+  AI          ℕ₁         1             Algorithmic Instance. Used during HQP parameter generation with the AES algorithm to avoid collisions with keystreams.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Table 4.3.1-3: Mapping of inputs to construct the IV value
+
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  IV[n]   Value of byte or bits of the byte. Bit ordering is so that 7 is the most significant bit.                                                Comment
+  ------- ------------------------------------------------------------------------------------------- ----- -------- ----- ----- ----- ----- ----- ------------------------------------------------------------------------------
+  0       7                                                                                           6     5        4     3     2     1     0     3GPP-defined values. Least significant bit of MAC_BYTES is mapped to bit 3.
+
+          MAC_BYTES                                                                                                              CF    LK    AI    
+
+  1       7                                                                                           6     5        4     3     2     1     0     Least significant bit of BEARER is mapped to bit 1. D is the DIRECTION.
+
+          0                                                                                           0     BEARER                           D     
+
+  2…7     EXTRA_IV[0…5]                                                                                                                            6 bytes for future extra entropy. EXTRA_IV [0] is mapped to IV[2] and so on.
+
+  8…11    (C₃, C₂, C₁, C₀)                                                                                                                         Most significant byte of COUNT is assigned to IV[8] (Big Endian).
+
+  12…15   0                                                                                                                                        Reserved for the 32-bit counter in AES-CTR. Set to zero otherwise.
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+4.3.2 The Make_5GIV mapping
+
+A mapping from the inputs to a byte array of length 16 can be defined as:
+
+Make_5GIV: ( ℕ₃₂, ℕ₅, ℕ₁, ℕ₅, ℕ₁, ℕ₁, ℕ₁, { ℕ₈ }⁶ ) { ℕ₈ }⁶
+
+(COUNT, BEARER, DIRECTION, MAC_BYTES, CF, LK, AI, EXTRA_IV) Make_5GIV (COUNT, BEARER, DIRECTION, MAC_BYTES, CF, LK, AI, EXTRA_IV)
+
+Where Make_5GIV maps the input according to Table 4.3.1-3. The Make_5GIV mapping is used in all algorithms to provide the Initial Value (IV).
+
+4.4 The KeyStream Generator (KSG) Interface
+
+4.4.1 General
+
+All core algorithms operate as keystream generators together with the basic 256-AEAD1 algorithm (Clause 5), and for that purpose, a common interface is described in this Clause. The interface consists of three functions: one for initialising the KSG, one to generate the H, Q, and P values needed in the 256-AEAD1 algorithm, and one function to generate the keystream symbols. In the specifications for ZUC-256 and for AES ([5]) and for Snow 5G ([6]), the implementation of the KSG interface is specified for each algorithm.
+
+4.4.2 KSG.Initialise
+
+Purpose: This interface takes two inputs, the KEY and the IV, and initialises the KSG. Initialisation of the KSG typically amounts to initialising the internal state that needs to be retained. It returns no output.
+
+Table 4.4.2-1: Inputs to the KSG.Initialise interface
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type       Size [bits]   Comment
+  ----------- ---------- ------------- ---------------------------------------------------------------------------------------------------------------------------
+  KEY         { ℕ₈ }³²   256           Security key. Array of 32 bytes. Could be the Cipher Key (CK) or the Integrity Key (IK) or a common key for the NCA mode.
+
+  IV          { ℕ₈ }¹⁶   128           Initialization Value. Array of 16 bytes, initialized according to Clause 5.1.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+4.4.3 KSG.GenerateHQP
+
+Purpose: Generate the three secret 128-bit values H, Q, and P used in the integrity protection functions 256-NIAx and the combined functions 256-NCAx.
+
+This interface does not take any input values, but simply generates the three requested byte arrays. This interface function shall only be called once, directly after a preceding call to KSG.Initialise.
+
+Table 4.4.3-1: Return values from the KSG.GenerateHQP interface
+
+  -----------------------------------------------------------------------------------------------------
+  Return Value   Type       Size [bits]   Comment
+  -------------- ---------- ------------- -------------------------------------------------------------
+  H              { ℕ₈ }¹⁶   128           The secret point in which the polynomial will be evaluated.
+
+  Q              { ℕ₈ }¹⁶   128           The secret truncation key.
+
+  P              { ℕ₈ }¹⁶   128           The final masking of the tag.
+  -----------------------------------------------------------------------------------------------------
+
+4.4.4 KSG.Keystream
+
+Purpose: Generates a keystream array of 16 bytes.
+
+This interface does not take any input arguments, but simply generates the keystream array. A call to this interface shall be proceeded by a call to KSG.Initialise and possibly a single call to KSG.GenerateHQP. KSG.Keystream shall be called as many times as needed to produce the required quantity of keystreams.
+
+Table 4.4.4-1: Inputs to the Key Stream Generator
+
+  --------------------------------------------------------------------------------
+  Return Value   Type       Size [bits]   Comment
+  -------------- ---------- ------------- ----------------------------------------
+  Z              { ℕ₈ }¹⁶   128           The keystream.
+
+  --------------------------------------------------------------------------------
+
+4.5 128-bit key usage
+
+3GPP anticipates that there might be situations where the 256-bit algorithms defined in the present document will be used with only a 128-bit key. In such a case, the 256-bit key is formed by simply extending the 128-bit key with zeros. In a byte array setting, this means that the lowest index array elements of the 256-bit key are given the value of the corresponding bytes from the 128-bit key array, Key256[0…15] = Key128[0…15]. The upper index elements are set to zero, Key256[16…31] = {0}.
+
+Note: The present document currently only allows 256-bit key size. If specifications, would permit the usage of 128-bit keys, the flag LK (Legacy Key size) in the IV constructed Clause 4.3 is set to 1 in all instances and invocations using 128-bit keys, to avoid initial state collisions.
+
+5 Authenticated Encryption 256-AEAD1
+
+5.1 Introductory Information
+
+5.1.1 Introduction
+
+The 256-AEAD1 algorithm can be used as a pure encryption algorithm, a pure integrity protection algorithm, or combined into a so-called Authenticated Encryption with Additional Data (AEAD) algorithm. The benefit of using the AEAD mode is that implementations can do keystream generation and integrity protection in parallel, thereby increasing the overall speed of the security layer of the communication. In the 256-AEAD1 algorithm, the integrity protection tag is calculated over the ciphertext, an order which is often referred to as Encrypt-then-MAC (EtM). In the context of current (5G) protocols in 3GPP, this increasing speed cannot be utilised since the protocols due to legacy have adopted the opposite order and calculate the integrity protection tag over the plaintext (MAC-then-Encrypt, MtE). The combined AEAD operation can be considered as something that could potentially be adopted by 3GPP.
+
+The 256-AEAD1 algorithm is based on the AES-GCM ([8]) construction with some important differences. The Figure 5.1.1-1 gives a schematic overview of the 256-AEAD1 algorithm.
+
+[]
+
+Figure 5.1.1-1: Overview of 256-AEAD1 and the relation to 256-NEA4/5/6 and 256-NIA4/5/6
+
+The upper/right part relates to the implementation of 256-NEA4/5/6. This is a normal stream cipher, producing the ciphertext as the XOR of the plaintext together with the keystream symbols 𝑧_(i).
+
+The lower/left part relates to 256-NIA4/5/6. Similarly to AES-GCM ([8]), the ciphertext output words are treated as coefficients in a polynomial over 𝐺𝐹(2¹²⁸), which is evaluated at a secret point 𝐻. The main schematic difference is that 256-AEAD1 uses an additional secret point 𝑄, which is multiplied in the last step, before the masking with the secret value 𝑃. The other implementational disparity from AES-GCM is that the multiplication with 𝐻 is reduced modulo a different polynomial, which is taken from the POLYVAL ([9]) construction. The mathematical details can be found in Annex A.
+
+5.1.2 Notation
+
+The notation and conventions on bit order are described in Clause 4.2 of the present document.
+
+5.2 Authenticated Encryption Construction 256-AEAD1
+
+5.2.1 Inputs and Outputs
+
+The inputs of the algorithm are given by below Table 5.2.1-1.
+
+Table 5.2.1-1: 256-AEAD1 Inputs
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter    Type                  Size (bits)                                                     Comment
+  ------------ --------------------- --------------------------------------------------------------- -------------------------------------------------------------------------------------------------------------------------------------------
+  KEY          { ℕ₈}³²               256                                                             Security key for authenticated encryption. Array of 32 bytes.
+
+  IV           { ℕ₈}¹⁶               128                                                             Initialisation Vector for authenticated encryption. Array of 16 bytes.
+
+  KSG          Keystream generator   N/A                                                             The underlying keystream generator used for encryption and authentication. This KSG adheres to the functionality described in Clause 4.4.
+
+  MODE         ℕ₁                    1                                                               0 = Encrypt, 1 = Decrypt
+
+  MAC_BYTES    ℕ₅                    5                                                               Length of output MAC in bytes; maximum supported value is 16. If MAC_BYTES == 0, then no authentication or verification is done.
+
+  AAD          { ℕ₈ }^(*)            Smallest multiple of 8, large enough to hold AAD_LENGTH bits.   Array of bytes containing additional authenticated data of length defined by the next parameter.
+
+  AAD_LENGTH   ℕ₃₂                   32                                                              The number of bits of additional authenticated data. This is the actual number of bits, without padding to full byte.
+
+  IBS          { ℕ₈ }^(*)            Smallest multiple of 8, large enough to hold S_LENGTH bits.     Input Bit Stream. Array of bytes containing the input bit stream of length defined by the next parameter.
+
+  S_LENGTH     ℕ₃₂                   32                                                              Stream Length. The number of bits of data to be encrypted/decrypted. This is the actual number of bits, without padding to the full byte.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+The outputs of the algorithm are given by below Table 5.2.1-2.
+
+Table 5.2.1-2: 256-AEAD1 Outputs
+
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type                 Size (bits)                                                   Comment
+  ----------- -------------------- ------------------------------------------------------------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  OBS         { ℕ₈ }*              Smallest multiple of 8, large enough to hold S_LENGTH bits.   Output Bit Stream. Array of bytes containing the output bit stream of length defined by the S_LENGTH parameter. Any additional bits in the last byte will be set to zero.
+
+  MAC         { ℕ₈ }^(MAC_BYTES)   8× MAC_BYTES                                                  Array of bytes containing the message authentication code.
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+5.2.2 Algorithmic description
+
+This algorithm utilises a generic stream cipher that conforms to the KSG Interface described in Clause 4.4 of the present document. The functions ClearBits, Mac5G.Update, and Mac5G.Final are described below in Clause 5.2.3.
+
+The 256-AEAD1 algorithm:
+
+1: procedure 256-AEAD1() := {
+
+2: KSG.Initialise(Key, IV)
+
+3: if MAC_BYTES > 0 then [H, Q, P] = KSG.GenerateHQP()
+
+4: if S_LENGTH > 0 then
+
+5: let S_BYTES : ℕ₃₂ = [ S_LENGTH / 8 ] # Number of bytes in IBS
+
+6: for I in 0…S_BYTES – 1 do
+
+7: if (i mod 16) == 0 then ks = KSG.Keystream()
+
+8: OBS[i] = IBS[i] ⊕ ks[i mod 16]
+
+9: endfor
+
+10: # Unused bits (towards lsb) in the last byte are set to zero.
+
+11: OBS[S_BYTES – 1] = ClearBits(OBS[S_BYTES – 1], S_LENGTH)
+
+12: endif
+
+13: if MAC_BYTES > 0 then
+
+14: let A : {ℕ₈}¹⁶ = {0}¹⁶ # A byte array of 16 bytes, all set to zero
+
+15: if AAD_LENGTH > 0 then
+
+16: let AAD_BYTES : ℕ₃₂ = [AAD_LENGTH / 8 ] # Number of bytes in AAD
+
+17: # Unused bits (towards lsb) in the last byte are set to zero.
+
+18: AAD[AAD_BYTES – 1] = ClearBits(AAD[AAD_BYTES – 1], AAD_LENGTH)
+
+19: A = Mac5G.Update(H, A, AAD, AAD_BYTES)
+
+20: endif
+
+21: if MODE == 0 then # Pick the stream containing the ciphertext
+
+22: A = Mac5G.Update(H, A, OBS, S_BYTES)
+
+23: else
+
+24: A = Mac5G.Update(H, A, IBS, S_BYTES)
+
+25: endif
+
+26: A = Mac5G.Final(Q, A, P, AAD_LENGTH, S_LENGTH)
+
+27: for i in 0…MAC_BYTES – 1 do # Truncate to the correct number of bytes
+
+28: MAC[i] = A[i]
+
+29: endfor
+
+30: endif
+
+31: }
+
+5.2.3 Functions used in 256-AEAD1
+
+5.2.3.1 General
+
+It is not mandatory to implement the functions in this clause as separate entities, and the APIs for these functions are not normative. For optimisation purposes, these functions can be incorporated into the main 256-AEAD1 procedure and/or implemented in more efficient ways.
+
+5.2.3.2 ClearBits
+
+ClearBits is a function to clear (set to zero) the correct number of bits in the last byte of the stream. If s is a multiple of 8, then all bits in the last byte are active.
+
+ClearBits: (ℕ₈,ℕ₃₂) → ℕ₈
+
+(𝑏, 𝑠) → ClearBits(𝑏, 𝑠)
+
+Where:
+
+1: function ClearBits(b,s) := {
+
+2: let bitpad : {ℕ₈}⁸ = {0xFF, 0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE}
+
+3: return b & bitpad[s mod 8]
+
+4: }
+
+5.2.3.3 pdot
+
+pdot is a function used to calculate (𝐴 × 𝐵 × x ⁻¹²⁸) mod (𝑥¹²⁸ + 𝑥¹²⁷ + 𝑥¹²⁶ + 𝑥¹²¹ + 1). The two byte-arrays, 𝐴 and 𝐵, are interpreted as elements in 𝐺𝐹(2¹²⁸). The general element of 𝐺𝐹(2¹²⁸) as 𝑐₁₂₇𝑥¹²⁷ + 𝑐₁₂₆𝑥¹²⁶ …𝑐₁𝑥¹ + 𝑐₀𝑥⁰ can be mapped such that the least significant bit of A[0] is mapped to the 𝑐₀ coefficient, and the most significant bit of A[0] is mapped to 𝑐₇. Continuing in this fashion such that the least significant bit of A[15] is mapped to 𝑐₁₂₀ and the most significant bit of A[15] is mapped to 𝑐₁₂₇. Then the product 𝐴 ∗ 𝐵 ∗ 𝑥 ⁻¹²⁸ is calculated and reduced modulo the generating polynomial 𝑥¹²⁸ + 𝑥¹²⁷ + 𝑥¹²⁶ + 𝑥¹²¹ + 1. The resulting element in 𝐺𝐹(2¹²⁸) is then interpreted as a byte-array 𝑅 using the same mapping; the coefficient of 𝑥¹²⁷ becomes the most significant bit in R[15] all the way down to the coefficient of 𝑥⁰ becoming the least significant bit of R[0]. In the following informative example implementation, it is assumed a word size of 64 bits, but other sizes are possible.
+
+pdot: ({ℕ₈}¹⁶, {ℕ₈}¹⁶) → {ℕ₈}¹⁶
+
+(A, B) → pdot(A, B)
+
+Where,
+
+1: function pdot(A,B) := {
+
+2: let 𝑟₀ ∶ ℕ₆₄ = 0, 𝑟, ∶ ℕ₆₄ = 0
+
+3: # 𝑏0 and 𝑏, are constructed from the B byte array in Little Endian style.
+
+4: # B[0] and B[8] become the least significant bytes of the two 64-bit words.
+
+5: let 𝑏₀: ℕ₆₄ = 𝐵[7] ∥ 𝐵[6] ∥ ⋯ ∥ 𝐵[0]
+
+6: let 𝑏₁: ℕ₆₄ = 𝐵[15] ∥ 𝐵[14] ∥ ⋯ ∥ 𝐵[8]
+
+7: for byte_idx in 0…15 do
+
+8: for bit_idx in 0…7 do
+
+9: if (A[byte_idx] ≫₈ bit_idx) & 0x1 == 1 then
+
+10: 𝑟₀ = 𝑟₀ ⊕𝑏₀
+
+11: 𝑟₁ = 𝑟₁ ⊕𝑏₁
+
+12: endif
+
+13: let 𝑟𝑒𝑑𝑐 ∶ {ℕ₆₄} = 0
+
+14: if (𝑟₀ & 1) == 1 then 𝑟𝑒𝑑𝑐 = 0𝑥𝐸100000000000000
+
+15: 𝑟₀ = (𝑟₀ ≫₆₄ 1)⊕(𝑟₁ ≪₆₄ 63)
+
+16: 𝑟₁ = (𝑟₁ ≫₆₄ 1)⊕𝑟𝑒𝑑𝑐
+
+17: endfor
+
+18: endfor
+
+19: # return a byte array R where R[0] is the least significant byte of 𝑟0
+
+20: # and R[15] is the most significant byte of 𝑟,
+
+21: let R : {ℕ_(𝟖)}^(𝟏𝟔) = ByteArray_LittleEndian( (𝑟₁ ≪₁₂₈ 64)⊕𝑟₀)
+
+22: return R
+
+23: }
+
+The implementation above can be explained as follows. Let the polynomial 𝐴(𝑥) be 𝑎₁₂₇𝑥¹²⁷ + 𝑎₁₂₆𝑥¹²⁶ …𝑎₁𝑥¹ + 𝑎₀𝑥⁰, let the polynomial 𝐵(𝑥) be 𝑏₁₂₇𝑥¹²⁷ + 𝑏₁₂₆𝑥¹²⁶ …𝑏₁𝑥¹ + 𝑏₀𝑥⁰, let the generating polynomial 𝐺(𝑥) be 𝑥¹²⁸ + 𝑥¹²⁷ + 𝑥¹²⁶ + 𝑥¹²¹ + 1 as mentioned above, and initialise the polynomial 𝑅(𝑥) = 𝑟₁₂₇𝑥¹²⁷ + 𝑟₁₂₆𝑥¹²⁶ …𝑟₁𝑥¹ + 𝑟₀𝑥⁰ to zero. Then the following should be done:
+
+for i in 0…127 do
+
+𝑅(𝑥) = 𝑅(𝑥) + 𝑎_(i) . 𝐵(𝑥)
+
+𝑅(𝑥) = 𝑥 ⁻¹ . 𝑅(𝑥) mod 𝐺(𝑥)
+
+endfor
+
+5.2.3.4 Mac5G.Update
+
+Function used to update the MAC value during computation. The current MAC value is stored in A and returned to the caller.
+
+Mac5G.Update: ({ℕ₈}¹⁶, {ℕ₈}¹⁶, {ℕ₈}^(∗), ℕ₃₂) → {ℕ₈}¹⁶
+
+(H, A, DATA, D_BYTES) → Mac5G.Update(H, A, DATA, D_BYTES)
+
+Where,
+
+1: function Mac5G.Update(H, A, DATA, D_BYTES) := {
+
+2: let didx : ℕ₃₂ = 0
+
+3: while D_BYTES >= 16 do
+
+4: for i in 0…15 do
+
+5: A[i] = A[i] ⊕ DATA[didx + i]
+
+6: endfor
+
+7: didx = didx + 16
+
+8: A = pdot(A, H)
+
+9: D_BYTES = D_BYTES–- 16
+
+10: endwhile
+
+11: if D_BYTES > 0 then # If D_BYTES is not a multiple of 16
+
+12: for i in 0…D_BYTES-1 do
+
+13: A[i] = A[i] ⊕ DATA[didx + i]
+
+14: endfor
+
+15: A = pdot(A, H)
+
+16: endif
+
+17: return A
+
+18: }
+
+5.2.3.5 Mac5G.Final
+
+This function is used to finalise the MAC computation by incorporating the length of the AAD bitstream and the encrypted bitstream, both given in number of bits. The final MAC value is masked with the P variable and returned untruncated.
+
+Mac5G.Final: ({ℕ₈}¹⁶, {ℕ₈}¹⁶, {ℕ₈}¹⁶, ℕ₃₂, ℕ₃₂) → {ℕ₈}¹⁶
+
+(Q, A, P, A_LEN, S_LEN)→ Mac5G.Final(Q, A, P, A_LEN, S_LEN)
+
+Where,
+
+1: function Mac5G.Final(Q, A, P, A_LEN, S_LEN) := {
+
+2: let mac_len : {ℕ₈}¹⁶ = {0}¹⁶ # A byte array of 16 bytes, all set to zero
+
+3: # Little endian encoding of the 4-bytes integers A_LEN and S_LEN into mac_len.
+
+4: mac_len[0…3] = {S_LEN₀, S_LEN₁, S_LEN₂, S_LEN₃ }
+
+5: mac_len[8..11] = {A_LEN₀, A_LEN₁, A_LEN₂, A_LEN₃}
+
+6: A = A ⊕ mac_len # XOR of all 16 elements
+
+7: A = pdot(A, Q)
+
+8: A = A ⊕ P # XOR of all 16 elements
+
+9: return A
+
+10: }
+
+6 Specification of the ZUC-256 Algorithm
+
+6.1 Introductory Information
+
+6.1.1 Introduction
+
+At its core, ZUC-256 is the same algorithm as ZUC-128 ([19]). The differences lie in the Key/IV-loading scheme and the initialisation. A new Key/IV-loading scheme has been described by the original ZUC designers in ([20], [21]). In this new KEY/IV-loading scheme, the number of initialisation rounds is 32+1, unchanged from ZUC-128. Due to recent attacks ([22], [23]) on the initialisation phase, 3GPP believes that this number of initialisation rounds provides too little security margin, and hence the present document defines as a parameter (𝑃) the number of initialisation rounds that shall be used. The original ZUC-256 scheme uses 𝑃 = 32, whereas 3GPP in the present document recommends 𝑃 = 48. It will be up to the receiving standardisation body to finally define the value of 𝑃 to best fit their purpose and acceptable security margins.
+
+6.1.2 Notation
+
+The notation and conventions on bit order are described in Clause 4.2 of the present document. In addition, the following two notations are used in the present document:
+
+  -----------------------------------------------------------------------
+  α_(H)           The 16 most significant bits of the integer α.
+  --------------- -------------------------------------------------------
+  α_(L)           The 16 least significant bits of the integer α.
+
+  -----------------------------------------------------------------------
+
+6.2 Algorithmic description of ZUC-256
+
+6.2.1 General
+
+As previously pointed out, the core of ZUC-256 is exactly the same as ZUC-128. Figure 6.2.1-1 gives an overview of the algorithm. The top layer is a linear feedback shift register (LFSR) of 16 stages, the middle layer is for bit-reorganization (BR), and the bottom layer is a nonlinear function F.
+
+[A diagram of a machine Description automatically generated]
+
+Figure 6.2.1-1: General structure of ZUC-256
+
+6.2.2 The linear feedback shift register (LFSR)
+
+The linear feedback shift register has sixteen 31-bit cells (𝑠₀, 𝑠₁,…, 𝑠₁₅). Each cell 𝑠_(𝑖), 0 ≤ 𝑖 ≤ 15, is restricted to take values from the following set:
+
+Ñ₃₁ = ℕ₃₁\{0} = {1,2,3,…, 2³² − 1}.
+
+The LFSR has 2 modes of operation: the initialisation mode and the working mode.
+
+In the initialisation mode, the LFSR receives a 31-bit input word 𝑢 ∈ ℕ₃₁, which is obtained by removing the least significant bit from the 32-bit output 𝑊 of the nonlinear function F, i.e., 𝑢 =𝑊 ≫₃₂ 1.
+
+More specifically, the initialisation mode works as follows:
+
+LFSR Update algorithm during initialisation:
+
+1: procedure LFSRWithInitialisationMode(𝑢 ∶ ℕ₃₁)
+
+2: 𝑣 = 2¹⁵𝑠₁₅ + 2¹⁷𝑠₁₃ + 2²¹𝑠₁₀ + 2²⁰𝑠₄ + (1 + 2⁸)𝑠₀ 𝑚𝑜𝑑 (2³¹ − 1)
+
+3: 𝑡𝑚𝑝 = (𝑣 + 𝑢) 𝑚𝑜𝑑 (2³¹ − 1)
+
+4: if 𝑡𝑚𝑝 == 0 then 𝑡𝑚𝑝 = 2³¹ − 1
+
+5: (𝑠₀, 𝑠₁,…, 𝑠₁₄, 𝑠₁₅) = (𝑠₁, 𝑠₂,…, 𝑠₁₅, 𝑡𝑚𝑝) # shift towards lower index
+
+In the working mode, the LFSR does not receive any input, and it works as follows:
+
+LFSR Update algorithm during work:
+
+1: procedure LFSRWithWorkMode()
+
+2: 𝑡𝑚𝑝 = 2¹⁵𝑠₁₅ + 2¹⁷𝑠₁₃ + 2²¹𝑠₁₀ + 2²⁰𝑠₄ + (1 + 2⁸)𝑠₀ 𝑚𝑜𝑑 (2³¹ − 1)
+
+3: if 𝑡𝑚𝑝 == 0 then 𝑡𝑚𝑝 = 2³¹ − 1
+
+4: (𝑠₀, 𝑠₁,…, 𝑠₁₄, 𝑠₁₅) = (𝑠₁, 𝑠₂,…, 𝑠₁₅, 𝑡𝑚𝑝) # shift towards lower index
+
+NOTE 1: Since the multiplication of a 31-bit integer 𝑠 by 2^(i) over 𝐺𝐹(2³¹ − 1) can be implemented by a cyclic shift of 𝑠 to the left by 𝑖 bits, only addition modulo 2³¹ − 1 is needed in step 2 of the above procedures. More precisely, step 2 of LFSRWithInitialisationMode can be implemented by:
+
+𝑣 = (𝑠₁₅ ⋘₃₁ 15) + (𝑠₁₃ ⋘₃₁ 17) + (𝑠₁₀ ⋘₃₁ 21) + (𝑠₄ ⋘₃₁ 20) + (𝑠₀ ⋘₃₁ 8)
+
++ 𝑠₀ 𝑚𝑜𝑑 (2³¹ − 1)
+
+and similarly for step 2 in LFSRWithWorkMode.
+
+NOTE 2: For two elements 𝑎, 𝑏 over GF(2³¹ − 1), the computation of 𝑣 = 𝑎 + 𝑏 𝑚𝑜𝑑 (2³¹ − 1) involves two steps: (1) compute 𝑣 = 𝑎 + 𝑏; and (2) if the carry bit is 1, then set 𝑣 = 𝑣 + 1. Alternatively (and better if the implementation should resist possible timing attacks): compute 𝑤 = 𝑎 + 𝑏 where 𝑤 ∈ ℕ₃₂( and (2) set 𝑣 = (least significant 31 bits of 𝑤) + (most significant bit of 𝑤).
+
+6.2.3 The bit-reorganisation
+
+The middle layer of the algorithm is the bit-reorganisation. It extracts 128 bits from the cells of the LFSR and forms four 32-bit words, where the first three words will be used by the nonlinear function F in the bottom layer, and the last word will be involved in producing the keystream 𝑧.
+
+Recall the notation 𝑠_(H) (and 𝑠_(L)) to denote the 16 most (least) significant bits of a cell 𝑠. The bitreorganisation forms four 32-bit words 𝑋₀, 𝑋₁, 𝑋₂, 𝑋₃ from the eight cells 𝑠₀, 𝑠₂, 𝑠₅, 𝑠₇, 𝑠₉, 𝑠₁₁, 𝑠₁₄, 𝑠₁₅ of the LFSR as follows:
+
+Bit-reorganisation
+
+1: procedure BitReorganisation()
+
+2: 𝑋₀ = 𝑠_(15H) ∥ 𝑠_(14L)
+
+3: 𝑋₁ = 𝑠_(11L) ∥ 𝑠_(9H)
+
+4: 𝑋₂ = 𝑠_(7L) ∥ 𝑠_(5H)
+
+5: 𝑋₃ = 𝑠_(2L) ∥ 𝑠_(0H)
+
+To be precise, the 16 most significant bits of 𝑠₁₅ ∈ Ñ₃₁ (which means bits 30…15) are concatenated with the 16 least significant bits of 𝑠₁₄ ∈ Ñ₃₁ to form the word 𝑋0 ∈ ℕ₃₂. The bits from 𝑠₁₅ form the most significant bits of 𝑋₀. The 16 least significant bits of 𝑠₁₁ ∈ Ñ₃₁ (bits 15…0) are concatenated with the 16 most significant bits (bits 30…15) of 𝑠₉ ∈ Ñ₃₁ to form the word 𝑋₁ ∈ ℕ₃₂. The bits from 𝑠₉ form the most significant bits of 𝑋₁. Similarly for 𝑋₂, 𝑋₃.
+
+6.2.4 The nonlinear function F
+
+The nonlinear function F has two 32-bit memory cells 𝑅$, 𝑅( ∈ ℕ'(. Let the inputs to F be 𝑋#, 𝑋$, 𝑋( ∈ ℕ'(, which come from the outputs of the bit-reorganisation layer. Then the function F outputs a word 𝑊 ∈ ℕ'(. The detailed process of F is as follow:
+
+The nonlinear function F:
+
+1: procedure F(𝑋₀, 𝑋₁, 𝑋₂:ℕ₃₂) → ℕ₃₂
+
+2: 𝑊 = (𝑋₀ ⊕𝑅₁)⊞₃₂ 𝑅₂
+
+3: 𝐴 = 𝑅₁ ⊞₃₂ 𝑋₁ # temporary variable A
+
+4: 𝐵 = 𝑅₂ ⊕𝑋₂ # temporary variable B
+
+5: 𝑅₁ = 𝑆(𝐿₁(𝐴_(L) ∥ 𝐵_(H))D
+
+6: 𝑅₂ = 𝑆(𝐿₂(𝐵_(L) ∥ 𝐴_(H))D
+
+7: return 𝑊
+
+where 𝑆 is a 32 × 32 SBox (see Clause 6.2.5), and 𝐿₁ and 𝐿₂ are linear transformations as defined in Clause 6.2.6.
+
+6.2.5 The SBox
+
+The 32 × 32 SBox 𝑆 is composed of 4 juxtaposed 8 × 8 SBoxes, i.e., 𝑆 = (𝑆₀, 𝑆₁, 𝑆₂, 𝑆₃), where 𝑆₀ = 𝑆₂ and 𝑆₁ = 𝑆₃. The definitions of 𝑆₀ and 𝑆₁ can be found in Figures 6.2.5-1 and 6.2.5-2 respectively.
+
+Let 𝑥 ∈ ℕ₈ be an input to 𝑆₀ (or 𝑆₁). Write 𝑥 into two hexadecimal digits as 𝑥 = ℎ ∥ 𝑙, then the entry at the intersection of the ℎ-th row and the 𝑙-th column in Figure 6.2.5-1 (or Figure 6.2.5-2) is the output of 𝑆₀ (or 𝑆₁). For example, 𝑆₀(0𝑥12) = 0𝑥𝐹9 and 𝑆₁(0𝑥34) = 0𝑥𝐶0.
+
+For the full 32-bit input, split the input 𝑋 and output 𝑌 into bytes
+
+𝑋 = (𝑥₀, 𝑥₁, 𝑥₂, 𝑥₃), 𝑥_(i) ∈ ℕ,
+
+𝑌 = (𝑦₀, 𝑦₁, 𝑦₂, 𝑦₃), 𝑦_(i) ∈ ℕ,
+
+The juxtaposed SBox is then computed as 𝑦_(i) = 𝑆_(i)(𝑥_(i)), 𝑖 = 0…3.
+
+For example, let 𝑋 = 0𝑥12345678, then calculate the output as:
+
+𝑌 = 𝑆(0𝑥12345678) = 𝑆₀(0𝑥12) ∥ 𝑆₁(0𝑥34) ∥ 𝑆₂(0𝑥56) ∥ 𝑆₃(0𝑥78) = 0𝑥𝐹9𝐶05𝐴4𝐸.
+
+[A grid of numbers and letters Description automatically generated]
+
+Figure 6.2.5-1: The SBox S₀
+
+[A grid of numbers and letters Description automatically generated]
+
+Figure 6.2.5-2: The SBox S₁
+
+6.2.6 The linear transforms L₁ and L₂
+
+Both 𝐿₁ and 𝐿₂ are linear transformations ℕ₃₂ → ℕ₃₂ and defined according to:
+
+𝐿₁(𝑋) = 𝑋⊕(𝑋⋘₃₂ 2)⊕(𝑋⋘₃₂ 10)⊕(𝑋⋘₃₂ 18)⊕(𝑋⋘₃₂ 24)
+
+𝐿₂(𝑋) = 𝑋⊕(𝑋⋘₃₂ 8)⊕(𝑋⋘₃₂ 14)⊕(𝑋⋘₃₂ 22)⊕(𝑋⋘₃₂ 30)
+
+6.2.7 The Key/IV-loading
+
+The key and IV loading will expand a 256-bit key and 128-bit IV into the 16 cells of 31-bit integers as the initial state of the LFSR. Let the byte array 𝐾: {N₈}³² be the byte array of key material and let 𝐼𝑉: {ℕ₈}³² be the byte array of the initialisation vector. The initialisation also utilises an array of 7-bit constants, called 𝑑_(i):ℕ₇ , 0 ≤ 𝑖 ≤ 15. The values of 𝑑& are the binary expansion of the constant 𝜋 including the integer part.
+
+𝑑0 = 1100100 (0𝑥64)
+
+𝑑1 = 1000011 (0𝑥43)
+
+𝑑2 = 1111011 (0𝑥7𝑏)
+
+𝑑3 = 0101010 (0𝑥2𝑎)
+
+𝑑4 = 0010001 (0𝑥11)
+
+𝑑5 = 0000101 (0𝑥05)
+
+𝑑6 = 1010001 (0𝑥51)
+
+𝑑7 = 1000010 (0𝑥42)
+
+𝑑8 = 0011010 (0𝑥1𝑎)
+
+𝑑9 = 0110001 (0𝑥31)
+
+𝑑10 = 0011000 (0𝑥18)
+
+𝑑11 = 1100110 (0𝑥66)
+
+𝑑12 = 0010100 (0𝑥14)
+
+𝑑13 = 0101110 (0𝑥2𝑒)
+
+𝑑14 = 0000001 (0𝑥01)
+
+𝑑15 = 1011100 (0𝑥5𝑐)
+
+The 31-bit cells in the LFSR are now initialised according to:
+
+𝑠₀ = 𝐾₀ ∥ 𝑑₀ ∥ 𝐾₁₆ ∥ 𝐾₂₄
+
+𝑠₁ = 𝐾₁ ∥ 𝑑₁ ∥ 𝐾₁₇ ∥ 𝐾₂₅
+
+𝑠₂ = 𝐾₂ ∥ 𝑑₂ ∥ 𝐾₁₈ ∥ 𝐾₂₆
+
+𝑠₃ = 𝐾₃ ∥ 𝑑₃ ∥ 𝐾₁₉ ∥ 𝐾₂₇
+
+𝑠₄ = 𝐾₄ ∥ 𝑑₄ ∥ 𝐾₂₀ ∥ 𝐾₂₈
+
+𝑠₅ = 𝐾₅ ∥ 𝑑₅ ∥ 𝐾₂₁ ∥ 𝐾₂₉
+
+𝑠₆ = 𝐾₆ ∥ 𝑑₆ ∥ 𝐾₂₂ ∥ 𝐾₃₀
+
+𝑠₇ = 𝐾₇ ∥ 𝑑₇ ∥ 𝐼𝑉₀ ∥ 𝐼𝑉₈
+
+𝑠₈ = 𝐾₈ ∥ 𝑑₈ ∥ 𝐼𝑉₁ ∥ 𝐼𝑉₉
+
+𝑠₉ = 𝐾₉ ∥ 𝑑₉ ∥ 𝐼𝑉₂ ∥ 𝐼𝑉₁₀
+
+𝑠₁₀ = 𝐾₁₀ ∥ 𝑑₁₀ ∥ 𝐼𝑉₃ ∥ 𝐼𝑉₁₁
+
+𝑠₁₁ = 𝐾₁₁ ∥ 𝑑₁₁ ∥ 𝐼𝑉₄ ∥ 𝐼𝑉₁₂
+
+𝑠₁₂ = 𝐾₁₂ ∥ 𝑑₁₂ ∥ 𝐼𝑉₅ ∥ 𝐼𝑉₁₃
+
+𝑠₁₃ = 𝐾₁₃ ∥ 𝑑₁₃ ∥ 𝐼𝑉₆ ∥ 𝐼𝑉₁₄
+
+𝑠₁₄ = 𝐾₁₄ ∥ 𝑑₁₄ ∥ 𝐼𝑉₇ ∥ 𝐼𝑉₁₅
+
+𝑠₁₅ = 𝐾₁₅ ∥ 𝑑₁₅ ∥ 𝐾₂₃ ∥ 𝐾₃₁
+
+where 𝐾₀ becomes the most significant bits of 𝑠₀, and so on.
+
+6.2.8 The operation of ZUC-256
+
+Two procedures of ZUC-256 can be specified, namely the initialisation procedure and the key generation procedure. The initialisation procedure takes the two byte arrays KEY and IV and runs a parametrised number P of initialisation rounds.
+
+ZUC-256 Initialisation:
+
+1: procedure ZUC256.Initialisation(𝐾𝐸𝑌 ∶ {ℕ₈}³², 𝐼𝑉 ∶ {ℕ₈}¹⁶)
+
+2: Map 𝐾𝐸𝑌and 𝐼𝑉 into the LFSR according to Clause 6.2.7.
+
+3: 𝑅₁ = 0, 𝑅₂ = 0 # Set registers to zero
+
+4: for r in 1…𝑃 do # P is the number of initialisation rounds.
+
+3GPP recommends P=48.
+
+5: BitReorganisation () # See Clause 6.2.3
+
+6: 𝑊 ∶ ℕ₃₂ = 𝐹(𝑋₀, 𝑋₁, 𝑋₂) # See Clause 6.2.4
+
+7: LFSRWithInitialisationMode (𝑊 ≫₃₂ 1) # See Clause 6.2.5
+
+8: endfor
+
+9: BitReorganisation()
+
+10: 𝐹(𝑋₀, 𝑋₁, 𝑋₂) # Discard output from F
+
+11: LFSRWithWorkMode()
+
+For the working stage, ZUC-256 will produce a word 𝑍 ∈ ℕ₃₂ as keystream output.
+
+ZUC-256 Keystream generation:
+
+1: procedure ZUC256.Keystream() → {ℕ₈}⁴
+
+2: BitReorganisation()
+
+3: 𝑧 ∶ ℕ₃₂ = 𝐹(𝑋₀, 𝑋₁, 𝑋₂)⊕𝑋₃
+
+4: LFSRWithWorkMode()
+
+𝑍 = {𝑧₃, 𝑧₂, 𝑧₁, 𝑧₀} where 𝑧 = (𝑧₃, 𝑧₂, 𝑧₁, 𝑧₀) # Big Endian conversion ℕ₃₂ → {ℕ₈}⁴
+
+5: return keystream array 𝑍
+
+In summary, now the complete ZUC-256 cipher operational procedure can be described as:
+
+ZUC-256 Operation:
+
+1: procedure ZUC256(𝐾𝐸𝑌 ∶ {ℕ₈}³², 𝐼𝑉12 ∶ {ℕ₈}¹²) → {ℕ₈}^(4∗)
+
+2: ZUC256.Initialisation(KEY, IV12)
+
+3: while more keystream symbols needed do
+
+4: Output ZUC256.Keystream()
+
+The length of the output array is of course dependent on the number of needed keystream symbols, but will be a multiple of 4 bytes.
+
+6.3 KeyStream Generator (KSG) Interface
+
+6.3.0 General
+
+To be able to use ZUC-256 in the 256-AEAD1 algorithm (see Document 2 of this specification), it needs to conform to the KSG interface. The KSG interface is described in Document 1. This section describes how to implement the three procedures using ZUC-256.
+
+6.3.1 ZUC256.Initialise
+
+This interface is implemented as a single call to the Initialisation procedure described in Clause 6.2.8.
+
+ZUC256.Initialise interface implementation:
+
+1: procedure Initialise(KEY, IV)
+
+2: Initialisation(KEY, IV)
+
+6.3.2 ZUC256.GenerateHQP
+
+This interface is implemented as twelve consecutive calls to generate new keystream symbols.
+
+ZUC256.GenerateHQP interface implementation:
+
+1: procedure GenerateHQP()
+
+2: ℎ⁰ = Keystream(), # Each output ℎ^(i) ∈ {ℕ₈}⁴ is a 4-byte array.
+
+ℎ¹ = Keystream(),
+
+ℎ² = Keystream(),
+
+ℎ³ = Keystream()
+
+3: H = {ℎ⁰, ℎ¹, ℎ², ℎ³}
+
+= {ℎ⁰[0], ℎ⁰[1], ℎ⁰[2], ℎ⁰[3], ℎ¹[0],…, ℎ³[3] } # Concatenate the 4-byte arrays into a 16-byte array
+
+4: 𝑞⁰ = Keystream(),
+
+𝑞¹ = Keystream(),
+
+𝑞² = Keystream(),
+
+𝑞³ = Keystream()
+
+5: Q = {𝑞⁰, 𝑞¹, 𝑞², 𝑞³}
+
+6: 𝑝⁰ = Keystream(),
+
+𝑝¹ = Keystream(),
+
+𝑝² = Keystream(),
+
+𝑝³ = Keystream()
+
+7: P = {𝑝⁰, 𝑝¹, 𝑝², 𝑝³}
+
+8: return (H, Q, P)
+
+6.3.3 ZUC256.Keystream
+
+This interface is simply executing the keystream generation procedure four times to produce a 128-bit
+
+output.
+
+ZUC256.Keystream interface implementation:
+
+1: procedure Keystream()
+
+2: 𝑧⁰ = Keystream(),
+
+𝑧¹ = Keystream(),
+
+𝑧² = Keystream(),
+
+𝑧³ = Keystream()
+
+3: Z = {𝑧⁰, 𝑧¹, 𝑧², 𝑧³}
+
+4: return Z
+
+7 Specification of the 256-NxA4/5/6 Algorithms
+
+7.1 Confidentiality Algorithms 256-NEA4/5/6 
+
+7.1.1 Inputs and Outputs
+
+The confidentiality algorithms 256-NEA4/5/6 is a stream cipher that encrypts/decrypts blocks of data using the confidentiality key CK. The message shall be between 1 and (2³² − 1) bits in length.
+
+The inputs to the algorithm are given by below Table 7.1.1-1.
+
+Table 7.1.1-1: 256-NEA4/5/6 Inputs
+
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type         Size (bits)                                                 Comment
+  ----------- ------------ ----------------------------------------------------------- ----------------------------------------------------------------------------------------------------------------
+  COUNT-C     ℕ₃₂          32                                                          Frame dependent input counter.
+
+  BEARER      ℕ₅           5                                                           Bearer identity.
+
+  DIRECTION   ℕ₁           1                                                           Direction of transmission.
+
+  EXTRA_IV    { ℕ₈}⁶       48                                                          Extra entropy for future use.
+
+  CK          { ℕ₈}³²      256                                                         Confidentiality key. Array of 32 bytes.
+
+  LENGTH      ℕ₃₂          32                                                          The number of bits to be encrypted/decrypted. This is the actual number of bits, without padding to full byte.
+
+  IBS         { ℕ₈ }^(*)   Smallest multiple of 8, large enough to hold LENGTH bits.   Input Bit Stream. Array of bytes containing the input bit stream of length defined by the LENGTH parameter.
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+The outputs of the algorithm are given by below Table 7.1.1-2.
+
+Table 7.1.1-2: 256-NEA4/5/6 Outputs
+
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type       Size (bits)                                                 Comment
+  ----------- ---------- ----------------------------------------------------------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  OBS         { ℕ₈ }*    Smallest multiple of 8, large enough to hold LENGTH bits.   Output Bit Stream. Array of bytes containing the output bit stream of length defined by the LENGTH parameter. Any additional bits in the last byte will be set to zero.
+
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+7.1.2 Components and Architecture
+
+For 256-NEA6, the keystream generator is the ZUC-256, and for 256-NEA4 the keystream generator is Snow 5G described in ([6]) and for 256-NEA5, the keystream generator is the AES-256 described in ([5]). In all three cases, the operational procedure is based on the 256-AEAD1 algorithm specified in Clause 5 of the present document.
+
+7.1.3 Input Variable Mapping
+
+In this clause it will be defined how the input variables to the 256-AEAD1 algorithm are constructed from the input variables of 256-NEA4/5/6 and other constants.
+
+The mapping of the input variables is given by Table 7.1.3-1.
+
+Table 7.1.3-1: Input variables mapping
+
++--------------------------+-----------------------------+------------------------+
+| 256-AEAD1 Input Variable | 256-NEA4/5/6 Input Variable | Other Constant         |
++==========================+=============================+========================+
+| KEY                      | CK                          |                        |
++--------------------------+-----------------------------+------------------------+
+| IV                       |                             | See Clause 7.1.5       |
++--------------------------+-----------------------------+------------------------+
+| KSG                      |                             | = Snow 5G for 256-NEA4 |
+|                          |                             | = AES-256 for 256-NEA5 |
+|                          |                             |                        |
+|                          |                             | = ZUC-256 for 256-NEA6 |
++--------------------------+-----------------------------+------------------------+
+| MODE                     |                             | = 0                    |
++--------------------------+-----------------------------+------------------------+
+| MAC_BYTES                |                             | = 0                    |
++--------------------------+-----------------------------+------------------------+
+| AAD                      |                             | = { } The empty array  |
++--------------------------+-----------------------------+------------------------+
+| AAD_LENGTH               |                             | = 0                    |
++--------------------------+-----------------------------+------------------------+
+| IBS                      | IBS                         |                        |
++--------------------------+-----------------------------+------------------------+
+| S_LENGTH                 | LENGTH                      |                        |
++--------------------------+-----------------------------+------------------------+
+
+7.1.4 Output Variable Mapping
+
+In this clause it will be defined how the output of the 256-AEAD1 algorithm is mapped to the output of the 256-NEA4/5/6 algorithm.
+
+The mapping of the output variables is given by Table 7.1.4-1.
+
+Table 7.1.4-1: Output variables mapping
+
+  ----------------------------------------------------------------------------------
+  256-AEAD1 Output Variable   256-NEA4/5/6 Output Variable   Other Constant
+  --------------------------- ------------------------------ -----------------------
+  OBS                         OBS                            
+
+  ----------------------------------------------------------------------------------
+
+7.1.5 The IV Construction for the 256-NEA4/5/6
+
+To construct the IV input variable to 256-AEAD1 the following values are used according to the Make_5GIV mapping defined in Clause 4.3.2 of the present document.
+
+The Make_5GIV variables mapping for 256-NEA4/5/6 is given by Table 7.1.5-1.
+
+Table 7.1.5-1: The Make_5GIV Variables mapping for 256-NEA4/5/6
+
+  --------------------------------------------------------------------------------
+  Make_5GIV Input Variable   256-NEA4/5/6 Input Variable   Other Constant
+  -------------------------- ----------------------------- -----------------------
+  COUNT                      COUNT-C                       
+
+  BEARER                     BEARER                        
+
+  DIRECTION                  DIRECTION                     
+
+  MAC_BYTES                                                = 0
+
+  CF                                                       = 0
+
+  LK                                                       = 0
+
+  AI                                                       = 0
+
+  EXTRA_IV                   EXTRA_IV                      
+  --------------------------------------------------------------------------------
+
+7.2 Integrity Algorithms 256-NIA4/5/6 
+
+7.2.0 General
+
+The integrity algorithms 256-NIA4/5/6 compute a Message Authentication Code (MAC) on an input message under an integrity key IK. The message shall be between 1 and (2³² -1) bits in length.
+
+7.2.1 Inputs and Outputs
+
+The inputs to the algorithm are given in Table 7.2.1-1.
+
+Table 7.2.1-1: 256-NIA4/5/6 Inputs
+
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type         Size (bits)                                                 Comment
+  ----------- ------------ ----------------------------------------------------------- ----------------------------------------------------------------------------------------------------------------
+  COUNT-I     ℕ₃₂          32                                                          Frame dependent input counter.
+
+  BEARER      ℕ₅           5                                                           Bearer identity.
+
+  DIRECTION   ℕ₁           1                                                           Direction of transmission.
+
+  EXTRA_IV    { ℕ₈}⁶       48                                                          Extra entropy for future use.
+
+  IK          { ℕ₈}³²      256                                                         Integrity key. Array of 32 bytes.
+
+  LENGTH      ℕ₃₂          32                                                          The number of bits to be encrypted/decrypted. This is the actual number of bits, without padding to full byte.
+
+  MESSAGE     { ℕ₈ }^(*)   Smallest multiple of 8, large enough to hold LENGTH bits.   Array of bytes containing the input bit stream of length defined by the LENGTH parameter.
+
+  MAC_BYTES   ℕ₅           5                                                           Length of the MAC tag in bytes. Allowed values are 4…16 inclusive.
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+The outputs of the algorithm are given by below Table 7.2.1-2.
+
+Table 7.2.1-2: 256-NIA4/5/6 Outputs
+
+  ----------------------------------------------------------------------------------------
+  Parameter   Type                 Size (bits)    Comment
+  ----------- -------------------- -------------- ----------------------------------------
+  MAC-I       { ℕ₈ }^(MAC_BYTES)   8× MAC_BYTES   Array of bytes containing the MAC tag.
+
+  ----------------------------------------------------------------------------------------
+
+7.2.2 Components and Architecture
+
+For the 256-NIA6, the underlying keystream generator is ZUC-256 described in Clause 6, and for 256-NIA4 the underlying keystream generator is Snow 5G described in ([6]) and for 256-NIA5, the keystream generator is the AES-256 described in ([5]). In all three cases, the operational procedure is based on the 256-AEAD1 algorithm specified in Clause 5 of the present document.
+
+7.2.3 Input Variable Mapping
+
+The mapping of the input variables is given by Table 7.2.3-1.
+
+Table 7.2.3-1: 256-NIA4/5/6 Inputs
+
+  --------------------------------------------------------------------------------
+  256-AEAD3 Input Variable   256-NIA4/5/6 Input Variable   Other Constant
+  -------------------------- ----------------------------- -----------------------
+  KEY                        IK                            
+
+  IV                                                       See Clause 7.2.5
+
+  MODE                                                     = 0
+
+  MAC_BYTES                  MAC_BYTES                     
+
+  AAD                        MESSAGE                       
+
+  AAD_LENGTH                 LENGTH                        
+
+  IBS                                                      = { } The empty array
+
+  S_LENGTH                                                 = 0
+  --------------------------------------------------------------------------------
+
+7.2.4 Output Variable Mapping
+
+In this clause it will be defined how the output of the 256-AEAD3 algorithm is mapped to the output of the 256-NEA4/5/6 algorithm.
+
+The mapping of the output variables is given by Table 7.2.4-1.
+
+Table 7.2.4-1: Output variables mapping
+
+  ----------------------------------------------------------------------------------
+  256-AEAD1 Output Variable   256-NIA4/5/6 Output Variable   Other Constant
+  --------------------------- ------------------------------ -----------------------
+  MAC                         MAC-I                          
+
+  ----------------------------------------------------------------------------------
+
+Note: The current PDCP ([7]) specifies that the integrity check should be done on the plaintext message. To achieve that the MESSAGE should be fed to the 256-AEDA3 algorithm as pure Additional Authenticated Data (AAD). The S_LENGTH is equal to zero so no encryption / decryption will be performed.
+
+7.2.5 The IV Construction for the 256-NIA4/5/6
+
+To construct the IV input variable to 256-AEAD1, the following values according to the Make_5GIV mapping defined in Clause 4.3.2 shall be used.
+
+The Make_5GIV variables mapping for 256-NIA4/5/6 is given by Table 7.2.5-1.
+
+Table 7.2.5-1: The Make_5GIV Variables mapping for 256-NIA4/5/6
+
+  --------------------------------------------------------------------------------
+  Make_5GIV Input Variable   256-NIA4/5/6 Input Variable   Other Constant
+  -------------------------- ----------------------------- -----------------------
+  COUNT                      COUNT-I                       
+
+  BEARER                     BEARER                        
+
+  DIRECTION                  DIRECTION                     
+
+  MAC_BYTES                  MAC_BYTES                     
+
+  CF                                                       = 0
+
+  LK                                                       = 0
+
+  AI                                                       = 0
+
+  EXTRA_IV                   EXTRA_IV                      
+  --------------------------------------------------------------------------------
+
+7.3 Combined Algorithms 256-NCA4/5/6
+
+7.3.0 General
+
+The algorithms 256-NCA4/5/6 combine ciphering and integrity protection using a single key. They also allow for additional authenticated data (AAD) which is not confidentiality protected, but only integrity protected. The additional authenticated data shall be between 0 and (2³²-1) bit in length, and the message that will be both confidentiality and integrity protected shall be between 0 and (2³²-1) bit in length.
+
+Note: When decrypting, this algorithm will return the calculated MAC as well as the decrypted plaintext. The caller verifies the calculated MAC against the received MAC before processing the plaintext in any way. If the calculated MAC does not agree with the received MAC, the plaintext is discarded without further processing.
+
+7.3.1 Inputs and Outputs
+
+The inputs to the algorithm are given in Table 7.3.1-1.
+
+Table 7.3.1-1: 256-NCA4/5/6 Inputs
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter    Type         Size (bits)                                                     Comment
+  ------------ ------------ --------------------------------------------------------------- ----------------------------------------------------------------------------------------------------------------------------------
+  COUNT        ℕ₃₂          32                                                              Frame dependent input counter.
+
+  BEARER       ℕ₅           5                                                               Bearer identity.
+
+  DIRECTION    ℕ₁           1                                                               Direction of transmission.
+
+  EXTRA_IV     { ℕ₈}⁶       48                                                              Extra entropy for the IV.
+
+  KEY          { ℕ₈}³²      256                                                             Security key for authenticated encryption. Array of 32 bytes.
+
+  MODE         ℕ₁           1                                                               = 0 for encryption
+                                                                                            = 1 for decryption
+
+  IBS          { ℕ₈ }^(*)   Smallest multiple of 8, large enough to hold S_LENGTH bits.     Input Bit Stream. Array of bytes containing the input bit stream of length defined by the S_LENGTH parameter.
+
+  S_LENGTH     ℕ₃₂          32                                                              The number of bits to be encrypted/decrypted and authenticated. This is the actual number of bits, without padding to full byte.
+
+  MAC_BYTES    ℕ₅           5                                                               Length of the MAC tag in bytes. Allowed values are 4…16 inclusive.
+
+  AAD          { ℕ₈ }^(*)   Smallest multiple of 8, large enough to hold AAD_LENGTH bits.   Array of bytes containing additional authenticated data of length defined by the next parameter.
+
+  AAD_LENGTH   ℕ₃₂          32                                                              The number of bits of additional authenticated data. This is the actual number of bits, without padding to full byte.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+The outputs of the algorithm are given by below Table 7.3.1-2.
+
+Table 7.3.1-2: 256-NCA4/5/6 Outputs
+
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Parameter   Type                 Size (bits)                                                   Comment
+  ----------- -------------------- ------------------------------------------------------------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  OBS         { ℕ₈ }^(*)           Smallest multiple of 8, large enough to hold S_LENGTH bits.   Output Bit Stream. Array of bytes containing the output bit stream of length defined by the S_LENGTH parameter. Any additional bits in the last byte will be set to zero.
+
+  MAC         { ℕ₈ }^(MAC_BYTES)   8× MAC_BYTES                                                  Array of bytes containing the MAC tag.
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+7.3.2 Components and Architecture
+
+For the 256-NCA6, the underlaying keystream generator is ZUC-256, and for 256-NCA4 the underlaying keystream generator is Snow 5G described in [6] and for 256-NCA5, the keystream generator is the AES-256 described in ([5]). In all three cases, the operational procedure is based on the 256-AEAD1 algorithm specified in Clause 5 of the present document.
+
+7.3.3 Input Variable Mapping
+
+The inputs to the 256-AEAD1 algorithm are practically identical to the input variables of 256-NCA4/5/6. The only part missing is the specification of the IV value, whose construction is defined in Clause 7.3.5.
+
+7.3.4 Output Variable Mapping
+
+The output of 256-AEAD3 algorithm is identical to the output of 256-NCA3.
+
+7.3.5 The IV Construction for the 256-NCA3
+
+To construct the IV input variable to 256-AEAD1, use the following values according to the Make_5GIV mapping defined in Clause 4.3.2.
+
+The Make_5GIV variables mapping for 256-NCA4/5/6 is given by Table 7.3.5-1.
+
+Table 7.3.5-1: The Make_5GIV Variables mapping for 256-NCA4/5/6
+
+  --------------------------------------------------------------------------------
+  Make_5GIV Input Variable   256-NCA4/5/6 Input Variable   Other Constant
+  -------------------------- ----------------------------- -----------------------
+  COUNT                      COUNT                         
+
+  BEARER                     BEARER                        
+
+  DIRECTION                  DIRECTION                     
+
+  MAC_BYTES                  MAC_BYTES                     
+
+  CF                                                       = 1
+
+  LK                                                       = 0
+
+  AI                                                       = 0
+
+  EXTRA_IV                   EXTRA_IV                      
+  --------------------------------------------------------------------------------
+
+Annex A (informative): Reference Code in C/C++
+
+This clause provides informative reference implementations of all algorithms needed to implement the air interface encryption and integrity functions 256-NEA6, 256-NIA6, and 256-NCA6.
+
+#define ZUC256_INIT_ROUND_CLOCKS 48
+
+// ------------------------------------------------------------------------------
+
+// Common components
+
+// ------------------------------------------------------------------------------
+
+#include <stdint.h>
+
+#include <stdlib.h>
+
+#include <memory.h>
+
+typedef uint8_t u8;
+
+typedef uint16_t u16;
+
+typedef uint32_t u32;
+
+typedef uint64_t u64;
+
+// Endianness tools
+
+u64 EndianTool(int n, char isBigEndian, const u8 * x)
+
+{
+
+u64 r = 0;
+
+for (int i = 0; i < n; i++)
+
+r = (r << 8) | (u64)(isBigEndian ? x[i] : x[n - 1 - i]);
+
+return r;
+
+}
+
+void EndianTool(int n, char isBigEndian, u8 * x, u64 v)
+
+{
+
+for (int i = 0; i < n; i++, v >>= 8)
+
+if (isBigEndian)
+
+x[n - 1 - i] = (u8)v;
+
+else
+
+x[i] = (u8)v;
+
+}
+
+u16 LittleEndian16(const u8 * x) { return (u16)EndianTool(2, 0, x); }
+
+u32 LittleEndian32(const u8 * x) { return (u32)EndianTool(4, 0, x); }
+
+u64 LittleEndian64(const u8 * x) { return (u64)EndianTool(8, 0, x); }
+
+u16 BigEndian16(const u8 * x) { return (u16)EndianTool(2, 1, x); }
+
+u32 BigEndian32(const u8 * x) { return (u32)EndianTool(4, 1, x); }
+
+u64 BigEndian64(const u8 * x) { return (u64)EndianTool(8, 1, x); }
+
+void LittleEndian16(u8 * x, u16 v) { EndianTool(2, 0, x, v); }
+
+void LittleEndian32(u8 * x, u32 v) { EndianTool(4, 0, x, v); }
+
+void LittleEndian64(u8 * x, u64 v) { EndianTool(8, 0, x, v); }
+
+void BigEndian16(u8 * x, u16 v) { EndianTool(2, 1, x, v); }
+
+void BigEndian32(u8 * x, u32 v) { EndianTool(4, 1, x, v); }
+
+void BigEndian64(u8 * x, u64 v) { EndianTool(8, 1, x, v); }
+
+// Exclusive-OR over lanes of 128 bits
+
+void xor128(void * dst, const void * in1, const void * in2)
+
+{
+
+((u64*)(dst))[0] = ((u64*)(in1))[0] ^ ((u64*)(in2))[0];
+
+((u64*)(dst))[1] = ((u64*)(in1))[1] ^ ((u64*)(in2))[1];
+
+}
+
+// Arithmetical 16-bit additions over lanes of 128 bits
+
+void add128(u8 * dst, const u8 * in1, const u8 * in2)
+
+{
+
+for (int i = 0; i < 8; i++)
+
+{ u16 a = LittleEndian16(in1 + 2 * i);
+
+u16 b = LittleEndian16(in2 + 2 * i);
+
+LittleEndian16(dst + 2 * i, (u16)(a + b));
+
+}
+
+}
+
+// ending masks for unaligned data bits
+
+static const u8 bitPad[8] = { 0xff, 0x80, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc, 0xfe };
+
+// Common IV configuration
+
+void MAKE_FULL_KEY_IV(
+
+u8 fkey[32], /* out, 32-byte full key = KEY padded with zeroes if KEY_BYTES < 32 */
+
+u8 fiv[16], /* out, 16-byte full iv = IV12 padded with zeroes */
+
+u8 * KEY, /* [16/32] bytes */
+
+u8 KEY_BYTES, /* key size, also determines the flag LK */
+
+u32 COUNT, /* 32 bits */
+
+u8 BEARER, /* 5 bits */
+
+u8 DIRECTION, /* 1 bit */
+
+u8 * EXTRA_IV, /* [0/6] bytes, 48 bits, extra entropy for IV */
+
+u8 MAC_BYTES, /* 5 bits, size of MAC tag, [0..16] */
+
+u8 CF /* 1 bit, Combined mode flag */
+
+)
+
+{
+
+// prepare full IV
+
+// bit 0 of iv[0] is reserved for AI flag, set to 0 by default
+
+fiv[0] = ((KEY_BYTES == 16) << 1) | (CF << 2) | (MAC_BYTES << 3);
+
+fiv[1] = DIRECTION | (BEARER << 1);
+
+if (EXTRA_IV)
+
+memcpy(fiv + 2, EXTRA_IV, 6);
+
+else
+
+memset(fiv + 2, 0, 6);
+
+BigEndian32(fiv + 8, COUNT);
+
+memset(fiv + 12, 0, 4);
+
+// prepare full key
+
+memcpy(fkey, KEY, KEY_BYTES);
+
+memset(fkey + KEY_BYTES, 0, 32 - KEY_BYTES);
+
+}
+
+// ------------------------------------------------------------------------------
+
+// Mac5G: Truncatable MAC construction, based on POLYVAL
+
+// POLYVAL-dot returns (A * B * x^-128) mod (x ^ 128 + x ^ 127 + x ^ 126 + x ^ 121 + 1)
+
+// ------------------------------------------------------------------------------
+
+void polyval_dot(u8 * R, const u8 * A, const u8 * B)
+
+{
+
+u64 r0 = 0, r1 = 0, u0 = LittleEndian64(B), u1 = LittleEndian64(B + 8);
+
+for (int i = 0; i < 16; i++)
+
+for (int j = 0; j < 8; j++)
+
+{
+
+// multiplication & addition
+
+if ((A[i] >> j) & 1)
+
+r0 ^= u0, r1 ^= u1;
+
+// shift & reduction
+
+u64 redc = (r0 & 1ULL) ? 0xe100000000000000ULL : 0ULL;
+
+r0 = (r0 >> 1) | (r1 << 63);
+
+r1 = (r1 >> 1) ^ redc;
+
+}
+
+LittleEndian64(R, r0);
+
+LittleEndian64(R + 8, r1);
+
+}
+
+// computes A' = (A + data) * H
+
+void Mac5G_update(const u8 * H, u8 * A, const u8 * data, u64 length_bits)
+
+{
+
+u8 tmp[16];
+
+for (; length_bits >= 128; length_bits -= 128, data += 16)
+
+{
+
+xor128(A, A, data);
+
+polyval_dot(A, A, H);
+
+}
+
+if (!length_bits) return;
+
+// unaligned bytes and bits are padded with zeroes
+
+memset(tmp, 0, 16);
+
+int full_bytes = (int)((length_bits + 7ULL) >> 3);
+
+int unaligned_bits = (int)(length_bits & 7ULL);
+
+memcpy(tmp, data, full_bytes);
+
+tmp[full_bytes - 1] &= bitPad[unaligned_bits];
+
+xor128(A, A, tmp);
+
+polyval_dot(A, A, H);
+
+}
+
+// A = (A + LENs) * Q + P, where Q is the secure truncation key
+
+void Mac5G_final(const u8 * Q, u8 * A, const u8 * P, u64 lenAAD_bits, u64 lenC_bits)
+
+{
+
+u8 tmp[16];
+
+LittleEndian64(tmp + 8, lenAAD_bits);
+
+LittleEndian64(tmp, lenC_bits);
+
+xor128(A, A, tmp);
+
+polyval_dot(A, A, Q);
+
+xor128(A, A, P); /* The resulting AuthTag is in A[], not yet truncated */
+
+}
+
+// ------------------------------------------------------------------------------
+
+// ZUC-256 core
+
+// ------------------------------------------------------------------------------
+
+struct Zuc256
+
+{
+
+// Internal state
+
+u32 lfsr[16], R1, R2;
+
+void lfsr_update(u32 W)
+
+{
+
+u64 s = (u64)W + (u64)lfsr[0]
+
++ (((u64)lfsr[0]) << 8)
+
++ (((u64)lfsr[4]) << 20)
+
++ (((u64)lfsr[10]) << 21)
+
++ (((u64)lfsr[13]) << 17)
+
++ (((u64)lfsr[15]) << 15);
+
+s = (s & 0x7fffffffULL) + (s >> 31);
+
+s = (s & 0x7fffffffULL) + (s >> 31);
+
+memmove(lfsr, lfsr + 1, sizeof(lfsr[0]) * 15);
+
+lfsr[15] = (u32)(s ? s : 0x7fffffffUL);
+
+}
+
+u32 br_hl(u32 a, u32 b)
+
+{
+
+return ((a << 1) & 0xffff0000UL) | (b & 0x0000ffffUL);
+
+}
+
+u32 br_lh(u32 a, u32 b)
+
+{
+
+return (a << 16) | (b >> 15);
+
+}
+
+u32 rotl(u32 x, const int i)
+
+{
+
+return (x << i) | (x >> (32 - i));
+
+}
+
+u32 sboxes(u32 x)
+
+{
+
+static const u8 S0[256] = {
+
+0x3E,0x72,0x5B,0x47,0xCA,0xE0,0x00,0x33,0x04,0xD1,0x54,0x98,0x09,0xB9,0x6D,0xCB,
+
+0x7B,0x1B,0xF9,0x32,0xAF,0x9D,0x6A,0xA5,0xB8,0x2D,0xFC,0x1D,0x08,0x53,0x03,0x90,
+
+0x4D,0x4E,0x84,0x99,0xE4,0xCE,0xD9,0x91,0xDD,0xB6,0x85,0x48,0x8B,0x29,0x6E,0xAC,
+
+0xCD,0xC1,0xF8,0x1E,0x73,0x43,0x69,0xC6,0xB5,0xBD,0xFD,0x39,0x63,0x20,0xD4,0x38,
+
+0x76,0x7D,0xB2,0xA7,0xCF,0xED,0x57,0xC5,0xF3,0x2C,0xBB,0x14,0x21,0x06,0x55,0x9B,
+
+0xE3,0xEF,0x5E,0x31,0x4F,0x7F,0x5A,0xA4,0x0D,0x82,0x51,0x49,0x5F,0xBA,0x58,0x1C,
+
+0x4A,0x16,0xD5,0x17,0xA8,0x92,0x24,0x1F,0x8C,0xFF,0xD8,0xAE,0x2E,0x01,0xD3,0xAD,
+
+0x3B,0x4B,0xDA,0x46,0xEB,0xC9,0xDE,0x9A,0x8F,0x87,0xD7,0x3A,0x80,0x6F,0x2F,0xC8,
+
+0xB1,0xB4,0x37,0xF7,0x0A,0x22,0x13,0x28,0x7C,0xCC,0x3C,0x89,0xC7,0xC3,0x96,0x56,
+
+0x07,0xBF,0x7E,0xF0,0x0B,0x2B,0x97,0x52,0x35,0x41,0x79,0x61,0xA6,0x4C,0x10,0xFE,
+
+0xBC,0x26,0x95,0x88,0x8A,0xB0,0xA3,0xFB,0xC0,0x18,0x94,0xF2,0xE1,0xE5,0xE9,0x5D,
+
+0xD0,0xDC,0x11,0x66,0x64,0x5C,0xEC,0x59,0x42,0x75,0x12,0xF5,0x74,0x9C,0xAA,0x23,
+
+0x0E,0x86,0xAB,0xBE,0x2A,0x02,0xE7,0x67,0xE6,0x44,0xA2,0x6C,0xC2,0x93,0x9F,0xF1,
+
+0xF6,0xFA,0x36,0xD2,0x50,0x68,0x9E,0x62,0x71,0x15,0x3D,0xD6,0x40,0xC4,0xE2,0x0F,
+
+0x8E,0x83,0x77,0x6B,0x25,0x05,0x3F,0x0C,0x30,0xEA,0x70,0xB7,0xA1,0xE8,0xA9,0x65,
+
+0x8D,0x27,0x1A,0xDB,0x81,0xB3,0xA0,0xF4,0x45,0x7A,0x19,0xDF,0xEE,0x78,0x34,0x60
+
+};
+
+static const u8 S1[256] = {
+
+0x55,0xC2,0x63,0x71,0x3B,0xC8,0x47,0x86,0x9F,0x3C,0xDA,0x5B,0x29,0xAA,0xFD,0x77,
+
+0x8C,0xC5,0x94,0x0C,0xA6,0x1A,0x13,0x00,0xE3,0xA8,0x16,0x72,0x40,0xF9,0xF8,0x42,
+
+0x44,0x26,0x68,0x96,0x81,0xD9,0x45,0x3E,0x10,0x76,0xC6,0xA7,0x8B,0x39,0x43,0xE1,
+
+0x3A,0xB5,0x56,0x2A,0xC0,0x6D,0xB3,0x05,0x22,0x66,0xBF,0xDC,0x0B,0xFA,0x62,0x48,
+
+0xDD,0x20,0x11,0x06,0x36,0xC9,0xC1,0xCF,0xF6,0x27,0x52,0xBB,0x69,0xF5,0xD4,0x87,
+
+0x7F,0x84,0x4C,0xD2,0x9C,0x57,0xA4,0xBC,0x4F,0x9A,0xDF,0xFE,0xD6,0x8D,0x7A,0xEB,
+
+0x2B,0x53,0xD8,0x5C,0xA1,0x14,0x17,0xFB,0x23,0xD5,0x7D,0x30,0x67,0x73,0x08,0x09,
+
+0xEE,0xB7,0x70,0x3F,0x61,0xB2,0x19,0x8E,0x4E,0xE5,0x4B,0x93,0x8F,0x5D,0xDB,0xA9,
+
+0xAD,0xF1,0xAE,0x2E,0xCB,0x0D,0xFC,0xF4,0x2D,0x46,0x6E,0x1D,0x97,0xE8,0xD1,0xE9,
+
+0x4D,0x37,0xA5,0x75,0x5E,0x83,0x9E,0xAB,0x82,0x9D,0xB9,0x1C,0xE0,0xCD,0x49,0x89,
+
+0x01,0xB6,0xBD,0x58,0x24,0xA2,0x5F,0x38,0x78,0x99,0x15,0x90,0x50,0xB8,0x95,0xE4,
+
+0xD0,0x91,0xC7,0xCE,0xED,0x0F,0xB4,0x6F,0xA0,0xCC,0xF0,0x02,0x4A,0x79,0xC3,0xDE,
+
+0xA3,0xEF,0xEA,0x51,0xE6,0x6B,0x18,0xEC,0x1B,0x2C,0x80,0xF7,0x74,0xE7,0xFF,0x21,
+
+0x5A,0x6A,0x54,0x1E,0x41,0x31,0x92,0x35,0xC4,0x33,0x07,0x0A,0xBA,0x7E,0x0E,0x34,
+
+0x88,0xB1,0x98,0x7C,0xF3,0x3D,0x60,0x6C,0x7B,0xCA,0xD3,0x1F,0x32,0x65,0x04,0x28,
+
+0x64,0xBE,0x85,0x9B,0x2F,0x59,0x8A,0xD7,0xB0,0x25,0xAC,0xAF,0x12,0x03,0xE2,0xF2
+
+};
+
+u32 b0 = S1[(u8)(x >> 0)];
+
+u32 b1 = S0[(u8)(x >> 8)];
+
+u32 b2 = S1[(u8)(x >> 16)];
+
+u32 b3 = S0[(u8)(x >> 24)];
+
+return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+
+}
+
+void fsm_update(void)
+
+{
+
+u32 X1 = br_lh(lfsr[11], lfsr[9]) + R1;
+
+u32 X2 = br_lh(lfsr[7], lfsr[5]) ^ R2;
+
+R1 = (X1 << 16) | (X2 >> 16);
+
+R2 = (X2 << 16) | (X1 >> 16);
+
+R1 = R1 ^ rotl(R1, 2) ^ rotl(R1, 10) ^ rotl(R1, 18) ^ rotl(R1, 24); // L1
+
+R2 = R2 ^ rotl(R2, 8) ^ rotl(R2, 14) ^ rotl(R2, 22) ^ rotl(R2, 30); // L2
+
+R1 = sboxes(R1);
+
+R2 = sboxes(R2);
+
+}
+
+u32 update(char is_init)
+
+{
+
+u32 X0 = br_hl(lfsr[15], lfsr[14]);
+
+u32 X3 = br_lh(lfsr[2], lfsr[0]);
+
+u32 W = (X0 ^ R1) + R2;
+
+u32 z = W ^ X3;
+
+if (!is_init) W = 0;
+
+fsm_update();
+
+lfsr_update(W >> 1);
+
+return z;
+
+}
+
+void keyiv_setup(u8 * key /* [32] */, u8 * iv /* [16] */)
+
+{
+
+R1 = R2 = 0;
+
+static const u8 dvect[16] = { 0x64, 0x43, 0x7b, 0x2a, 0x11, 0x05, 0x51, 0x42,
+
+0x1a, 0x31, 0x18, 0x66, 0x14, 0x2e, 0x01, 0x5c };
+
+#define zuci(i, b, a) lfsr[i] = (((u32)key[i]) << 23) \
+
+^ (((u32)dvect[i]) << 16) ^ (((u32)b) << 8) ^ (((u32)a) << 0)
+
+zuci(0, key[16], key[24]);
+
+zuci(1, key[17], key[25]);
+
+zuci(2, key[18], key[26]);
+
+zuci(3, key[19], key[27]);
+
+zuci(4, key[20], key[28]);
+
+zuci(5, key[21], key[29]);
+
+zuci(6, key[22], key[30]);
+
+zuci(7, iv[0], iv[8]);
+
+zuci(8, iv[1], iv[9]);
+
+zuci(9, iv[2], iv[10]);
+
+zuci(10, iv[3], iv[11]);
+
+zuci(11, iv[4], iv[12]);
+
+zuci(12, iv[5], iv[13]);
+
+zuci(13, iv[6], iv[14]);
+
+zuci(14, iv[7], iv[15]);
+
+zuci(15, key[23], key[31]);
+
+for (int i = 0; i < (ZUC256_INIT_ROUND_CLOCKS + 1); i++)
+
+update(i < ZUC256_INIT_ROUND_CLOCKS);
+
+}
+
+};
+
+// ------------------------------------------------------------------------------
+
+// Generic internal function for NxA6 (ZUC-256)
+
+// ------------------------------------------------------------------------------
+
+// Returns 0 if OK, otherwise <0 if error
+
+int AEAD_ZUC256(
+
+u8 MODE, /* 0=Encrypt, 1=Decrypt mode */
+
+u8 FKEY[32], /* full key */
+
+u8 FIV[16], /* full iv */
+
+u8 * MAC, /* In/Out MAC of size [MAC_BYTES] bytes */
+
+u8 MAC_BYTES, /* [4..16] */
+
+u8 * AAD, /* Authentication Data */
+
+u32 AAD_LENGTH, /* length of AAD in bits */
+
+u8 * IBS, /* Input stream */
+
+u8 * OBS, /* Output stream */
+
+u32 S_LENGTH /* the number of bits in IN/OUT streams */
+
+)
+
+{
+
+u8 H[16], Q[16], P[16], A[16] = { 0 };
+
+Zuc256 s;
+
+s.keyiv_setup(FKEY, FIV);
+
+// If MACing should happen (NIA6 and NCA6)
+
+if (MAC && MAC_BYTES)
+
+{
+
+for (int i = 0; i < 16; i += 4) BigEndian32(H + i, s.update(0));
+
+for (int i = 0; i < 16; i += 4) BigEndian32(Q + i, s.update(0));
+
+for (int i = 0; i < 16; i += 4) BigEndian32(P + i, s.update(0));
+
+}
+
+// If Encryption/Decryption should happen
+
+if (IBS && OBS && S_LENGTH)
+
+{
+
+u8 z[4];
+
+long long i, BLEN = ((u64)S_LENGTH + 7ULL) >> 3;
+
+for (i = 0; i < (BLEN - 3LL); i += 4LL)
+
+{
+
+BigEndian32(z, s.update(0));
+
+OBS[i + 0] = IBS[i + 0] ^ z[0];
+
+OBS[i + 1] = IBS[i + 1] ^ z[1];
+
+OBS[i + 2] = IBS[i + 2] ^ z[2];
+
+OBS[i + 3] = IBS[i + 3] ^ z[3];
+
+}
+
+// handle unaligned bytes
+
+if (i != BLEN)
+
+{
+
+BigEndian32(z, s.update(0));
+
+for (int k = 0; i < BLEN; i++, k++)
+
+OBS[i] = IBS[i] ^ z[k];
+
+}
+
+// handle unaligned bits
+
+OBS[i - 1] &= bitPad[S_LENGTH & 7];
+
+}
+
+// If MACing should happen
+
+if (MAC && MAC_BYTES)
+
+{
+
+if (AAD && AAD_LENGTH)
+
+Mac5G_update(H, A, AAD, AAD_LENGTH);
+
+u8 * tmp = MODE ? IBS : OBS; // pick the stream with Ciphertext
+
+if (tmp)
+
+Mac5G_update(H, A, tmp, S_LENGTH);
+
+Mac5G_final(Q, A, P, AAD_LENGTH, S_LENGTH);
+
+if (MODE == 0)
+
+memcpy(MAC, A, MAC_BYTES);
+
+else
+
+{ // MAC verification
+
+if (memcmp(MAC, A, MAC_BYTES))
+
+return -1;
+
+}
+
+}
+
+return 0;
+
+}
+
+// ------------------------------------------------------------------------------
+
+// 3GPP API
+
+// Authenticated Encryption
+
+// ------------------------------------------------------------------------------
+
+// Returns 0 if OK, otherwise <0 if error
+
+int NCA6_256(
+
+u8 MODE, /* 0=Encrypt, 1=Decrypt mode */
+
+u32 COUNT, /* 32 bits */
+
+u8 * EXTRA_IV, /* [6] bytes, 48 bits, extra entropy for IV */
+
+u8 DIRECTION, /* 1 bit */
+
+u8 BEARER, /* 5 bits */
+
+u8 * KEY, /* [16/32] bytes */
+
+u8 KEY_BYTES, /* 16/32 bytes */
+
+u8 * MAC, /* In/Out MAC of size [MAC_BYTES] bytes */
+
+u8 MAC_BYTES, /* [4..16] */
+
+u8 * AAD, /* Authentication Data */
+
+u32 AAD_LENGTH, /* length of AAD in bits */
+
+u8 * IBS, /* Input stream */
+
+u8 * OBS, /* Output stream */
+
+u32 S_LENGTH /* the number of bits in IN/OUT streams */
+
+)
+
+{
+
+u8 fiv[16], fkey[32];
+
+MAKE_FULL_KEY_IV(fkey, fiv, KEY, KEY_BYTES, COUNT, BEARER, DIRECTION, EXTRA_IV,
+
+MAC_BYTES, 1);
+
+return AEAD_ZUC256(MODE, fkey, fiv, MAC, MAC_BYTES, AAD, AAD_LENGTH, IBS, OBS,
+
+S_LENGTH);
+
+}
+
+// ------------------------------------------------------------------------------
+
+// Encryption only
+
+// ------------------------------------------------------------------------------
+
+void NEA6_256(
+
+u32 COUNT_C, /* 32 bits */
+
+u8 * EXTRA_IV, /* [6] bytes, 48 bits, extra entropy for IV */
+
+u8 DIRECTION, /* 1 bit */
+
+u8 BEARER, /* 5 bits */
+
+u8 * CK, /* [16/32] bytes */
+
+u8 CK_BYTES, /* 16 or 32 */
+
+u8 * IBS, /* Input stream */
+
+u8 * OBS, /* Output stream */
+
+u32 S_LENGTH /* the number of bits to be encrypted */
+
+)
+
+{
+
+u8 fiv[16], fkey[32];
+
+MAKE_FULL_KEY_IV(fkey, fiv, CK, CK_BYTES, COUNT_C, BEARER, DIRECTION, EXTRA_IV, 0, 0);
+
+AEAD_ZUC256(0, fkey, fiv,
+
+NULL, 0, /* MAC=NULL => skip MAC computation */
+
+NULL, 0, /* AAD=NULL */
+
+IBS, OBS, S_LENGTH /* IN and OUT streams are given => Encrypt/Decrypt */
+
+);
+
+}
+
+// ------------------------------------------------------------------------------
+
+// Integrity only
+
+// ------------------------------------------------------------------------------
+
+void NIA6_256(
+
+u32 COUNT_I, /* 32 bits */
+
+u8 * EXTRA_IV, /* [6] bytes, 48 bits, extra entropy for IV */
+
+u8 DIRECTION, /* 1 bit */
+
+u8 BEARER, /* 5 bits */
+
+u8 * IK, /* [16/32] bytes */
+
+u8 IK_BYTES, /* 16 or 32 */
+
+u8 * MESSAGE, /* Input message */
+
+u32 LENGTH, /* the number of bits to be MACed */
+
+u8 * MAC_I, /* Output MAC of size [MAC_BYTES] bytes */
+
+u8 MAC_BYTES /* [4..16] */
+
+)
+
+{
+
+u8 fiv[16], fkey[32];
+
+MAKE_FULL_KEY_IV(fkey, fiv, IK, IK_BYTES, COUNT_I, BEARER, DIRECTION, EXTRA_IV,
+
+MAC_BYTES, 0);
+
+AEAD_ZUC256(0, fkey, fiv,
+
+MAC_I, MAC_BYTES, /* MAC != NULL, and we do Encrypt mode => will compute MAC value */
+
+MESSAGE, LENGTH, /* AAD = MESSAGE, which goes to MACing as-is */
+
+NULL, NULL, 0 /* Both IN and OUT streams are NULL => no encryption */
+
+);
+
+}
+
+Annex B (informative): Change history
+
+  ---------------- --------- ----------- ------ ----- ----- ---------------------------------------------------------------------------------------------------------------------------- -------------
+  Change history                                                                                                                                                                         
+
+  Date             Meeting   TDoc        CR     Rev   Cat   Subject/Comment                                                                                                              New version
+
+  2024-03          SA#103    SP-240228                      Presented for information and approval                                                                                       1.0.0
+
+  2024-03          SA#103                                   Upgrade to change control version                                                                                            18.0.0
+
+  2025-07          SA#108    SP-250677   0001   1     F     ZUC number of initialisation rounds: the parameter P shall be set to 48. Remove the word ‘two’ for change to ‘byte array’.   19.0.0
+
+  2026-03          SA#111    SP-260157   0002   1     F     Update on ZUC 256-bit Specification                                                                                          20.0.0
+  ---------------- --------- ----------- ------ ----- ----- ---------------------------------------------------------------------------------------------------------------------------- -------------

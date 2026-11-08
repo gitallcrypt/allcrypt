@@ -1060,6 +1060,8 @@ fn describe_key(key: &allcrypt::x509::PublicKey<'_>) -> String {
             parameter_set.to_string(),
         PublicKey::SlhDsa { parameter_set, pre_hash, .. } =>
             allcrypt::x509::slh_dsa_name(parameter_set, *pre_hash),
+        PublicKey::HashSig { scheme, key } => allcrypt::x509::hash_sig_key_name(*scheme, key)
+            .unwrap_or_else(|_| scheme.name().to_string()),
         PublicKey::Dsa { parameters: Some((p, _, _)), .. } => format!("DSA-{}", p.bit_len()),
         PublicKey::Dsa { parameters: None, .. } => "DSA with inherited parameters".to_string(),
         PublicKey::Unsupported { .. } => "an unsupported algorithm".to_string(),

@@ -1,5 +1,5 @@
-//! Checksums: CRC-32 (IEEE 802.3), CRC-32C (Castagnoli), Adler-32,
-//! Fletcher's, and the FNV hashes.
+//! Checksums: CRC-32 (IEEE 802.3), CRC-32C (Castagnoli), every other CRC
+//! from its parameters, Adler-32, Fletcher's, and the FNV hashes.
 //!
 //! Checksums, not cryptographic functions: they are linear, and anybody
 //! can make data with any value they like. CRC-32 is here because ciphers
@@ -16,6 +16,10 @@
 //! register, with neither inversion, which is what ZipCrypto, RFC 3961's
 //! modified CRC-32 and TrueCrypt's keyfile pool use.
 //! `crc32(data) == !crc32_update(!0, data)`, and the same for CRC-32C.
+//!
+//! Every other CRC is in [`crc`]: any width from 1 to 128 bits from the
+//! six parameters of Williams's model, and the catalogue of parametrised
+//! CRC algorithms by name.
 //!
 //! Adler-32 (RFC 1950, zlib's) is two sums modulo 65521, the largest
 //! prime below 2^16: one of the bytes plus one, and one of the first
@@ -48,10 +52,13 @@
 //!
 //! [`Checksum`] streams any of them by name, as `api::AnyHash` carries
 //! it, with the value big endian, as PHP's `hash` and Go's `Sum` give it.
-//! By name, the seeded hashes have the seed zero.
+//! By name, the seeded hashes have the seed zero. A CRC outside the
+//! catalogue is named by its model line (see [`crc`]).
 
 use crate::hash_functions::HashFunction;
 
+pub mod crc;
+mod crc_catalogue;
 mod fnv_tables;
 pub mod murmur3;
 pub mod xxhash;
@@ -384,8 +391,8 @@ impl Fnv {
     }
 }
 
-/// The checksums' names, as `api::AnyHash::new` takes them.
-pub const NAMES: &[&str] = &[
+/// The checksums' names other than the CRC catalogue's.
+const OWN_NAMES: &[&str] = &[
     "crc32", "crc32c", "adler32", "fletcher16", "fletcher32", "fletcher64",
     "fnv0_32", "fnv0_64", "fnv0_128", "fnv0_256", "fnv0_512", "fnv0_1024",
     "fnv1_32", "fnv1_64", "fnv1_128", "fnv1_256", "fnv1_512", "fnv1_1024",
@@ -394,6 +401,24 @@ pub const NAMES: &[&str] = &[
     "murmur3_32", "murmur3_x86_128", "murmur3_x64_128",
     "joaat",
 ];
+
+const ALL_NAMES: [&str; OWN_NAMES.len() + crc_catalogue::NAMES.len()] = {
+    let mut all = [""; OWN_NAMES.len() + crc_catalogue::NAMES.len()];
+    let mut i = 0;
+    while i < all.len() {
+        all[i] = if i < OWN_NAMES.len() {
+            OWN_NAMES[i]
+        } else {
+            crc_catalogue::NAMES[i - OWN_NAMES.len()]
+        };
+        i += 1;
+    }
+    all
+};
+
+/// The checksums' names, as `api::AnyHash::new` takes them: the CRC
+/// catalogue's names, lowercase, follow the others.
+pub const NAMES: &[&str] = &ALL_NAMES;
 
 #[derive(Clone)]
 enum State {
@@ -407,6 +432,7 @@ enum State {
     Xxh3(xxhash::Xxh3),
     Murmur3(murmur3::Murmur3),
     Joaat(u32),
+    Crc(crc::Crc),
 }
 
 /// A checksum in progress, by name.
@@ -420,8 +446,16 @@ impl Checksum {
     /// [`NAMES`], PHP's `crc32b` for CRC-32, `xxh3_64` and `xxh3_128` for
     /// XXH3, `murmur3_x86_32`, or PHP's `murmur3a`, `murmur3c` and
     /// `murmur3f`, for MurmurHash3, or `one_at_a_time` and `oaat` for
-    /// `joaat`. `None` for any other.
+    /// `joaat`; a CRC catalogue name, in any case and with hyphens or
+    /// underscores, or a CRC's model line. `None` for any other.
     pub fn from_name(name: &str) -> Option<Checksum> {
+        if let Some(c) = crc::Crc::named(name) {
+            return Some(Checksum { state: State::Crc(c) });
+        }
+        if name.trim_start().to_ascii_lowercase().starts_with("width=") {
+            let params = crc::CrcParams::from_model(name).ok()?;
+            return Some(Checksum { state: State::Crc(crc::Crc::new(params).ok()?) });
+        }
         let state = match name {
             "crc32" | "crc32b" => State::Crc32(!0),
             "crc32c" => State::Crc32c(!0),
@@ -445,6 +479,11 @@ impl Checksum {
         Some(Checksum { state })
     }
 
+    /// A CRC from its parameters, named by its model line.
+    pub fn crc(params: crc::CrcParams) -> Result<Checksum, String> {
+        Ok(Checksum { state: State::Crc(crc::Crc::new(params)?) })
+    }
+
     /// The value so far.
     fn value(&self) -> Vec<u8> {
         match &self.state {
@@ -457,6 +496,7 @@ impl Checksum {
             State::Xxh3(h) => h.value(),
             State::Murmur3(h) => h.value(),
             State::Joaat(state) => joaat_finish(*state).to_be_bytes().to_vec(),
+            State::Crc(c) => c.digest(),
         }
     }
 }
@@ -478,6 +518,7 @@ impl HashFunction for Checksum {
                 murmur3::Murmur3Variant::X64_128 => "murmur3_x64_128",
             }.to_string(),
             State::Joaat(_) => "joaat".to_string(),
+            State::Crc(c) => c.name(),
         }
     }
 
@@ -490,6 +531,7 @@ impl HashFunction for Checksum {
             State::Xxh64(_) => 8,
             State::Xxh3(h) => h.bits() / 8,
             State::Murmur3(h) => if h.variant() == murmur3::Murmur3Variant::X86_32 { 4 } else { 16 },
+            State::Crc(c) => c.digest_len(),
         }
     }
 
@@ -510,6 +552,7 @@ impl HashFunction for Checksum {
             State::Xxh3(h) => h.update(input),
             State::Murmur3(h) => h.update(input),
             State::Joaat(state) => *state = joaat_update(*state, input),
+            State::Crc(c) => c.update(input),
         }
     }
 

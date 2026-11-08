@@ -602,7 +602,8 @@ TAG_LENGTHS = [("aes-gcm", 16, 16), ("chacha20-poly1305", 32, 16),
                ("kuznyechik-mgm", 32, 16), ("magma-mgm", 32, 8),
                ("des-mgm", 8, 8), ("aes-mgm", 16, 16),
                ("rijndael-160-eax", 16, 20), ("shacal2-eax", 32, 32),
-               ("threefish512-eax", 64, 64), ("threefish1024-eax", 128, 128)]
+               ("threefish512-eax", 64, 64), ("threefish1024-eax", 128, 128),
+               ("grain128aeadv2", 16, 8), ("grain128aeadv1", 16, 8)]
 
 
 def nonce_for(name, tag_len):

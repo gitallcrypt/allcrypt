@@ -11,6 +11,7 @@ pub mod cast5;
 pub mod cast256;
 pub mod cbc_hmac;
 pub mod ccm;
+pub mod chaskey_lts;
 pub mod cms_wrap;
 pub mod des;
 pub mod eax;

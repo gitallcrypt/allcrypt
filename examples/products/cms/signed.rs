@@ -1,5 +1,14 @@
 //! SignedData (RFC 5652 section 5), with RSA PKCS#1 v1.5 and PSS
-//! (RFC 4056), ECDSA (RFC 5753), DSA (RFC 3370) and EdDSA (RFC 8419).
+//! (RFC 4056), ECDSA (RFC 5753), DSA (RFC 3370), EdDSA (RFC 8419), HSS
+//! (RFC 9708), and XMSS and XMSS^MT under RFC 9802's identifiers.
+//!
+//! HSS, XMSS and XMSS^MT sign the attributes or the content whole, as
+//! EdDSA does. RFC 9708 makes an HSS signer's digest the tree's own hash:
+//! SHA-256, or SHAKE256 under plain `id-shake256` at 64 bytes. Nothing
+//! specifies XMSS in CMS; Bouncy Castle 1.85 writes it like HSS, and this
+//! does the same with the set's hash - SHA-256, SHA-512 for the 512 bit
+//! SHA-2 sets, SHAKE256 for every SHAKE set. Any digest is accepted on
+//! reading, as RFC 9708 asks nothing of a verifier there.
 //!
 //! With signed attributes the signature covers the DER of the
 //! attributes - re-tagged from `[0] IMPLICIT` to `SET OF` - and the
@@ -9,7 +18,9 @@
 use allcrypt::asn1::{tag, Reader, Tag, Writer};
 use allcrypt::publickey_ciphers::rsa::{self, RsaPublicKey};
 use allcrypt::x509::verify::{self, Policy};
-use allcrypt::x509::{Certificate, PublicKey, SignatureAlgorithm};
+use allcrypt::pq::lms::{LmsHash, LmsParams};
+use allcrypt::pq::xmss::{XmssHash, XmssParams};
+use allcrypt::x509::{Certificate, HashSig, PublicKey, SignatureAlgorithm};
 
 use crate::asn::{self, AlgId, CertId, IssuerSerial};
 use crate::keys::Key;
@@ -197,7 +208,9 @@ fn describe_algorithm(signer: &SignerInfo) -> String {
     let names = [(asn::RSA_ENCRYPTION, "RSA"), (asn::RSASSA_PSS, "RSA-PSS"),
                  (asn::ED25519, "Ed25519"), (asn::ED448, "Ed448"), (asn::ID_DSA, "DSA"),
                  (asn::EC_PUBLIC_KEY, "ECDSA")];
+    let hash_sig = HashSig::from_oid(&signer.sig_alg.oid).map(HashSig::name);
     let name = names.iter().find(|(o, _)| signer.sig_alg.is(o)).map(|(_, n)| *n)
+        .or(hash_sig)
         .unwrap_or_else(|| {
             let ecdsa = [asn::ECDSA_WITH_SHA1, asn::ECDSA_WITH_SHA224, asn::ECDSA_WITH_SHA256,
                          asn::ECDSA_WITH_SHA384, asn::ECDSA_WITH_SHA512];
@@ -229,6 +242,10 @@ fn verify_one(sd: &SignedData, signer: &SignerInfo, content: &[u8], cert: &Certi
             if Reader::new(content_type).read_oid()?.as_bytes() != sd.content_type.as_slice() {
                 return Err("The signed content type is not the content's type.".to_string());
             }
+            // The content is bound to the signature by this digest alone,
+            // so it is judged whatever the signature algorithm - EdDSA,
+            // HSS and XMSS name no hash of their own for the policy to see.
+            policy.accepts_hash_public(digest_name)?;
             let digest = asn::single(&attributes, asn::MESSAGE_DIGEST)?
                 .ok_or("The signed attributes have no message digest.")?;
             let mut d = Reader::new(digest);
@@ -318,6 +335,16 @@ fn check_signature(cert: &Certificate, pool: &[Certificate], digest_name: &'stat
         } else {
             Err("The signature does not verify.".to_string())
         };
+    }
+    if let Some(scheme) = HashSig::from_oid(&sig_alg.oid) {
+        // RFC 9708 section 3 and RFC 9802: absent, not NULL.
+        if sig_alg.params.is_some() {
+            return Err(format!("{} signature algorithm with parameters, which must be \
+                                absent.", scheme.name()));
+        }
+        return verify::verify_signed(signed, SignatureAlgorithm::HashSig(scheme), signature,
+                                     &cert.public_key, policy)
+            .map_err(|e| format!("The signature does not verify: {e}"));
     }
     let rsa = [(asn::RSA_ENCRYPTION, None), (asn::MD5_WITH_RSA, Some("md5")),
                (asn::SHA1_WITH_RSA, Some("sha1")), (asn::SHA224_WITH_RSA, Some("sha224")),
@@ -410,10 +437,17 @@ pub fn sign(content: &[u8], signers: &[Signer], extra_certs: &[Vec<u8>], options
             Key::Eddsa { name, .. } if *name == "ed25519" => "sha512".to_string(),
             Key::Eddsa { .. } => if options.attributes { "shake256-512" }
                                  else { "shake256" }.to_string(),
+            Key::Hss(_) | Key::Xmss(_) => hash_sig_digest(signer.key).to_string(),
             _ => options.hash.clone(),
         };
-        let digest_alg = if hash == "shake256" { AlgId::new(asn::SHAKE256) }
-                         else { asn::digest_alg(&hash)? };
+        // RFC 9708 writes SHAKE256 as plain id-shake256, where RFC 8419
+        // gives Ed448 id-shake256-len; both digest to 64 bytes.
+        let digest_alg = if hash == "shake256"
+                             || (hash == "shake256-512" && hash_sig_scheme(signer.key).is_some()) {
+            AlgId::new(asn::SHAKE256)
+        } else {
+            asn::digest_alg(&hash)?
+        };
         let (sig_alg, pss) = match signer.key {
             Key::Rsa(_) if options.pss => (pss_alg(&hash)?, true),
             Key::Rsa(_) => (AlgId::with_null(asn::RSA_ENCRYPTION), false),
@@ -431,6 +465,18 @@ pub fn sign(content: &[u8], signers: &[Signer], extra_certs: &[Vec<u8>], options
             }), false),
             Key::Eddsa { name, .. } =>
                 (AlgId::new(if *name == "ed25519" { asn::ED25519 } else { asn::ED448 }), false),
+            Key::Hss(_) | Key::Xmss(_) => {
+                let scheme = hash_sig_scheme(signer.key).expect("a stateful key");
+                // The certificate's key must be this one: a signature
+                // made under any other spends a leaf for nothing.
+                match &cert.public_key {
+                    PublicKey::HashSig { scheme: s, key } if *s == scheme
+                        && Some(key.to_vec()) == signer.key.hash_sig_public() => {}
+                    _ => return Err("The stateful key is not the certificate's key."
+                                    .to_string()),
+                }
+                (AlgId { oid: scheme.oid().to_vec(), params: None }, false)
+            }
         };
         let sid = if options.key_id {
             any_key_id = true;
@@ -463,7 +509,8 @@ pub fn sign(content: &[u8], signers: &[Signer], extra_certs: &[Vec<u8>], options
             rsa::sign_pss(key, &hash, &digest, digest.len())?
         } else {
             match signer.key {
-                Key::Eddsa { .. } => signer.key.signing().sign_signed_data(&hash, &to_sign)?,
+                Key::Eddsa { .. } | Key::Hss(_) | Key::Xmss(_) =>
+                    signer.key.signing().sign_signed_data(&hash, &to_sign)?,
                 _ => signer.key.signing().sign(&hash, &to_sign)?,
             }
         };
@@ -498,6 +545,42 @@ pub fn sign(content: &[u8], signers: &[Signer], extra_certs: &[Vec<u8>], options
         w.write_raw(&asn::der_set_of(infos, 0x31));
     });
     Ok(content_info(asn::SIGNED_DATA, &body.finish()))
+}
+
+/// The scheme a stateful key signs under: XMSS^MT for a multi-tree key.
+fn hash_sig_scheme(key: &Key) -> Option<HashSig> {
+    match key {
+        Key::Hss(_) => Some(HashSig::Hss),
+        Key::Xmss(k) => Some(HashSig::of_xmss(k.borrow().params())),
+        _ => None,
+    }
+}
+
+/// The digest an HSS signer uses: the top tree's hash (RFC 9708 section
+/// 5), SHA-256 whatever its output length, SHAKE256 at 64 bytes.
+pub fn hss_digest(top: &LmsParams) -> &'static str {
+    match top.hash {
+        LmsHash::Sha256 => "sha256",
+        LmsHash::Shake256 => "shake256-512",
+    }
+}
+
+/// The digest an XMSS or XMSS^MT signer uses: the set's hash family (see
+/// the module comment).
+pub fn xmss_digest(p: &XmssParams) -> &'static str {
+    match p.hash {
+        XmssHash::Sha2 if p.n == 64 => "sha512",
+        XmssHash::Sha2 => "sha256",
+        XmssHash::Shake128 | XmssHash::Shake256 => "shake256-512",
+    }
+}
+
+fn hash_sig_digest(key: &Key) -> &'static str {
+    match key {
+        Key::Hss(k) => hss_digest(k.borrow().params()[0].0),
+        Key::Xmss(k) => xmss_digest(k.borrow().params()),
+        _ => "sha256",
+    }
 }
 
 /// ContentInfo: the type and `[0] EXPLICIT` content.

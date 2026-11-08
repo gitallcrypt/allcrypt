@@ -203,11 +203,13 @@ def used_ranges(data, data_length):
     return ranges
 
 
-def write_sparse(image_path, out_path, data_length):
-    """The image, keeping only what is read (`used_ranges`), as runs of
-    non-zero 512 byte blocks. Its length is cut after the data kept."""
+def write_sparse(image_path, out_path, data_length, ranges=None):
+    """The image, keeping only what is read (`used_ranges`, or `ranges`
+    of (offset, length)), as runs of non-zero 512 byte blocks. Its
+    length is cut after the data kept."""
     data = open(image_path, "rb").read()
-    ranges = used_ranges(data, data_length)
+    if ranges is None:
+        ranges = used_ranges(data, data_length)
     kept = bytearray(max(start + length for start, length in ranges))
     for start, length in ranges:
         kept[start:start + length] = data[start:start + length]

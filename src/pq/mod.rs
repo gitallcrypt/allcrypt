@@ -33,8 +33,10 @@ hash-based scheme in particular has a failure mode with no equivalent in
 RSA or ECDSA - see the warning about one-time keys in `slh_dsa.rs`.
 */
 
+pub mod lms;
 pub mod ml_dsa;
 pub mod ml_kem;
 pub mod prehash;
 pub mod slh_dsa;
 pub mod sntrup;
+pub mod xmss;

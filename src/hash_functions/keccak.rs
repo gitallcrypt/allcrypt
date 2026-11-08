@@ -102,9 +102,12 @@ const fn rho_offsets() -> [u32; 25] {
 
 const RHO: [u32; 25] = rho_offsets();
 
-/// `Keccak-f[1600]`: twenty-four rounds of theta, rho, pi, chi, iota.
-fn permute(state: &mut [u64; 25]) {
-    for round_constant in ROUND_CONSTANTS {
+/// `Keccak-p[1600, rounds]`: the last `rounds` of `Keccak-f[1600]`'s
+/// twenty-four rounds of theta, rho, pi, chi, iota (FIPS 202 section
+/// 3.3: round indices `24 - rounds` to 23). All 24 is `Keccak-f`; 12 is
+/// TurboSHAKE's and KangarooTwelve's (RFC 9861 section 2.2).
+pub(crate) fn permute(state: &mut [u64; 25], rounds: usize) {
+    for &round_constant in &ROUND_CONSTANTS[24 - rounds..] {
         // theta: each lane takes the parity of two neighbouring
         // columns, one of them rotated by one bit.
         let mut parity = [0u64; 5];
@@ -154,8 +157,11 @@ pub struct Keccak {
     filled: usize,
     /// The sponge's rate in bytes: `200 - capacity`.
     rate: usize,
-    /// `0x01` for Keccak, `0x06` for SHA-3, `0x1f` for SHAKE.
+    /// `0x01` for Keccak, `0x06` for SHA-3, `0x1f` for SHAKE; for
+    /// TurboSHAKE the caller's domain separation byte.
     padding: u8,
+    /// 24, or TurboSHAKE's 12.
+    rounds: usize,
     /// Default output length in bytes. For the SHAKEs this is only a
     /// default - they will produce any length.
     digest_len: usize,
@@ -230,8 +236,39 @@ impl Keccak {
         Ok(Keccak::with(200 - 2 * digest_len, 0x01, digest_len, name))
     }
 
+    /// TurboSHAKE128 or TurboSHAKE256 (RFC 9861 section 2): SHAKE's
+    /// rate and padding over `Keccak-p[1600, 12]`, with a domain
+    /// separation byte `domain` from 0x01 to 0x7F where SHAKE's is 0x1F.
+    /// `digest_len` is only a default; any length can be squeezed.
+    pub fn turboshake(security_bits: usize, domain: u8, digest_len: usize)
+                      -> Result<Keccak, String> {
+        let (rate, name) = match security_bits {
+            128 => (168, "turboshake_128"),
+            256 => (136, "turboshake_256"),
+            other => return Err(format!(
+                "TurboSHAKE comes at 128 and 256 bit security; {other} is not one.")),
+        };
+        if !(0x01..=0x7f).contains(&domain) {
+            return Err(format!(
+                "TurboSHAKE's domain separation byte is 0x01 to 0x7F, not {domain:#04x}."));
+        }
+        if digest_len > Keccak::MAX_SQUEEZE {
+            return Err(format!("A TurboSHAKE output is at most {} bytes here; asked for {}.",
+                               Keccak::MAX_SQUEEZE, digest_len));
+        }
+        let mut sponge = Keccak::with(rate, domain, digest_len, name);
+        sponge.rounds = 12;
+        Ok(sponge)
+    }
+
+    /// TurboSHAKE's domain separation byte, or the padding byte of the
+    /// other functions.
+    pub fn domain(&self) -> u8 {
+        self.padding
+    }
+
     fn with(rate: usize, padding: u8, digest_len: usize, name: &'static str) -> Keccak {
-        Keccak { state: [0u64; 25], filled: 0, rate, padding, digest_len, name }
+        Keccak { state: [0u64; 25], filled: 0, rate, padding, rounds: 24, digest_len, name }
     }
 
     /// Absorb one byte, permuting when the block fills.
@@ -242,7 +279,7 @@ impl Keccak {
         self.state[lane] ^= (byte as u64) << shift;
         self.filled += 1;
         if self.filled == self.rate {
-            permute(&mut self.state);
+            permute(&mut self.state, self.rounds);
             self.filled = 0;
         }
     }
@@ -295,7 +332,7 @@ impl Keccak {
                 out.push((sponge.state[index / 8] >> (8 * (index % 8))) as u8);
             }
             if out.len() < length {
-                permute(&mut sponge.state);
+                permute(&mut sponge.state, sponge.rounds);
             }
         }
         Ok(out)
@@ -312,6 +349,8 @@ impl HashFunction for Keccak {
             "keccak" => format!("keccak_{bits}"),
             "shake_128" if self.digest_len != 16 => format!("shake_128_{bits}"),
             "shake_256" if self.digest_len != 32 => format!("shake_256_{bits}"),
+            "turboshake_128" if self.digest_len != 32 => format!("turboshake_128_{bits}"),
+            "turboshake_256" if self.digest_len != 64 => format!("turboshake_256_{bits}"),
             other => other.to_string(),
         }
     }
@@ -349,7 +388,7 @@ impl HashFunction for Keccak {
             self.state[self.filled / 8] ^= u64::from_le_bytes(lane.try_into().unwrap());
             self.filled += 8;
             if self.filled == self.rate {
-                permute(&mut self.state);
+                permute(&mut self.state, self.rounds);
                 self.filled = 0;
             }
         }

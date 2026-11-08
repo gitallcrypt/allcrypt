@@ -1,0 +1,10 @@
+[package]
+name = "lms-witness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+hbs-lms = "=0.2.0-alpha.1"
+
+[workspace]

@@ -37,21 +37,21 @@ $ printf '%s\n' "$PW" | cargo run --release --example age -- decrypt in.age out 
 
 | Product | Example | What it does | Checked against |
 |---|---|---|---|
-| LUKS1, LUKS2 (Linux disk encryption) | `luks/` | `dump`, `open` (passphrase or key file to volume key, data decrypted), `format` (new image with data) | cryptsetup 2.8.8, both directions: 13 of its images opened by ours, data included; 7 of ours opened by it; 3 compatibility images and 12 kernel-written LUKS1 test volumes from cryptsetup's test suite, whose FAT serial DEAD-BABE ours decrypts |
-| age (file encryption) | `age/` | `keygen` (X25519 and post-quantum), `encrypt` (recipients, passphrase, armor), `decrypt` | all 147 of the format's test vectors (C2SP CCTV); age 1.1.1 and 1.3.2 both directions, 116 of 116, the post-quantum `age1pq` recipients included |
+| LUKS1, LUKS2 (Linux disk encryption) | `luks/` | `dump`, `open` (passphrase or key file to volume key, data decrypted; a LUKS2 volume stopped part way through `cryptsetup reencrypt` read as its recovery would leave it), `format` (new image with data) | cryptsetup 2.8.8, both directions: 13 of its images opened by ours, data included; 7 of ours opened by it; 3 compatibility images and 12 kernel-written LUKS1 test volumes from cryptsetup's test suite, whose FAT serial DEAD-BABE ours decrypts; 7 volumes it was stopped in the middle of reencrypting, which it then recovered and decrypted to the plaintext ours reads |
+| age (file encryption) | `age/` | `keygen` (X25519 and post-quantum), `encrypt` (recipients, SSH public keys, the hardware tagged types, passphrase, armor), `decrypt` (SSH private keys too); plugins over age's plugin protocol, both state machines | all 147 of the format's test vectors (C2SP CCTV); age 1.1.1 and 1.3.2 both directions, 116 of 116, the post-quantum `age1pq` recipients included; SSH keys with age 1.1.1, age 1.3.2 and rage 0.11.1 both directions, 15 of 15, and 31 files replayed offline; the tagged types with age 1.3.2 and its own test identities both directions, 21 files replayed offline; age 1.3.2's plugins `tag`, `tagpq`, `pq` and `batchpass`, 6 conversations replayed offline |
 | OpenPGP (GnuPG, RFC 9580, LibrePGP) | `openpgp/` | `encrypt` and `decrypt` with passphrases and with keys, `sign` and `verify` (inline, detached, text, cleartext), `gen-key`: SKESK v4, v5 and v6, PKESK v3 and v6; SED, SEIPD v1 and v2, and the OCB packet; keys of versions 4, 5 and 6 in RSA, DSA/ElGamal, ECDSA/ECDH on nine curves, EdDSA, X25519/X448 and Ed25519/Ed448; signatures of versions 3 to 6; every cipher, EAX, OCB and GCM, ZIP, ZLIB and BZip2; `list-keys`, `list-packets` | RFC 9580's appendix samples and LibrePGP's, intermediates included; GnuPG 2.4.4 and go-crypto both directions, 577 of 577 |
 | TrueCrypt, VeraCrypt | `veracrypt/` | `open` (password, keyfiles, PIM, hidden volumes; master key, data decrypted), `format` (new XTS volume, VeraCrypt or TrueCrypt) | 104 volumes TrueCrypt 1.0 to 7.1 and VeraCrypt to 1.26 wrote (hidden volumes counted apart from their outer ones), from cryptsetup's test suite: every one opens, 93 decrypt to their filesystem, and 35 master keys equal cryptsetup's; 9 of ours opened by cryptsetup with the same master key |
 | BitLocker (Windows full-volume encryption, version 2; BitLocker To Go) | `bitlocker/` | `dump` (metadata, protectors), `open` (password, recovery password, startup key file, clear key or volume key to volume key; the volume decrypted as a reader sees it), `format` (new volume with data, any method, password, recovery password and clear key protectors) | cryptsetup 2.8.8 and the 21 volumes Windows made in its test suite: every dump, every secret's volume key and 19 decrypted volumes' SHA-256 equal cryptsetup's, 2 unfinished volumes refused as cryptsetup refuses them; 13 of ours read by cryptsetup, the volume key equal: 115 of 115; 21 volumes replayed offline |
-| Wi-Fi (WEP, WPA, WPA2; IEEE 802.11) | `wifi/` | `decrypt` a capture: WEP with a shared key, or WPA/WPA2 with the passphrase and ESSID, taking the pairwise key from the capture's 4-way handshake; a tally and, with `--out`, the decrypted frames as Ethernet | aircrack-ng's `airdecap-ng` 1.7 and its capture files (WEP, WPA-TKIP, WPA2-CCMP): the decrypted frames identical packet for packet and the counts equal, 5 of 5; 3 captures replayed offline |
+| Wi-Fi (WEP, WPA, WPA2, WPA3; IEEE 802.11) | `wifi/` | `decrypt` a capture (pcap or pcapng): WEP with a shared key, or WPA/WPA2/WPA3 with the passphrase and ESSID or a PMK, the pairwise and group keys taken from the capture's 4-way and group handshakes; TKIP, CCMP, CCMP-256, GCMP and GCMP-256, group-addressed frames and protected management frames, QoS, four-address and HT Control headers; a tally, with `--out` the decrypted frames as Ethernet and with `--frames` every plaintext | aircrack-ng's `airdecap-ng` 1.7 and its capture files (WEP, WPA-TKIP, WPA2-CCMP): the decrypted frames identical packet for packet and the counts equal, 5 of 5; `tshark` 4.6.9 on the 9 captures of Wireshark's decryption tests (management frame protection, PSK-SHA256, TKIP group keys and their rekeying, GCMP, GCMP-256, CCMP-256, SAE and OWE from their PMKs), three of them with frames appended (QoS priorities, fragments, HT Control fields, a TKIP group frame's Michael) and a handshake made whole with four-address frames: the same frames decrypted to the same plaintext, 13 of 13; all 16 captures replayed offline |
 | KeePass (KDBX 3.1, 4.0, 4.1) | `keepass/` | `dump` (groups, entries, attachments; `--canonical` for comparison), `create` (a sample database in any format): AES, Twofish and ChaCha20; AES-KDF, Argon2d and Argon2id; key files of every kind; protected values under Salsa20 and ChaCha20; gzip; the KDBX 4 HMAC block stream and the 3.1 hashed blocks and header hash | gokeepasslib (master, 4fa52e4) both directions, and the 25 test databases of gokeepasslib and pykeepass, which other KeePass applications wrote: 82 of 82 identical listings; 28 replayed offline |
 | ZIP with a password (PKWARE ZipCrypto, WinZip AES AE-1/AE-2) | `zip/` | `list`, `extract` (stored, deflate, bzip2; ZIP64; refuses names that leave the destination), `create` (stored; none, ZipCrypto, AES-128/192/256, AE-1 or AE-2) | Info-ZIP 3.0/6.0, libarchive 3.8.1 and 7-Zip 26.03 writing, ours extracting; ours writing, 7-Zip, libarchive, Info-ZIP and Python's zipfile extracting: 119 of 119; 23 of their archives replayed offline |
 | 7z (7-Zip) | `sevenzip/` | `list`, `extract` (LZMA, LZMA2, Deflate, BZip2, Copy; the BCJ, ARM, ARMT, ARM64, PPC, SPARC and Delta filters; 7zAES, the header encrypted or not; solid and not; refuses names that leave the destination), `create` (stored, one solid folder; 7zAES at 2^0 to 2^24 rounds or the raw key, header encryption) | 7-Zip 26.03 writing every method and filter, ours extracting; ours writing, 7-Zip and libarchive 3.8.1 extracting; liblzma's LZMA2 from XZ Utils 5.4.5: 211 of 211; 38 archives replayed offline |
 | PDF (the standard security handler, revisions 2 to 6) | `pdf/` | `info`, `decrypt`, `encrypt` (40 and 128-bit RC4, AES-128, AES-256 at revisions 5 and 6): user and owner passwords, crypt filters, object and cross-reference streams | qpdf 11.9.0 and pdftk-java 3.3.3: 41 of qpdf's test files decrypted as qpdf decrypts them, files qpdf and pdftk encrypted decrypted, ours opened by both, and qpdf's test files re-encrypted under every scheme, 425 of 425; 72 documents replayed offline |
 | Office documents (`.docx`, `.xlsx`, `.pptx`, `.doc`, `.xls`; [MS-OFFCRYPTO]) | `office/` | `info`, `decrypt`, `encrypt`: agile encryption (AES-128/192/256, SHA-1/256/384/512, the data-integrity HMAC) and standard encryption (AES-128/192/256), in a compound file the example reads and writes; `.doc` and `.xls` decrypted from RC4, RC4 CryptoAPI and (`.xls`) XOR obfuscation | Office's own documents, LibreOffice 24.2 and msoffcrypto-tool, both directions for OOXML: 134 of 134; 23 documents replayed offline |
 | OpenDocument (`.odt`, `.ods`, `.odp`; ODF 1.2 part 3, LibreOffice's ODF 1.4 extension) | `odf/` | `info`, `decrypt`, `encrypt`: AES-256-CBC with PBKDF2 (ODF 1.2 on), Blowfish CFB (ODF 1.0 and 1.1), and AES-256-GCM over the whole package under Argon2id | LibreOffice 24.2 both directions, all three schemes, with a second decryption written from the manifest: 85 of 85; 6 documents replayed offline |
-| Key stores (PKCS#12 `.p12`/`.pfx`, Java's JKS and JCEKS) | `keystore/` | `list` (`--canonical` for comparison), `convert` between the three: PKCS#12 with PBES2/PBKDF2 AES-256, PBE-SHA1-3DES and 40-bit RC2, MACs HMAC-SHA-1/256 and PBMAC1, plain and shrouded keys, certificates, CRLs and Java's secret keys; BER as NSS writes it; JKS's key protector and JCEKS's PBEWithMD5AndTripleDES, with a JCEKS secret key's Java serialization; the Ukrainian stores: PKCS#12 under GOST 28147 CFB with PBKDF2-HMAC-GOST 34.311 and an HMAC-GOST 34.311 MAC, and PrivatBank's JKS | OpenSSL 3.0 and 3.5 (command line and, for a NULL password, its API), python-cryptography, NSS's pk12util, keytool and Java's KeyStore API (JDK 21), both directions: 121 of 121; 27 stores replayed offline. dstu-engine's keylib for the Ukrainian stores, both directions (`scripts/check_ua_keys.py`); 6 replayed offline |
+| Key stores (PKCS#12 `.p12`/`.pfx`, Java's JKS and JCEKS) | `keystore/` | `list` (`--canonical` for comparison), `convert` between the three: PKCS#12 with PBES2/PBKDF2 AES-256, PBE-SHA1-3DES and 40-bit RC2, MACs HMAC-SHA-1/256 and PBMAC1, plain and shrouded keys, certificates, CRLs and Java's secret keys; BER as NSS writes it; JKS's key protector and JCEKS's PBEWithMD5AndTripleDES, with a JCEKS secret key's Java serialization; the Ukrainian stores: PKCS#12 under GOST 28147 CFB with PBKDF2-HMAC-GOST 34.311 and an HMAC-GOST 34.311 MAC, and PrivatBank's JKS | OpenSSL 3.0 and 3.5 (command line and, for a NULL password, its API), python-cryptography, NSS's pk12util, keytool and Java's KeyStore API (JDK 21), both directions: 121 of 121; 27 stores replayed offline. dstu-engine's keylib for the Ukrainian stores, both directions (`scripts/check_ua_keys.py`); 6 replayed offline; PrivatBank's cryptonite finds the same keys in the 4 PKCS#12 among them, one written by IIT's software |
 | JOSE (JWK, JWS, JWE: RFC 7515 to 7518, 7638, 7797, 8037, 8812) | `jose/` | `keygen`, `public`, `thumbprint`, `sign`, `verify`, `encrypt`, `decrypt`: every JWS algorithm of RFC 7518 with ES256K, EdDSA and the fully-specified `Ed25519` and `Ed448`, `none` on request; every JWE key management algorithm (RSA1_5, RSA-OAEP, RSA-OAEP-256, AES key wrap, AES-GCM key wrap, PBES2, `dir`, ECDH-ES and ECDH-ES with key wrap over P-256/384/521, X25519 and X448) with every content encryption; compact, general and flattened JSON, several signers and recipients, unencoded payloads, `zip`, AAD | jwcrypto 1.6.1 both directions, every algorithm and serialization, and PyJWT 2.12.1 for compact JWS: 802 of 802; the examples of RFC 7515, 7516, 7518, 7638, 7797 and 8037 read out of the documents; 137 jwcrypto outputs replayed offline |
-| CMS and S/MIME (RFC 5652, RFC 8551; PKCS#7) | `cms/` | `sign`, `verify` (chain to given roots), `encrypt`, `decrypt`, `info`: SignedData with RSA PKCS#1 v1.5 and PSS, ECDSA, DSA, Ed25519 and Ed448, with or without signed attributes, attached or detached, by issuer and serial or key identifier, several signers; EnvelopedData to RSA (PKCS#1 v1.5, OAEP), EC (ECDH with every X9.63 KDF), password (PWRI) and shared-key recipients, with AES, 3DES, DES and RC2; AES-GCM AuthEnvelopedData; EncryptedData, DigestedData, CompressedData; BER, PEM and S/MIME in both forms | OpenSSL 3.0 and 3.5, python-cryptography 46 and NSS's cmsutil both directions: 552 of 552; RFC 4134's examples and RFC 3211's and RFC 3217's vectors read out of the documents; 121 messages replayed offline |
+| CMS and S/MIME (RFC 5652, RFC 8551; PKCS#7) | `cms/` | `sign`, `verify` (chain to given roots), `encrypt`, `decrypt`, `info`: SignedData with RSA PKCS#1 v1.5 and PSS, ECDSA, DSA, Ed25519 and Ed448, HSS, XMSS and XMSS^MT (a stateful key file, written back before the signature), with or without signed attributes, attached or detached, by issuer and serial or key identifier, several signers; EnvelopedData to RSA (PKCS#1 v1.5, OAEP), EC (ECDH with every X9.63 KDF), password (PWRI) and shared-key recipients, with AES, 3DES, DES and RC2; AES-GCM AuthEnvelopedData; EncryptedData, DigestedData, CompressedData; BER, PEM and S/MIME in both forms | OpenSSL 3.0 and 3.5, python-cryptography 46 and NSS's cmsutil both directions: 552 of 552; RFC 4134's examples and RFC 3211's and RFC 3217's vectors read out of the documents; 121 messages replayed offline; Bouncy Castle 1.85 both directions for HSS, XMSS and XMSS^MT: 25 messages |
 | Kerberos 5 (MIT keytabs and credential caches; RFC 3961, 3962, 4757, 6803, 8009) | `kerberos/` | `string2key`, `encrypt`, `decrypt`, `checksum`, `prf` for all twelve encryption types - single DES (CRC, MD4, MD5), Triple DES, AES with HMAC-SHA1 and with HMAC-SHA2, RC4-HMAC and its 40-bit export variant, Camellia - and every DES checksum; `keytab list`, `keytab add`; `ccache list`; `ticket` (every ticket in a cache opened with the service's keys, its session key checked against the cache's) | MIT Kerberos 1.21.3 and 1.17.2 (single DES) both directions through libk5crypto, `ktutil`, `klist` and a KDC on loopback for every type, credential caches of versions 3 and 4: 34,383 of 34,383; RFC 3961, 3962, 6803 and 8009's vectors read out of the documents; 342 answers, 2 keytabs and 6 caches replayed offline |
 | Cryptocurrency wallets (BIP-32, -38, -39, -49, -84, -86; Ethereum keystores, ERC-55, EIP-191) | `wallet/` | `mnemonic` (BIP-39, NFKD-normalized), `derive` (BIP-32 in every version prefix: extended keys, WIF, P2PKH, P2SH-P2WPKH, P2WPKH, P2TR and Ethereum addresses), `address`, `check-address`, `sign-message`/`verify-message` (Bitcoin's, every BIP-137 header), `bip38` (encrypt, decrypt, intermediate codes, EC-multiply generation and confirmation codes), `eth` (address, keystore v3 under scrypt or PBKDF2, v1 and presale files, EIP-191 signing and recovery) | python-mnemonic (the BIP-39 reference) and pycoin, with OpenSSL 3.5's Keccak-256, both directions, signatures byte for byte, passphrases unnormalized in every word list: 2,081 of 2,081; BIP-32's, -38's, -49's, -84's, -86's and -350's vectors and ERC-55's read out of the documents; python-mnemonic's vectors, go-ethereum's keystore test files and Unicode 16.0's NormalizationTest.txt replayed offline |
 | DNSSEC (RFC 4033 to 4035, NSEC3 RFC 5155) | `dnssec/` | `keygen` (BIND's `.key` and `.private` files), `ds`, `key-tag`, `sign` (RRSIGs, NSEC or NSEC3, KSK and ZSK roles, delegations and glue), `verify` (every signature, every algorithm present, the NSEC or NSEC3 chain, opt-out), `nsec3-hash`: algorithms 1, 3, 5, 6, 7, 8, 10, 12 (GOST R 34.10-2001), 13, 14, 15, 16, 17 (SM2) and 23 (GOST R 34.10-2012), DS digests 1 to 6 | dnspython 2.7.0 both directions for its eleven algorithms, keys, DS records, signed zones and NSEC3 chains: 1,679 of 1,679; the examples of RFC 4034, 4035, 4509, 5155, 5702, 5933, 6605, 8080, 9558 and 9563 read out of the documents, GOST R 34.10-2012's signature reproduced from the document's nonce; 11 dnspython-signed zones replayed offline |
@@ -76,6 +76,15 @@ $ printf '%s\n' "$PW" | cargo run --release --example age -- decrypt in.age out 
   `plain64`, `plain64be`, `benbi`, `essiv:HASH` (with the kernel's
   `wp256` and `wp384`, which are Whirlpool cut short) and `null`; 512 to
   4096 byte sectors.
+- **A reencryption stopped part way**: a LUKS2 volume that `cryptsetup
+  reencrypt` was moving to a new key (and cipher, and sector size) is
+  read as cryptsetup's recovery would leave it, without writing to it:
+  each data segment under its key, and a hotzone stopped in the middle of
+  its write told apart block by block by the checksums cryptsetup kept
+  of the old blocks, or taken from the journal's copy. Both keys are
+  needed - the passphrase gives both, or `--volume-key-file` and
+  `--new-volume-key-file` - and the digest that binds the reencryption
+  metadata to them is checked before anything is read.
 
 Checked (`scripts/check_luks.py`, cryptsetup 2.8.8 built from source,
 no root):
@@ -95,6 +104,14 @@ no root):
   and Twofish in XTS, AES in LRW and in CBC-ESSIV, XTS with ESSIV over
   truncated Whirlpool - each holding a FAT filesystem whose serial is
   DEAD-BABE, which our decryption of the first data sector shows.
+- Volumes stopped in the middle of `cryptsetup reencrypt`
+  (`scripts/make_luks_reencrypt_fixtures.py`): CBC-ESSIV with 512 byte
+  sectors on its way to XTS with 4096 byte sectors, stopped by a
+  preload library at a chosen write - before a hotzone's write, part
+  way through it and after it, under checksum (SHA-256 and SHA-512) and
+  journal resilience - and cleanly, by SIGTERM. cryptsetup repaired,
+  finished and decrypted each to the plaintext encrypted; ours reads the
+  same plaintext from the volume as it was left.
 
 What cryptsetup could not judge here: ciphers other than AES on its
 side (without root it checks a cipher by activating it), and data in
@@ -103,8 +120,13 @@ volumes are checked only by the kernel-written test images above, and
 by round trip.
 
 Not implemented: LUKS2 tokens (they hold no key material this library
-could use without the token's own plugin), online reencryption state,
-dm-integrity, and hardware OPAL segments.
+could use without the token's own plugin), an encryption or decryption
+in place still under way and a reencryption that moves the data (both
+refused by name), dm-integrity, and hardware OPAL segments. A
+reencryption run in the `backward` direction is read by the same code,
+but no volume here was made that way: cryptsetup's command line changes
+a key backward only while moving the data, and only its library can do
+it otherwise.
 
 ## TrueCrypt and VeraCrypt
 
@@ -216,44 +238,96 @@ and smart-card protectors, and the volume key's backup copy.
 
 ## Wi-Fi
 
-`wifi/main.rs`, with `wifi/pcap.rs` for the capture format, on the
-library's `stream_ciphers::wep` and `tkip`, `mac::michael`,
-`block_ciphers::ccm` and `kdf::ieee80211`. The 802.11 framing - the
-header lengths, which address is the transmitter, where the sequence
-counter and the CCMP nonce and additional data come from - is here.
+`wifi/main.rs`, with `wifi/pcap.rs` for the capture formats (pcap and
+pcapng, each interface's link type its own), on the library's
+`stream_ciphers::wep` and `tkip`, `mac::michael`, `block_ciphers::ccm`,
+AES-GCM through `api::aead_decrypt`, and `kdf::ieee80211`. The 802.11
+framing - the header lengths, which address is the transmitter, where
+the sequence counter and the CCMP and GCMP nonces and additional data
+come from - is here.
 
 - **WEP**: the 3-byte IV from the frame and the shared key, RC4, the
   CRC-32 ICV checked.
-- **WPA/WPA2**: the pairwise key comes from the 4-way handshake in the
-  capture - the two nonces and an EAPOL frame whose MIC (HMAC-MD5 for
-  TKIP, HMAC-SHA1 for CCMP) verifies under a key stretched from the
-  passphrase and ESSID by PBKDF2. TKIP then mixes a per-packet RC4 key
-  and checks the ICV; CCMP is AES-CCM with the nonce and additional data
-  built from the header. A frame retransmitted in the same direction is
-  skipped, as `airdecap-ng` skips it.
-- The decrypted frames are written as `airdecap-ng` writes them: each an
-  Ethernet frame, the 802.11 and LLC/SNAP headers replaced by a 14-byte
-  Ethernet header.
+- **The suites** come from the RSN (or WPA) element in an association
+  request or in the handshake's message 2 or 3: the pairwise and group
+  ciphers and the key management. The PTK is derived with 802.11's
+  PRF-SHA1 for the PSK and 802.1X key managements and with the KDF over
+  SHA-256 for PSK-SHA256, SAE, OWE and their kind, its length the
+  cipher's; the EAPOL MIC is HMAC-MD5, HMAC-SHA1, AES-CMAC or
+  HMAC-SHA256 as the key descriptor version and key management say.
+- **WPA/WPA2/WPA3**: the pairwise key comes from the 4-way handshake in
+  the capture - the two nonces and an EAPOL frame whose MIC verifies
+  under the PMK, which is stretched from the passphrase and ESSID by
+  PBKDF2 or given with `--pmk`. Message 3's key data, unwrapped under the
+  KEK (RC4 for descriptor version 1, AES key wrap otherwise), gives the
+  GTK and IGTK; so does every group handshake after it, including one
+  sent inside the protected link, which is how a rekeyed group key is
+  followed. TKIP mixes a per-packet RC4 key, checks the ICV and then
+  Michael (under the access point's or the station's MIC key by
+  direction, and the GTK's for a group frame); CCMP and CCMP-256 are
+  AES-CCM with an 8 or 16-byte tag, GCMP and GCMP-256 AES-GCM, with the
+  nonce and additional data built from the header.
+- **The header**: 24 bytes, a fourth address when both DS bits are set,
+  a QoS Control field whose priority goes into the CCMP nonce, the
+  additional data and Michael, and an HT Control field when a QoS data
+  or management frame has the order bit set, which the additional data
+  leaves out along with the order bit itself. A four-address frame names
+  only the two ends of a link; the transmitter is taken for the access
+  point, or the receiver when only that link has keys.
+- **Group-addressed data frames** open under the GTK named by the
+  frame's key index; **protected unicast management frames** (802.11w:
+  deauthentication, disassociation and action frames) under the TK,
+  with the management flag in the CCMP nonce and the frame's subtype
+  kept in the additional data.
+- `--airdecap` keeps to `airdecap-ng`'s selection: unicast data frames
+  only, a frame retransmitted in the same direction skipped, Michael
+  not checked. The decrypted frames are written as `airdecap-ng` writes
+  them: each an Ethernet frame, the 802.11 and LLC/SNAP headers replaced
+  by a 14-byte Ethernet header. `--frames FILE` lists every decrypted
+  frame - its number, kind and plaintext - which is what is compared
+  with `tshark`.
 
 ```console
 $ cargo run --release --example wifi -- decrypt capture.cap --wep-key 1F:1F:1F:1F:1F
 $ cargo run --release --example wifi -- decrypt capture.cap --essid linksys --password-stdin --out plain.pcap
+$ cargo run --release --example wifi -- decrypt sae.pcapng --pmk PMK_HEX --frames frames.txt
 $ cargo test --example wifi
 $ python3 scripts/check_wifi.py --airdecap ~/src/aircrack-ng/airdecap-ng --captures ~/src/aircrack-ng/test
+$ python3 scripts/check_wifi_wireshark.py --wireshark ~/src/wireshark --tshark ~/src/ws46/build/run/tshark
 ```
 
-Checked (`scripts/check_wifi.py`, aircrack-ng's `airdecap-ng` 1.7): the
-WEP, WPA-TKIP and WPA2-CCMP capture files in aircrack-ng's test suite.
-For each, our decrypted records and `airdecap-ng`'s are identical packet
-for packet (the pcap timestamps aside), and our count of decrypted
-frames equals the number it reports. Michael is **computed and could be
-verified** but, like `airdecap-ng`, the example does not drop a frame on
-a Michael failure; the TKIP ICV is the per-frame check.
+Checked:
 
-Not implemented: WPA3-SAE's dragonfly handshake (the example takes a
-PMK or a PSK, so a WPA3 capture opens only with `--pmk`), management
-frame protection, and cracking - the passphrase or key is an input, not
-something this searches for.
+- `scripts/check_wifi.py`, aircrack-ng's `airdecap-ng` 1.7: the WEP,
+  WPA-TKIP and WPA2-CCMP capture files in aircrack-ng's test suite, with
+  `--airdecap`. For each, our decrypted records and `airdecap-ng`'s are
+  identical packet for packet (the pcap timestamps aside), and our count
+  of decrypted frames equals the number it reports.
+- `scripts/check_wifi_wireshark.py`, `tshark` 4.6.9 with
+  `wlan.enable_decryption`: the nine captures Wireshark's own decryption
+  tests use, each with the key from those tests' key list. Both decrypt
+  the same frames, data and management, unicast and group, to the same
+  plaintext, frame by frame. `tshark` 4.2.2 (Ubuntu 24.04's) leaves the
+  four TKIP group frames of `wpa2-psk-ccmp-tkip` encrypted; 4.6.9
+  decrypts them to what the example does, and Michael verifies on each.
+- None of those has a protected QoS frame of a priority other than 0, a
+  fragment, an HT Control field or four addresses, so the script makes
+  four more captures and `tshark` judges them: three of the nine with
+  frames appended - sealed under the TK and GTK `tshark` reports, CCMP
+  and GCMP by python-cryptography, a TKIP group frame by this library -
+  and one made whole, a WPA2-PSK handshake computed in Python with the
+  access point at the larger address (`tshark` takes the larger of a
+  four-address frame's two link addresses as its BSSID), then CCMP frames
+  with four addresses each way. `tshark` opens every frame made, and the
+  example decrypts the same ones to the same plaintext: 13 of 13.
+
+Not implemented: WPA3-SAE's dragonfly handshake and OWE's Diffie-Hellman.
+Their PMK comes from a secret neither side sends, so a capture cannot
+yield it; such a capture opens with `--pmk` only, as in Wireshark's
+tests. Also FT (fast transition) key hierarchies, 802.1X key management
+with the PMK taken from the RADIUS exchange, the BIP integrity check on
+group management frames, and cracking - the passphrase or key is an
+input, not something this searches for.
 
 ## age
 
@@ -263,8 +337,42 @@ stored compressed.
 - **Recipients**: X25519 (`age1...`), the post-quantum hybrid
   MLKEM768-X25519 (`age1pq1...`: X-Wing - ML-KEM-768 and X25519 with
   a SHA3-256 combiner - through RFC 9180 HPKE with HKDF-SHA256 and
-  ChaCha20-Poly1305), and passphrases through scrypt. Unknown stanza
-  types are passed over, as the format requires.
+  ChaCha20-Poly1305, the library's `publickey_ciphers::hpke`), and
+  passphrases through scrypt. Unknown stanza types are passed over, as
+  the format requires.
+- **The tagged types**, the public side of keys held in hardware:
+  `p256tag` (`age1tag1...`, a compressed P-256 point) and
+  `mlkem768p256tag` (`age1tagpq1...`, an MLKEM768-P256 key), each HPKE
+  with HKDF-SHA256 and ChaCha20-Poly1305 and the type's label as `info`,
+  plus a four byte tag - HKDF-Extract over `enc` and a hash of the
+  recipient's P-256 key - that lets hardware pass over stanzas that are
+  not its own. Files are encrypted to them. Their identities live behind
+  age's plugins, so only the tests make one, as age's own tests do: HPKE's
+  `DeriveKeyPair` of a seed. A stanza whose tag is another key's, or
+  whose body does not open (four bytes can collide), is somebody
+  else's.
+- **SSH keys**, as age's `agessh` package has them (no specification
+  covers them): an `ssh-ed25519` or `ssh-rsa` public key line as a
+  recipient (`-r`, or a file of them with `-R`), an OpenSSH private key
+  file as an identity, `--key-passphrase` opening an encrypted one.
+  `ssh-rsa` is RSA-OAEP with SHA-256 and the label
+  `age-encryption.org/v1/ssh-rsa`. `ssh-ed25519` is X25519 to the key's
+  Montgomery form, the shared secret multiplied by a tweak that HKDF
+  derives with the key's wire form as salt, then wrapped as X25519 is.
+  Each stanza carries a tag - four bytes of the SHA-256 of the key's wire
+  form - so they are not anonymous, and a stanza whose tag names the key
+  and does not open is an error rather than somebody else's.
+- **Plugins**, the client's side of age's plugin protocol (C2SP
+  age-plugin.md): a recipient `age1NAME1...` of a type the example does
+  not know, an identity `AGE-PLUGIN-NAME-1...`, and `-j NAME` - a plugin
+  identity with no data, as a recipient or an identity - go to
+  `age-plugin-NAME` on the `PATH`. `recipient-v1` hands it the file key
+  and takes the stanzas it makes; `identity-v1` shows it every stanza and
+  takes back the file key or nothing. Its messages are shown and its
+  requests for a value read from the terminal; anything else - grease
+  among it - is answered `unsupported` and the conversation goes on.
+  `--plugin-recipients` sends every `age1NAME1...` recipient to its
+  plugin, even one of a type the example knows.
 - **The header** parsed to the letter of the ABNF: canonical base64
   only, 64 column body lines ending in a shorter one, an scrypt stanza
   alone; and its HMAC-SHA-256.
@@ -291,10 +399,38 @@ Checked:
   each age, to recipients either generated, X25519 and `age1pq`; and
   passphrases both ways, typed into age's terminal prompt, and ours
   taking its passphrase from a pipe. 116 of 116.
+- SSH keys, in the same script, against age 1.1.1, age 1.3.2 and rage
+  0.11.1 - the Go and the Rust implementations of `agessh`: Ed25519 and
+  RSA keys `ssh-keygen` makes, each tool encrypting for ours and ours
+  for each, and an encrypted Ed25519 key ours opens. 15 of 15.
+  `scripts/make_age_ssh_fixtures.py` keeps 24 files age and rage wrote,
+  to single keys and to all three, armored or not, and 7 of ours that
+  both decrypted (`fixtures/age/ssh/`); `cargo test` opens theirs and
+  makes ours again byte for byte from their seeds.
 
-Not implemented: the SSH recipient types (`ssh-ed25519`, `ssh-rsa`)
-and the hardware-key tagged types (`p256tag`, `mlkem768p256tag`), and
-age plugins.
+- The tagged types against age 1.3.2 (`scripts/make_age_tag_fixtures.py`):
+  age encrypting to one and two recipients of each type, binary and
+  armored, either side of a chunk; and ours, which age's own test
+  identities - built into `age-tag-witness` from age's tree - decrypt.
+  16 of theirs and 5 of ours are kept (`fixtures/age/tag/`); `cargo test`
+  opens theirs, makes ours again byte for byte, and checks that our
+  recipient strings are age's.
+
+- Plugins against age 1.3.2's own (`scripts/make_age_plugin_fixtures.py`),
+  each run through a wrapper that records both sides: `recipient-v1`
+  with `age-plugin-tag` and `-tagpq` (the files then opened by age's test
+  identities), `-pq` (opened by age with the native identity) and
+  `-batchpass` (`-j batchpass`, the passphrase from the environment,
+  opened by age through the same plugin); `identity-v1` with `-pq` (age's
+  file opened with the plugin identity `age-plugin-pq -identity` makes)
+  and `-batchpass`. `cargo test` plays each plugin's side back and checks
+  that the example writes to it exactly what it wrote then, and makes the
+  same file or opens age's.
+
+Not implemented: a plugin's `confirm` request (answered `fail`: there is
+nobody to ask), and the rule age enforces with the plugins' labels - it
+will not mix a post-quantum recipient with a classical one - which this
+example does not enforce for any recipient.
 
 ## OpenPGP
 
@@ -1015,6 +1151,10 @@ and DSA keys:
   keylib finds, and ours converted from them to GOST PKCS#12 and to JKS
   open in keylib to the same. keylib refuses any JKS with a trusted
   certificate entry, so that is checked with key entries only.
+- `scripts/make_ua_keys_cryptonite_vectors.py`, against PrivatBank's
+  cryptonite: it finds the same DSTU 4145 keys in dstu-engine's PKCS#12,
+  in ours, and in `cryptonite-iit.pfx`, a PKCS#12 the IIT software wrote,
+  from cryptonite's own tests. It reads no JKS.
 - `cargo test` opens 27 of those stores (`fixtures/keystore/`) to the
   entries the witnesses agreed on, refuses a wrong password, converts
   each to every format and back, and holds two things to keytool's own
@@ -1046,6 +1186,15 @@ key store example's.
   takes it from its issuer - and EdDSA, where RFC 8419 digests with
   SHA-512 or SHAKE256 at 512 bits. What is written is DER: attributes and
   certificates sorted, the signing time a UTCTime until 2050.
+- **Stateful keys**: HSS (RFC 9708), and XMSS and XMSS^MT under RFC
+  9802's identifiers, sign the attributes or the content whole, as EdDSA
+  does. The digest is the tree's hash for HSS - SHA-256, or SHAKE256 at
+  64 bytes under plain `id-shake256` - and for XMSS, which nothing
+  specifies in CMS, the set's hash family, as Bouncy Castle writes it.
+  The key is a file of its state (`HssPrivateKey::to_bytes`, or the XMSS
+  reference's form), and `sign` writes it back moved past the leaves it
+  spent - beside the file, renamed over it - before it writes the
+  message. The key must be the certificate's, or nothing is signed.
 - **Recipients**: RSA key transport, PKCS#1 v1.5 or OAEP; EC key
   agreement - an ephemeral key, ECDH, the X9.63 KDF (the library's
   `kdf::nist::x963_kdf`) over ECC-CMS-SharedInfo (RFC 5753), AES key wrap, or RFC 3217's Triple-DES
@@ -1070,6 +1219,7 @@ $ cargo run --release --example cms -- verify letter.eml letter.txt --roots ca.c
 $ cargo run --release --example cms -- encrypt data.bin data.p7m --recipient alice.crt --recipient bob.crt --cipher aes-256-gcm
 $ cargo run --release --example cms -- decrypt data.p7m data.bin --key alice.key --cert alice.crt
 $ cargo run --release --example cms -- encrypt data.bin data.p7m --password-stdin
+$ cargo run --release --example cms -- sign firmware.bin firmware.p7s --signer hss.crt hss.key --detached
 $ cargo test --example cms
 $ python3 scripts/check_cms.py
 ```
@@ -1100,6 +1250,14 @@ Checked (`scripts/check_cms.py`, every content compared byte for byte):
   vectors out of `rfcs/`, replays 121 messages the witnesses wrote
   (`fixtures/cms/`), and builds the malformed messages a reader must
   refuse by editing real ones.
+- Bouncy Castle 1.85 (`scripts/make_hbs_cms_vectors.py`,
+  `vectors/hbs_cms.vec`): ours verifies twelve of its HSS, XMSS and
+  XMSS^MT messages - with and without attributes, attached and detached,
+  its own digest and named ones - and it verifies thirteen that `sign`
+  made from key files, refusing each with a byte of the signature changed
+  and over other content. `cargo test` makes six of ours again byte for
+  byte; the other seven, keys that take minutes in a debug build, are an
+  `#[ignore]`d test.
 
 Where the witnesses differ from the documents: OpenSSL 3.5 writes Ed448
 with signed attributes under plain `id-shake256`, digesting to 64 bytes,
@@ -1108,6 +1266,12 @@ RFC's, which OpenSSL cannot read. OpenSSL 3.0 has no EdDSA in CMS, and
 3.5 none without signed attributes. OpenSSL's `-binary` reading of a
 clear-signed message keeps the CR of the CRLF that RFC 2046 gives to the
 boundary, so it verifies one written to the RFC only without `-binary`.
+Bouncy Castle 1.85 takes an HSS signer's digest from the tree, and for a
+SHAKE tree writes `id-shake256-len` without its length and then fails;
+told SHAKE256, it writes RFC 9708's `id-shake256`. It writes XMSS and
+XMSS^MT SignedData under RFC 9802's identifiers and cannot verify them,
+its CMS name table having neither, so the witness supplies those two
+names.
 
 Not here: AuthenticatedData (MAC recipients), static-static ECDH
 (an originator certificate rather than an ephemeral key), X25519 and

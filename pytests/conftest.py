@@ -17,6 +17,15 @@ test here already does.
 
 Checking against real servers is a development activity, not a test. It
 lives in `scripts/check_live.py`, which is run by hand.
+
+**A test marked `slow` runs only under `--run-slow`.** It is the
+counterpart of Rust's `#[ignore]` and is held to the same four
+conditions: marked for measured cost and never because it fails; its
+docstring gives that cost and the command that runs it; a cheaper test
+that does run covers the same code paths; and it was run and passed
+before the commit that touched it. Without the option it is deselected
+rather than skipped, so a skip in the summary still means something
+went missing.
 """
 
 import ipaddress
@@ -118,3 +127,22 @@ def _no_network():
         socket.socket.connect = _real_connect
         socket.socket.connect_ex = _real_connect_ex
         socket.getaddrinfo = _real_getaddrinfo
+
+
+def pytest_addoption(parser):
+    parser.addoption("--run-slow", action="store_true",
+                     help="also run the tests marked slow")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "slow: deselected for its measured cost unless --run-slow is given")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-slow"):
+        return
+    slow = [item for item in items if "slow" in item.keywords]
+    if slow:
+        config.hook.pytest_deselected(items=slow)
+        items[:] = [item for item in items if "slow" not in item.keywords]

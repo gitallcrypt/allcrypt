@@ -1,0 +1,9 @@
+[package]
+name = "grain-witness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+grain-128aeadv2 = "=0.1.2"
+
+[workspace]

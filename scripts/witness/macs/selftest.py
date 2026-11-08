@@ -18,8 +18,8 @@
   * The 64 Chaskey and 64 Chaskey-12 tags go-chaskey's test file
     publishes, reproduced by both of its builds and by sacundim's crate;
     the three agreeing at every round count each has; the FELIX
-    Chaskey-LTS block in sacundim's tests, and volexity's own CTR test,
-    reproduced by both block ciphers.
+    Chaskey-LTS block in sacundim's tests, reproduced and decrypted back
+    by both block ciphers, and volexity's own CTR test reproduced by both.
 """
 
 import json
@@ -108,6 +108,8 @@ def check_chaskey(out):
     for witness in ("rust-chaskey", "volexity-chaskey"):
         if ask(out, witness, [f"cipher 16 {key.hex()} {plain.hex()}"]) != [cipher.hex()]:
             sys.exit(f"{witness} does not reproduce the FELIX Chaskey-LTS block")
+        if ask(out, witness, [f"decipher 16 {key.hex()} {cipher.hex()}"]) != [plain.hex()]:
+            sys.exit(f"{witness} does not decrypt the FELIX Chaskey-LTS block")
     # volexity's tests/test_chaskey.py: "foo" under CTR from the counter
     # "0000000000000000" (ASCII) and the key "0123456789012345".
     test = os.path.join(out, "src", "chaskey-lts", "tests", "test_chaskey.py")
@@ -177,7 +179,7 @@ def main():
           f"agree; LTC_FAST differs on {len(differs)} 64 bit rows; the draft's VMAC "
           f"tests reproduced and the two VMAC witnesses agree; {chaskey} published "
           f"Chaskey tags reproduced, the Chaskey witnesses agree, and both block "
-          f"ciphers give the FELIX block")
+          f"ciphers give the FELIX block and decrypt it")
 
 
 if __name__ == "__main__":

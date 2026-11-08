@@ -26,21 +26,24 @@ description and test vectors.
 
 ## What is in it
 
-- **Block ciphers** - AES, Anubis, ARIA, Blowfish, Camellia, CAST5, CAST-256, DES and 3DES, FEAL,
-  GOST 28147-89, HIGHT, IDEA, Kalyna, KASUMI, Khazad, Kuznyechik, LEA, LOKI97, Magma, MARS, MISTY1, Noekeon, PRESENT, RC2, RC5, RC6, Rijndael
+- **Block ciphers** - AES, Anubis, ARIA, Blowfish, Camellia, CAST5, CAST-256, Chaskey-LTS, DES and 3DES,
+  FEAL, GOST 28147-89, HIGHT, IDEA, Kalyna, KASUMI, Khazad, Kuznyechik, LEA, LOKI97, Magma, MARS, MISTY1, Noekeon, PRESENT, RC2, RC5, RC6, Rijndael
   at every block size, SAFER K and SK, SAFER+, SEED, Serpent, SHACAL-1 and SHACAL-2, Simon, Skipjack, SM4, Speck, Square,
   TEA, Threefish, 3-Way, Twofish, XTEA - in the modes each one's block size allows: ECB,
   CBC, PCBC, CFB, OFB, CTR, ciphertext stealing, XTS, LRW, GCM, CCM,
   EAX, OCB, MGM and key wrap.
 - **Stream ciphers** - ChaCha20 and XChaCha20, Salsa20 and XSalsa20, RC4,
-  Strumok (DSTU 8845), the eSTREAM ciphers (Rabbit, HC-128 and HC-256,
-  SOSEMANUK, Trivium, Grain v1 and Grain-128), ZipCrypto, and WEP and
-  TKIP's constructions on top of them.
+  Strumok (DSTU 8845), ISAAC and ISAAC-64, the eSTREAM ciphers (Rabbit, HC-128 and HC-256,
+  SOSEMANUK, Trivium, Grain v1 and Grain-128, and Grain-128AEAD v1 and v2), SNOW 3G, ZUC-128 and
+  ZUC-256 with the 3GPP algorithms over them and KASUMI (UEA1, UIA1, UEA2, UIA2, 128-EEA1/EIA1,
+  128-EEA3/EIA3, 5G's 256-NEA6/NIA6/NCA6), ZipCrypto, and WEP and TKIP's constructions on top of
+  them.
 - **Hashes** - MD2, MD4, MD5, SHA-0 to SHA-3, SHAKE, Keccak, BLAKE, BLAKE2, BLAKE3, Grøstl, JH, Skein,
   RIPEMD-128 to -320, HAS-160, SM3, Whirlpool and its two earlier
   versions, MD6, Tiger, HAVAL, Snefru, Streebog, GOST R 34.11-94, Ukraine's GOST 34.311-95
   and Kupyna, Korea's LSH, the fuzzy hashes ssdeep and CTPH, and the
-  checksums CRC-32, CRC-32C, Adler-32, Fletcher's and FNV.
+  checksums: any CRC from its parameters and the CRC catalogue by name,
+  Adler-32, Fletcher's and FNV.
 - **MACs and key derivation** - HMAC, CMAC, CBC-MAC, Poly1305, UMAC,
   SipHash;
   PBKDF1 and 2, scrypt, Argon2, HKDF, SP 800-108, Windows's NT and LM
@@ -49,7 +52,8 @@ description and test vectors.
   ElGamal, ECDSA and ECDH on the NIST, secp256k1, SM2 and GOST curves,
   X25519 and X448, Ed25519 and Ed448, GOST R 34.10, SM2, and Ukraine's
   DSTU 4145 over binary curves and DSTU 9041 encryption over twisted
-  Edwards curves. RSA, finite-field Diffie-Hellman, ECDSA,
+  Edwards curves; HPKE (RFC 9180) over those curves and ML-KEM, with
+  the post-quantum hybrids. RSA, finite-field Diffie-Hellman, ECDSA,
   EdDSA, X25519, X448, DSTU 4145, ML-KEM and ML-DSA keep
   their secrets in fixed-width arithmetic, checked for constant time
   under valgrind; the leaks that remain elsewhere are named in
@@ -57,8 +61,9 @@ description and test vectors.
 - **NaCl and libsodium** - secretbox, box and sealed boxes on XSalsa20
   and XChaCha20, key exchange, `crypto_auth`, combined signatures and
   Ed25519-to-X25519 keys, byte for byte with libsodium.
-- **Post-quantum** - ML-KEM, ML-DSA, SLH-DSA, Streamlined NTRU Prime, and
-  the hybrid key exchanges TLS and SSH use.
+- **Post-quantum** - ML-KEM, ML-DSA, SLH-DSA, the stateful hash
+  signatures LMS, HSS, XMSS and XMSS^MT, Streamlined NTRU Prime, and the
+  hybrid key exchanges TLS and SSH use.
 - **Certificates and keys** - X.509 parsing, chain verification and
   building, CRLs, OCSP, name constraints, PEM and PKCS#8 keys, encrypted
   keys, and Java's key stores.

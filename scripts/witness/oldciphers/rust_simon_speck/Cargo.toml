@@ -1,0 +1,10 @@
+[package]
+name = "simon-speck-witness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+speck-cipher = "=0.1.0"
+cryptography-rs = "=0.8.0"
+
+[workspace]

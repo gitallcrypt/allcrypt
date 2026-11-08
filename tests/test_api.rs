@@ -162,11 +162,14 @@ fn test_facade_update_into() {
 /// silently given the wrong length.
 fn stream_nonce(name: &str) -> Vec<u8> {
     match name {
-        "rc4" | "zipcrypto" => vec![],
+        "rc4" | "zipcrypto" | "isaac" | "isaac-bouncycastle" | "isaac64" => vec![],
         "salsa20" | "salsa12" | "salsa8" | "rabbit" | "grainv1" => iv(8),
         "trivium" => iv(10),
         "grain128" => iv(12),
-        "hc128" | "sosemanuk" => iv(16),
+        "hc128" | "sosemanuk" | "snow3g" | "zuc128" | "zuc256-3gpp" => iv(16),
+        // ZUC-256's IV packed: any 23 bytes are one, where the 25 byte form
+        // has six bit values that iv(25) would overfill.
+        "zuc256" => iv(23),
         "xchacha20" | "xsalsa20" => iv(24),
         "strumok" | "hc256" => iv(32),
         _ => iv(12),
@@ -609,7 +612,7 @@ fn test_aead_through_the_api() {
     // fails if they do not.
     assert_eq!(AEADS, &["aes-gcm", "aes-ccm", "aes-ccm-8", "aria-gcm", "camellia-gcm", "sm4-gcm",
                         "aria-ccm", "camellia-ccm", "sm4-ccm", "chacha20-poly1305",
-                        "xchacha20-poly1305", "aes-eax", "twofish-eax", "serpent-eax", "camellia-eax",
+                        "xchacha20-poly1305", "grain128aeadv2", "grain128aeadv1", "aes-eax", "twofish-eax", "serpent-eax", "camellia-eax",
                         "sm4-eax", "des-eax", "3des-eax", "blowfish-eax",
                         "tea-eax", "xtea-eax", "rc5-eax", "aria-eax", "rc6-eax",
                         "cast256-eax", "mars-eax", "khazad-eax", "anubis-eax", "noekeon-eax",
@@ -618,7 +621,7 @@ fn test_aead_through_the_api() {
                         "square-eax", "kasumi-eax", "misty1-eax", "saferplus-eax",
                         "saferplus-reversed-words-eax", "loki97-eax", "loki97-mcrypt-eax", "lea-eax",
                         "hight-eax", "speck64-eax", "speck128-eax", "simon64-eax",
-                        "simon128-eax", "present-eax", "feal-eax", "feal-nx-eax",
+                        "simon128-eax", "present-eax", "feal-eax", "feal-nx-eax", "chaskey-lts-eax",
                         "threefish256-eax", "threefish512-eax", "threefish1024-eax",
                         "shacal2-eax", "kalyna-256-eax", "kalyna-512-eax",
                         "rijndael-160-eax", "rijndael-192-eax", "rijndael-224-eax",
@@ -633,13 +636,13 @@ fn test_aead_through_the_api() {
                         "square-mgm", "kasumi-mgm", "misty1-mgm", "saferplus-mgm",
                         "saferplus-reversed-words-mgm", "loki97-mgm", "loki97-mcrypt-mgm", "lea-mgm",
                         "hight-mgm", "speck64-mgm", "speck128-mgm", "simon64-mgm",
-                        "simon128-mgm", "present-mgm", "feal-mgm", "feal-nx-mgm",
+                        "simon128-mgm", "present-mgm", "feal-mgm", "feal-nx-mgm", "chaskey-lts-mgm",
                         "aes-ocb", "camellia-ocb", "twofish-ocb", "serpent-ocb",
                         "aria-ocb", "sm4-ocb", "seed-ocb", "kuznyechik-ocb", "rc6-ocb",
                         "cast256-ocb", "mars-ocb", "anubis-ocb", "noekeon-ocb",
                         "noekeon-indirect-ocb", "square-ocb", "saferplus-ocb",
                         "saferplus-reversed-words-ocb", "loki97-ocb", "loki97-mcrypt-ocb", "lea-ocb",
-                        "speck128-ocb", "simon128-ocb",
+                        "speck128-ocb", "simon128-ocb", "chaskey-lts-ocb",
                         "aes-128-cbc-hmac-sha256",
                         "aes-192-cbc-hmac-sha384",
                         "aes-256-cbc-hmac-sha512", "kalyna-128-gcm", "kalyna-256-gcm",
@@ -653,7 +656,8 @@ fn test_aead_through_the_api() {
         ("aes-ccm-8", 16), ("aes-ccm-8", 32),
         ("aria-gcm", 16), ("aria-gcm", 32), ("camellia-gcm", 24), ("sm4-gcm", 16),
         ("aria-ccm", 24), ("camellia-ccm", 16), ("camellia-ccm", 32), ("sm4-ccm", 16),
-        ("chacha20-poly1305", 32), ("xchacha20-poly1305", 32),
+        ("chacha20-poly1305", 32), ("xchacha20-poly1305", 32), ("grain128aeadv2", 16),
+        ("grain128aeadv1", 16),
         // EAX, over a cipher of each block size the catalogue offers -
         // 64 and 128 bit, and 160 to 1024 - because EAX's OMAC tweak is
         // a whole block and the sizes other than 16 are where an
@@ -673,6 +677,7 @@ fn test_aead_through_the_api() {
         ("loki97-eax", 16), ("loki97-mcrypt-eax", 24), ("lea-eax", 32),
         ("hight-eax", 16), ("speck64-eax", 12), ("speck128-eax", 32), ("simon64-eax", 16),
         ("simon128-eax", 24), ("present-eax", 10), ("feal-eax", 8), ("feal-nx-eax", 16),
+        ("chaskey-lts-eax", 16),
         ("threefish256-eax", 32), ("threefish512-eax", 64), ("threefish1024-eax", 128),
         ("shacal2-eax", 16), ("shacal2-eax", 64), ("kalyna-256-eax", 32),
         ("kalyna-256-eax", 64), ("kalyna-512-eax", 64), ("rijndael-160-eax", 20),
@@ -696,6 +701,7 @@ fn test_aead_through_the_api() {
         ("loki97-mgm", 24), ("loki97-mcrypt-mgm", 32), ("lea-mgm", 16),
         ("hight-mgm", 16), ("speck64-mgm", 16), ("speck128-mgm", 24), ("simon64-mgm", 12),
         ("simon128-mgm", 16), ("present-mgm", 16), ("feal-mgm", 8), ("feal-nx-mgm", 16),
+        ("chaskey-lts-mgm", 16),
         // OCB, 128 bit blocks only.
         ("aes-ocb", 16), ("aes-ocb", 24), ("aes-ocb", 32),
         ("camellia-ocb", 16), ("twofish-ocb", 32), ("serpent-ocb", 32),
@@ -704,7 +710,7 @@ fn test_aead_through_the_api() {
         ("mars-ocb", 20), ("anubis-ocb", 32), ("noekeon-ocb", 16),
         ("noekeon-indirect-ocb", 16), ("square-ocb", 16), ("saferplus-ocb", 16),
         ("saferplus-reversed-words-ocb", 24), ("loki97-ocb", 32), ("loki97-mcrypt-ocb", 16),
-        ("lea-ocb", 24), ("speck128-ocb", 16), ("simon128-ocb", 32),
+        ("lea-ocb", 24), ("speck128-ocb", 16), ("simon128-ocb", 32), ("chaskey-lts-ocb", 16),
         // AES-CBC with HMAC: one key size each, the MAC key and the AES
         // key together.
         ("aes-128-cbc-hmac-sha256", 32), ("aes-192-cbc-hmac-sha384", 48),
@@ -786,6 +792,9 @@ fn test_aead_through_the_api() {
         } else if aead.contains("-cbc-hmac-") {
             // Half the key: the MAC key's length.
             key_len / 2
+        } else if aead.starts_with("grain128aead") {
+            // Grain-128AEAD's accumulator is 64 bits.
+            8
         } else {
             16
         };
@@ -835,7 +844,10 @@ fn test_aead_through_the_api() {
             || aead.ends_with("-eax") || aead.ends_with("-mgm") || aead.ends_with("-ocb")
             || aead.contains("-cbc-hmac-")
             // Kalyna's GCM is one-shot here, as EAX is.
-            || aead.starts_with("kalyna-");
+            || aead.starts_with("kalyna-")
+            // Grain-128AEAD authenticates the plaintext, so a decryption
+            // could only stream by releasing it before the tag is checked.
+            || aead.starts_with("grain128aead");
         assert_eq!(buffers, expected_to_buffer,
                    "{} disagrees about whether it buffers", aead);
         if buffers {
@@ -2146,4 +2158,75 @@ fn test_gost_key_agreement_and_28147_export_through_the_api() {
                api::cryptopro_kek_diversify(&iv, &key, Some("id-tc26-gost-28147-param-Z"))
                    .unwrap());
     assert!(api::cryptopro_kek_diversify(&iv[..7], &key, None).is_err());
+}
+
+/// HPKE through the API: every KEM, KDF and AEAD by the name the
+/// documents print, round trip in every mode the suite allows, exports
+/// agreeing, and the mode's inputs checked. The bytes are checked against
+/// RFC 9180's and the drafts' vectors in `publickey_ciphers::hpke`.
+#[test]
+fn test_hpke_through_the_api() {
+    use allcrypt::api::{hpke_names, HpkeSuite};
+    let (kems, kdfs, aeads) = hpke_names();
+    assert_eq!((kems.len(), kdfs.len(), aeads.len()), (11, 7, 4));
+    for kem in &kems {
+        for (kdf, aead) in [("HKDF-SHA256", "AES-128-GCM"), ("HKDF-SHA512", "ChaCha20Poly1305"),
+                            ("SHAKE256", "AES-256-GCM"), ("SHAKE128", "export only"),
+                            ("TurboSHAKE128", "ChaCha20Poly1305"),
+                            ("TurboSHAKE256", "AES-128-GCM")] {
+            let suite = HpkeSuite::new(kem, kdf, aead).unwrap();
+            assert_eq!(suite.names(), (*kem, kdf, aead));
+            let (kem_id, kdf_id, aead_id) = suite.ids();
+            assert_eq!(HpkeSuite::from_ids(kem_id, kdf_id, aead_id).unwrap(), suite);
+            let (sk, pk) = suite.derive_key_pair(b"input keying material, 32 bytes!..").unwrap();
+            assert_eq!(suite.public_key(&sk).unwrap(), pk);
+            let (sender_sk, sender_pk) = suite.generate_key_pair().unwrap();
+            let auth = kem.starts_with("DHKEM") && !kdf.contains("SHAKE");
+            for (psk, sender) in [(None, false), (Some((&b"a pre-shared key"[..], &b"id"[..])), false),
+                                  (None, true), (Some((&b"a pre-shared key"[..], &b"id"[..])), true)] {
+                let sending = sender.then_some(&sender_sk[..]);
+                let receiving = sender.then_some(&sender_pk[..]);
+                let setup = suite.setup_sender(&pk, b"info", psk, sending, None);
+                if sender && !auth {
+                    assert!(setup.is_err(), "{kem} {kdf}: auth mode allowed");
+                    continue;
+                }
+                let (enc, mut sealer) = setup.unwrap_or_else(|e| panic!("{kem} {kdf}: {e}"));
+                let mut opener = suite.setup_receiver(&enc, &sk, b"info", psk, receiving).unwrap();
+                assert_eq!(sealer.export(b"label", 40).unwrap(), opener.export(b"label", 40).unwrap());
+                if aead == "export only" {
+                    assert!(sealer.seal(b"", b"x").is_err());
+                    continue;
+                }
+                for n in 0..3u8 {
+                    let ct = sealer.seal(&[n], b"a message").unwrap();
+                    assert!(opener.open(&[n + 1], &ct).is_err(), "{kem}: wrong aad opened");
+                    assert_eq!(opener.open(&[n], &ct).unwrap(), b"a message");
+                }
+                assert_eq!((sealer.sequence(), opener.sequence()), (3, 3));
+                // A different info is a different key schedule.
+                let mut other = suite.setup_receiver(&enc, &sk, b"other", psk, receiving).unwrap();
+                assert!(other.open(&[0], &sealer.seal(&[0], b"m").unwrap()).is_err());
+            }
+            let (enc, ct) = suite.seal(&pk, b"i", b"a", b"single", None, None).unwrap_or_else(|e| {
+                assert_eq!(aead, "export only", "{e}");
+                (Vec::new(), Vec::new())
+            });
+            if aead != "export only" {
+                assert_eq!(suite.open(&enc, &sk, b"i", b"a", &ct, None, None).unwrap(), b"single");
+            }
+        }
+    }
+    let suite = HpkeSuite::new("X25519", "hkdf-sha256", "chacha20-poly1305").unwrap();
+    let (_, pk) = suite.generate_key_pair().unwrap();
+    assert!(suite.setup_sender(&pk, b"", Some((b"", b"id")), None, None).is_err());
+    assert!(suite.setup_sender(&pk, b"", Some((b"psk", b"")), None, None).is_err());
+    assert!(suite.setup_sender(&pk[..31], b"", None, None, None).is_err());
+    assert_eq!(HpkeSuite::new("x-wing", "0x0001", "0x0003").unwrap().ids(), (0x647a, 1, 3));
+    for bad in [("X25520", "HKDF-SHA256", "AES-128-GCM"), ("X25519", "TurboSHAKE512", "AES-128-GCM"),
+                ("X25519", "HKDF-SHA256", "AES-192-GCM")] {
+        assert!(HpkeSuite::new(bad.0, bad.1, bad.2).is_err(), "{bad:?}");
+    }
+    assert_eq!(HpkeSuite::from_ids(0x20, 0x12, 1).unwrap().names().1, "TurboSHAKE128");
+    assert!(HpkeSuite::from_ids(0x20, 0x14, 1).is_err());
 }

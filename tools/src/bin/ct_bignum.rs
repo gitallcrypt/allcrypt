@@ -696,6 +696,20 @@ fn run(case: &str) {
             }
         }
 
+        "chaskey_lts_blocks" => {
+            // A block each way under a secret key, secret data.
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            use allcrypt::block_ciphers::chaskey_lts::ChaskeyLts;
+            let mut cipher = ChaskeyLts::new(&key[..16]).unwrap();
+            let mut out = Vec::new();
+            cipher.block_encrypt(&data[..16], &mut out);
+            let mut back = Vec::new();
+            cipher.block_decrypt(&out, &mut back);
+            publish_bytes(&out);
+            publish_bytes(&back);
+        }
+
         "shacal2_blocks" => {
             // The key schedule at a 64-byte key and a block each way,
             // secret key and data: SHA-256's round, words only.
@@ -774,6 +788,49 @@ fn run(case: &str) {
             publish_bytes(&z);
         }
 
+        "snow3g_keystream" => {
+            // A secret key and IV and 300 bytes of keystream, then UEA2,
+            // UIA2 and 128-EIA1 under a secret key: the set-up, S1 and S2
+            // by masked scans, MULα and DIVα by masked folds, and UIA2's
+            // multiplications in GF(2^64).
+            let key = secret_bytes32(AES_XTS_KEY);
+            let mut snow =
+                allcrypt::stream_ciphers::snow3g::Snow3g::new(&key[..16], &key[16..32]).unwrap();
+            let mut z = vec![0u8; 300];
+            snow.apply_keystream(&mut z);
+            publish_bytes(&z);
+            let data = public_bytes(&AES_DATA[..200]);
+            use allcrypt::stream_ciphers::mobile;
+            publish_bytes(&mobile::uea2(&key[32..48], 0x1234_5678, 5, 1, &data, 797).unwrap());
+            publish_bytes(&mobile::uia2(&key[32..48], 0x1234_5678, 0x9abc_def0, 1, &data, 797)
+                .unwrap());
+            publish_bytes(&mobile::eia1(&key[48..64], 7, 3, 0, &data, 800).unwrap());
+        }
+
+        "zuc_keystream" => {
+            // ZUC-128 and ZUC-256 under secret keys and IVs, 300 bytes of
+            // keystream each, then 128-EEA3, 128-EIA3 and the ZUC-256 MAC
+            // at all three tag sizes under secret keys: S0 and S1 by masked
+            // scans, and the LFSR's additions mod 2^31 - 1.
+            let key = secret_bytes32(AES_XTS_KEY);
+            use allcrypt::stream_ciphers::{mobile, zuc};
+            let mut z128 = zuc::Zuc::zuc128(&key[..16], &key[16..32]).unwrap();
+            let mut z = vec![0u8; 300];
+            z128.apply_keystream(&mut z);
+            publish_bytes(&z);
+            let mut z256 = zuc::Zuc::zuc256(&key[..32], &key[32..55]).unwrap();
+            let mut z = vec![0u8; 300];
+            z256.apply_keystream(&mut z);
+            publish_bytes(&z);
+            let data = public_bytes(&AES_DATA[..200]);
+            publish_bytes(&mobile::eea3(&key[32..48], 0x1234_5678, 5, 1, &data, 797).unwrap());
+            publish_bytes(&mobile::eia3(&key[48..64], 7, 3, 0, &data, 797).unwrap());
+            for tag in [32, 64, 128] {
+                publish_bytes(&zuc::zuc256_mac(&key[..32], &[0x5a; 23], tag, &data, 797)
+                    .unwrap());
+            }
+        }
+
         "hc128_keystream" => {
             let key = secret_bytes32(AES_KEY);
             let mut hc = allcrypt::stream_ciphers::hc::Hc128::new(&key[..16], &[0x5a; 16]).unwrap();
@@ -787,6 +844,37 @@ fn run(case: &str) {
             let mut hc = allcrypt::stream_ciphers::hc::Hc256::new(&key[..32], &[0x5a; 32]).unwrap();
             let mut z = vec![0u8; 300];
             hc.apply_keystream(&mut z);
+            publish_bytes(&z);
+        }
+
+        "grain128aead" => {
+            // A seal and an open under a secret key, secret data across
+            // the 16 bit steps, secret associated data; both versions.
+            use allcrypt::stream_ciphers::grain128aead::{decrypt_version, encrypt_version,
+                                                         Version};
+            let key = secret_bytes32(AES_KEY);
+            let data = secret_bytes32(AES_DATA);
+            for version in [Version::V2, Version::V1] {
+                let (ct, tag) = encrypt_version(version, &key[..16], &key[16..28], &data[..5],
+                                                &data[5..]).unwrap();
+                let back = decrypt_version(version, &key[..16], &key[16..28], &data[..5], &ct,
+                                           &tag).unwrap();
+                publish_bytes(&ct);
+                publish_bytes(&tag);
+                publish_bytes(&back);
+            }
+        }
+
+        "isaac_keystream" => {
+            // Both sizes and Bouncy Castle's reading, across a block
+            // boundary, under a secret key.
+            use allcrypt::stream_ciphers::isaac::{Isaac, Isaac64, IsaacBouncyCastle};
+            use allcrypt::stream_ciphers::StreamCipher;
+            let key = secret_bytes32(AES_KEY);
+            let mut z = Vec::new();
+            Isaac::new(&key).unwrap().crypt(&[0u8; 1100], &mut z);
+            Isaac64::new(&key).unwrap().crypt(&[0u8; 2100], &mut z);
+            IsaacBouncyCastle::new(&key).unwrap().crypt(&[0u8; 1100], &mut z);
             publish_bytes(&z);
         }
 
@@ -1206,13 +1294,18 @@ const CASES: &[&str] = &[
     "khazad_blocks",
     "anubis_blocks",
     "noekeon_blocks",
+    "chaskey_lts_blocks",
     "shacal2_blocks",
     "strumok_keystream",
     "rabbit_keystream",
     "sosemanuk_keystream",
     "trivium_keystream",
     "grain_keystream",
+    "snow3g_keystream",
+    "zuc_keystream",
     "hc128_keystream",
+    "grain128aead",
+    "isaac_keystream",
     "hc256_keystream",
     "dstu9041_public_key",
     "aes_gcm_seal",

@@ -57,6 +57,17 @@ pub enum SigningKey<'a> {
     /// context, hedged. The builder's `hash` field is ignored, as for
     /// ML-DSA.
     SlhDsa(&'a crate::api::SlhDsaKey),
+    /// HSS, RFC 9708 and RFC 9802. **A stateful key**: every signature
+    /// spends a one-time key and advances it, so the builder takes it
+    /// through a `RefCell` and each certificate, CRL or response it signs
+    /// moves the key on by one. Save the key (`to_bytes`) after signing
+    /// and before the result is published, or the next signature reuses
+    /// a one-time key. The builder's `hash` field is ignored: the hash is
+    /// the parameter set's.
+    Hss(&'a std::cell::RefCell<crate::pq::lms::HssPrivateKey>),
+    /// XMSS or XMSS^MT, RFC 9802 - which one the key's parameter set
+    /// says. Stateful in the same way as `Hss`.
+    Xmss(&'a std::cell::RefCell<crate::pq::xmss::XmssPrivateKey>),
     /// DSA, RFC 3279: hash, then sign with RFC 6979 nonces, and the
     /// signature a DER `Dss-Sig-Value`.
     Dsa(&'a crate::publickey_ciphers::dsa::DsaPrivateKey),
@@ -123,6 +134,11 @@ pub enum SubjectKey<'a> {
     /// HashSLH-DSA OID (`None` for pure), and `PK.seed || PK.root` as
     /// the BIT STRING (RFC 9909 section 5).
     SlhDsa { parameter_set: &'static str, pre_hash: Option<&'static str>, key: &'a [u8] },
+    /// An HSS, XMSS or XMSS^MT key: the scheme, and the raw public key -
+    /// RFC 8554's or RFC 8391's encoding - as the BIT STRING, under the
+    /// scheme's OID with absent parameters (RFC 9802 section 5). The
+    /// writer checks the key names a parameter set this library has.
+    HashSig { scheme: crate::x509::HashSig, key: &'a [u8] },
     /// A DSA key: the group goes in the AlgorithmIdentifier as Dss-Parms
     /// and `y` in the BIT STRING as an INTEGER.
     Dsa(&'a crate::publickey_ciphers::dsa::DsaPublicKey),
@@ -191,6 +207,8 @@ impl<'a> SigningKey<'a> {
             (SigningKey::MlDsa(key), _) => crate::x509::ml_dsa_oid(key.parameter_set())?,
             (SigningKey::SlhDsa(key), _) =>
                 crate::x509::slh_dsa_oid(key.parameter_set(), key.pre_hash())?,
+            (SigningKey::Hss(_), _) => oids::ID_ALG_HSS_LMS_HASHSIG,
+            (SigningKey::Xmss(key), _) => crate::x509::HashSig::of_xmss(key.borrow().params()).oid(),
             // GOST 34.311's OID is the key's, which names the byte order;
             // Kupyna's say nothing of it, and the key decides.
             (SigningKey::Dstu4145 { little_endian, .. }, "gost34311") =>
@@ -277,6 +295,13 @@ impl<'a> SigningKey<'a> {
             SigningKey::SlhDsa(key) => key_identifier(&SubjectKey::SlhDsa {
                 parameter_set: key.parameter_set(), pre_hash: key.pre_hash(),
                 key: key.public_bytes() }),
+            SigningKey::Hss(key) => key_identifier(&SubjectKey::HashSig {
+                scheme: crate::x509::HashSig::Hss, key: &key.borrow().public_key() }),
+            SigningKey::Xmss(key) => {
+                let key = key.borrow();
+                key_identifier(&SubjectKey::HashSig {
+                    scheme: crate::x509::HashSig::of_xmss(key.params()), key: &key.public_key() })
+            }
             SigningKey::Dsa(key) => key_identifier(&SubjectKey::Dsa(&key.public)),
             SigningKey::Dstu4145 { curve, private, dke, little_endian } => {
                 let point = curve.public_key(private)?;
@@ -305,6 +330,10 @@ impl<'a> SigningKey<'a> {
             // RFC 9909 section 4: the empty context, and the pre-hash the
             // key's OID fixes.
             SigningKey::SlhDsa(key) => key.sign(tbs, &[], key.pre_hash()),
+            // RFC 9802 section 7: the scheme signs the message whole, and
+            // the signature goes in the BIT STRING as it is.
+            SigningKey::Hss(key) => key.borrow_mut().sign(tbs),
+            SigningKey::Xmss(key) => key.borrow_mut().sign(tbs),
             SigningKey::Dstu4145 { curve, private, dke, little_endian } =>
                 SigningKey::sign_dstu4145(curve, private, *dke, *little_endian, hash, tbs),
             SigningKey::External { sign, .. } => sign(hash, tbs),
@@ -343,7 +372,8 @@ impl<'a> SigningKey<'a> {
             SigningKey::Gost { .. } | SigningKey::Gost2001 { .. } =>
                 unreachable!("handled in sign_gost"),
             SigningKey::Eddsa { .. } => unreachable!("handled in sign_eddsa"),
-            SigningKey::MlDsa(_) | SigningKey::SlhDsa(_) | SigningKey::Dstu4145 { .. } =>
+            SigningKey::MlDsa(_) | SigningKey::SlhDsa(_) | SigningKey::Hss(_)
+                | SigningKey::Xmss(_) | SigningKey::Dstu4145 { .. } =>
                 unreachable!("handled in sign_signed_data"),
             SigningKey::External { .. } => unreachable!("handled above"),
         }
@@ -635,6 +665,15 @@ pub(crate) fn write_spki(writer: &mut Writer, subject_key: &SubjectKey<'_>)
                     let mut y = Writer::new();
                     y.write_integer(&key.y);
                     w.write_bit_string(&y.finish());
+                });
+            }
+            SubjectKey::HashSig { scheme, key } => {
+                crate::x509::hash_sig_key_name(*scheme, key)?;
+                writer.write_sequence(|w| {
+                    w.write_sequence(|w| {
+                        w.write_oid(scheme.oid());
+                    });
+                    w.write_bit_string(key);
                 });
             }
             SubjectKey::MlDsa { parameter_set, key } | SubjectKey::MlKem { parameter_set, key }

@@ -457,6 +457,10 @@ CASES = [
     ("noekeon_blocks", CLEAN,
      "Noekeon in both key modes and a block each way, secret key and data: "
      "bitsliced by design, words, rotations and Boolean operations only."),
+    ("chaskey_lts_blocks", CLEAN,
+     "the Chaskey-LTS block cipher, a block each way under a secret key and "
+     "data: the key XORed in either side of the 16 round permutation and "
+     "its inverse, additions, subtractions, rotations and XORs of words."),
     ("shacal2_blocks", CLEAN,
      "SHACAL-2's key schedule at a 64-byte key and a block each way, secret "
      "key and data: SHA-256's round, additions, rotations and Boolean "
@@ -484,12 +488,39 @@ CASES = [
      "Grain v1 and Grain-128 under secret keys and IVs: the registers as "
      "128 bit words, 16 or 32 clocks at a time by shifts, ANDs and XORs, "
      "the set-up's output added back the same way."),
+    ("snow3g_keystream", CLEAN,
+     "SNOW 3G under a secret key and IV, and UEA2, UIA2 and 128-EIA1 under "
+     "secret keys: SR and SQ read by masked scans of all 256 entries, the "
+     "MixColumns' doubling with a masked reduction, MULα and DIVα as masked "
+     "XORs of a word per input bit, UIA2's GF(2^64) products a masked step "
+     "per bit."),
+    ("zuc_keystream", CLEAN,
+     "ZUC-128 and ZUC-256 under secret keys and IVs, and 128-EEA3, 128-EIA3 "
+     "and the ZUC-256 MAC at 32, 64 and 128 bits under secret keys: S0 and S1 "
+     "by masked scans, the additions mod 2^31 - 1 folding the carry back in, "
+     "and each MAC window added under a mask."),
     ("hc128_keystream", {"allcrypt::stream_ciphers::hc::h128"},
      "HC-128 under a secret key: the initialisation's 1024 steps and the "
      "keystream. h reads two words of the other table at indices from the "
      "state, which is the design - every implementation does - and is "
      "documented in stream_ciphers/hc.rs and docs/pitfalls.md. The update, "
      "whose indices are the public step counter, must stay out of the list."),
+    ("grain128aead", {"allcrypt::stream_ciphers::grain128aead::decrypt_version"},
+     "Grain-128AEADv2 and v1 sealed and opened under a secret key and nonce "
+     "over secret associated data and plaintext: v2's 384 initialisation "
+     "clocks with the key tweak, v1's 256 and the key added during the 128 "
+     "that fill the accumulator and register, the 32 clock steps, the even "
+     "and odd split and the masked accumulation. The report, once per "
+     "version, is the verdict, the branch on whether the tag matched, which "
+     "the caller learns anyway."),
+    ("isaac_keystream", {"allcrypt::stream_ciphers::isaac::ind32",
+                         "allcrypt::stream_ciphers::isaac::ind64"},
+     "ISAAC, ISAAC-64 and Bouncy Castle's reading under a secret key, past a "
+     "block: randinit's mixing and the generator. ind32 and ind64 are its "
+     "reads of m[x >> 2] and m[y >> 10], at indices from the state, which is the design - every "
+     "implementation does - and is documented in stream_ciphers/isaac.rs and "
+     "docs/pitfalls.md. The seeding, whose indices are public, must stay out "
+     "of the list."),
     ("hc256_keystream", {"allcrypt::stream_ciphers::hc::h256",
                          "allcrypt::stream_ciphers::hc::g256"},
      "HC-256 under a secret key: the initialisation's 4096 steps and the "
@@ -694,16 +725,60 @@ def strip_trailing_generics(name):
     return name
 
 
+def erase_generic_args(path):
+    """`path` with each generic argument list replaced by `<_>`, which is
+    how the legacy scheme prints a generic type's arguments: v0 prints
+    `Engine<4>` where legacy prints `Engine<_>`."""
+    out, depth = [], 0
+    for ch in path:
+        if ch == "<":
+            if depth == 0:
+                out.append("<_")
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+            if depth == 0:
+                out.append(">")
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+def bare_generic_type(name):
+    """`(Type, method)` for `<Type>::method` where `Type` has generic
+    arguments of its own - `<allcrypt::ec::dstu9041::Engine<4>>::scalar` -
+    which BARE_TYPE's bracket-free pattern cannot match. Brackets are
+    counted; a trait method (`<Type as Trait>`) is not this shape."""
+    if not name.startswith("<"):
+        return None
+    depth = 0
+    for i, ch in enumerate(name):
+        if ch == "<":
+            depth += 1
+        elif ch == ">" and not (i > 0 and name[i - 1] == "-"):
+            depth -= 1
+            if depth == 0:
+                inner, rest = name[1:i], name[i + 1:]
+                if not rest.startswith("::") or " as " in inner:
+                    return None
+                return erase_generic_args(inner), rest[2:]
+    return None
+
+
 def canonical(name):
     """`Type::method` for a method in either demangling, with any trailing
-    generic arguments dropped; anything else unchanged. A trait method,
-    `<Type as Trait>::method`, is spelled the same way by both schemes
-    and is left alone."""
+    generic arguments dropped and a generic type's own arguments written
+    `<_>`; anything else unchanged. A trait method, `<Type as
+    Trait>::method`, is spelled the same way by both schemes and is left
+    alone."""
     name = strip_trailing_generics(name.strip())
     for pattern in (IMPL_BLOCK, BARE_TYPE):
         match = pattern.match(name)
         if match:
             return "{}::{}".format(match.group(1), match.group(2))
+    generic = bare_generic_type(name)
+    if generic:
+        return "{}::{}".format(*generic)
     return name
 
 
@@ -720,11 +795,18 @@ def canonical_self_test():
          "<allcrypt::ec::Curve>::scalar_mul_secret_bytes"),
         ("is_some_and<core::cmp::Ordering, fn(core::cmp::Ordering) -> bool>",
          "is_some_and::<core::cmp::Ordering, fn(core::cmp::Ordering) -> bool>"),
+        # A method of a generic type: legacy's `<_>` and v0's arguments.
+        ("allcrypt::ec::dstu9041::Engine<_>::scalar",
+         "<allcrypt::ec::dstu9041::Engine<4>>::scalar"),
+        ("allcrypt::ec::dstu9041::Engine<_>::scalar",
+         "<allcrypt::ec::dstu9041::Engine<8>>::scalar"),
     ]
     different = [
         ("allcrypt::ec::Curve::sign", "allcrypt::ec::Curve::gost_sign"),
         ("<allcrypt::ec::Curve as core::fmt::Debug>::fmt", "allcrypt::ec::Curve::fmt"),
         ("normalise", "unmask"),
+        ("<allcrypt::ec::dstu9041::Engine<4> as core::fmt::Debug>::fmt",
+         "allcrypt::ec::dstu9041::Engine<_>::fmt"),
     ]
     if shutil.which("c++filt") is not None:
         # Symbols as valgrind 3.18 prints them, from a real run.

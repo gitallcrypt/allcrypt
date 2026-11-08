@@ -3418,6 +3418,13 @@ _OID_EQUIVALENTS = {
     "ID_HASH_SLH_DSA_SHAKE_192F_WITH_SHAKE256": None,
     "ID_HASH_SLH_DSA_SHAKE_256S_WITH_SHAKE256": None,
     "ID_HASH_SLH_DSA_SHAKE_256F_WITH_SHAKE256": None,
+    # RFC 9708's and RFC 9802's three: python-cryptography has no name for
+    # them. Bouncy Castle 1.85 reads and writes certificates carrying them
+    # (`vectors/hbs_x509.vec`), RFC 9802's appendices carry all three, and
+    # the vendored RFCs state each one (`_OID_IN_RFCS`).
+    "ID_ALG_HSS_LMS_HASHSIG": None,
+    "ID_ALG_XMSS_HASHSIG": None,
+    "ID_ALG_XMSSMT_HASHSIG": None,
 
     # Password based encryption, PKCS#5 and PKCS#12. None of these is in
     # python-cryptography's `x509.oid` - those tables are about
@@ -3821,6 +3828,11 @@ _OID_IN_RFCS = {
     "ID_HASH_SLH_DSA_SHAKE_192F_WITH_SHAKE256": "id-hash-slh-dsa-shake-192f-with-shake256",
     "ID_HASH_SLH_DSA_SHAKE_256S_WITH_SHAKE256": "id-hash-slh-dsa-shake-256s-with-shake256",
     "ID_HASH_SLH_DSA_SHAKE_256F_WITH_SHAKE256": "id-hash-slh-dsa-shake-256f-with-shake256",
+    # RFC 9708 section 3 (RFC 9802's id-alg-mts-hashsig) and RFC 9802
+    # section 4.
+    "ID_ALG_HSS_LMS_HASHSIG": "id-alg-hss-lms-hashsig",
+    "ID_ALG_XMSS_HASHSIG": "id-alg-xmss-hashsig",
+    "ID_ALG_XMSSMT_HASHSIG": "id-alg-xmssmt-hashsig",
 
     # Password based encryption. RFC 8018 assigns the PKCS#5 ones and
     # the PBKDF2 PRFs; RFC 7292 assigns the PKCS#12 ones.

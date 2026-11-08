@@ -151,6 +151,14 @@ to be someone's CVE.**
 - [7zzzzzzzzzb. Chaskey](#7zzzzzzzzzb-chaskey)
 - [7zzzzzzzzzc. Rabbit, HC-128, HC-256 and SOSEMANUK](#7zzzzzzzzzc-rabbit-hc-128-hc-256-and-sosemanuk)
 - [7zzzzzzzzzd. Trivium, Grain v1 and Grain-128](#7zzzzzzzzzd-trivium-grain-v1-and-grain-128)
+- [7zzzzzzzzze. KASUMI, SNOW 3G, ZUC and the 3GPP algorithms](#7zzzzzzzzze-kasumi-snow-3g-zuc-and-the-3gpp-algorithms)
+- [7zzzzzzzzzf. ISAAC and ISAAC-64](#7zzzzzzzzzf-isaac-and-isaac-64)
+- [7zzzzzzzzzg. Grain-128AEADv2 and v1](#7zzzzzzzzzg-grain-128aeadv2-and-v1)
+- [7zzzzzzzzzh. LMS and HSS](#7zzzzzzzzzh-lms-and-hss)
+- [7zzzzzzzzzi. XMSS and XMSS^MT](#7zzzzzzzzzi-xmss-and-xmssmt)
+- [7zzzzzzzzzj. Kerberos RC4-HMAC](#7zzzzzzzzzj-kerberos-rc4-hmac)
+- [7zzzzzzzzzk. HPKE](#7zzzzzzzzzk-hpke)
+- [7zzzzzzzzzl. TurboSHAKE and KangarooTwelve](#7zzzzzzzzzl-turboshake-and-kangarootwelve)
 - [8. What to do with this document](#8-what-to-do-with-this-document)
 
 ---
@@ -6050,8 +6058,11 @@ points, with 0xFF85 first. 0xC102's own name is
 yet its coverage test listed one; the two code points share a record
 layer, so nothing failed. `capture_gost_transcripts.py` now asks by the
 IANA name and refuses a row whose ServerHello is not the code point it
-asked for. `suites::by_name` still resolves the alias to 0xC102 alone,
-and the todo records that.
+asked for. A cipher list naming the alias offered 0xC102 alone, where
+OpenSSL offers both. **Mitigated**: `Selection::named` expands it to
+0xFF85 then 0xC102 and offers a suite named twice once, as OpenSSL 3.0
+does (`test_the_superseded_openssl_name_selects_both_code_points`);
+`suites::by_name`, which answers with one suite, gives 0xC102.
 
 ### A registered curve was readable and not writable
 
@@ -7873,6 +7884,64 @@ So an image's size is mostly noise that nothing reads. The fixtures keep
 only the headers, the active keyslots' material and the data recorded;
 `scripts/check_luks.py` says so in the file it writes.
 
+### A mandatory requirement is a feature the reader must have
+
+`config.requirements.mandatory` names what a reader must implement
+before it may use the volume - `online-reencrypt-v2` while a
+reencryption is unfinished - and cryptsetup refuses a volume whose
+requirements it lacks. A reader that ignores the list opens such a
+volume with whichever key unlocks first and decrypts the segment that
+key's digest names, which mid-reencryption is the 1 MiB hotzone, and
+calls it the volume. **Mitigated**: a header with a requirement this
+example does not implement is refused, naming it
+(`test_a_mandatory_requirement_is_refused`).
+
+### A matching checksum means the block is still old
+
+Under `checksum` resilience cryptsetup hashes each block of the hotzone
+as it is - the old ciphertext - before rewriting it, so after a crash a
+block whose hash matches the record has not been rewritten and is read
+with the old key; one that does not match is new. Read the other way
+round, the torn hotzone decrypts to noise in the blocks that were and
+were not rewritten alike, and a hotzone stopped before or after its
+write reads entirely wrong. **Mitigated**: volumes stopped before,
+during and after a hotzone's write, recovered by cryptsetup to the
+recorded plaintext (`test_cryptsetups_volumes_stopped_mid_reencryption`).
+
+### The hotzone's IVs are the hotzone's, under both keys
+
+The old blocks of a hotzone are decrypted with the old cipher and sector
+size, but their IVs count from the hotzone segment's `iv_tweak`, in 512
+byte units, as the new ones do - not from the old segment's. With a 512
+byte old sector and a 4096 byte new one, the old key's IV steps by 1 and
+the new key's by 8 across the same bytes. **Mitigated**: the fixtures
+change both the cipher and the sector size.
+
+### The reencryption digest covers the layout's ends, not its middle
+
+The digest over the reencryption metadata takes in both keys, the
+reencrypt keyslot's mode, direction and area, and the `backup-previous`
+and `backup-final` segments - what the volume was and what it will be.
+The data segments, which move with every hotzone, are not in it: the
+header's checksum is all that guards where the boundary between old and
+new lies, and a checksum is not a MAC. Someone who can write the header
+can move the boundary and have a reader decrypt part of the volume with
+the wrong key; cryptsetup has the same exposure. **Accepted**: this
+reads what cryptsetup would, and checks the digest as cryptsetup does
+(`test_reencryption_metadata_is_bound_by_its_digest`).
+
+### Resilience "none" records the progress only when stopped cleanly
+
+With `--resilience none` cryptsetup writes the header when reencryption
+ends or is interrupted by a signal, not after every hotzone. Killed, it
+leaves a header that says less was done than was: the rewritten part is
+read with the old key and comes out as noise, by this reader and by
+cryptsetup's own recovery alike. Making the fixtures showed it - such a
+volume, repaired, finished and decrypted by cryptsetup, did not give
+back its plaintext. **Accepted**: nothing on the volume records the
+difference. A header that does name a hotzone under `none` is refused,
+since nothing says which of its blocks were rewritten.
+
 ## 7zg. The TrueCrypt and VeraCrypt example
 
 `examples/products/veracrypt`.
@@ -7959,6 +8028,59 @@ ciphertext, the X25519 public key and then the six byte label - the
 label last; and of SHAKE256's 96 bytes from the seed, ML-KEM's 64
 come first and X25519's 32 after. **Mitigated**: the hybrid test
 vectors, and age 1.3.2 both ways.
+
+### An SSH stanza is tagged, so a failure is not a mismatch
+
+X25519 and the hybrid stanzas are anonymous: one that does not open is
+somebody else's, and the next is tried. The SSH stanzas name their key
+with a tag, so one whose tag is this key's and does not open is an
+error, as in age, rather than a quiet move to the next identity. The
+`ssh-ed25519` tweak is HKDF with an empty input key and the SSH key's
+wire form as the salt - Go's `hkdf.New(hash, secret, salt, info)` with
+`nil` as the secret - and swapping the two is self-consistent.
+**Mitigated**: `test_ssh_stanzas_and_keys_are_checked`, and files age
+and rage wrote, both ways. **Accepted**: a recipient whose Ed25519 key
+has a small-order component is refused
+(`eddsa::ed25519_public_to_x25519`), where age converts it; no key
+`ssh-keygen` makes has one.
+
+### The two tag types hash different encodings of the same point
+
+A tagged stanza's tag covers four bytes of the SHA-256 of the
+recipient's P-256 key, and the two types take that key differently:
+`p256tag` the compressed point its `age1tag1` string carries,
+`mlkem768p256tag` the uncompressed point at the end of its hybrid
+public key, since that is how the key carries it. Hashing one form
+for both makes half the files open nowhere. **Mitigated**: files age
+1.3.2 wrote to both types, and ours to both, which age's test identities
+opened.
+
+### A tagged stanza that does not open is somebody else's
+
+Unlike an SSH stanza, whose tag hashes the whole key, a tagged stanza's
+tag is four bytes over the ephemeral `enc` as well, so another key's
+can collide with it; age's reader moves on when the body does not
+open, and so does this one, rather than calling it an error. A tag of
+the wrong length, an `enc` of the wrong size or a body that is not 32
+bytes is malformed. **Mitigated**: `test_tag_stanzas_are_checked`.
+
+### A plugin greases the conversation
+
+age's plugins send stanzas of random types - `grease-...`, with random
+arguments and bodies - and a `labels` stanza of random labels among the
+real ones, so that a client which stops at the first stanza it does not
+know is caught at once. The client answers anything it does not know
+`unsupported` and reads on; it answers `labels` `ok`. A plugin may also
+greet with nothing but grease before its stanzas. **Mitigated**: the
+recorded conversations with age 1.3.2's plugins carry their grease, and
+`test_what_a_plugin_may_say` sends an unknown stanza first.
+
+### A plugin identity with no data is still bech32
+
+`-j NAME` is `AGE-PLUGIN-NAME-1` and a six character checksum over no
+data at all - `bech32_encode` of an empty payload, upper case - which
+the plugin checks like any other identity. **Mitigated**: the
+`batchpass` conversations, and a test of the string.
 
 ## 7zi. OCB
 
@@ -8881,6 +9003,30 @@ the same agreement for a PKCS#1 v1.5 or ECDSA algorithm that names its
 hash is checked too, and is an equivalent mutant there - the signature
 fails under the other hash anyway.
 
+The message digest in the signed attributes is the only thing binding
+the content to the signature, so the policy judges its hash for every
+signature type. RSA, ECDSA and DSA name their hash in the signature
+algorithm, where the policy sees it anyway; EdDSA signs the attributes
+themselves and names none. **Mitigated**:
+`test_the_attributes_digest_is_judged_for_every_signature` builds an
+Ed25519 signer with MD5 and SHA-1 message digests, refused by the
+default policy and accepted by the legacy one.
+
+### A stateful key's file
+
+An HSS or XMSS signature spends one-time keys, and two signatures from
+the same state reuse them, which is what lets a third party forge. The
+key lives in a file, so `sign` writes the moved-on state beside it and
+renames it over the file before writing the message: a failure leaves a
+key that has skipped leaves, never a message whose leaf the file still
+offers. **Mitigated**: `test_a_stateful_key_file_moves_on` signs twice
+from one file and checks two leaves were used, and makes the write-back
+fail and checks no message appears. A key that is not the certificate's
+is refused before it signs, since its signature would spend a leaf for
+nothing. **Accepted**: a copy of the file - a backup restored, a second
+machine - is the same state twice, and nothing inside a file can see
+that.
+
 ### Content encryption is not authenticated
 
 EnvelopedData is CBC with no MAC, so a damaged or chosen ciphertext is
@@ -9431,8 +9577,10 @@ and pinned to the kernel's shipped table by `vectors/tkip.vec`.
 Its block function can be run backwards, so a known-plaintext MIC gives
 the key; it has about 20 bits of forgery resistance. 802.11 relies on
 countermeasures, not on Michael. **Accepted**: it is the algorithm, kept
-because TKIP is; the module comment says so, and the ICV, not Michael,
-is the example's per-frame check, matching `airdecap-ng`.
+because TKIP is; the module comment says so. The example checks it after
+the ICV, under the MIC key for the frame's direction (and the GTK's for a
+group frame), except with `--airdecap`, where it matches `airdecap-ng`,
+which does not.
 
 ### A captured frame may carry a trailing FCS
 
@@ -9457,6 +9605,86 @@ the MIC verifies, and the recorded captures decrypt.
 direction, so a capture with retransmissions decrypts fewer frames than
 it holds. A reader that does not skip reports more. **Mitigated**: the
 example skips the same way, and the counts equal `airdecap-ng`'s.
+
+### The key management decides the key derivation and the MIC
+
+The PTK is 802.11's PRF-SHA1 for the PSK and 802.1X key managements and
+the KDF over SHA-256 for PSK-SHA256, SAE and OWE, and its length follows
+the pairwise cipher: CCMP-256 and GCMP-256 take a 32-byte TK. The EAPOL
+MIC goes by the key descriptor version, except that version 0 leaves it
+to the key management - AES-CMAC for SAE, HMAC-SHA256 for OWE on P-256.
+Any of these wrong gives a MIC that never verifies and nothing decrypted,
+which looks the same as a wrong passphrase. **Mitigated**: the suites are
+read from the RSN element, and Wireshark's PSK-SHA256, SAE, OWE, GCMP-256
+and CCMP-256 captures decrypt to what `tshark` decrypts.
+
+### A protected management frame is not a data frame
+
+CCMP over a management frame (802.11w) sets bit 4 of the nonce's flags
+byte and keeps the frame's subtype bits in the additional data, where a
+data frame's are masked. With the data-frame rules a deauthentication or
+action frame fails its MIC and is reported as a bad frame rather than as
+something else. **Mitigated**: `wpa-test-decode-mgmt` and `wpa2-psk-mfp`
+from Wireshark's tests decrypt to `tshark`'s plaintext.
+
+### An HT Control field follows the QoS Control field
+
+A QoS data frame or a management frame with the order bit set carries a
+4-byte HT Control field after the rest of the header (802.11n and
+later). A header length that leaves it out starts the CCMP header four
+bytes early, so every such frame fails its MIC; the additional data also
+masks the order bit of a QoS data frame and leaves the field out. None
+of aircrack-ng's or Wireshark's captures has one, so the example missed
+these frames until frames made for the purpose were judged by `tshark`.
+**Mitigated**: `header_len` counts it, `aead_aad` masks the bit, and the
+synthesized captures in `fixtures/wifi/wireshark/` carry such frames,
+data and management, which `tshark` and the example both open.
+
+### A four-address frame names no BSSID
+
+With both DS bits set a frame carries the receiver, the transmitter and
+the two hosts behind them, and neither link address is marked as the
+access point's. `tshark` takes the larger; the example takes the
+transmitter, and the receiver when only that link has keys. A capture
+whose access point has the smaller address shows `tshark` leaving such
+frames encrypted. **Accepted**: the keys exist for one pair, and trying
+both orders finds it; the synthesized `wpa2-psk-4addr` capture has the
+access point at the larger address so that both tools can be compared.
+
+### WPA1's group key is bare, and a rekey travels encrypted
+
+WPA (descriptor type 254) sends the GTK in the group handshake as the
+whole key data, with its index in bits 4 and 5 of the key information;
+WPA2 wraps it in a GTK KDE that carries the index itself. Once the link
+is up, a group handshake - a rekeyed GTK - arrives inside protected data
+frames, so a reader that looks for EAPOL only in the clear keeps the old
+key and every group frame after the rekey fails. **Mitigated**: decrypted
+EAPOL frames go back through the handshake code; `wpa1-gtk-rekey`
+decrypts its 22 frames across the rekey, as `tshark` does.
+
+### The fast BSS transition PTK is a different derivation
+
+Under FT (802.11r) the PMK - the PSK, the MSK's second half, SAE's PMK -
+is not the PTK's key. It becomes PMK-R0, bound to the SSID, the
+mobility domain identifier, the R0 key holder's identifier and the
+station's address; PMK-R0 becomes PMK-R1, bound to the R1 key holder's
+identifier; and PMK-R1 gives the PTK over `SNonce || ANonce || BSSID ||
+STA-ADDR` under the label "FT-PTK", in that order and not sorted as the
+4-way handshake's input is. The names PMKR0Name and PMKR1Name hash with
+the key's own hash, SHA-384 for a 48-byte key; Wireshark 4.6's
+`dot11decrypt` uses SHA-256 at every length, which changes no key it
+derives. **Mitigated**: `kdf::ieee80211::ft_pmk_r0`, `ft_pmk_r1` and
+`ft_ptk` against hostapd and Wireshark in `vectors/ieee80211_ft.vec`
+(names at SHA-384 and SHA-512 against hostapd alone), and
+`test_the_ft_ptk_input_is_in_order` and `test_the_names_take_the_keys_hash`.
+
+### SAE and OWE keys cannot be recovered from a capture
+
+SAE's PMK depends on each side's private random value and OWE's on a
+Diffie-Hellman exchange; neither crosses the air. Knowing the
+passphrase is not enough to decrypt a WPA3-SAE capture. **Accepted**: the
+example takes `--pmk`, which is how Wireshark's own tests open these
+captures, and the products README says so.
 
 ## 7zzg. The smart card example
 
@@ -10995,6 +11223,42 @@ size, and fnv-es and fnv-plus witness it.
 **Status: accepted.** PHP runs the variant and the size together:
 `fnv132` is FNV-1 at 32 bits and `fnv1a64` FNV-1a at 64. They are taken
 as those four spellings only; everything else is `fnvVARIANT_BITS`.
+
+### "CRC-16" does not name a CRC
+
+**Status: mitigated.** The same short name is given to different CRCs:
+"CRC-16" is ARC to one program and CCITT-FALSE to the next, and the two
+share neither polynomial nor init. The CRCs here are named only by the
+catalogue of parametrised CRC algorithms' full names - `crc-16/arc`,
+`crc-16/ibm-3740` - or by all six parameters in the model line, and a
+bare `crc-16` is refused. The catalogue's aliases (`crc-16/ccitt-false`
+for `crc-16/ibm-3740`) are not taken, as only one of the two
+transcriptions it is generated from carries them.
+
+### A CRC's init has more than one reading
+
+**Status: mitigated.** The catalogue's `init` is the register before
+the first bit of the message, written unreflected whichever way the
+bytes go in, and that is what `CrcParams` takes. Other code takes other
+things under the same name: crcmod's `initCrc` is that register XORed
+with `xorout`, and reflected when the CRC is; the augmented algorithm
+of the textbooks starts from a different register, which feeds `width`
+zero bits after the message to reach the same CRC. Every reading agrees
+when init is zero, so a mistake shows only on a CRC with a non-zero
+init - CRC-32 among them. `vectors/crc.vec` has init zero, all ones and
+random at every width.
+
+### pycrc's bit-by-bit algorithm is wrong under an even polynomial
+
+**Status: mitigated.** pycrc 0.10.0, one of the witnesses, finds the
+augmented algorithm's starting register by running the CRC's step
+backwards from init, which needs the polynomial's lowest term to tell
+whether the polynomial went in. An even polynomial has none, so with a
+non-zero init its bit-by-bit algorithm gives the wrong CRC, without an
+error; its other two algorithms are right. An even polynomial is
+degenerate and no catalogue entry has one, but `CrcParams` takes it, so
+`scripts/make_crc_vectors.py` leaves that algorithm out of those rows and
+requires it to disagree on each.
 ## 7zzzj. ML-KEM keys and certificates
 
 `src/x509` (RFC 9935): the three OIDs, public keys in certificates and
@@ -11631,13 +11895,14 @@ bits above the word unless each is masked, and the results are wrong
 from there on. Each operation is masked, the tests put every byte 0xff
 through them, and the vectors cover both sizes.
 
-### Four variants have one witness
+### Four variants rest on fewer witnesses
 
-**Status: accepted.** lwbc has one key length at each of the 32, 48 and
-96 bit blocks, 8, 12 and 18 bytes, so Speck48/72, Speck96/96,
-Simon48/72 and Simon96/96 are computed by inmcm's Python alone, with
-the paper's one vector each. Their rows say `witnesses=1`, and a test
-requires exactly those rows to.
+**Status: mitigated.** lwbc has one key length at each of the 32, 48
+and 96 bit blocks, 8, 12 and 18 bytes, and Crypto++ and the kernel have
+only the 64 and 128 bit blocks, so Speck48/72, Speck96/96, Simon48/72
+and Simon96/96 rest on inmcm's Python and cryptography-rs, and for Speck
+RustCrypto's speck-cipher too, with the paper's one vector each. The
+generator refuses a key length with fewer than two witnesses.
 
 ### Simon's sequences come in three encodings
 
@@ -11919,9 +12184,11 @@ branch shows only that it almost never happened. `ct_check.py`'s
 
 ## 7zzzzzzzzzb. Chaskey
 
-`src/mac/chaskey.rs`. Checked against go-chaskey's published tags,
-go-chaskey, sacundim's Rust crate and volexity's Chaskey-LTS block
-cipher: `vectors/chaskey.vec`.
+`src/mac/chaskey.rs`, and the block cipher over its permutation in
+`src/block_ciphers/chaskey_lts.rs`. Checked against go-chaskey's
+published tags, go-chaskey, sacundim's Rust crate and volexity's
+Chaskey-LTS block cipher: `vectors/chaskey.vec` and
+`vectors/chaskey_lts.vec`.
 
 ### Five readings that agree with themselves
 
@@ -11959,7 +12226,27 @@ around it is the one the 8 and 12 round rows check.
 **Status: mitigated.** The permutation is additions, rotations and XORs,
 and the doubling folds its carry in with a mask; the branches are on
 the message's length, which is public. `ct_check.py`'s `chaskey` row
-runs all three round counts under a secret key and reports nothing.
+runs all three round counts under a secret key and reports nothing, and
+its `chaskey_lts_blocks` row the block cipher both ways.
+
+### The block cipher is single-key Even-Mansour
+
+**Status: accepted.** `chaskey-lts` is a public permutation with one
+key XORed in on both sides. Its security is the Even-Mansour bound:
+with D known blocks and T evaluations of the permutation, key recovery
+succeeds once D times T nears 2^128, so 2^64 blocks under one key are
+about 2^64 work. It is implemented as FELIX and volexity's package
+use it and not changed.
+
+### Decryption is the inverse round, with no witness of its own
+
+**Status: mitigated.** Neither the MAC nor sacundim's tests run the
+permutation backwards. The inverse round undoes the round's ten steps
+in reverse order; both witnesses decrypt every row of
+`vectors/chaskey_lts.vec` back to its block, through their own
+inverses - sacundim's `cipher::decrypt` and volexity's
+`_chaskey_block(False, ...)` - and the tests decrypt each row here too,
+iterated rows 100 or 1,000 times over.
 
 ## 7zzzzzzzzzc. Rabbit, HC-128, HC-256 and SOSEMANUK
 
@@ -12080,8 +12367,8 @@ change to its Grain-128 in 1.86, changing its test's expected values
 with it, so from 1.86 its Grain-128 agrees with neither the paper, the
 eSTREAM vectors, the reference nor its own earlier releases; this
 library agrees with Bouncy Castle 1.77 to 1.85. A test asserts the
-Grain-128a filter gives a different keystream here. Grain-128a and
-Grain-128AEAD are not implemented.
+Grain-128a filter gives a different keystream here. Grain-128a is not
+implemented.
 
 ### Grain v1's and Trivium's keys are 80 bits
 
@@ -12102,7 +12389,546 @@ rows report nothing.
 **Status: accepted.** As with the software-profile ciphers above, the
 state is everything that came before.
 
+## 7zzzzzzzzze. KASUMI, SNOW 3G, ZUC and the 3GPP algorithms
+
+`src/stream_ciphers/snow3g.rs`, `zuc.rs` and `mobile.rs`. Checked
+against ETSI/SAGE's implementors' test data, read out of `rfcs/` by
+`tests/test_snow3g_zuc.rs`, Intel's ZUC-256 tests (`vectors/zuc256/`),
+and the reference code as CryptoMobile carries it, intel-ipsec-mb,
+GmSSL, free5gc, Bouncy Castle 1.77, the zuc crate and oxirush-security:
+`vectors/snow3g_zuc.vec`. UEA1 and UIA1 against Intel's KASUMI tests
+(`vectors/kasumi_3gpp/`), the KASUMI reference code and intel-ipsec-mb:
+`vectors/uea1_uia1.vec`. 256-NEA6, 256-NIA6 and 256-NCA6 against TS
+35.247's and 35.248's test data, read out of `rfcs/`, and TS 35.246
+Annex A's reference code: `vectors/zuc256_3gpp.vec`.
+
+### UEA2 and UIA2 load the key the other way round from SNOW 3G
+
+**Status: mitigated.** The implementors' test data's section 3 writes a
+SNOW 3G key as `k0 k1 k2 k3`, first word first, and so does `snow3g`
+here. UEA2 and UIA2 load CK and IK with their first 32 bits as `k3`, and
+IV0 is the word with BEARER (or FRESH) in it. Both are self-consistent,
+and a SNOW 3G keystream compared with a UEA2 implementation's - Intel's
+library takes the key in UEA2's order even for its raw keystream -
+disagrees for every key unless the words are reversed. The UEA2 and UIA2
+sets settle `mobile`'s order and the SNOW 3G sets the cipher's.
+
+### The bits past the length
+
+**Status: mitigated.** Every algorithm here takes a length in bits.
+UIA2 and 128-EIA3 define their message as exactly that many bits, the
+last block padded with zeros, so a MAC must not see whatever the last
+byte holds past them; free5gc's NIA1 does see them, and so does the
+KASUMI reference f9, which ORs the last byte in whole - UIA1's
+DIRECTION and stop bits then land on top of whatever was there. Intel's
+tests have those bits clear, so they cannot show it;
+`tests/test_uea1_uia1.rs` sets them, and every UIA1 row carries random
+bits there. The ciphers XOR whole bytes and clear the
+bits past the length in their output, so two messages that differ only
+there give the same ciphertext. `test_bits_past_the_length` sets those
+bits for every algorithm, and every MAC row in `vectors/snow3g_zuc.vec`
+carries random bits there.
+
+### An empty message
+
+**Status: accepted.** The algorithms are written for a length of one
+bit or more. UIA2's block count `D = ceil(LENGTH / 64) + 1` is 1 for an
+empty message, and the reference f9 runs its loop to `D - 2` in an
+unsigned type, which cannot work; Intel's library refuses an empty
+message for UIA2, both EIA3s and both ZUC MACs. Here the definitions are
+followed through - no blocks, then the length - and an empty message
+has a MAC: oxirush-security gives the same 128-EIA1, and the ZUC MACs'
+empty rows have GmSSL, the zuc crate and Bouncy Castle. UIA1 of an
+empty message is DIRECTION and the stop bit after COUNT and FRESH, which
+the KASUMI reference computes and Intel's library refuses; that row has
+the reference alone. A peer may refuse what this library computes.
+
+### The ZUC-256 IV has two shapes
+
+**Status: mitigated.** The paper writes the IV as 25 bytes, the last
+eight holding six bits each; GmSSL and the zuc crate take 23 bytes with
+those 48 bits packed, first value highest; intel-ipsec-mb and Bouncy
+Castle take 25. Both are accepted, and a 25 byte IV with a top bit set in
+one of its six bit values is refused rather than masked, which would
+make two IVs one. The witnesses are put to both forms.
+
+### ZUC-256's paper is not here
+
+**Status: accepted.** The 2018 paper that defines ZUC-256 is not
+vendored, so its constants are read out of two implementations
+(`scripts/make_zuc256_constants.py`) and its key loading follows them;
+Intel's vectors and four implementations agreeing are what stand behind
+it.
+
+### The specification's first MULx example is wrong
+
+**Status: mitigated.** Section 3.1.1 of the SNOW 3G specification
+prints `MULx(0x69, 0x1B) = 0xC2`; 0x69's top bit is clear, so it is the
+shift alone, 0xD2. A test pins both the misprint and the value. The
+implementors' test data has one too: UEA2 set 5 prints a plaintext word
+`060876A0` as `60876A0`, which the printed keystream and result settle
+and both parsers correct, asserting the misprint is there.
+
+### The S-boxes are scanned, not indexed
+
+**Status: mitigated.** SR, SQ, S0 and S1 are read out of the
+specifications at compile time and looked up by visiting all 256
+entries under a mask; MULα and DIVα are masked XORs of a word per input
+bit, UIA2's products a masked step per bit. That costs speed - every
+keystream word is eight full table scans - for no index or branch on
+the state, which `ct_check.py`'s `snow3g_keystream` and `zuc_keystream`
+rows check. UEA1 and UIA1 are not: KASUMI's S7 and S9 are tables
+indexed by the data, as the block cipher's are.
+
+### None of them seeks
+
+**Status: accepted.** The state is everything that came before.
+
 ---
+
+### 3GPP's ZUC-256 is not the 2018 ZUC-256
+
+TS 35.246's ZUC-256 takes a 16 byte IV, loads it with sixteen seven bit
+constants of its own in a layout of its own, and runs 48 set-up clocks;
+the design team's 2018 cipher, `zuc256`, takes 25 bytes and runs 32.
+Both are "ZUC-256", over the same core, and either is a plausible
+keystream. **Mitigated**: they are separate constructors and stream
+cipher names (`zuc256`, `zuc256-3gpp`), the constants are read out of
+TS 35.246's text, and TS 35.247's traces pin the loaded state and each
+printed set-up clock. Version 18.0.0 of the specification left the
+number of clocks open; 19.0.0 set it to 48.
+
+### NCA6's keystream does not start where NEA6's does
+
+When a MAC is wanted, the first twelve keystream words are H, Q and P,
+and the data's keystream follows them; NEA6 asks for no MAC and starts
+at the first word. Under one key and IV the two ciphertexts differ, and
+reusing NEA6's keystream for NCA6 gives a ciphertext no receiver
+decrypts. The IV differs too: MAC_BYTES and the CF bit are in its first
+byte. **Mitigated**: TS 35.248's sets for each algorithm, with H, Q and
+P, and Annex A's rows.
+
+### Mac5G's multiplication is POLYVAL's, not GHASH's
+
+`dot(A, B) = A * B * x^-128` modulo `x^128 + x^127 + x^126 + x^121 +
+1`, operands little endian: neither GHASH's bit order nor XTS's or
+MGM's fields. A GHASH multiply passes nothing here. **Mitigated**: TS
+35.247's six products, each also checked with the operands swapped.
+
+### A 16 byte key is not the same as 16 zero bytes after it
+
+A 128 bit key is zero-extended to 32 bytes, and the IV's LK bit is set,
+so the two keystreams differ. **Mitigated**: Annex A's rows include 16
+byte keys, and a test asserts the two differ.
+
+### Bits past a length: ignored in the MAC, per the reference code
+
+The specification's pseudocode MACs a received ciphertext as it
+arrives, unused low bits in its last byte and all; Annex A's code masks
+them first. With junk in those bits, the first refuses a MAC the sender
+computed and the second accepts it. **Accepted**: the library does what
+the code does, as every algorithm in `mobile` ignores the bits past a
+length; the vector rows with such ciphertexts pin it.
+
+### Annex A's reference code is not safe to call on bad input
+
+Its key and MAC lengths are unchecked - a 40 byte key or a 20 byte MAC
+overflows a stack buffer - it XORs through misaligned `u64` pointers,
+it compares the MAC with `memcmp`, and it writes the plaintext out
+before refusing a MAC. **Accepted** as a witness's property: it is run
+only on valid inputs, under ASan and UBSan, and the library refuses
+those inputs, compares in constant time and returns no plaintext when
+the MAC fails.
+
+## 7zzzzzzzzzf. ISAAC and ISAAC-64
+
+`src/stream_ciphers/isaac.rs`. Checked against the values rand_isaac's
+tests give as the reference implementation's, and Jenkins's code,
+coreutils's, rand_isaac and Bouncy Castle 1.77: `vectors/isaac.vec`.
+
+### Three readings of one generator
+
+**Status: accepted.** ISAAC produces 32 bit words in blocks of 256, and
+nothing defines them as bytes. The reference's `rand()` takes block 0,
+the one `randinit` computes, from its last word to its first; rand_isaac
+does the same and writes the words little endian; coreutils hands over
+whole blocks in index order; Bouncy Castle's `ISAACEngine` computes a
+second block before its first byte, so block 0 is never used, and writes
+each block in index order, big endian. The same key gives three
+unrelated byte streams. `isaac` and `isaac64` are the first,
+`isaac-bouncycastle` the last, and `next_block` gives the blocks for any
+other.
+
+### Trailing zero bytes do not change the key
+
+**Status: accepted.** The key fills the seed array as little-endian
+words and the rest is zero, so `ab`, `ab 00` and `ab 00 00 00 00` are one
+key, and the empty key is all of them with nothing. Jenkins suggests
+putting the key's length in the last word; no implementation here does,
+and doing it would agree with none. A caller deriving keys of varying
+length should fix the length.
+
+### The portable reference is wrong on a 64 bit machine
+
+**Status: mitigated.** rand.c's portable version, randport.c, masks
+every word to 32 bits in `isaac()`, but its `ub4` is standard.h's
+`unsigned long` and `randinit`'s `mix()` does not mask: on LP64 its right
+shifts bring bits above 32 back down, and every output differs. The
+witness compiles it with `ub4` 32 bits wide; this module's words are
+`u32` and `u64`.
+
+### Bouncy Castle throws on a key of odd length
+
+**Status: accepted.** `ISAACEngine` pads the key to `length + (length &
+3)` bytes, which is a whole number of words for an even length and never
+for an odd one, and reads it four bytes at a time, so any odd-length key
+throws `ArrayIndexOutOfBoundsException`, as does any key over 1024
+bytes. `isaac-bouncycastle` takes every length to 1024, zero-padded,
+which is what Bouncy Castle gives for the lengths it takes.
+
+### It is not constant time
+
+**Status: accepted.** Each step reads `m[x >> 2]` and `m[y >> 10]`, with
+`x` and `y` from the state; that is the design, as in RC4 and HC-128.
+`ct_check.py`'s `isaac_keystream` row lists the two functions that make
+those reads, `ind32` and `ind64`, and nothing else.
+
+## 7zzzzzzzzzg. Grain-128AEADv2 and v1
+
+`src/stream_ciphers/grain128aead.rs`. v2 is checked against the NIST
+final round's known answers, lwc-finalists, the grain-128aeadv2 crate
+and Bouncy Castle 1.77: `vectors/grain128aead.vec`. v1 against the
+designers' known answers, their reference and optimised
+implementations and lightweight-crypto: `vectors/grain128aead_v1.vec`.
+
+### v1 and v2 are different ciphers under nearly one name
+
+**Status: mitigated.** v1 feeds the output back for 256 clocks, then
+adds the whole key into the LFSR's feedback alone, one bit per clock,
+during the 128 clocks that fill the accumulator and the register. v2,
+the round 3 tweak, feeds the output back for 320 clocks, then for 64
+more adds the key's two halves into the two feedbacks, and then fills
+the accumulator and the register with no key at all. Everything after
+initialisation is the same, and the outputs are unrelated. The
+designers' GitHub repository, its known-answer file and
+lightweight-crypto are v1; NIST's final package, lwc-finalists, the
+crate and Bouncy Castle 1.77 are v2. Both are here, as
+`grain128aeadv1` and `grain128aeadv2`, and the bare `grain128aead` is
+refused with an error naming both rather than given either meaning.
+Each version's vectors are required to fail under the other.
+
+### The known answers never reach the long length forms
+
+**Status: mitigated.** The associated data's length is prefixed in DER,
+whose long forms start at 128 bytes, and the known-answer file stops at
+32. Bouncy Castle 1.77 writes the long form's length bytes least
+significant first, which agrees with DER below 256 and at lengths whose
+bytes are a palindrome, such as 257, and differs elsewhere; its
+self-consistent tags verify against nothing else. The vectors cover
+127, 128, 255, 256, 257, 258, 1,000 and 65,536 bytes.
+
+### The plaintext is authenticated, not the ciphertext
+
+**Status: mitigated.** Each message bit goes into the accumulator, so a
+decryption recovers it before it can authenticate it. Authenticating the
+ciphertext instead is self-consistent and verifies nothing anybody else
+wrote; a decryption that releases plaintext before the tag is checked
+hands out unauthenticated data. `decrypt` checks first, and the facade
+buffers. Bouncy Castle 1.77's engine had no decryption: in decrypt mode
+it authenticated its input, the ciphertext and the tag, appended a new
+tag and checked nothing.
+
+### It is constant time
+
+**Status: mitigated.** The registers are two `u128`s clocked 32 steps
+at a time, the accumulation is by mask, and the length prefix depends
+only on the public length. `ct_check.py`'s `grain128aead` row seals and
+opens under a secret key and reports only the verdict in `decrypt`, the
+branch on whether the tag matched.
+
+## 7zzzzzzzzzh. LMS and HSS
+
+### The private key is a counter
+
+**Status: accepted.** Every LMS signature spends one of the tree's
+one-time keys, and signing two messages with one leaf gives away enough
+of its chains to forge a third. The library moves the count on before
+`sign` returns, but cannot see a copy: a backup restored, a virtual
+machine snapshot resumed, two processes reading one key file. The caller
+stores `to_bytes()` after every signature and before the signature
+leaves; a key whose store failed must not be used again.
+
+### How lower trees are made is not standardised
+
+**Status: accepted.** RFC 8554 fixes the signatures, not the private
+keys. Keys here come from a SEED and I by its Appendix A, and the trees
+below the top are derived from their parents as Cisco's hash-sigs
+derives them, which Bouncy Castle 1.77 matches byte for byte while every
+level has one hash length. Where the levels' hash lengths differ, the
+two size a lower tree's SEED differently and sign differently from the
+same top SEED and I; the signatures verify everywhere, but a key made
+here and one made by Bouncy Castle from the same seeds are different
+keys. Moving such a key from one implementation to another partway
+through its life is worse than a mismatch: the new one rebuilds the
+current lower tree differently and signs its public key with the
+parent's current leaf, which already signed the old one - one one-time
+key over two messages. `vectors/lms.vec` holds hierarchies of one hash
+length only.
+
+### A signature is exactly its length
+
+**Status: mitigated.** RFC 8554 makes a signature over an object of the
+wrong length invalid. Bouncy Castle 1.77, pyhsslms and hbs-lms read an
+HSS signature from the front and accept it with bytes appended, so one
+signing has many valid byte strings; hash-sigs refuses, and so does this
+library: the `long` rows of `vectors/lms.vec`.
+
+### Checks the tests cannot isolate
+
+**Status: accepted.** A leaf number of `2^h` or more is refused, as
+Algorithm 6a says, though a path walked from one ends at the wrong node
+and could not verify; the check also keeps the node number `2^h + q`
+inside a `u32`, which is what its test sees. An LM-OTS public key of the
+wrong length is refused, though the comparison of `K` would refuse it
+anyway, so the breakage sweep cannot tell the check from its absence.
+
+### Tall trees are slow
+
+**Status: accepted.** A tree's root is computed from all `2^h` leaves,
+each a one-time public key of `p` chains of `2^w - 1` hashes: a height-20
+tree at `w = 8` is about nine billion hash calls. Trees to height 15 keep
+every node after the first signature; taller ones compute each
+signature's path again, which is as slow as making the key.
+
+## 7zzzzzzzzzi. XMSS and XMSS^MT
+
+### The private key is a counter
+
+**Status: accepted.** As with LMS: every signature spends a WOTS+
+one-time key, `sign` moves the index on before it returns, and a copy of
+the key signs with the same leaves twice. Store `to_bytes()` after every
+signature and before the signature leaves.
+
+### Two derivations of the one-time keys
+
+**Status: accepted.** RFC 8391 suggests deriving each WOTS+ private key
+from a PRF of `SK_SEED` and the leaf's address, expanded per chain; SP
+800-208 section 7.2.1 replaced that, because of a multi-target attack,
+with `PRF_keygen(SK_SEED, SEED || ADRS)` per chain. The same three seeds
+give different keys under the two. This library derives SP 800-208's
+way, as the reference implementation and Botan 3 do; Bouncy Castle 1.77
+derives the older way. Signatures verify whichever way their keys were
+made, so this matters only to a private key moved between
+implementations - and `from_bytes` refuses a key whose stored root is
+not the one its seeds make here, which is what such a key looks like.
+
+### The XMSS and XMSS^MT registries overlap
+
+**Status: accepted.** RFC 8391 numbers the two kinds' OIDs separately,
+so OID 1 is XMSS-SHA2_10_256 and XMSSMT-SHA2_20/2_256 alike, and nothing
+in a public key, private key or signature says which kind it is. The
+verifiers are two functions and `from_bytes` takes the kind; a test
+asserts that every signature in `vectors/xmss.vec` fails as the other
+kind.
+
+In a certificate the OID says which (RFC 9802's `id-alg-xmss-hashsig`
+and `id-alg-xmssmt-hashsig`), and `x509::PublicKey::HashSig` keeps the
+scheme beside the key, as `api::HashSigPublicKey` does. Read under the
+wrong OID, a key is a well-formed key of the other kind: RFC 9802's
+XMSSMT-SHA2_20/2_256 appendix key under the XMSS OID is an
+XMSS-SHA2_10_256 key, and only its signature failing says otherwise
+(`test_the_overlapping_registries`). **Mitigated** for certificates.
+
+### A certificate spends a one-time key
+
+**Status: accepted.** The builder signs with `SigningKey::Hss` or
+`SigningKey::Xmss` through a `RefCell`, and each certificate, CRL or
+OCSP response it signs moves the key on, the same TBS twice giving two
+different signatures (`test_the_builder_signs_with_stateful_keys`). The
+key has to be stored after `sign` returns and before what it signed is
+published; nothing here can do that for the caller, and RFC 9802's
+section 11 on backup and restore is about exactly this.
+
+### Bouncy Castle 1.85's 192 bit XMSS
+
+**Status: accepted.** SP 800-208's SHA-256/192 and SHAKE256/192 sets pad
+the hash functions' domain separator to 4 bytes; Bouncy Castle 1.85 pads
+it to `n`, 24, so its signatures under those sets fail under the XMSS
+reference, Botan and this library, and ours under it. The 256 bit
+SP 800-208 set, SHAKE256/256, agrees. The certificate vectors leave the
+192 bit sets out; `vectors/xmss.vec` checks them against the reference
+and Botan.
+
+### The last leaf signs like the others
+
+**Status: mitigated.** The XMSS reference implementation wipes its key
+when it reaches the last leaf - before signing with it, so its last
+signature carries an index of all ones and does not verify. Here the
+last leaf signs and the key is spent after; `vectors/xmss.vec` has
+XMSS-SHA2_10_256's last leaf from Botan.
+
+### A signature is exactly its length
+
+**Status: mitigated.** Bouncy Castle 1.77's XMSS verifier accepts a
+signature with a byte appended, as three LMS verifiers do; its XMSS^MT
+verifier refuses one, as this library does for both.
+
+### Checks the tests cannot isolate
+
+**Status: accepted.** An index of `2^h` or more is refused, though one
+puts a non-zero tree address into every hash of the walk and could not
+verify; the breakage sweep cannot tell the check from its absence.
+
+### SP 800-208's XMSS^MT sets have one implementation here
+
+**Status: accepted.** Botan has no XMSS^MT and Bouncy Castle 1.77 knows
+only RFC 8391's sets, so the XMSS^MT sets SP 800-208 added are checked
+by their parts: their trees are SP 800-208's XMSS trees, which the
+reference implementation and Botan agree on, and their layering is RFC
+8391's, which the reference implementation and Bouncy Castle agree on.
+
+### Tall trees are slow
+
+**Status: accepted.** A key's root is computed from every leaf of the
+top tree, each a WOTS+ public key of `2n + 3` chains of fifteen keyed
+hashes and an L-tree over them: a height-10 tree is about three million
+hash calls, a height-20 one about three billion. Trees to height 16 keep
+every node; taller ones compute each signature's path again.
+
+
+## 7zzzzzzzzzj. Kerberos RC4-HMAC
+
+`src/stream_ciphers/rc4_hmac.rs`, which the Kerberos example (section
+7zv) now uses. Checked against MIT Kerberos 1.21.3, Apache Kerby and
+impacket: `vectors/rc4_hmac.vec`.
+
+### The key is the password's NT hash
+
+**Status: accepted.** String-to-key is MD4 of the password's UTF-16,
+with no salt and no iteration, so the key is the same in every realm,
+is the key NTLM uses, and a stolen key authenticates without the
+password. The type is still what Active Directory issues where AES is
+not configured, which is why it is here.
+
+### Usage 9
+
+**Status: accepted.** RFC 4757 section 3 renumbers the TGS-REP under a
+subkey, usage 9, to 8; the erratum, MIT Kerberos, Heimdal, Kerby and
+impacket keep it 9, and so does `message_type`. A test asserts 9 and 8
+are different keys. impacket also tries 8 when 9 fails to decrypt;
+this library does not, so a TGS-REP written the RFC's way is refused.
+
+### A short body
+
+**Status: mitigated.** A ciphertext needs 24 bytes, the checksum and
+the confounder. A shorter one with a correct checksum - which only the
+key's holder can make - would otherwise reach the confounder's removal
+with fewer than 8 bytes; the length is checked first, and
+`test_a_short_body_with_a_good_checksum_is_refused` builds one with the
+key.
+
+### It is not constant time
+
+**Status: accepted.** RC4 indexes its state by key-dependent values in
+both its key schedule and its output; nothing can make it otherwise.
+The checksum comparison is constant time.
+
+## 7zzzzzzzzzk. HPKE
+
+`src/publickey_ciphers/hpke.rs`: RFC 9180, with draft-ietf-hpke-pq-05's
+KEMs and one-stage KDFs. Checked against RFC 9180's appendix, the CFRG's
+and the PQ draft's vector files (`vectors/hpke.vec`), pyhpke 0.6.5 and
+filippo.io/hpke v0.4.0 (`vectors/hpke_witness.vec`).
+
+### The mode is what the inputs make
+
+**Status: mitigated.** An interface that takes a mode and a PSK
+separately can be asked for base mode with a PSK, or PSK mode without
+one, and RFC 9180's `VerifyPSKInputs` exists to refuse both. Here there
+is no mode argument: a PSK and its identifier make PSK mode, a sender
+key makes auth mode, and a PSK with an empty key or identifier is
+refused (`test_inputs_are_checked`).
+
+### Rejection sampling, two ways
+
+**Status: mitigated.** A DHKEM's `DeriveKeyPair` on a NIST curve masks
+each candidate's first byte - 0xff for P-256 and P-384, 0x01 for P-521 -
+before comparing it with the order; a hybrid KEM's P-256 or P-384 key,
+from its seed or from encapsulation randomness, is the first candidate
+below the order with no mask at all. Mask a P-521 candidate with 0xff
+and almost every one is above the order, so the 256 tries can run out;
+mask a hybrid's and the key is a different one. RFC 9180's P-521
+vectors and the PQ draft's hybrid vectors each catch one, and
+`test_hybrid_candidates_are_rejection_sampled` the skipping of a zero
+or too-large candidate.
+
+### A KEM's KDF is not the suite's KDF
+
+**Status: mitigated.** A DHKEM derives keys and its shared secret with
+its own HKDF - SHA-256 for P-256 and X25519, SHA-384 for P-384, SHA-512
+for P-521 and X448 - whatever the suite names; the ML-KEM and hybrid
+KEMs use SHAKE256's `LabeledDerive`, also whatever the suite names. The
+vectors pair each KEM with several KDFs, so taking the suite's would
+fail most of them.
+
+### Go serializes an X25519 private key clamped
+
+**Status: accepted.** filippo.io/hpke's `Bytes()` returns X25519 keys
+clamped; this library keeps the bytes `DeriveKeyPair` produced, as
+RFC 9180's vectors print them. Both are the same key. `check_hpke.py`
+compares X25519 key pairs with Go by their public halves.
+
+### A context's limit is 2^64 messages, not 2^96
+
+**Status: accepted.** RFC 9180 refuses a message once the sequence
+number reaches `2^(8*Nn) - 1`; the counter here is 64 bits and stops at
+2^64 - 1, sooner and unreachable in practice. A message at the last
+number is computed and then refused with its result discarded
+(`test_context_sequence_and_limits`).
+
+## 7zzzzzzzzzl. TurboSHAKE and KangarooTwelve
+
+`hash_functions::keccak` (TurboSHAKE) and `hash_functions::kangarootwelve`.
+Checked against RFC 9861's 67 vectors, read out of `rfcs/rfc9861.txt`,
+and XKCP's K12 and pycryptodome: `vectors/turboshake_k12.vec`.
+
+### Twelve rounds are the last twelve
+
+Keccak-p[1600, 12] runs rounds 12 to 23 of Keccak-f[1600], with those
+rounds' constants. Rounds 0 to 11 is also twelve rounds of Keccak and a
+plausible permutation. **Mitigated**: `permute` takes the constants
+from `24 - rounds`, and the RFC's vectors fail on the other choice.
+
+### The customization string is part of the message
+
+KangarooTwelve hashes `S = M || C || length_encode(|C|)`, and the 8192
+byte chunks are cut from S, not from M: a short message with a long
+customization string is a tree. pycryptodome 3.23.0 decided the shape
+from the message alone when the message was empty, and hashed S of up to
+the customization's size as one chunk; its 3.24.0 fixed it. **Mitigated**:
+the customization goes through the same chunking as the message, and the
+witness rows include customization strings that cross a chunk alone.
+
+### length_encode(0) is one byte
+
+It is `00`, not empty: the count of the integer's bytes, zero, still
+follows them. Every message with no customization string ends in that
+byte. **Mitigated**: section 3.3's examples are read out of the RFC.
+
+### KT256's chaining values are 64 bytes
+
+A leaf's output is twice the security level, 32 bytes for KT128 and 64
+for KT256, and the final node's length encodes the number of leaves, not
+of bytes. **Mitigated**: the RFC's KT256 vectors reach several chunks,
+and the witness rows go to five.
+
+### TurboSHAKE's domain byte is not a parameter to vary freely
+
+It must be 0x01 to 0x7F (RFC 9861 section 2.2): it carries the first
+bit of the pad10*1 padding, so it cannot be 0x00, and it must leave room
+for the last bit when it ends a block, so its top bit cannot be set.
+**Mitigated**: anything else is refused, and every legal value is in the
+witness rows.
 
 ## 8. What to do with this document
 

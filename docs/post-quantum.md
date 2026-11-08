@@ -518,6 +518,11 @@ a mask, and the weight check substitutes rather than rejects.
   one kind of work this library has no appetite for, because the point
   of it is that nothing gets removed - and something that was never
   standardised is the one thing that could reasonably be.
+* **The stateful hash signatures** - LMS and HSS in `pq::lms`, XMSS and
+  XMSS^MT in `pq::xmss`, both done - are outside this order: they rest on hashes alone like
+  SLH-DSA but are older than the 2024 standards, and what makes them hard
+  to use, their state, is a property of the deployment rather than of the
+  mathematics.
 * **SLH-DSA in a handshake.** Its certificates are done (RFC 9909, in
   section 1); it has no TLS codepoint, and its signatures are 8 to 50 KB.
 

@@ -1,12 +1,12 @@
 //! Speck and Simon at every block size against
 //! `vectors/simon_speck.vec`, written by
 //! `scripts/make_simon_speck_vectors.py`: rows on which every witness
-//! that takes the key agrees - Crypto++ 8.9.0, the Linux kernel's Speck,
-//! jedisct1/rust-lwbc and inmcm's Python reference - Crypto++'s and the
+//! that takes the key agrees, two at least - Crypto++ 8.9.0, the Linux
+//! kernel's Speck, jedisct1/rust-lwbc, inmcm's Python reference,
+//! cryptography-rs and RustCrypto's speck-cipher - Crypto++'s and the
 //! paper's published tests, NESSIE's test sets in shape at every key
-//! length, random blocks, and blocks iterated 100 and 1,000 times. The
-//! rows at Speck48/72, Speck96/96, Simon48/72 and Simon96/96 are inmcm's
-//! alone and say so. Offline.
+//! length, random blocks, and blocks iterated 100 and 1,000 times.
+//! Offline.
 
 use std::collections::HashMap;
 
@@ -26,7 +26,6 @@ struct Row {
     ct: Vec<u8>,
     n: usize,
     published: bool,
-    alone: bool,
 }
 
 fn rows() -> Vec<Row> {
@@ -41,8 +40,7 @@ fn rows() -> Vec<Row> {
                 .map(|w| w.split_once('=').unwrap()).collect();
             Row { kind, key: unhex(f["key"]), pt: unhex(f["pt"]), ct: unhex(f["ct"]),
                   n: f.get("n").map_or(1, |n| n.parse().unwrap()),
-                  published: f.get("src") == Some(&"published"),
-                  alone: f.get("witnesses") == Some(&"1") }
+                  published: f.get("src") == Some(&"published") }
         })
         .collect();
     assert_eq!(rows.len(), declared);
@@ -65,21 +63,22 @@ fn cipher(kind: &str, key: &[u8]) -> Box<dyn BlockCipher> {
     }
 }
 
-/// Each name, its published rows, its key lengths, and those only inmcm
-/// computes.
-const KINDS: [(&str, usize, &[usize], &[usize]); 10] = [
-    ("speck32", 1, &[8], &[]), ("speck48", 2, &[9, 12], &[9]),
-    ("speck64", 16, &[12, 16], &[]), ("speck96", 2, &[12, 18], &[12]),
-    ("speck128", 24, &[16, 24, 32], &[]),
-    ("simon32", 1, &[8], &[]), ("simon48", 2, &[9, 12], &[9]),
-    ("simon64", 16, &[12, 16], &[]), ("simon96", 2, &[12, 18], &[12]),
-    ("simon128", 24, &[16, 24, 32], &[]),
+/// Each name, its published rows and its key lengths.
+const KINDS: [(&str, usize, &[usize]); 10] = [
+    ("speck32", 1, &[8]), ("speck48", 2, &[9, 12]),
+    ("speck64", 16, &[12, 16]), ("speck96", 2, &[12, 18]),
+    ("speck128", 24, &[16, 24, 32]),
+    ("simon32", 1, &[8]), ("simon48", 2, &[9, 12]),
+    ("simon64", 16, &[12, 16]), ("simon96", 2, &[12, 18]),
+    ("simon128", 24, &[16, 24, 32]),
 ];
 
 #[test]
 fn test_simon_speck_vectors() {
     let rows = rows();
-    for (kind, want_published, lengths, alone) in KINDS {
+    // Every row has two witnesses at least; none says otherwise.
+    assert!(!include_str!("../vectors/simon_speck.vec").contains("witnesses="));
+    for (kind, want_published, lengths) in KINDS {
         let (mut single, mut published) = (0, 0);
         let mut by_length = HashMap::new();
         for r in rows.iter().filter(|r| r.kind == kind) {
@@ -93,7 +92,6 @@ fn test_simon_speck_vectors() {
             single += 1;
             published += usize::from(r.published);
             *by_length.entry(r.key.len()).or_insert(0) += 1;
-            assert_eq!(r.alone, alone.contains(&r.key.len()), "{kind} {:02x?}", r.key);
         }
         // A parser that found nothing would pass every assertion above.
         assert_eq!(published, want_published, "{kind}");
@@ -154,7 +152,7 @@ fn test_the_paper_order_is_the_reverse() {
 fn test_simon_speck_through_the_catalogue_in_every_mode() {
     let rows = rows();
     let mut checked = 0;
-    for (kind, _, lengths, _) in KINDS {
+    for (kind, _, lengths) in KINDS {
         let r = rows.iter().find(|r| r.kind == kind && !r.published).unwrap();
         let block = r.pt.len();
         let mut ecb = CipherStream::new(AnyBlockCipher::new(kind, &r.key, None).unwrap(),

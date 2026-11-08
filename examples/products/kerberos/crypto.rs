@@ -17,8 +17,7 @@ use allcrypt::api::{self, AnyBlockCipher};
 use allcrypt::kdf::nist::{kbkdf_counter, kbkdf_feedback, Prf};
 use allcrypt::block_ciphers::{BlockCipher, CtsVariant};
 use allcrypt::hash_functions::HashFunction;
-use allcrypt::stream_ciphers::rc4::RC4;
-use allcrypt::stream_ciphers::StreamCipher;
+use allcrypt::stream_ciphers::rc4_hmac;
 
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -189,21 +188,6 @@ fn des_string_to_key(password: &[u8], salt: &[u8]) -> Result<Vec<u8>, String> {
     allcrypt::kdf::kerberos::des_string_to_key(password, salt)
 }
 
-/// The key usage as RC4-HMAC numbers it (RFC 4757 3): the AS-REP's
-/// encrypted part is 8, like the TGS-REP's, and the GSS wrap token's
-/// signature usage, 23, is 13.
-///
-/// RFC 4757 also gives the TGS-REP encrypted under a subkey (usage 9)
-/// T = 8. MIT Kerberos and Heimdal both keep it 9, so a TGS-REP the RFC's
-/// way decrypts under neither, and 9 stays 9 here; a test pins it.
-fn rc4_usage(usage: u32) -> u32 {
-    match usage {
-        3 => 8,
-        23 => 13,
-        other => other,
-    }
-}
-
 // ------------------------------------------------------------------- the types --
 
 impl Enctype {
@@ -274,11 +258,10 @@ impl Enctype {
                 self.derive(&temp, b"kerberos")
             }
             Kind::Rc4(_) => {
-                // MD4 of the password as UTF-16LE: the NT hash. No salt.
+                // The NT hash, the library's; no salt.
                 let text = std::str::from_utf8(password)
                     .map_err(|_| "An RC4-HMAC password must be UTF-8.".to_string())?;
-                let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-                Ok(hash("md4", &utf16))
+                Ok(rc4_hmac::string_to_key(text).to_vec())
             }
         }
     }
@@ -381,15 +364,9 @@ impl Enctype {
                 out.extend_from_slice(&hmac(hash_name, &ki, &mac_input)[..mac_len]);
                 Ok(out)
             }
-            Kind::Rc4(export) => {
-                data.extend_from_slice(plain);
-                let (k1, k2) = rc4_keys(key, usage, export);
-                let checksum = hmac("md5", &k2, &data);
-                let k3 = hmac("md5", &k1, &checksum);
-                let mut out = checksum.clone();
-                RC4::new(&k3)?.crypt(&data, &mut out);
-                Ok(out)
-            }
+            // The library's RFC 4757, which renumbers usages 3 and 23
+            // and keeps 9 as MIT Kerberos and Heimdal do.
+            Kind::Rc4(export) => rc4_hmac::encrypt(key, usage, plain, &confounder, export),
         }
     }
 
@@ -462,20 +439,8 @@ impl Enctype {
                 let data = cts_decrypt(&mut cipher("aes", &ke)?, &[0; 16], body)?;
                 Ok(data[16..].to_vec())
             }
-            Kind::Rc4(export) => {
-                if cipher_text.len() < 16 + 8 {
-                    return Err(failed());
-                }
-                let (checksum, body) = cipher_text.split_at(16);
-                let (k1, k2) = rc4_keys(key, usage, export);
-                let k3 = hmac("md5", &k1, checksum);
-                let mut data = Vec::with_capacity(body.len());
-                RC4::new(&k3)?.crypt(body, &mut data);
-                if !constant_eq(&hmac("md5", &k2, &data), checksum) {
-                    return Err(failed());
-                }
-                Ok(data[8..].to_vec())
-            }
+            Kind::Rc4(export) => rc4_hmac::decrypt(key, usage, cipher_text, export)
+                .map_err(|_| failed()),
         }
     }
 
@@ -513,14 +478,8 @@ impl Enctype {
             }
             Kind::Camellia(_) => allcrypt::mac::cmac::cmac(
                 "camellia", &self.derive(key, &usage_constant(usage, 0x99))?, data)?,
-            Kind::Rc4(_) => {
-                // RFC 4757 4: HMAC-MD5 under a key derived from
-                // "signaturekey", over MD5 of the usage and the data.
-                let ksign = hmac("md5", key, b"signaturekey\0");
-                let mut input = rc4_usage(usage).to_le_bytes().to_vec();
-                input.extend_from_slice(data);
-                hmac("md5", &ksign, &hash("md5", &input))
-            }
+            // RFC 4757 4, the library's.
+            Kind::Rc4(_) => rc4_hmac::checksum(key, usage, data)?.to_vec(),
         })
     }
 }
@@ -697,27 +656,10 @@ impl Enctype {
             // RFC 6803 3.
             Kind::Camellia(n) => allcrypt::mac::cmac::cmac(
                 "camellia", &kdf_feedback_cmac(key, b"prf", n)?, input)?,
-            // RFC 4757 5.
-            Kind::Rc4(_) => hmac("sha1", key, input),
+            // RFC 4757 5, the library's.
+            Kind::Rc4(_) => rc4_hmac::prf(key, input)?.to_vec(),
         })
     }
-}
-
-/// RC4-HMAC's two keys for a usage: the one that keys RC4 (masked to 40
-/// bits for the export variant) and the one that keys the checksum.
-fn rc4_keys(key: &[u8], usage: u32, export: bool) -> (Vec<u8>, Vec<u8>) {
-    let mut salt = Vec::new();
-    if export {
-        salt.extend_from_slice(b"fortybits\0");
-    }
-    salt.extend_from_slice(&rc4_usage(usage).to_le_bytes());
-    let k1 = hmac("md5", key, &salt);
-    let k2 = k1.clone();
-    let mut k1 = k1;
-    if export {
-        k1[7..].fill(0xab);
-    }
-    (k1, k2)
 }
 
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {

@@ -26,7 +26,7 @@ use crate::stream_ciphers::{chacha::Chacha, rc4::RC4, StreamCipher};
 // ------------------------------------------------------------- catalogue ---
 
 pub const BLOCK_CIPHERS: &[&str] =
-    &["aes", "anubis", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "des", "3des",
+    &["aes", "anubis", "aria", "blowfish", "blowfish-le", "camellia", "cast5", "cast256", "chaskey-lts", "des", "3des",
       "feal", "feal-nx", "gost", "hight", "idea", "kalyna-128", "kalyna-256", "kalyna-512",
       "kasumi", "khazad", "kuznyechik",
       "lea", "loki97", "loki97-mcrypt", "magma",
@@ -70,8 +70,8 @@ pub fn block_cipher_name(name: &str) -> Option<&'static str> {
 }
 pub const STREAM_CIPHERS: &[&str] =
     &["chacha20", "chacha12", "chacha8", "xchacha20", "grain128", "grainv1", "hc128", "hc256",
-      "rabbit", "rc4", "salsa20", "salsa12", "salsa8", "sosemanuk", "strumok", "trivium",
-      "xsalsa20", "zipcrypto"];
+      "isaac", "isaac-bouncycastle", "isaac64", "rabbit", "rc4", "salsa20", "salsa12", "salsa8", "snow3g", "sosemanuk", "strumok",
+      "trivium", "xsalsa20", "zipcrypto", "zuc128", "zuc256", "zuc256-3gpp"];
 pub const MODES: &[&str] = &["ecb", "cbc", "pcbc", "cfb", "ofb", "ctr", "ctr-le",
                               "cbc-cs1", "cbc-cs2", "cbc-cs3"];
 /// Authenticated modes, which are not in `MODES` because they do not
@@ -87,6 +87,12 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "aria-gcm", "camellia-gcm", "sm4-gcm",
                              "aria-ccm", "camellia-ccm", "sm4-ccm",
                              "chacha20-poly1305", "xchacha20-poly1305",
+                             // Grain-128AEADv2, the NIST lightweight
+                             // finalist: a 16 byte key, a 12 byte nonce
+                             // and an 8 byte tag; and v1, as it stood
+                             // before the round 3 tweak. Bare
+                             // "grain128aead" names both, and is refused.
+                             "grain128aeadv2", "grain128aeadv1",
                              // EAX over any block cipher here. Named per
                              // cipher rather than as one "eax" taking a
                              // cipher argument, because the catalogue is
@@ -111,7 +117,7 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "saferplus-eax", "saferplus-reversed-words-eax",
                              "loki97-eax", "loki97-mcrypt-eax", "lea-eax", "hight-eax",
                              "speck64-eax", "speck128-eax", "simon64-eax", "simon128-eax",
-                             "present-eax", "feal-eax", "feal-nx-eax",
+                             "present-eax", "feal-eax", "feal-nx-eax", "chaskey-lts-eax",
                              // The wider blocks: CMAC's field there is the
                              // low-weight polynomial Botan, Crypto++ and
                              // Bouncy Castle use (see `mac/cmac.rs`), and
@@ -140,7 +146,7 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "saferplus-mgm", "saferplus-reversed-words-mgm",
                              "loki97-mgm", "loki97-mcrypt-mgm", "lea-mgm", "hight-mgm",
                              "speck64-mgm", "speck128-mgm", "simon64-mgm", "simon128-mgm",
-                             "present-mgm", "feal-mgm", "feal-nx-mgm",
+                             "present-mgm", "feal-mgm", "feal-nx-mgm", "chaskey-lts-mgm",
                              // OCB (RFC 7253), which is defined for 128
                              // bit blocks only. OpenPGP's AEAD packets
                              // default to it.
@@ -151,7 +157,7 @@ pub const AEADS: &[&str] = &["aes-gcm", "aes-ccm", "aes-ccm-8",
                              "noekeon-ocb", "noekeon-indirect-ocb", "square-ocb",
                              "saferplus-ocb", "saferplus-reversed-words-ocb",
                              "loki97-ocb", "loki97-mcrypt-ocb", "lea-ocb",
-                             "speck128-ocb", "simon128-ocb",
+                             "speck128-ocb", "simon128-ocb", "chaskey-lts-ocb",
                              // AES-CBC and HMAC-SHA-2 as one AEAD (RFC
                              // 7518 5.2): JWE's A128CBC-HS256 and its two
                              // siblings. The nonce is the 16-byte IV.
@@ -222,6 +228,11 @@ pub const HASHES: &[&str] = &[
     "sha3_224", "sha3_256", "sha3_384", "sha3_512",
     "shake_128", "shake_256",
     "keccak_224", "keccak_256", "keccak_384", "keccak_512",
+    // TurboSHAKE and KangarooTwelve, RFC 9861: Keccak-p[1600] at twelve
+    // rounds. TurboSHAKE by name has the default domain byte 0x1F; any
+    // other, and KangarooTwelve's customization string, through
+    // `turboshake` and `kangarootwelve`.
+    "turboshake_128", "turboshake_256", "kt128", "kt256",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -354,6 +365,9 @@ pub enum AnyBlockCipher {
     /// (`noekeon-indirect`), which first encrypts the key under the zero
     /// key.
     Noekeon(crate::block_ciphers::noekeon::Noekeon),
+    /// The Chaskey-LTS block cipher, `pi(x ^ K) ^ K` over Chaskey-LTS's
+    /// 16 round permutation: a 128 bit block and key.
+    ChaskeyLts(crate::block_ciphers::chaskey_lts::ChaskeyLts),
     /// SHACAL-2, SHA-256's compression function as a cipher: a 256 bit
     /// block and a key of 16 to 64 bytes, zero-padded to 64.
     Shacal2(crate::block_ciphers::shacal2::Shacal2),
@@ -476,6 +490,8 @@ impl AnyBlockCipher {
                 crate::block_ciphers::noekeon::Noekeon::new(key)?)),
             "noekeon-indirect" => Ok(AnyBlockCipher::Noekeon(
                 crate::block_ciphers::noekeon::Noekeon::new_indirect(key)?)),
+            "chaskey-lts" => Ok(AnyBlockCipher::ChaskeyLts(
+                crate::block_ciphers::chaskey_lts::ChaskeyLts::new(key)?)),
             "shacal2" => Ok(AnyBlockCipher::Shacal2(
                 crate::block_ciphers::shacal2::Shacal2::new(key)?)),
             "shacal1" => Ok(AnyBlockCipher::Shacal1(
@@ -681,6 +697,7 @@ impl AnyBlockCipher {
             AnyBlockCipher::Anubis(_) => "anubis",
             AnyBlockCipher::Noekeon(n) if n.is_indirect() => "noekeon-indirect",
             AnyBlockCipher::Noekeon(_) => "noekeon",
+            AnyBlockCipher::ChaskeyLts(_) => "chaskey-lts",
             AnyBlockCipher::Shacal2(_) => "shacal2",
             AnyBlockCipher::Shacal1(_) => "shacal1",
             AnyBlockCipher::Present(_) => "present",
@@ -762,6 +779,7 @@ macro_rules! dispatch {
             AnyBlockCipher::Khazad($inner) => $body,
             AnyBlockCipher::Anubis($inner) => $body,
             AnyBlockCipher::Noekeon($inner) => $body,
+            AnyBlockCipher::ChaskeyLts($inner) => $body,
             AnyBlockCipher::Shacal2($inner) => $body,
             AnyBlockCipher::Shacal1($inner) => $body,
             AnyBlockCipher::Present($inner) => $body,
@@ -967,6 +985,17 @@ enum AeadInner {
         buffered: Vec<u8>,
         tag_len: usize,
     },
+    /// Grain-128AEADv2 or v1. **Buffers**: it authenticates the
+    /// plaintext, so a decryption has its plaintext before it can check
+    /// the tag, and releasing it before then would hand out
+    /// unauthenticated data.
+    Grain {
+        version: crate::stream_ciphers::grain128aead::Version,
+        key: Vec<u8>,
+        nonce: Vec<u8>,
+        aad: Vec<u8>,
+        buffered: Vec<u8>,
+    },
 }
 
 impl AeadStream {
@@ -1075,6 +1104,23 @@ impl AeadStream {
                     buffered: Vec::new(),
                 }
             }
+            // No tag length can follow the name: `split_tag_len` reads one
+            // only after a block cipher mode, so "grain128aeadv2-4" is not
+            // a name at all.
+            "grain128aeadv2" | "grain-128aeadv2" | "grain128aeadv1" | "grain-128aeadv1" => {
+                use crate::stream_ciphers::grain128aead::{encrypt_version, Version};
+                let version = if base.ends_with('1') { Version::V1 } else { Version::V2 };
+                // The key and nonce are checked now rather than at the end.
+                encrypt_version(version, key, nonce, &[], &[])?;
+                AeadInner::Grain { version, key: key.to_vec(), nonce: nonce.to_vec(),
+                                   aad: aad.to_vec(), buffered: Vec::new() }
+            }
+            "grain128aead" | "grain-128aead" => {
+                return Err("\"grain128aead\" names two ciphers: Grain-128AEAD as submitted to \
+                            the first two rounds of NIST's lightweight cryptography process, \
+                            and the round 3 tweak, Grain-128AEADv2, whose outputs are \
+                            unrelated. Say \"grain128aeadv1\" or \"grain128aeadv2\".".to_string());
+            }
             "aes-128-cbc-hmac-sha256" | "aes-192-cbc-hmac-sha384" | "aes-256-cbc-hmac-sha512" => {
                 use crate::block_ciphers::cbc_hmac::{CbcHmac, Variant};
                 let variant = match &lower[..7] {
@@ -1111,7 +1157,8 @@ impl AeadStream {
             AeadInner::ChaChaPoly(state) => state.update(input, out),
             AeadInner::Ccm { buffered, .. } | AeadInner::Eax { buffered, .. }
             | AeadInner::Mgm { buffered, .. } | AeadInner::Ocb { buffered, .. }
-            | AeadInner::CbcHmac { buffered, .. } | AeadInner::Kalyna { buffered, .. } => {
+            | AeadInner::CbcHmac { buffered, .. } | AeadInner::Kalyna { buffered, .. }
+            | AeadInner::Grain { buffered, .. } => {
                 buffered.extend_from_slice(input);
                 Ok(())
             }
@@ -1143,6 +1190,7 @@ impl AeadStream {
             AeadInner::Ocb { ocb, .. } => ocb.tag_len(),
             AeadInner::CbcHmac { aead, .. } => aead.tag_len(),
             AeadInner::Kalyna { tag_len, .. } => *tag_len,
+            AeadInner::Grain { .. } => crate::stream_ciphers::grain128aead::TAG_LEN,
         }
     }
 
@@ -1152,7 +1200,8 @@ impl AeadStream {
     pub fn buffers_everything(&self) -> bool {
         matches!(self.inner, AeadInner::Ccm { .. } | AeadInner::Eax { .. }
                              | AeadInner::Mgm { .. } | AeadInner::Ocb { .. }
-                             | AeadInner::CbcHmac { .. } | AeadInner::Kalyna { .. })
+                             | AeadInner::CbcHmac { .. } | AeadInner::Kalyna { .. }
+                             | AeadInner::Grain { .. })
     }
 
     /// Finish a CCM encryption: the ciphertext, which `update` could not
@@ -1198,6 +1247,12 @@ impl AeadStream {
                     cipher, nonce, aad, buffered, *tag_len)?;
                 out.extend_from_slice(&ciphertext);
                 Ok(tag)
+            }
+            AeadInner::Grain { version, key, nonce, aad, buffered } => {
+                let (ciphertext, tag) = crate::stream_ciphers::grain128aead::encrypt_version(
+                    *version, key, nonce, aad, buffered)?;
+                out.extend_from_slice(&ciphertext);
+                Ok(tag.to_vec())
             }
             AeadInner::Kalyna { cipher, ccm: true, nonce, aad, buffered, tag_len } => {
                 let mut sealed = crate::block_ciphers::kalyna_aead::ccm_encrypt(
@@ -1260,6 +1315,12 @@ impl AeadStream {
                 out.extend_from_slice(&plaintext);
                 Ok(())
             }
+            AeadInner::Grain { version, key, nonce, aad, buffered } => {
+                let plaintext = crate::stream_ciphers::grain128aead::decrypt_version(
+                    *version, key, nonce, aad, buffered, tag)?;
+                out.extend_from_slice(&plaintext);
+                Ok(())
+            }
             AeadInner::Kalyna { cipher, ccm: true, nonce, aad, buffered, tag_len } => {
                 // The tag's length is part of what CCM authenticates.
                 if tag.len() != *tag_len {
@@ -1312,6 +1373,9 @@ impl AeadStream {
             AeadInner::Kalyna { .. } => Err(
                 "Kalyna's GCM and CCM are one-shot here; call finish() with a \
                  buffer for the ciphertext.".to_string()),
+            AeadInner::Grain { version, .. } => Err(format!(
+                "{} is one-shot here; call finish() with a buffer for the \
+                 ciphertext.", version.name())),
         }
     }
 
@@ -1358,6 +1422,9 @@ impl AeadStream {
             AeadInner::Kalyna { .. } => Err(
                 "Kalyna's GCM and CCM release their plaintext only once the tag \
                  checks; call open() with a buffer for it.".to_string()),
+            AeadInner::Grain { version, .. } => Err(format!(
+                "{} releases its plaintext only once the tag checks; call \
+                 open() with a buffer for it.", version.name())),
         }
     }
 }
@@ -1576,10 +1643,26 @@ pub enum AnyStreamCipher {
     /// Strumok, DSTU 8845:2019: a 32 or 64 byte key, the 32 byte IV as
     /// the nonce.
     Strumok(crate::stream_ciphers::strumok::Strumok),
+    /// SNOW 3G: a 16 byte key and a 16 byte IV as the nonce, `k0` and
+    /// `IV0` first, each word big endian. UEA2 and UIA2 are
+    /// `stream_ciphers::mobile`.
+    Snow3g(crate::stream_ciphers::snow3g::Snow3g),
+    /// ZUC-128 (a 16 byte key and IV) or ZUC-256 (a 32 byte key and a 25
+    /// byte IV, or 23 packed). 128-EEA3 and 128-EIA3 are
+    /// `stream_ciphers::mobile`.
+    Zuc(crate::stream_ciphers::zuc::Zuc),
     /// PKWARE's traditional ZIP encryption. Its keys absorb the
     /// plaintext, so it has a direction: `encrypt` and `decrypt` work and
     /// `update` refuses.
     ZipCrypto(crate::stream_ciphers::zipcrypto::ZipCrypto),
+    /// ISAAC: a key of up to 1024 bytes and no nonce, the reference's
+    /// `rand()` order, each word little endian.
+    Isaac(crate::stream_ciphers::isaac::Isaac),
+    /// ISAAC as Bouncy Castle's `ISAACEngine` reads it: from the second
+    /// block, words in index order, each big endian.
+    IsaacBouncyCastle(crate::stream_ciphers::isaac::IsaacBouncyCastle),
+    /// ISAAC-64: a key of up to 2048 bytes and no nonce.
+    Isaac64(crate::stream_ciphers::isaac::Isaac64),
 }
 
 impl AnyStreamCipher {
@@ -1638,6 +1721,28 @@ impl AnyStreamCipher {
                 crate::stream_ciphers::grain::GrainV1::new(key, nonce)?)),
             "grain128" | "grain-128" => Ok(AnyStreamCipher::Grain128(
                 crate::stream_ciphers::grain::Grain128::new(key, nonce)?)),
+            "snow3g" | "snow-3g" => Ok(AnyStreamCipher::Snow3g(
+                crate::stream_ciphers::snow3g::Snow3g::new(key, nonce)?)),
+            "zuc128" | "zuc-128" | "zuc" => Ok(AnyStreamCipher::Zuc(
+                crate::stream_ciphers::zuc::Zuc::zuc128(key, nonce)?)),
+            "zuc256" | "zuc-256" => Ok(AnyStreamCipher::Zuc(
+                crate::stream_ciphers::zuc::Zuc::zuc256(key, nonce)?)),
+            // 3GPP's ZUC-256 (TS 35.246): a 16 byte IV and its own loading.
+            "zuc256-3gpp" | "zuc-256-3gpp" => Ok(AnyStreamCipher::Zuc(
+                crate::stream_ciphers::zuc::Zuc::zuc256_3gpp(key, nonce)?)),
+            // ISAAC's key is any length up to its seed array, the empty one
+            // included, and it has no nonce.
+            "isaac" | "isaac-bouncycastle" | "isaac64" => {
+                if !nonce.is_empty() {
+                    return Err("ISAAC takes no nonce.".to_string());
+                }
+                use crate::stream_ciphers::isaac;
+                Ok(match lower.as_str() {
+                    "isaac" => AnyStreamCipher::Isaac(isaac::Isaac::new(key)?),
+                    "isaac64" => AnyStreamCipher::Isaac64(isaac::Isaac64::new(key)?),
+                    _ => AnyStreamCipher::IsaacBouncyCastle(isaac::IsaacBouncyCastle::new(key)?),
+                })
+            }
             // The key is the password, of any length, the empty one
             // included.
             "zipcrypto" => {
@@ -1737,6 +1842,26 @@ impl AnyStreamCipher {
                 c.crypt(input, out);
                 Ok(())
             }
+            AnyStreamCipher::Snow3g(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::Zuc(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::Isaac(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::IsaacBouncyCastle(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
+            AnyStreamCipher::Isaac64(c) => {
+                c.crypt(input, out);
+                Ok(())
+            }
             AnyStreamCipher::ZipCrypto(_) => Err(
                 "ZipCrypto has no keystream independent of the data.".to_string()),
         }
@@ -1772,7 +1897,10 @@ impl AnyStreamCipher {
             | AnyStreamCipher::ZipCrypto(_) | AnyStreamCipher::Rabbit(_)
             | AnyStreamCipher::Hc128(_) | AnyStreamCipher::Hc256(_)
             | AnyStreamCipher::Sosemanuk(_) | AnyStreamCipher::Trivium(_)
-            | AnyStreamCipher::GrainV1(_) | AnyStreamCipher::Grain128(_) => Err(
+            | AnyStreamCipher::GrainV1(_) | AnyStreamCipher::Grain128(_)
+            | AnyStreamCipher::Snow3g(_) | AnyStreamCipher::Zuc(_)
+            | AnyStreamCipher::Isaac(_) | AnyStreamCipher::IsaacBouncyCastle(_)
+            | AnyStreamCipher::Isaac64(_) => Err(
                 "Only ChaCha and Salsa20 can seek. The other stream ciphers' state is \
                  everything that came before, not a counter: start a new one and \
                  discard up to the offset.".to_string()),
@@ -1958,6 +2086,150 @@ pub fn office_xor_encrypt(password: &[u8], data: &[u8], index: usize)
     Ok(out)
 }
 
+// ------------------------------------------------- 3GPP UMTS, LTE and 5G ---
+
+/// The names `mobile_cipher` takes: UEA2 and 128-EEA1 (one function, over
+/// SNOW 3G) and 128-EEA3 (over ZUC); `nea1` and `nea3` are 5G's names for
+/// the last two. A `128-` in front is accepted.
+pub const MOBILE_CIPHERS: &[&str] = &["uea1", "uea2", "eea1", "nea1", "eea3", "nea3"];
+/// The names `mobile_mac` takes: 128-EIA1 (UIA2 with FRESH = BEARER ||
+/// 0^27, over SNOW 3G) and 128-EIA3 (over ZUC), and 5G's `nia1` and
+/// `nia3`. UIA2 itself, which takes a FRESH instead of a BEARER, is
+/// `uia2`.
+pub const MOBILE_MACS: &[&str] = &["eia1", "nia1", "eia3", "nia3"];
+
+fn mobile_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    lower.strip_prefix("128-").unwrap_or(&lower).to_string()
+}
+
+/// A 3GPP confidentiality algorithm (`stream_ciphers::mobile`) over the
+/// first `bits` bits of `data` - all of it when `None` - under a 16 byte
+/// key, a 32 bit COUNT, a 5 bit BEARER and a DIRECTION bit. Encryption
+/// and decryption are the same; the bits past `bits` come back cleared.
+pub fn mobile_cipher(name: &str, key: &[u8], count: u32, bearer: u8, direction: u8,
+                     data: &[u8], bits: Option<u64>) -> Result<Vec<u8>, String> {
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    match mobile_name(name).as_str() {
+        "uea1" => crate::stream_ciphers::mobile::uea1(key, count, bearer, direction, data, bits),
+        "uea2" | "eea1" | "nea1" =>
+            crate::stream_ciphers::mobile::uea2(key, count, bearer, direction, data, bits),
+        "eea3" | "nea3" =>
+            crate::stream_ciphers::mobile::eea3(key, count, bearer, direction, data, bits),
+        _ => Err(format!("Unknown 3GPP confidentiality algorithm {name:?}. Known: {}.",
+                         MOBILE_CIPHERS.join(", "))),
+    }
+}
+
+/// A 3GPP integrity algorithm's 4 byte MAC over the first `bits` bits of
+/// `data` - all of it when `None` - under a 16 byte key, a 32 bit COUNT, a
+/// 5 bit BEARER and a DIRECTION bit.
+pub fn mobile_mac(name: &str, key: &[u8], count: u32, bearer: u8, direction: u8,
+                  data: &[u8], bits: Option<u64>) -> Result<Vec<u8>, String> {
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    match mobile_name(name).as_str() {
+        "eia1" | "nia1" =>
+            crate::stream_ciphers::mobile::eia1(key, count, bearer, direction, data, bits),
+        "eia3" | "nia3" =>
+            crate::stream_ciphers::mobile::eia3(key, count, bearer, direction, data, bits),
+        _ => Err(format!("Unknown 3GPP integrity algorithm {name:?}. Known: {}. UIA1 and \
+                          UIA2, which take a FRESH, are uia1 and uia2.",
+                         MOBILE_MACS.join(", "))),
+    }
+    .map(|mac| mac.to_vec())
+}
+
+/// UMTS's UIA1, KASUMI's f9: the 4 byte MAC over the first `bits` bits of
+/// `data` - all of it when `None` - under a 16 byte key, a 32 bit COUNT, a
+/// 32 bit FRESH and a DIRECTION bit.
+pub fn uia1(key: &[u8], count: u32, fresh: u32, direction: u8, data: &[u8], bits: Option<u64>)
+            -> Result<Vec<u8>, String> {
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    crate::stream_ciphers::mobile::uia1(key, count, fresh, direction, data, bits)
+        .map(|mac| mac.to_vec())
+}
+
+/// UMTS's UIA2: the 4 byte MAC over the first `bits` bits of `data` - all
+/// of it when `None` - under a 16 byte key, a 32 bit COUNT, a 32 bit
+/// FRESH and a DIRECTION bit.
+pub fn uia2(key: &[u8], count: u32, fresh: u32, direction: u8, data: &[u8], bits: Option<u64>)
+            -> Result<Vec<u8>, String> {
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    crate::stream_ciphers::mobile::uia2(key, count, fresh, direction, data, bits)
+        .map(|mac| mac.to_vec())
+}
+
+/// ZUC's MAC over a raw IV, of the first `bits` bits of `data` - all of
+/// it when `None`: ZUC-128's (a 16 byte key and IV, a 32 bit tag - 128-EIA3
+/// is it with the IV built from COUNT, BEARER and DIRECTION) or ZUC-256's
+/// (a 32 byte key, a 25 byte IV or 23 packed, a tag of 32, 64 or 128 bits).
+/// `tag_bits` is in bits.
+pub fn zuc_mac(key: &[u8], iv: &[u8], tag_bits: u32, data: &[u8], bits: Option<u64>)
+               -> Result<Vec<u8>, String> {
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    if key.len() == 16 {
+        if tag_bits != 32 {
+            return Err(format!("ZUC-128's MAC is 32 bits, not {tag_bits}; ZUC-256's, with a \
+                                32 byte key, is 32, 64 or 128."));
+        }
+        return crate::stream_ciphers::zuc::zuc128_mac(key, iv, data, bits)
+            .map(|mac| mac.to_vec());
+    }
+    if key.len() != 32 {
+        return Err(format!("A ZUC MAC key is 16 bytes (ZUC-128) or 32 (ZUC-256), not {}.",
+                           key.len()));
+    }
+    crate::stream_ciphers::zuc::zuc256_mac(key, iv, tag_bits, data, bits)
+}
+
+/// 5G's 256-NEA6 (`stream_ciphers::mobile`, TS 35.246): the first `bits`
+/// bits of `data` - all of it when `None` - under a 32 byte key (or 16,
+/// zero-extended), a 32 bit COUNT, a 5 bit BEARER, a DIRECTION bit and an
+/// EXTRA_IV of six bytes or none. Encryption and decryption are the same;
+/// the bits past `bits` come back cleared.
+pub fn nea6(key: &[u8], count: u32, bearer: u8, direction: u8, extra_iv: &[u8], data: &[u8],
+            bits: Option<u64>) -> Result<Vec<u8>, String> {
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    crate::stream_ciphers::mobile::nea6(key, count, bearer, direction, extra_iv, data, bits)
+}
+
+/// 5G's 256-NIA6: the MAC of `mac_bytes` bytes, 4 to 16, over the first
+/// `bits` bits of `data` - all of it when `None` - under the inputs
+/// `nea6` takes.
+#[allow(clippy::too_many_arguments)] // the algorithm's own inputs, all of them
+pub fn nia6(key: &[u8], count: u32, bearer: u8, direction: u8, extra_iv: &[u8], data: &[u8],
+            bits: Option<u64>, mac_bytes: u8) -> Result<Vec<u8>, String> {
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    crate::stream_ciphers::mobile::nia6(key, count, bearer, direction, extra_iv, data, bits,
+                                        mac_bytes)
+}
+
+/// 5G's 256-NCA6 encryption: the ciphertext of the first `bits` bits of
+/// `data`, and the MAC of `mac_bytes` bytes, 4 to 16, over the first
+/// `aad_bits` bits of `aad` and the ciphertext. A length that is `None`
+/// is all of its bytes.
+#[allow(clippy::too_many_arguments)] // the algorithm's own inputs, all of them
+pub fn nca6_encrypt(key: &[u8], count: u32, bearer: u8, direction: u8, extra_iv: &[u8],
+                    aad: &[u8], aad_bits: Option<u64>, data: &[u8], bits: Option<u64>,
+                    mac_bytes: u8) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let aad_bits = aad_bits.unwrap_or(8 * aad.len() as u64);
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    crate::stream_ciphers::mobile::nca6_encrypt(key, count, bearer, direction, extra_iv, aad,
+                                                aad_bits, data, bits, mac_bytes)
+}
+
+/// 5G's 256-NCA6 decryption: the plaintext, if `mac` is the MAC the
+/// sender computed; an error, and nothing else, if it is not.
+#[allow(clippy::too_many_arguments)] // the algorithm's own inputs, all of them
+pub fn nca6_decrypt(key: &[u8], count: u32, bearer: u8, direction: u8, extra_iv: &[u8],
+                    aad: &[u8], aad_bits: Option<u64>, data: &[u8], bits: Option<u64>,
+                    mac: &[u8]) -> Result<Vec<u8>, String> {
+    let aad_bits = aad_bits.unwrap_or(8 * aad.len() as u64);
+    let bits = bits.unwrap_or(8 * data.len() as u64);
+    crate::stream_ciphers::mobile::nca6_decrypt(key, count, bearer, direction, extra_iv, aad,
+                                                aad_bits, data, bits, mac)
+}
+
 // --------------------------------------------------------- IEEE 802.11 ---
 
 /// Michael, TKIP's message integrity code (`mac::michael`). The key is
@@ -2011,8 +2283,52 @@ pub fn wpa_ptk(akm: &str, pmk: &[u8], aa: &[u8], spa: &[u8], anonce: &[u8], snon
     Ok(match akm {
         "sha1" => crate::kdf::ieee80211::try_ptk_sha1(pmk, &aa, &spa, &anonce, &snonce, bits)?,
         "sha256" => crate::kdf::ieee80211::try_ptk_sha256(pmk, &aa, &spa, &anonce, &snonce, bits)?,
-        other => return Err(format!("A WPA AKM is \"sha1\" or \"sha256\", not {other:?}.")),
+        "sha384" => crate::kdf::ieee80211::try_ptk_sha384(pmk, &aa, &spa, &anonce, &snonce, bits)?,
+        other => return Err(format!("A WPA AKM is \"sha1\", \"sha256\" or \"sha384\", not \
+                                     {other:?}.")),
     })
+}
+
+fn six(m: &[u8], what: &str) -> Result<[u8; 6], String> {
+    m.try_into().map_err(|_| format!("A {what} is 6 bytes, not {}.", m.len()))
+}
+
+fn sixteen(m: &[u8], what: &str) -> Result<[u8; 16], String> {
+    m.try_into().map_err(|_| format!("A {what} is 16 bytes, not {}.", m.len()))
+}
+
+fn nonce32(n: &[u8], what: &str) -> Result<[u8; 32], String> {
+    n.try_into().map_err(|_| format!("An {what} is 32 bytes, not {}.", n.len()))
+}
+
+/// Fast BSS transition's PMK-R0 and PMKR0Name (`kdf::ieee80211::ft_pmk_r0`):
+/// XXKey of 32, 48 or 64 bytes, the SSID, the 2 byte mobility domain
+/// identifier, the R0 key holder's identifier and the station's address.
+pub fn wpa_ft_pmk_r0(xxkey: &[u8], ssid: &[u8], mdid: &[u8], r0kh_id: &[u8], s0kh_id: &[u8])
+                     -> Result<(Vec<u8>, Vec<u8>), String> {
+    let mdid: [u8; 2] = mdid.try_into()
+        .map_err(|_| format!("A mobility domain identifier is 2 bytes, not {}.", mdid.len()))?;
+    let (key, name) = crate::kdf::ieee80211::ft_pmk_r0(xxkey, ssid, &mdid, r0kh_id,
+                                                       &six(s0kh_id, "station address")?)?;
+    Ok((key, name.to_vec()))
+}
+
+/// Fast BSS transition's PMK-R1 and PMKR1Name for the access point whose
+/// R1 key holder identifier (six bytes) is given.
+pub fn wpa_ft_pmk_r1(pmk_r0: &[u8], pmk_r0_name: &[u8], r1kh_id: &[u8], s1kh_id: &[u8])
+                     -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (key, name) = crate::kdf::ieee80211::ft_pmk_r1(
+        pmk_r0, &sixteen(pmk_r0_name, "PMKR0Name")?, &six(r1kh_id, "R1KH-ID")?,
+        &six(s1kh_id, "station address")?)?;
+    Ok((key, name.to_vec()))
+}
+
+/// Fast BSS transition's PTK from PMK-R1, `bits` long.
+pub fn wpa_ft_ptk(pmk_r1: &[u8], snonce: &[u8], anonce: &[u8], bssid: &[u8], sta: &[u8],
+                  bits: usize) -> Result<Vec<u8>, String> {
+    crate::kdf::ieee80211::ft_ptk(pmk_r1, &nonce32(snonce, "SNonce")?,
+                                  &nonce32(anonce, "ANonce")?, &six(bssid, "BSSID")?,
+                                  &six(sta, "station address")?, bits)
 }
 
 /// IEEE 802.11's PRF-n (12.7.1.2): HMAC-SHA-1 over `label || 0 ||
@@ -2028,6 +2344,19 @@ pub fn ieee80211_prf(key: &[u8], label: &[u8], data: &[u8], bits: usize)
 pub fn ieee80211_kdf_sha256(key: &[u8], label: &[u8], context: &[u8], bits: usize)
                             -> Result<Vec<u8>, String> {
     crate::kdf::ieee80211::kdf_sha256(key, label, context, bits)
+}
+
+/// IEEE 802.11's KDF-Hash-Length over `hash`: "sha256", "sha384" (the
+/// SHA-384 AKMs) or "sha512".
+pub fn ieee80211_kdf(hash: &str, key: &[u8], label: &[u8], context: &[u8], bits: usize)
+                     -> Result<Vec<u8>, String> {
+    match hash {
+        "sha256" => crate::kdf::ieee80211::kdf_sha256(key, label, context, bits),
+        "sha384" => crate::kdf::ieee80211::kdf_sha384(key, label, context, bits),
+        "sha512" => crate::kdf::ieee80211::kdf_sha512(key, label, context, bits),
+        other => Err(format!("IEEE 802.11's KDF runs over \"sha256\", \"sha384\" or \
+                              \"sha512\", not {other:?}.")),
+    }
 }
 
 /// A TKIP frame's temporal key and transmitter address, checked, and
@@ -2166,9 +2495,20 @@ pub enum AnyHash {
     /// because the three differ only in a rate and one byte of
     /// padding - which is exactly the point being made.
     Keccak(crate::hash_functions::keccak::Keccak),
+    /// KangarooTwelve, KT128 and KT256, with an empty customization
+    /// string (TurboSHAKE is a `Keccak`).
+    KangarooTwelve(crate::hash_functions::kangarootwelve::KangarooTwelve),
 }
 
 impl AnyHash {
+    /// A CRC from its six parameters, streamed like any hash: the digest is
+    /// the value in `ceil(width / 8)` bytes, big endian, and the name is the
+    /// model line, which `AnyHash::new` reads back. A catalogue CRC is
+    /// also `AnyHash::new("crc-16/arc")`.
+    pub fn crc(params: CrcParams) -> Result<AnyHash, String> {
+        Ok(AnyHash::Checksum(crate::checksum::Checksum::crc(params)?))
+    }
+
     /// BLAKE2b or BLAKE2s (RFC 7693) with the whole parameter block:
     /// `digest_len` bytes of output, a key (which makes it a MAC; no HMAC
     /// around it), and a salt and personalisation of up to 16 bytes for
@@ -2446,6 +2786,28 @@ impl AnyHash {
                 let bits = bits_after(other, "keccak_")?;
                 Ok(AnyHash::Keccak(crate::hash_functions::keccak::Keccak::keccak(bits / 8)?))
             }
+            "turboshake_128" | "turboshake128" => Ok(AnyHash::Keccak(
+                crate::hash_functions::keccak::Keccak::turboshake(128, 0x1f, 32)?)),
+            "turboshake_256" | "turboshake256" => Ok(AnyHash::Keccak(
+                crate::hash_functions::keccak::Keccak::turboshake(256, 0x1f, 64)?)),
+            other if other.starts_with("turboshake_128_")
+                    || other.starts_with("turboshake_256_") => {
+                let bits = bits_after(other, &other[..15])?;
+                let security = if other.starts_with("turboshake_128_") { 128 } else { 256 };
+                Ok(AnyHash::Keccak(
+                    crate::hash_functions::keccak::Keccak::turboshake(security, 0x1f, bits / 8)?))
+            }
+            "kt128" | "kangarootwelve" => Ok(AnyHash::KangarooTwelve(
+                crate::hash_functions::kangarootwelve::KangarooTwelve::new(128, &[], 32)?)),
+            "kt256" => Ok(AnyHash::KangarooTwelve(
+                crate::hash_functions::kangarootwelve::KangarooTwelve::new(256, &[], 64)?)),
+            other if other.starts_with("kt128_") || other.starts_with("kt256_") => {
+                let bits = bits_after(other, &other[..6])?;
+                let security = if other.starts_with("kt128_") { 128 } else { 256 };
+                Ok(AnyHash::KangarooTwelve(
+                    crate::hash_functions::kangarootwelve::KangarooTwelve::new(security, &[],
+                                                                                bits / 8)?))
+            }
             other if other.starts_with("shake_128_") || other.starts_with("shake_256_") => {
                 let bits = bits_after(other, &other[..10])?;
                 let security = if other.starts_with("shake_128_") { 128 } else { 256 };
@@ -2511,6 +2873,7 @@ macro_rules! dispatch_hash {
             AnyHash::Gost94($inner) => $body,
             AnyHash::Whirlpool($inner) => $body,
             AnyHash::Keccak($inner) => $body,
+            AnyHash::KangarooTwelve($inner) => $body,
         }
     };
 }
@@ -2756,6 +3119,49 @@ pub fn kerberos_random_to_key(cipher: &str, data: &[u8]) -> Result<Vec<u8>, Stri
     }
 }
 
+/// Kerberos RC4-HMAC's string-to-key (RFC 4757): the NT hash of the
+/// password, with no salt.
+pub fn kerberos_rc4_hmac_string_to_key(password: &str) -> Vec<u8> {
+    crate::stream_ciphers::rc4_hmac::string_to_key(password).to_vec()
+}
+
+/// Kerberos RC4-HMAC encryption under a key usage: type 23
+/// (`arcfour-hmac`), or 24 (`arcfour-hmac-exp`) when `export` is set.
+/// The 8 byte confounder is drawn from the system's random source unless
+/// one is given, which is for known-answer tests. The result is the 16
+/// byte checksum followed by the encrypted confounder and plaintext.
+pub fn kerberos_rc4_hmac_encrypt(key: &[u8], usage: u32, plaintext: &[u8],
+                                 confounder: Option<&[u8]>, export: bool)
+                                 -> Result<Vec<u8>, String> {
+    let drawn;
+    let confounder = match confounder {
+        Some(c) => c,
+        None => {
+            drawn = random_bytes(crate::stream_ciphers::rc4_hmac::CONFOUNDER_LEN)?;
+            &drawn
+        }
+    };
+    crate::stream_ciphers::rc4_hmac::encrypt(key, usage, plaintext, confounder, export)
+}
+
+/// Kerberos RC4-HMAC decryption and check: the plaintext without its
+/// confounder, or an error and nothing else.
+pub fn kerberos_rc4_hmac_decrypt(key: &[u8], usage: u32, ciphertext: &[u8], export: bool)
+                                 -> Result<Vec<u8>, String> {
+    crate::stream_ciphers::rc4_hmac::decrypt(key, usage, ciphertext, export)
+}
+
+/// The Kerberos checksum `hmac-md5-arcfour` (-138) under a key usage.
+pub fn kerberos_rc4_hmac_checksum(key: &[u8], usage: u32, data: &[u8])
+                                  -> Result<Vec<u8>, String> {
+    crate::stream_ciphers::rc4_hmac::checksum(key, usage, data).map(|c| c.to_vec())
+}
+
+/// Kerberos RC4-HMAC's pseudo-random function: HMAC-SHA1 under the key.
+pub fn kerberos_rc4_hmac_prf(key: &[u8], input: &[u8]) -> Result<Vec<u8>, String> {
+    crate::stream_ciphers::rc4_hmac::prf(key, input).map(|p| p.to_vec())
+}
+
 /// OpenPGP's string-to-key (RFC 9580 3.7.1) over a named hash: `count`
 /// octets of `salt || passphrase` repeated (one copy if `count` is
 /// shorter), `key_len` bytes out. Simple S2K is an empty salt and a count
@@ -2823,6 +3229,11 @@ pub fn bitlocker_decrypt_sector(method: &str, key: &[u8], byte_offset: u64, sect
 // takes their names, and the value comes out big endian, as PHP's `hash`
 // and Go's `Sum` give it.
 pub const CHECKSUMS: &[&str] = crate::checksum::NAMES;
+
+// Any CRC from its parameters, and the catalogue of parametrised CRC
+// algorithms; by name through `AnyHash` as well. `crc` is the value of one
+// whole message.
+pub use crate::checksum::crc::{crc, CatalogueEntry, Crc, CrcParams, CATALOGUE as CRC_CATALOGUE};
 
 /// CRC-32C of `data`, continuing from `value`, the CRC-32C of what came
 /// before it (0 to start), as zlib's `crc32` takes and gives CRC-32.
@@ -3105,6 +3516,42 @@ pub fn shake(name: &str, data: &[u8], length: usize) -> Result<Vec<u8>, String> 
     use crate::hash_functions::HashFunction;
     sponge.update(data);
     sponge.try_squeeze(length)
+}
+
+fn security_of(name: &str, family: &str, names: [&str; 2]) -> Result<usize, String> {
+    let lower = name.to_ascii_lowercase().replace(['-', '_'], "");
+    if lower == names[0] {
+        Ok(128)
+    } else if lower == names[1] {
+        Ok(256)
+    } else {
+        Err(format!("{name:?} is not {family}: {} or {}.", names[0], names[1]))
+    }
+}
+
+/// `length` bytes of TurboSHAKE128 or TurboSHAKE256 (RFC 9861 section 2),
+/// `name` being `turboshake128` or `turboshake256`, with the domain
+/// separation byte `domain`, 0x01 to 0x7F; 0x1F is the default.
+pub fn turboshake(name: &str, data: &[u8], length: usize, domain: u8)
+                  -> Result<Vec<u8>, String> {
+    let security = security_of(name, "TurboSHAKE", ["turboshake128", "turboshake256"])?;
+    let mut sponge = crate::hash_functions::keccak::Keccak::turboshake(security, domain, length)?;
+    use crate::hash_functions::HashFunction;
+    sponge.update(data);
+    sponge.try_squeeze(length)
+}
+
+/// `length` bytes of KangarooTwelve (RFC 9861 section 3) - `name` is
+/// `kt128` or `kt256` - over `data` with the customization string
+/// `customization`, empty for the plain function.
+pub fn kangarootwelve(name: &str, data: &[u8], length: usize, customization: &[u8])
+                      -> Result<Vec<u8>, String> {
+    let security = security_of(name, "KangarooTwelve", ["kt128", "kt256"])?;
+    let mut tree = crate::hash_functions::kangarootwelve::KangarooTwelve::new(
+        security, customization, length)?;
+    use crate::hash_functions::HashFunction;
+    tree.update(data);
+    tree.squeeze(length)
 }
 
 /// `length` bytes of BLAKE3's output from byte `seek`, in its hash mode,
@@ -5524,6 +5971,8 @@ impl Certificate {
                 | x509::PublicKey::MlKem { parameter_set, .. } => (parameter_set.to_string(), 0),
             x509::PublicKey::SlhDsa { parameter_set, pre_hash, .. } =>
                 (x509::slh_dsa_name(parameter_set, *pre_hash), 0),
+            x509::PublicKey::HashSig { scheme, key } =>
+                (x509::hash_sig_key_name(*scheme, key)?, 0),
             x509::PublicKey::Dsa { parameters, .. } => ("DSA".to_string(),
                 parameters.as_ref().map_or(0, |(p, _, _)| p.bit_len())),
             x509::PublicKey::UnsupportedCurve { oid, family } =>
@@ -7435,6 +7884,161 @@ pub fn slh_dsa_parameter_sets() -> Vec<&'static str> {
     slh_dsa::PARAMETER_SETS.iter().map(|set| set.name).collect()
 }
 
+// LMS and HSS (RFC 8554, RFC 9858): stateful hash-based signatures. An
+// HSS key signs and moves its count on; the caller stores the moved key
+// before the signature leaves. `pq::lms` has the scheme.
+pub use crate::pq::lms::{hss_verify, lmots_public_key, lmots_sign, lmots_verify, lms_verify,
+                         HssPrivateKey, LmotsParams, LmsParams, LmsPrivateKey};
+
+/// The (LMS, LM-OTS) pairs of a hierarchy, from the top, by name.
+fn hss_levels(levels: &[(&str, &str)])
+              -> Result<Vec<(&'static LmsParams, &'static LmotsParams)>, String> {
+    levels.iter().map(|(lms, ots)| Ok((LmsParams::named(lms)?, LmotsParams::named(ots)?)))
+        .collect()
+}
+
+/// An HSS key over `levels` - (LMS, LM-OTS) parameter set names, from the
+/// top - from a top SEED and I drawn from the OS random source.
+///
+/// **Slow for tall trees**: every tree's root is computed from all of its
+/// leaves, so a height-20 tree is a million one-time keys.
+pub fn hss_generate(levels: &[(&str, &str)]) -> Result<HssPrivateKey, String> {
+    let levels = hss_levels(levels)?;
+    let m = levels.first().ok_or("HSS has 1 to 8 levels, not 0.")?.0.m;
+    let seed = crate::random::bytes(m + 16)?;
+    let id: [u8; 16] = seed[m..].try_into().expect("16 bytes");
+    HssPrivateKey::from_seed(&levels, &seed[..m], &id, 0)
+}
+
+/// An HSS key over `levels` from its top tree's SEED (the top LMS set's
+/// `m` bytes) and I, after `count` signatures.
+pub fn hss_from_seed(levels: &[(&str, &str)], seed: &[u8], id: &[u8], count: u64)
+                     -> Result<HssPrivateKey, String> {
+    let id: [u8; 16] = id.try_into()
+        .map_err(|_| format!("An LMS tree's I is 16 bytes, not {}.", id.len()))?;
+    HssPrivateKey::from_seed(&hss_levels(levels)?, seed, &id, count)
+}
+
+// XMSS and XMSS^MT (RFC 8391, SP 800-208): stateful too. `pq::xmss`.
+pub use crate::pq::xmss::{XmssParams, XmssPrivateKey};
+
+/// An XMSS or XMSS^MT key of `parameter_set` from three seeds drawn from
+/// the OS random source. **Slow for tall trees**: the top tree's root is
+/// computed from all of its leaves.
+pub fn xmss_generate(parameter_set: &str) -> Result<XmssPrivateKey, String> {
+    let p = XmssParams::named(parameter_set)?;
+    let seeds = crate::random::bytes(3 * p.n)?;
+    XmssPrivateKey::from_seeds(p, &seeds[..p.n], &seeds[p.n..2 * p.n], &seeds[2 * p.n..], 0)
+}
+
+/// An XMSS or XMSS^MT key from `SK_SEED`, `SK_PRF` and `SEED`, whose next
+/// leaf is `index`.
+pub fn xmss_from_seeds(parameter_set: &str, sk_seed: &[u8], sk_prf: &[u8], seed: &[u8],
+                       index: u64) -> Result<XmssPrivateKey, String> {
+    XmssPrivateKey::from_seeds(XmssParams::named(parameter_set)?, sk_seed, sk_prf, seed, index)
+}
+
+/// Whether `signature` is an XMSS signature of `message` under
+/// `OID || root || SEED`.
+pub fn xmss_verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
+    crate::pq::xmss::verify(public_key, message, signature, false)
+}
+
+/// Whether `signature` is an XMSS^MT signature of `message`: the XMSS^MT
+/// registry numbers its OIDs apart from XMSS's, so the caller says which.
+pub fn xmssmt_verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
+    crate::pq::xmss::verify(public_key, message, signature, true)
+}
+
+/// An HSS, XMSS or XMSS^MT public key as a certificate carries it (RFC
+/// 9802): the scheme and the raw key, whose parameter set has been
+/// checked. Verifying only - a stateful private key signs through
+/// `HssPrivateKey` or `XmssPrivateKey`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashSigPublicKey {
+    scheme: x509::HashSig,
+    key: Vec<u8>,
+}
+
+impl HashSigPublicKey {
+    /// `scheme` is `"HSS"`, `"XMSS"` or `"XMSS^MT"` (any case, and
+    /// `"XMSSMT"`), and `key` RFC 8554's or RFC 8391's encoding.
+    pub fn from_public(scheme: &str, key: &[u8]) -> Result<HashSigPublicKey, String> {
+        let scheme = match scheme.to_ascii_uppercase().as_str() {
+            "HSS" => x509::HashSig::Hss,
+            "XMSS" => x509::HashSig::Xmss,
+            "XMSS^MT" | "XMSSMT" => x509::HashSig::XmssMt,
+            other => return Err(format!("{other:?} is not HSS, XMSS or XMSS^MT.")),
+        };
+        x509::hash_sig_key_name(scheme, key)?;
+        Ok(HashSigPublicKey { scheme, key: key.to_vec() })
+    }
+
+    /// The key in a SubjectPublicKeyInfo, DER or PEM labelled `PUBLIC KEY`.
+    pub fn from_spki(data: &[u8]) -> Result<HashSigPublicKey, String> {
+        let der = der_of(data, &["PUBLIC KEY"])?;
+        let mut reader = crate::asn1::Reader::new(&der);
+        let key = x509::read_public_key(&mut reader)?;
+        reader.finish()?;
+        HashSigPublicKey::from_x509(&key)
+    }
+
+    /// The subject key of a certificate, DER or PEM. Read, not verified.
+    pub fn from_certificate(data: &[u8]) -> Result<HashSigPublicKey, String> {
+        let der = der_of(data, &["CERTIFICATE"])?;
+        let certificate = x509::Certificate::parse(&der)?;
+        HashSigPublicKey::from_x509(&certificate.public_key)
+    }
+
+    fn from_x509(key: &x509::PublicKey<'_>) -> Result<HashSigPublicKey, String> {
+        match key {
+            x509::PublicKey::HashSig { scheme, key } =>
+                Ok(HashSigPublicKey { scheme: *scheme, key: key.to_vec() }),
+            other => Err(format!("This is an {} key, not an HSS, XMSS or XMSS^MT one.",
+                                 x509::verify::describe_key(other))),
+        }
+    }
+
+    /// `"HSS"`, `"XMSS"` or `"XMSS^MT"`.
+    pub fn scheme(&self) -> &'static str { self.scheme.name() }
+
+    /// The parameter set the key names: the XMSS or XMSS^MT set, or for
+    /// HSS its levels and its top tree's LMS and LM-OTS sets.
+    pub fn parameter_set(&self) -> String {
+        x509::hash_sig_key_name(self.scheme, &self.key).expect("checked when made")
+    }
+
+    pub fn public_bytes(&self) -> &[u8] { &self.key }
+
+    /// The key as a SubjectPublicKeyInfo, DER.
+    pub fn to_spki(&self) -> Result<Vec<u8>, String> {
+        let mut writer = crate::asn1::Writer::new();
+        crate::x509::builder::write_spki(&mut writer, &crate::x509::builder::SubjectKey::HashSig {
+            scheme: self.scheme, key: &self.key })?;
+        Ok(writer.finish())
+    }
+
+    /// Whether `signature` is this scheme's signature of `message`.
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+        self.scheme.verify(&self.key, message, signature)
+    }
+}
+
+/// Every XMSS and XMSS^MT parameter set.
+pub fn xmss_parameter_sets() -> Vec<&'static str> {
+    crate::pq::xmss::parameter_sets().iter().map(|p| p.name).collect()
+}
+
+/// Every LMS parameter set, for a caller offering a choice.
+pub fn lms_parameter_sets() -> Vec<&'static str> {
+    crate::pq::lms::LMS_PARAMETER_SETS.iter().map(|p| p.name).collect()
+}
+
+/// Every LM-OTS parameter set.
+pub fn lmots_parameter_sets() -> Vec<&'static str> {
+    crate::pq::lms::LMOTS_PARAMETER_SETS.iter().map(|p| p.name).collect()
+}
+
 /// Every approved pre-hash function name.
 pub fn slh_dsa_pre_hashes() -> Vec<&'static str> {
     slh_dsa::PRE_HASHES.iter().map(|which| which.name()).collect()
@@ -7699,6 +8303,150 @@ pub fn sntrup761_decapsulate(secret: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>
 /// The three ML-KEM parameter sets, as FIPS 203 names them.
 pub fn ml_kem_parameter_sets() -> Vec<&'static str> {
     ml_kem::PARAMETER_SETS.iter().map(|set| set.name).collect()
+}
+
+// ---------------------------------------------------------------- HPKE ---
+
+use crate::publickey_ciphers::hpke;
+
+/// An HPKE ciphersuite (RFC 9180, with draft-ietf-hpke-pq's KEMs and
+/// one-stage KDFs): a KEM, a KDF and an AEAD, by name or id. See
+/// `publickey_ciphers::hpke` for the algorithms.
+///
+/// The mode follows from the arguments: a `psk` (the key and its
+/// identifier) makes `psk` mode, a sender key (its private key to seal,
+/// its public key to open) makes `auth` mode, both make `auth_psk`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HpkeSuite {
+    inner: hpke::Suite,
+}
+
+/// A sender's or recipient's HPKE context: messages in order, and
+/// exported secrets.
+pub struct HpkeContext {
+    inner: hpke::Context,
+}
+
+impl HpkeSuite {
+    /// `kem` as `"DHKEM(X25519, HKDF-SHA256)"`, `"X25519"`, `"P-256"`,
+    /// `"ML-KEM-768"`, `"MLKEM768-P256"`, `"X-Wing"` or `"0x0020"`; `kdf`
+    /// as `"HKDF-SHA256"` or `"SHAKE256"`; `aead` as `"AES-128-GCM"`,
+    /// `"ChaCha20Poly1305"` or `"export-only"`. Case, hyphens and spaces
+    /// do not matter.
+    pub fn new(kem: &str, kdf: &str, aead: &str) -> Result<HpkeSuite, String> {
+        Ok(HpkeSuite { inner: hpke::Suite::new(hpke::Kem::from_name(kem)?,
+                                               hpke::Kdf::from_name(kdf)?,
+                                               hpke::Aead::from_name(aead)?) })
+    }
+
+    pub fn from_ids(kem: u16, kdf: u16, aead: u16) -> Result<HpkeSuite, String> {
+        Ok(HpkeSuite { inner: hpke::Suite::from_ids(kem, kdf, aead)? })
+    }
+
+    /// `(kem, kdf, aead)` ids.
+    pub fn ids(&self) -> (u16, u16, u16) {
+        (self.inner.kem.id(), self.inner.kdf.id(), self.inner.aead.id())
+    }
+
+    /// `(kem, kdf, aead)` as the documents name them.
+    pub fn names(&self) -> (&'static str, &'static str, &'static str) {
+        (self.inner.kem.name(), self.inner.kdf.name(), self.inner.aead.name())
+    }
+
+    /// `DeriveKeyPair(ikm)`: `(private, public)`, serialized.
+    pub fn derive_key_pair(&self, ikm: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+        self.inner.kem.derive_key_pair(ikm)
+    }
+
+    /// A fresh key pair from the OS generator.
+    pub fn generate_key_pair(&self) -> Result<(Vec<u8>, Vec<u8>), String> {
+        self.inner.kem.generate_key_pair()
+    }
+
+    /// The public key of a serialized private key.
+    pub fn public_key(&self, private: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner.kem.public_key(private)
+    }
+
+    /// How many bytes of `randomness` `setup_sender` takes to be
+    /// deterministic.
+    pub fn encap_randomness_len(&self) -> usize {
+        self.inner.kem.encap_randomness_len()
+    }
+
+    fn options<'a>(psk: Option<(&'a [u8], &'a [u8])>, sender: Option<&'a [u8]>)
+                   -> hpke::Options<'a> {
+        hpke::Options { psk, sender }
+    }
+
+    /// `SetupS`: `(enc, context)`. `sender_private` for `auth` mode;
+    /// `randomness` makes it deterministic, and anyone who knows it can
+    /// open what the context seals.
+    pub fn setup_sender(&self, public: &[u8], info: &[u8], psk: Option<(&[u8], &[u8])>,
+                        sender_private: Option<&[u8]>, randomness: Option<&[u8]>)
+                        -> Result<(Vec<u8>, HpkeContext), String> {
+        let options = HpkeSuite::options(psk, sender_private);
+        let (enc, inner) = match randomness {
+            Some(randomness) => self.inner.setup_sender_with(public, info, &options,
+                                                             randomness)?,
+            None => self.inner.setup_sender(public, info, &options)?,
+        };
+        Ok((enc, HpkeContext { inner }))
+    }
+
+    /// `SetupR`. `sender_public` for `auth` mode.
+    pub fn setup_receiver(&self, enc: &[u8], private: &[u8], info: &[u8],
+                          psk: Option<(&[u8], &[u8])>, sender_public: Option<&[u8]>)
+                          -> Result<HpkeContext, String> {
+        let options = HpkeSuite::options(psk, sender_public);
+        Ok(HpkeContext { inner: self.inner.setup_receiver(enc, private, info, &options)? })
+    }
+
+    /// Single-shot `Seal`: `(enc, ciphertext)`.
+    pub fn seal(&self, public: &[u8], info: &[u8], aad: &[u8], plaintext: &[u8],
+                psk: Option<(&[u8], &[u8])>, sender_private: Option<&[u8]>)
+                -> Result<(Vec<u8>, Vec<u8>), String> {
+        self.inner.seal(public, info, aad, plaintext, &HpkeSuite::options(psk, sender_private))
+    }
+
+    /// Single-shot `Open`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open(&self, enc: &[u8], private: &[u8], info: &[u8], aad: &[u8], ciphertext: &[u8],
+                psk: Option<(&[u8], &[u8])>, sender_public: Option<&[u8]>)
+                -> Result<Vec<u8>, String> {
+        self.inner.open(enc, private, info, aad, ciphertext,
+                        &HpkeSuite::options(psk, sender_public))
+    }
+}
+
+impl HpkeContext {
+    /// Seal the next message: ciphertext and tag.
+    pub fn seal(&mut self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner.seal(aad, plaintext)
+    }
+
+    /// Open the next message. A failure does not move the sequence on.
+    pub fn open(&mut self, aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner.open(aad, ciphertext)
+    }
+
+    /// `Export(exporter_context, L)`.
+    pub fn export(&self, exporter_context: &[u8], length: usize) -> Result<Vec<u8>, String> {
+        self.inner.export(exporter_context, length)
+    }
+
+    /// The sequence number of the next message.
+    pub fn sequence(&self) -> u64 {
+        self.inner.sequence()
+    }
+}
+
+/// The names `HpkeSuite::new` takes for each part, as the documents print
+/// them: `(kems, kdfs, aeads)`.
+pub fn hpke_names() -> (Vec<&'static str>, Vec<&'static str>, Vec<&'static str>) {
+    (hpke::Kem::ALL.iter().map(|k| k.name()).collect(),
+     hpke::Kdf::ALL.iter().map(|k| k.name()).collect(),
+     hpke::Aead::ALL.iter().map(|a| a.name()).collect())
 }
 
 // ----------------------------------------------------------------- DSA ---
